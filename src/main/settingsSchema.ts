@@ -17,6 +17,7 @@ import { clampWelcomeSeen } from '../shared/welcome.ts'
 import { CHAT_INDEX_DEFAULTS, clampChatIndex, clampChatIndexOptions } from '../shared/chatIndex.ts'
 import { clampVoice, VOICE_DEFAULTS } from '../shared/voiceSettings.ts'
 import { clampAccessAud, clampAccessTeamDomain } from '../shared/cfAccess.ts'
+import { hydrateRemotePush } from '../shared/remotePhone.ts'
 import {
   clampCurrentProfile,
   clampImportOffer,
@@ -100,7 +101,9 @@ export const DEFAULT_SETTINGS: Settings = {
     tunnelName: 'stoke',
     // The mirror of `voice.sttUrl` an older build reads. Never read it here;
     // hydrateSettings rewrites it from `voice` every time. See types.ts.
-    sttUrl: VOICE_DEFAULTS.sttUrl
+    sttUrl: VOICE_DEFAULTS.sttUrl,
+    // No pair until a start path mints one (gotcha 53); main writes this block alone.
+    push: { vapidPublic: '', vapidPrivate: '', subscriptions: [] }
   },
   // Through the clamp rather than a spread: `keys` is an object, and a spread
   // would share VOICE_DEFAULTS' own with every settings object.
@@ -327,7 +330,13 @@ export function hydrateSettings(raw: unknown): Settings {
        * stale copy in a remote patch, or an old build's edit, must never beat
        * the setting it mirrors.
        */
-      sttUrl: voice.sttUrl
+      sttUrl: voice.sttUrl,
+      /*
+       * Rebuilt from named keys, never spread through: a subscription endpoint
+       * is a URL main POSTs to, so a hand-edited one must hydrate as gone
+       * rather than reach `sendPush` (`hydrateRemotePush`).
+       */
+      push: hydrateRemotePush(r.remote?.push)
     },
     voice,
     /*

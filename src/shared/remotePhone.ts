@@ -10,7 +10,7 @@
  */
 
 import type { RegistryStatus } from './claudeRegistry.ts'
-import type { EffortLevel, PermissionMode } from './types.ts'
+import type { EffortLevel, PermissionMode, PushSubscriptionRecord, RemotePushSettings } from './types.ts'
 import { launchModel, resolveDefaultAgent, type AgentEndpoint } from './agents.ts'
 import { accountProblem, accountsOf, DEFAULT_ACCOUNT_ID, resolveLaunchAccount, type AgentAccount } from './accounts.ts'
 import { accessRefusalForPhone, type AccessRefusal } from './cfAccess.ts'
@@ -854,6 +854,192 @@ export function phoneLaunchVerdict(
   if (accountId !== undefined && !pick) return bad(`That account is not one of ${label}’s.`)
   if (pick?.problem) return bad(pick.problem)
   return { ok: true, permissionMode: mode as PermissionMode, model: runs, effort: effort as EffortLevel, accountId }
+}
+
+/* ----------------------------------------------------------------- Web Push */
+
+/*
+ * A phone with the installed shell can be told when a session needs it,
+ * without the page open: Web Push (main/remote/push.ts). These are the parts
+ * that decide WHEN, WHAT and TO WHERE, pure so `verify:remote` holds them.
+ */
+
+/** What one push says. Content-free: a project name and a status word — never a prompt, a line of output or a path. */
+export interface PushPayload {
+  /** The project, or the remote machine's name (gotcha 18). */
+  title: string
+  /** "Needs you" or "Finished". */
+  body: string
+  /** One per session, so a newer notification replaces the older. */
+  tag: string
+  /** Where a tap opens, inside the shell: `#/s/<ptyId>` or `#/`. */
+  url: string
+}
+
+export type PushKind = 'needs-you' | 'finished' | 'test'
+
+/** One session's last reading, as Web Push sees it. */
+export interface PushState {
+  status: PhoneSessionStatus
+  promptId: string | null
+}
+
+/**
+ * Whether a session's move from `prev` to `next` is worth a push.
+ *
+ * - First sight (`prev` null) is a baseline, never a push: a server that starts,
+ *   or a session it has not seen yet, does not announce what was already so.
+ * - Into `waiting` from anything else: it needs you — once.
+ * - `waiting` to `waiting`: only when a NEW prompt is on screen (`trackPrompt`
+ *   gave it another id); the same prompt read again is silent.
+ * - Into `ended` (the process exited on its own): finished — once. A session
+ *   closed at the desk is gone from the list instead, and the server sends
+ *   nothing for it.
+ */
+export function pushFor(prev: PushState | null, next: PushState): PushKind | null {
+  if (!prev) return null
+  if (next.status === 'ended') return prev.status === 'ended' ? null : 'finished'
+  if (next.status !== 'waiting') return null
+  if (prev.status !== 'waiting') return 'needs-you'
+  return prev.promptId !== null && next.promptId !== null && next.promptId !== prev.promptId ? 'needs-you' : null
+}
+
+/** Longer than any folder name worth reading on a lock screen; cut rather than wrapped. */
+const PUSH_TITLE_MAX = 60
+
+/** The payload for one push (`pushFor`'s kind), for a session named `project`. */
+export function pushPayload(kind: PushKind, project: string, ptyId: string): PushPayload {
+  if (kind === 'test') return { title: 'Stoke', body: 'Notifications are on.', tag: 'stoke-test', url: '#/' }
+  const name = Array.from(project.replace(/\s+/g, ' ').trim()).slice(0, PUSH_TITLE_MAX).join('') || 'A session'
+  return {
+    title: name,
+    body: kind === 'needs-you' ? 'Needs you' : 'Finished',
+    tag: `stoke-${ptyId}`,
+    url: `#/s/${encodeURIComponent(ptyId)}`
+  }
+}
+
+/**
+ * The push services a subscription may point at — where the browsers a phone
+ * or laptop runs actually subscribe. Anything else is refused: the endpoint is
+ * a URL this machine will POST to, and the bearer key must not buy "make the
+ * desktop send requests anywhere" (an address on its LAN included). A leading
+ * dot is a suffix.
+ *
+ *   fcm.googleapis.com, android.googleapis.com   Chrome, Edge on Android, Samsung Internet, Opera, Brave
+ *   updates.push.services.mozilla.com             Firefox
+ *   web.push.apple.com, .push.apple.com           Safari and iOS home-screen apps
+ *   .notify.windows.com                           Edge on Windows
+ */
+export const PUSH_SERVICE_HOSTS: readonly string[] = [
+  'fcm.googleapis.com',
+  'android.googleapis.com',
+  'updates.push.services.mozilla.com',
+  'web.push.apple.com',
+  '.push.apple.com',
+  '.notify.windows.com'
+]
+
+/** More subscriptions than phones anyone carries; the oldest goes first. */
+export const MAX_PUSH_SUBSCRIPTIONS = 8
+
+const MAX_PUSH_ENDPOINT = 2048
+
+/**
+ * Whether Stoke may POST to `endpoint`: https on a push service above, or —
+ * only where `allowLoopback` (an unpackaged build told so, for a suite's fake
+ * push service) — plain http on 127.0.0.1. No credentials in it, ever.
+ */
+export function pushEndpointOk(endpoint: unknown, allowLoopback: boolean): endpoint is string {
+  if (typeof endpoint !== 'string' || !endpoint || endpoint.length > MAX_PUSH_ENDPOINT) return false
+  let u: URL
+  try {
+    u = new URL(endpoint)
+  } catch {
+    return false
+  }
+  if (u.username || u.password) return false
+  if (u.protocol === 'http:') return allowLoopback && u.hostname === '127.0.0.1'
+  if (u.protocol !== 'https:' || (u.port && u.port !== '443')) return false
+  const host = u.hostname.toLowerCase()
+  return PUSH_SERVICE_HOSTS.some((h) => (h.startsWith('.') ? host.endsWith(h) && host.length > h.length : host === h))
+}
+
+/** base64url of exactly `bytes` bytes, unpadded (a trailing `=` is tolerated and dropped). */
+function isB64u(v: unknown, bytes: number): v is string {
+  if (typeof v !== 'string') return false
+  const s = v.replace(/=+$/, '')
+  return /^[A-Za-z0-9_-]+$/.test(s) && s.length === Math.ceil((bytes * 4) / 3)
+}
+
+export type PushSubscriptionVerdict =
+  | { ok: true; sub: { endpoint: string; p256dh: string; auth: string } }
+  | { ok: false; error: string }
+
+/**
+ * A subscription from a phone (`PushSubscription.toJSON()`), or why not. The
+ * key must be an uncompressed P-256 point (65 bytes, leading 0x04 — base64url
+ * `B`) and the auth secret 16 bytes: anything else could never be encrypted
+ * to, and would be kept for nothing.
+ */
+export function pushSubscriptionFrom(raw: unknown, allowLoopback: boolean): PushSubscriptionVerdict {
+  const r = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as { endpoint?: unknown; keys?: unknown }) : null
+  if (!r) return { ok: false, error: 'Send the subscription as JSON.' }
+  if (!pushEndpointOk(r.endpoint, allowLoopback)) return { ok: false, error: 'That push service is not one Stoke sends to.' }
+  const keys = r.keys && typeof r.keys === 'object' ? (r.keys as { p256dh?: unknown; auth?: unknown }) : {}
+  if (!isB64u(keys.p256dh, 65) || !keys.p256dh.startsWith('B')) return { ok: false, error: 'The subscription’s key is not a P-256 public key.' }
+  if (!isB64u(keys.auth, 16)) return { ok: false, error: 'The subscription’s auth secret is not 16 bytes.' }
+  return { ok: true, sub: { endpoint: r.endpoint, p256dh: keys.p256dh.replace(/=+$/, ''), auth: keys.auth.replace(/=+$/, '') } }
+}
+
+/**
+ * The list after one phone subscribes under the key tagged `keyTag`: its old
+ * record for the same endpoint replaced, every record made under another key
+ * dropped (that key is gone), newest last, at most `MAX_PUSH_SUBSCRIPTIONS`.
+ */
+export function withPushSubscription(
+  list: readonly PushSubscriptionRecord[],
+  sub: { endpoint: string; p256dh: string; auth: string },
+  keyTag: string,
+  now: number
+): PushSubscriptionRecord[] {
+  const kept = list.filter((s) => s.keyTag === keyTag && s.endpoint !== sub.endpoint)
+  return [...kept, { ...sub, keyTag, addedAt: now }].slice(-MAX_PUSH_SUBSCRIPTIONS)
+}
+
+/** Who is sent a push now: made under the key in force, and still a place Stoke may POST to. */
+export function livePushSubscriptions(
+  list: readonly PushSubscriptionRecord[],
+  keyTag: string,
+  allowLoopback: boolean
+): PushSubscriptionRecord[] {
+  return list.filter((s) => s.keyTag === keyTag && pushEndpointOk(s.endpoint, allowLoopback))
+}
+
+export const EMPTY_REMOTE_PUSH: RemotePushSettings = { vapidPublic: '', vapidPrivate: '', subscriptions: [] }
+
+/**
+ * Repair `remote.push`, rebuilt from named keys (the clamp rule). A key that is
+ * not base64url of the right size is dropped with its pair, and a subscription
+ * that does not hold up is dropped alone; the loopback shape passes here and
+ * is refused at send time outside a test build (`livePushSubscriptions`). The
+ * private key may be `''` while the vault has not opened.
+ */
+export function hydrateRemotePush(raw: unknown): RemotePushSettings {
+  const r = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {}
+  const pub = isB64u(r.vapidPublic, 65) && (r.vapidPublic as string).startsWith('B') ? (r.vapidPublic as string) : ''
+  const priv = typeof r.vapidPrivate === 'string' && (r.vapidPrivate === '' || isB64u(r.vapidPrivate, 32)) ? r.vapidPrivate : ''
+  const subscriptions: PushSubscriptionRecord[] = []
+  if (Array.isArray(r.subscriptions)) {
+    for (const s of r.subscriptions) {
+      if (!s || typeof s !== 'object') continue
+      const rec = s as Record<string, unknown>
+      const v = pushSubscriptionFrom({ endpoint: rec.endpoint, keys: { p256dh: rec.p256dh, auth: rec.auth } }, true)
+      if (!v.ok || typeof rec.keyTag !== 'string' || !/^[0-9a-f]{8,64}$/.test(rec.keyTag)) continue
+      subscriptions.push({ ...v.sub, keyTag: rec.keyTag, addedAt: typeof rec.addedAt === 'number' && Number.isFinite(rec.addedAt) ? rec.addedAt : 0 })
+    }
+  }
+  return pub ? { vapidPublic: pub, vapidPrivate: priv, subscriptions: subscriptions.slice(-MAX_PUSH_SUBSCRIPTIONS) } : { ...EMPTY_REMOTE_PUSH, subscriptions: [] }
 }
 
 /* ------------------------------------------------ folders a phone may reach */

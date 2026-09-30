@@ -55,6 +55,8 @@ export interface HostInfo {
    * older than it, where the sheet falls back to Claude's own lists.
    */
   choices?: Record<string, PhoneAgentChoices>
+  /** Web Push (point 14): the key a subscription is made with, null until Phone access started with one. */
+  push?: { publicKey: string | null }
 }
 
 export interface ProjectRow {

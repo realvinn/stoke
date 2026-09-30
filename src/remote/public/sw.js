@@ -30,8 +30,12 @@
  * localhost. Browsers refuse a service worker on a plain-http LAN or tailnet
  * address, and that page simply runs without one, exactly as before.
  *
+ * It also shows Web Push notifications (`pushNotice`, phone contract point
+ * 14): the payload's title and body cut to size, and a tap goes only to one of
+ * this shell's own `#/` routes.
+ *
  * Plain JS, no imports: this file runs as it is. `verify:remote` loads it in a
- * sandbox and holds `route` to the rules above.
+ * sandbox and holds `route` and `pushNotice` to the rules above.
  */
 
 const BUILD = '__STOKE_BUILD__'
@@ -120,6 +124,57 @@ async function cacheFirst(request) {
   if (res.ok && !(res.headers.get('content-type') || '').includes('text/html')) void cache.put(request, res.clone())
   return res
 }
+
+/*
+ * Web Push (phone contract point 14). The payload is content-free by design —
+ * a project name, "Needs you" or "Finished", and the session's route inside
+ * this shell — and this worker trusts none of it past that: the text is cut,
+ * and the route must be one of the shell's own hash routes, so a payload can
+ * never send a tap to another page or origin.
+ */
+function pushNotice(data) {
+  const d = data && typeof data === 'object' ? data : {}
+  const text = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '')
+  const route = typeof d.url === 'string' && /^#\/[A-Za-z0-9/%._-]*$/.test(d.url) ? d.url : '#/'
+  return {
+    title: text(d.title, 80) || 'Stoke',
+    options: {
+      body: text(d.body, 120),
+      tag: text(d.tag, 80) || 'stoke',
+      renotify: true,
+      icon: scopeUrl('icon-192.png'),
+      badge: scopeUrl('icon-192.png'),
+      data: { route }
+    }
+  }
+}
+
+self.addEventListener('push', (event) => {
+  let data = null
+  try {
+    data = event.data ? event.data.json() : null
+  } catch {
+    data = null
+  }
+  const notice = pushNotice(data)
+  event.waitUntil(self.registration.showNotification(notice.title, notice.options))
+})
+
+/** A tap opens the session: the shell's own window if one is open (told to go there), else a new one. */
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close()
+  const route = pushNotice({ url: event.notification.data && event.notification.data.route }).options.data.route
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((list) => {
+      const mine = list.find((c) => c.url.startsWith(self.registration.scope))
+      if (mine) {
+        mine.postMessage({ type: 'stoke:open', route })
+        return mine.focus()
+      }
+      return self.clients.openWindow(scopeUrl('') + route)
+    })
+  )
+})
 
 self.addEventListener('fetch', (event) => {
   const request = event.request

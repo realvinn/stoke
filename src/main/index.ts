@@ -15,7 +15,7 @@ import {
   shell,
   systemPreferences
 } from 'electron'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { pathToFileURL } from 'node:url'
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
@@ -103,7 +103,12 @@ import {
 } from '../shared/stokeArgs.ts'
 import { installCommand, readCommandState, removeCommand, type CommandEnv } from './stokeCommand.ts'
 import { keepUsage } from '../shared/statusLine.ts'
-import { advertisedRemoteToken, shouldRestartRemote } from '../shared/remotePhone.ts'
+import {
+  advertisedRemoteToken,
+  livePushSubscriptions,
+  shouldRestartRemote,
+  withPushSubscription
+} from '../shared/remotePhone.ts'
 import { parseSession, readTranscript } from './sessionFile.ts'
 import { fetchRemoteTranscript } from './sshTranscript.ts'
 import { PtyManager, type StartResult } from './pty.ts'
@@ -174,7 +179,8 @@ import {
 import { createScratchDir, resolveDefaultCwd } from './workspace.ts'
 import { launchFolderProblem, realpathFolder } from './folderCheck.ts'
 import { BrowserMcpServer } from './mcp/server.ts'
-import { connectTarget, generateToken, RemoteServer, tailnetAddress, type RemoteDeps } from './remote/server.ts'
+import { connectTarget, generateToken, RemoteServer, tailnetAddress, type RemoteDeps, type RemotePushDeps } from './remote/server.ts'
+import { generateVapidKeys, isVapidPair, sendPush } from './remote/push.ts'
 import { TunnelManager } from './remote/tunnel.ts'
 import { discoverAccess } from './remote/accessJwt.ts'
 import { ACCESS_STATUS_OFF, type AccessLookup } from '../shared/cfAccess.ts'
@@ -1428,13 +1434,92 @@ function remoteConfig(): Settings['remote'] {
   return getSettings().remote
 }
 
-/** Mint the bearer key if there is none yet, and tell the renderer. */
+/**
+ * Mint the bearer key if there is none yet — and Web Push's VAPID pair if
+ * there is no whole one (phone contract point 14) — in one write, and tell the
+ * renderer. Only the start paths call this (gotcha 53): `/api/host` reads the
+ * public key and never mints. A new pair retires every subscription, which was
+ * made to the old one and could never be sent to again.
+ */
 function ensureRemoteToken(): Settings['remote'] {
   const s = getSettings()
-  if (s.remote.token) return s.remote
-  const next = setSettings({ remote: { ...s.remote, token: generateToken() } })
+  const push = s.remote.push
+  const pushWhole = isVapidPair({ publicKey: push.vapidPublic, privateKey: push.vapidPrivate })
+  if (s.remote.token && pushWhole) return s.remote
+  const pair = pushWhole ? null : generateVapidKeys()
+  const next = setSettings({
+    remote: {
+      ...s.remote,
+      token: s.remote.token || generateToken(),
+      push: pair ? { vapidPublic: pair.publicKey, vapidPrivate: pair.privateKey, subscriptions: [] } : push
+    }
+  })
   send(CH.settingsChanged, next)
   return next.remote
+}
+
+/**
+ * Which phone key a subscription was made under: a truncated hash, never the
+ * key. A key replaced in Settings is a phone locked out, so a subscription made
+ * under the old one is never sent to again (`livePushSubscriptions`).
+ */
+function pushKeyTag(token: string): string {
+  return createHash('sha256').update(`stoke-push:${token}`).digest('hex').slice(0, 16)
+}
+
+/**
+ * Whether a push may go to plain http on 127.0.0.1: only an unpackaged build
+ * launched with `STOKE_PUSH_LOOPBACK=1`, which is how a sandbox points a phone
+ * at a fake push service (the same shape as `STOKE_ACCESS_CERTS_URL`). A
+ * packaged build never does.
+ */
+function pushLoopbackAllowed(): boolean {
+  return !app.isPackaged && process.env.STOKE_PUSH_LOOPBACK === '1'
+}
+
+/** `remote.push.subscriptions`, rewritten by main alone, then the renderer told (gotcha 53). */
+function writePushSubscriptions(edit: (list: Settings['remote']['push']['subscriptions']) => Settings['remote']['push']['subscriptions']): void {
+  const s = getSettings()
+  const next = setSettings({ remote: { ...s.remote, push: { ...s.remote.push, subscriptions: edit(s.remote.push.subscriptions) } } })
+  send(CH.settingsChanged, next)
+}
+
+/**
+ * Web Push for the phone server (phone contract point 14), every read from
+ * settings on the call (gotcha 111). A send's `gone` (the phone unsubscribed,
+ * or its browser dropped it) forgets that subscription; a `failed` one is kept.
+ */
+function remotePushDeps(): RemotePushDeps {
+  const pair = (): { publicKey: string; privateKey: string } | null => {
+    const p = getSettings().remote.push
+    const keys = { publicKey: p.vapidPublic, privateKey: p.vapidPrivate }
+    return isVapidPair(keys) ? keys : null
+  }
+  return {
+    publicKey: () => pair()?.publicKey ?? null,
+    subscribe: (sub) => {
+      const tag = pushKeyTag(getSettings().remote.token)
+      writePushSubscriptions((list) => withPushSubscription(list, sub, tag, Date.now()))
+    },
+    unsubscribe: (endpoint) => {
+      const had = getSettings().remote.push.subscriptions.some((s) => s.endpoint === endpoint)
+      if (had) writePushSubscriptions((list) => list.filter((s) => s.endpoint !== endpoint))
+      return had
+    },
+    notify: async (payload, opts = {}) => {
+      const keys = pair()
+      if (!keys) return []
+      const s = getSettings()
+      const live = livePushSubscriptions(s.remote.push.subscriptions, pushKeyTag(s.remote.token), pushLoopbackAllowed()).filter(
+        (sub) => !opts.only || sub.endpoint === opts.only
+      )
+      const outcomes = await Promise.all(live.map((sub) => sendPush(sub, payload, keys, { urgency: opts.urgency })))
+      const gone = new Set(live.filter((_, i) => outcomes[i] === 'gone').map((sub) => sub.endpoint))
+      if (gone.size) writePushSubscriptions((list) => list.filter((sub) => !gone.has(sub.endpoint)))
+      return outcomes
+    },
+    allowLoopback: pushLoopbackAllowed
+  }
 }
 
 /**
@@ -1626,6 +1711,7 @@ function remoteDeps(): RemoteDeps {
         defaultModel: s.defaults.model
       }
     },
+    push: remotePushDeps(),
     sttStatus: async () => {
       const s = await sttStatusNow()
       return s === 'up' || s === 'ready' ? 'ready' : s
@@ -3484,9 +3570,15 @@ function registerIpc(): void {
      * The renderer may rename an account, recolour it or change its key —
      * never add one, remove one or move its home, which becomes an agent's
      * config dir. Those are `accounts:create`/`accounts:remove`, in main.
+     *
+     * Nor may it write `remote.push` at all: Phone access spreads its whole
+     * copy of `remote` into every patch, and a phone that subscribed since that
+     * copy was taken would be dropped by the next toggle (the same shape as
+     * gotcha 53's stale token). Main's own copy always stands.
      */
+    const guarded: Partial<Settings> = patch.remote ? { ...patch, remote: { ...patch.remote, push: prev.remote.push } } : patch
     const next = setSettings(
-      patch.accounts ? { ...patch, accounts: accountsFromRenderer(prev.accounts, patch.accounts) } : patch
+      guarded.accounts ? { ...guarded, accounts: accountsFromRenderer(prev.accounts, guarded.accounts) } : guarded
     )
     // A renamed or re-ordered profile list, a switch, or a bookmark list moved.
     if (patch.browser) {

@@ -1591,6 +1591,29 @@ a {
   gap: 8px;
 }
 
+/* Notifications: where this phone stands, then why not (when it cannot). */
+.notify-status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.notify-status[data-state='on'] svg {
+  color: var(--accent-ink);
+}
+
+.notify-why {
+  margin: 0 0 16px;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.notify-why[hidden] {
+  display: none;
+}
+
 .sheet-actions .btn {
   flex: 1;
 }

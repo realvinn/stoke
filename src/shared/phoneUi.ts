@@ -1043,3 +1043,77 @@ export function startFields(cli: string, c: PhoneAgentChoices, picks: PhonePicks
   if (showsAccountPicker(c)) out.accountId = picks.account
   return out
 }
+
+/* ---------------------------------------------------------- notifications */
+
+/** What the page can tell about Web Push here, read in the browser (`navigator`, `Notification`). */
+export interface PushEnv {
+  /** `window.isSecureContext`: https (the tunnel) or localhost. */
+  secure: boolean
+  serviceWorker: boolean
+  pushManager: boolean
+  notification: boolean
+  /** `Notification.permission`. */
+  permission: 'default' | 'granted' | 'denied'
+  /** An iPhone or iPad, where only a Home Screen app may subscribe. */
+  ios: boolean
+  /** Running as the installed app (`display-mode: standalone`, `navigator.standalone`). */
+  standalone: boolean
+  /** `/api/host`'s `push.publicKey`: null while the computer has no VAPID pair. */
+  serverKey: string | null
+}
+
+export type PushAvailability =
+  | { ok: true }
+  | { ok: false; reason: 'insecure' | 'install' | 'unsupported' | 'denied' | 'server'; text: string }
+
+/**
+ * Whether this page can turn notifications on, and if not, the one thing to do
+ * about it. The http link is the common case to explain: a LAN or tailnet
+ * address is plain http, where no browser registers a service worker or a push
+ * subscription, so it says to use the tunnel's https link rather than failing
+ * at the first tap.
+ */
+export function pushAvailability(env: PushEnv): PushAvailability {
+  if (!env.secure) {
+    return {
+      ok: false,
+      reason: 'insecure',
+      text: 'Notifications need Stoke’s https link, through your Cloudflare tunnel. This page came over plain http — the local network or the tailnet — where no browser allows them.'
+    }
+  }
+  if (env.ios && !env.standalone) {
+    return {
+      ok: false,
+      reason: 'install',
+      text: 'On iPhone and iPad, add Stoke to your Home Screen first (Share, then Add to Home Screen), open it from there, and turn notifications on in it.'
+    }
+  }
+  if (!env.serviceWorker || !env.pushManager || !env.notification) {
+    return { ok: false, reason: 'unsupported', text: 'This browser cannot receive notifications from a web page.' }
+  }
+  if (env.permission === 'denied') {
+    return { ok: false, reason: 'denied', text: 'Notifications are blocked for this site. Allow them in the browser’s site settings, then come back here.' }
+  }
+  if (!env.serverKey) {
+    return { ok: false, reason: 'server', text: 'Notifications are not set up on your computer yet. Turn Phone access off and on in Stoke.' }
+  }
+  return { ok: true }
+}
+
+/** A base64url VAPID key as the bytes `pushManager.subscribe` takes. */
+export function base64UrlBytes(s: string): Uint8Array {
+  const b64 = s.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (s.length % 4)) % 4)
+  const bin = atob(b64)
+  const out = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
+  return out
+}
+
+/** Whether a subscription the browser holds was made with `key` (the computer may have minted a new pair since). */
+export function sameServerKey(held: ArrayBuffer | null | undefined, key: string): boolean {
+  if (!held) return false
+  const a = new Uint8Array(held)
+  const b = base64UrlBytes(key)
+  return a.length === b.length && a.every((v, i) => v === b[i])
+}

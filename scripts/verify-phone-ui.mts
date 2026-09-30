@@ -60,6 +60,10 @@ import {
   showsAccountPicker,
   startFields,
   startProblem,
+  base64UrlBytes,
+  pushAvailability,
+  sameServerKey,
+  type PushEnv,
   type ResizeInput
 } from '../src/shared/phoneUi.ts'
 import type { PhoneAgentChoices } from '../src/shared/remotePhone.ts'
@@ -763,6 +767,42 @@ console.log("\nthe confirm step shows what the chosen agent takes (choices)")
     [phoneChoicesFor(undefined, 'claude').models.length, phoneChoicesFor(undefined, 'codex').models, phoneChoicesFor(undefined, 'codex').modes.length],
     [8, [{ id: '', label: 'Chosen by Codex CLI' }], 0]
   )
+}
+
+/*
+ * Notifications (phone contract point 14): a page that cannot subscribe says
+ * which thing is missing — above all the plain-http LAN link, where no browser
+ * allows a service worker — instead of failing at the first tap.
+ */
+console.log('\nnotifications: whether this page can, and if not why (pushAvailability)')
+{
+  const env: PushEnv = {
+    secure: true,
+    serviceWorker: true,
+    pushManager: true,
+    notification: true,
+    permission: 'default',
+    ios: false,
+    standalone: false,
+    serverKey: 'BKEY'
+  }
+  check('https with a service worker and a server key: it can', pushAvailability(env), { ok: true })
+  const why = (e: Partial<PushEnv>): string => {
+    const v = pushAvailability({ ...env, ...e })
+    return v.ok ? 'ok' : v.reason
+  }
+  check('plain http (the LAN or tailnet link): says to use the https tunnel link', why({ secure: false, serviceWorker: false, pushManager: false }), 'insecure')
+  check('…and says it in words that name the tunnel', (pushAvailability({ ...env, secure: false }) as { text: string }).text.includes('Cloudflare tunnel'), true)
+  check('iPhone in Safari, not from the Home Screen: install it first', why({ ios: true, standalone: false }), 'install')
+  check('iPhone from the Home Screen: it can', why({ ios: true, standalone: true }), 'ok')
+  check('a browser with no Push API', why({ pushManager: false }), 'unsupported')
+  check('blocked for the site', why({ permission: 'denied' }), 'denied')
+  check('the computer has no key yet (Phone access not restarted since the update)', why({ serverKey: null }), 'server')
+  check('the insecure reason wins over everything else', why({ secure: false, permission: 'denied', serverKey: null }), 'insecure')
+  const key = 'BP4z9KsN6nGRTbVYI_c7VJSPQTBtkgcy27mlmlMoZIIgDll6e3vCYLocInmYWAmS6TlzAC8wEqKK6PBru3jl7A8'
+  const bytes = base64UrlBytes(key)
+  check('a VAPID key becomes the 65 bytes subscribe() takes', [bytes.length, bytes[0]], [65, 4])
+  check('a held subscription is recognised as made with this key, or not', [sameServerKey(bytes.buffer as ArrayBuffer, key), sameServerKey(new Uint8Array(65).buffer, key), sameServerKey(null, key)], [true, false, false])
 }
 
 /*

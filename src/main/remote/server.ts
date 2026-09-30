@@ -36,6 +36,7 @@ import { disambiguate } from '../../shared/launcher.ts'
 import { pathKey, pathRulesFor } from '../../shared/paths.ts'
 import type { FolderBase } from '../../shared/remotePhone.ts'
 import { addRemoteProject, browseRemoteFolder, resolveFolderBases } from './folders.ts'
+import type { PushOutcome } from './push.ts'
 import { isTailnetAddress, tailnetAddress } from './link.ts'
 import {
   answerBytes,
@@ -46,7 +47,12 @@ import {
   phoneHostDefaults,
   phoneLaunchVerdict,
   hostChoices,
+  pushFor,
+  pushPayload,
+  pushSubscriptionFrom,
   type PhoneLaunchFacts,
+  type PushPayload,
+  type PushState,
   refusalStatusLine,
   remoteRefusal,
   type RemoteAuthVerdict,
@@ -183,7 +189,33 @@ export type { ConnectTarget, Reach } from './link.ts'
  *    snapshot or the last recorded one, else `null` (PX-19, gotcha 2).
  * 10. A session started from the phone pushes `CH.remoteSessionStarted`, so
  *     `App.tsx` adopts it as a desktop tab (PX-9/F3).
+ * 14. Web Push. `/api/host` adds `push: {publicKey}` — the VAPID key a
+ *     subscription is made with, null until a start path minted the pair
+ *     (never on this read, gotcha 53). `POST /api/push/subscription` takes a
+ *     `PushSubscription.toJSON()` (`pushSubscriptionFrom`: a real push
+ *     service's https endpoint only) and replies `{ok:true}`; `DELETE` the
+ *     same path with `{endpoint}` forgets it, `{ok, removed}`; `POST
+ *     /api/push/test {endpoint}` sends that one subscription a test
+ *     notification, `{ok, outcome}`. Gated like every `/api` route. A session
+ *     then pushes on `pushFor`'s edges only — into waiting, a new prompt, an
+ *     exit on its own — with a content-free payload (`pushPayload`: project
+ *     name, "Needs you"/"Finished", the session's route). A subscription made
+ *     under an older phone key is never sent to.
  */
+
+/** Web Push, as the server needs it (main/remote/push.ts; phone contract point 14). Settings read per call. */
+export interface RemotePushDeps {
+  /** The VAPID public key, or null while there is no whole pair. Never mints one. */
+  publicKey: () => string | null
+  /** Remember one checked subscription under the phone key in force. */
+  subscribe: (sub: { endpoint: string; p256dh: string; auth: string }) => void
+  /** Forget one by endpoint; true when it was there. */
+  unsubscribe: (endpoint: string) => boolean
+  /** Send one payload to every live subscription, or to `only` among them. What became of each send. */
+  notify: (payload: PushPayload, opts?: { only?: string; urgency?: 'high' | 'normal' }) => Promise<PushOutcome[]>
+  /** Whether a loopback http endpoint is accepted: an unpackaged build told so, for a fake push service. */
+  allowLoopback: () => boolean
+}
 
 export interface RemoteDeps {
   ptys: () => PtyManager | null
@@ -230,6 +262,8 @@ export interface RemoteDeps {
    * the ids, labels and models those two need leave this process.
    */
   launchFacts: () => PhoneLaunchFacts
+  /** Web Push (phone contract point 14); absent, the routes answer 503 and nothing is pushed. */
+  push?: RemotePushDeps
   sttStatus: () => Promise<'ready' | 'down' | 'off'>
   /**
    * A dictated clip to text, through `stt.ts` with the provider, key and
@@ -496,6 +530,12 @@ export class RemoteServer {
   /** What the panel is told about the last token refused and accepted. */
   private accessRefused: { reason: AccessRefusal; at: number } | null = null
   private accessAccepted: number | null = null
+  /**
+   * Each session's last reading as Web Push sees it (`pushFor`). A session
+   * first seen is a baseline, so a server start never announces what was
+   * already so; one gone from the list is forgotten.
+   */
+  private pushSeen = new Map<string, PushState>()
 
   private readonly deps: RemoteDeps
   /** Told whenever a client attaches or leaves, so the desktop can say so. */
@@ -647,6 +687,9 @@ export class RemoteServer {
           const set = this.attached.get(ptyId)
           if (set) for (const ws of set) if (ws.readyState === 1) ws.close(1000, 'exit')
           this.notifySessionsChanged()
+          // Finished, if it ended on its own: a tab closed at the desk is
+          // already gone from the list, and is sent nothing (`evaluatePush`).
+          this.evaluatePush()
         })
       }
     } catch (err) {
@@ -701,6 +744,8 @@ export class RemoteServer {
       this.eventsDebounce = null
     }
     this.lastEventsPayload = null
+    // A restart takes a fresh baseline: nothing seen while it was down is announced.
+    this.pushSeen.clear()
 
     this.wss?.close()
     this.wss = null
@@ -771,6 +816,36 @@ export class RemoteServer {
     for (const ptyId of this.attached.keys()) this.pushStatus(ptyId)
     this.pushSizes()
     if (this.eventsClients.size) this.notifySessionsChanged()
+    this.evaluatePush()
+  }
+
+  /**
+   * Web Push's edges (phone contract point 14), once a registry pass and on
+   * every exit: each listed session's reading against the last one
+   * (`pushFor`), and a content-free push for each edge (`pushPayload`). Runs
+   * whether or not anything is subscribed, so a phone that subscribes later
+   * starts from the truth rather than from a first sight. An "Add key" tab
+   * and an account sign-in are not sessions, as in `sessionList`.
+   */
+  private evaluatePush(): void {
+    const manager = this.deps.ptys()
+    if (!manager || this.servers.length === 0) return
+    const seen = new Set<string>()
+    for (const s of manager.list()) {
+      if (s.enroll || s.accountLogin) continue
+      const st = this.statusFor(s.ptyId)
+      if (!st) continue
+      seen.add(s.ptyId)
+      const next: PushState = { status: st.status, promptId: st.promptId }
+      const kind = pushFor(this.pushSeen.get(s.ptyId) ?? null, next)
+      this.pushSeen.set(s.ptyId, next)
+      if (!kind || !this.deps.push) continue
+      const project = this.deps.hostFor(s.sessionId) ?? s.cwd.split(/[\\/]/).filter(Boolean).pop() ?? s.cwd
+      void this.deps.push
+        .notify(pushPayload(kind, project, s.ptyId), { urgency: kind === 'needs-you' ? 'high' : 'normal' })
+        .catch((err) => console.error('[remote] push', err))
+    }
+    for (const id of [...this.pushSeen.keys()]) if (!seen.has(id)) this.pushSeen.delete(id)
   }
 
   /**
@@ -1153,7 +1228,9 @@ export class RemoteServer {
             choices: phoneAgentChoices(
               agents.map((a) => a.id),
               this.deps.launchFacts()
-            )
+            ),
+            // Point 14: read, never minted here (gotcha 53).
+            push: { publicKey: this.deps.push?.publicKey() ?? null }
           },
           setCookie
         )
@@ -1508,6 +1585,43 @@ export class RemoteServer {
          */
         if (host) return this.json(res, { ptyId: started.ptyId, sessionId: started.sessionId, cwd: host.alias }, setCookie)
         return this.json(res, { ...started, cwd }, setCookie)
+      }
+
+      /*
+       * Web Push (phone contract point 14). Subscribe, forget, and one test
+       * send to the phone asking. Gated like every /api route above — the key,
+       * then Access — and the endpoint is held to the real push services
+       * (`pushSubscriptionFrom`), so the key never buys "POST anywhere".
+       */
+      if (url.pathname === '/api/push/subscription' && (req.method === 'POST' || req.method === 'DELETE')) {
+        const push = this.deps.push
+        if (!push || !push.publicKey()) {
+          return this.json(res, { error: 'Notifications are not set up on this computer. Turn Phone access off and on in Stoke.' }, setCookie, 503)
+        }
+        const parsed = await this.readJson(req)
+        if (parsed === BAD_JSON) return this.json(res, { error: 'Malformed JSON body.' }, setCookie, 400)
+        if (req.method === 'DELETE') {
+          const endpoint = (parsed as { endpoint?: unknown } | null)?.endpoint
+          if (typeof endpoint !== 'string' || !endpoint) return this.json(res, { error: 'Name the subscription by its endpoint.' }, setCookie, 400)
+          return this.json(res, { ok: true, removed: push.unsubscribe(endpoint) }, setCookie)
+        }
+        const checked = pushSubscriptionFrom(parsed, push.allowLoopback())
+        if (!checked.ok) return this.json(res, { error: checked.error }, setCookie, 400)
+        push.subscribe(checked.sub)
+        return this.json(res, { ok: true }, setCookie, 201)
+      }
+      if (url.pathname === '/api/push/test' && req.method === 'POST') {
+        const push = this.deps.push
+        if (!push || !push.publicKey()) {
+          return this.json(res, { error: 'Notifications are not set up on this computer. Turn Phone access off and on in Stoke.' }, setCookie, 503)
+        }
+        const parsed = await this.readJson(req)
+        if (parsed === BAD_JSON) return this.json(res, { error: 'Malformed JSON body.' }, setCookie, 400)
+        const endpoint = (parsed as { endpoint?: unknown } | null)?.endpoint
+        if (typeof endpoint !== 'string' || !endpoint) return this.json(res, { error: 'Name the subscription by its endpoint.' }, setCookie, 400)
+        const [outcome] = await push.notify(pushPayload('test', 'Stoke', ''), { only: endpoint, urgency: 'normal' })
+        if (!outcome) return this.json(res, { error: 'This phone is not subscribed.' }, setCookie, 404)
+        return this.json(res, { ok: outcome === 'sent', outcome }, setCookie, outcome === 'sent' ? 200 : 502)
       }
 
       /*

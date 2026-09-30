@@ -845,5 +845,25 @@ console.log('\naccounts: rebuilt from named keys, never trusted (shared/accounts
   check('a hydrate of a hydrate is the same', hydrateSettings(h).accounts, h.accounts)
 }
 
+/*
+ * `remote.push` (Web Push, phone contract point 14): rebuilt from named keys,
+ * never spread through, because a subscription endpoint is a URL main POSTs
+ * to. A file from before it hydrates to an empty block, with no pair minted by
+ * a read (gotcha 53).
+ */
+console.log('\nremote.push is repaired, never spread through')
+{
+  const P = 'BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4'
+  const sub = (endpoint: string) => ({ endpoint, p256dh: P, auth: 'BTBZMqHH6r4Tts7J_aSIgg', keyTag: '0123456789abcdef', addedAt: 7 })
+  check('a file from before it: an empty block, nothing minted by reading it', hydrateSettings({ remote: { port: 9000 } }).remote.push, { vapidPublic: '', vapidPrivate: '', subscriptions: [] })
+  check('DEFAULT_SETTINGS has the same empty block', DEFAULT_SETTINGS.remote.push, { vapidPublic: '', vapidPrivate: '', subscriptions: [] })
+  const s = hydrateSettings({
+    remote: { push: { vapidPublic: P, vapidPrivate: '', subscriptions: [sub('https://fcm.googleapis.com/fcm/send/x'), sub('https://evil.example/x')], junk: 1 } }
+  })
+  check('a hand-edited endpoint off the push services is dropped at hydrate', s.remote.push.subscriptions.map((x) => x.endpoint), ['https://fcm.googleapis.com/fcm/send/x'])
+  check('and nothing the hydrate does not name survives', Object.keys(s.remote.push), ['vapidPublic', 'vapidPrivate', 'subscriptions'])
+  check('a written file round-trips', hydrateSettings(JSON.parse(JSON.stringify(s))).remote.push, s.remote.push)
+}
+
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
 process.exitCode = failures ? 1 : 0

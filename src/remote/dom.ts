@@ -54,7 +54,9 @@ const ICONS: Record<string, string> = {
   copy: 'M9 9h11v11H9zM5 15H4V4h11v1',
   pin: 'M12 17v5M9 10.8V4h6v6.8l3 3.2H6z',
   retry: 'M21 12a9 9 0 1 1-3-6.7L21 8M21 3v5h-5',
-  link: 'M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7'
+  link: 'M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7',
+  bell: 'M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.94 1.94 0 0 0 3.4 0',
+  bellOff: 'M8.7 3A6 6 0 0 1 18 8a21.3 21.3 0 0 0 .6 5M17 17H3s3-2 3-9a4.67 4.67 0 0 1 .3-1.7M10.3 21a1.94 1.94 0 0 0 3.4 0M2 2l20 20'
 }
 
 export function icon(name: keyof typeof ICONS | string, size = 20): SVGSVGElement {
