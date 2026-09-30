@@ -438,3 +438,44 @@ home-screen install (its own cookie jar still opens on Connect), and an https tu
 > stored response, not just the key it is filed under. Against the old `sw.js` that suite now fails
 > three checks. A phone that stored the key under an earlier build loses it when the next build's
 > worker activates (every other `stoke-shell-*` cache is deleted); that upgrade was not driven.
+
+## 136. A push subscription's endpoint is a URL this machine will POST to, and no sandbox can make a real one
+
+**Found 2026-09-30, building Web Push for the phone shell (phone contract point 14).** Four things,
+each of which a plausible first version gets wrong with every suite green:
+
+- **The endpoint is an SSRF handle, not an address book entry.** `POST /api/push/subscription`
+  takes a URL from the phone and main POSTs to it on every edge. Taken as it came, the bearer key
+  buys "make the desktop send requests anywhere", its own LAN included (measured: the sandbox
+  accepted nothing but the services below; `http://192.168.1.1/admin` and a look-alike host are 400).
+  `pushEndpointOk` allows https on the real push services only (FCM, Mozilla autopush, Apple,
+  WNS; a leading-dot entry is a suffix), no credentials, no odd port — and hydrate re-checks a
+  stored one, since settings.json can be edited by hand. Plain http on 127.0.0.1 passes only in an
+  unpackaged build launched with `STOKE_PUSH_LOOPBACK=1`, the `STOKE_ACCESS_CERTS_URL` shape.
+- **A new phone key must retire every subscription made under the old one.** Replacing the key is
+  how the owner locks a phone out; a subscription that outlived it would keep telling that phone
+  which project needs attention. Each record carries a hash of the key it was made under
+  (`keyTag`), and only matching ones are sent to (`livePushSubscriptions`). And `remote.push` is
+  main's alone: Phone access spreads its whole `remote` copy into every patch, so `commitSettings`
+  pins `push` to main's copy — driven: a stale patch with `subscriptions: []` changed the tunnel
+  name and left the subscription in place.
+- **Prove the crypto against the RFC, never against yourself.** An encrypt/decrypt round trip with
+  your own code passes with the wrong info strings on both sides. `encryptPush` reproduces RFC
+  8291 Appendix A's message byte for byte (`verify:remote`), and the JWT is checked with
+  `crypto.verify` in IEEE P1363 form, which JWS requires (RFC 7518 §3.4) — node signs DER unless
+  told `dsaEncoding: 'ieee-p1363'`.
+- **A sandbox cannot subscribe for real, and must not try.** Chromium's `pushManager.subscribe`
+  registers with Google's FCM; the task rule is no real Apple or Google endpoint, and headless
+  Chromium has no push service anyway. What was driven instead, against the built app on
+  127.0.0.1 (a secure context, so the worker registers): the page's OWN notify.ts with only
+  `PushManager.prototype.subscribe`/`getSubscription` stubbed to return a subscription for a
+  loopback fake service that holds its private key; Turn on, Send a test, then a stub `claude`
+  walking the registry busy → waiting → busy → waiting → exit. The fake service received four
+  valid-JWT `aes128gcm` posts: the test, "Needs you" twice (one per prompt, none while a prompt
+  sat for 8 s), "Finished" once, and nothing for waiting → busy. The real worker's half:
+  CDP `ServiceWorker.deliverPushMessage` with the decrypted bytes, then
+  `registration.getNotifications()` in the page listed the notification with its `#/s/<ptyId>`
+  route. Opened over the LAN address instead (plain http, `isSecureContext` false, no
+  `navigator.serviceWorker`), the bell's sheet says to use the tunnel's https link and offers no
+  button (`pushAvailability`). **Not driven:** a real phone, a real push service, iOS's Home
+  Screen app, and a notification tap (the vm sandbox in `verify:remote` covers `notificationclick`).

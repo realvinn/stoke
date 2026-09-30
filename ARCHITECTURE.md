@@ -1138,7 +1138,11 @@ src/main/         Electron main process
                     servers (`readMcpCatalog`). `McpFileStore`
                     writes the Qwen/Copilot/Kimi/Claude files owner-only under
                     `<userData>/agents/mcp/`, content-named, and sweeps only its own names once
-                    per run. Not SSH, not headless (gotchas 19, 15)
+                    per run. Not SSH, not headless (gotchas 19, 15). A second Claude account
+                    (its own `CLAUDE_CONFIG_DIR`, so its own `~/.claude.json`) is handed the
+                    Default account's user-scope servers in that generated file
+                    (`resolveAccountMirror`, `accountMcpMirror`): URL and headers only for
+                    http, never an OAuth token (gotcha 36), never a name it defines itself
   stt.ts            the one place Stoke sends a recording to be transcribed — the sidecar,
                     a custom OpenAI-compatible server, or a hosted provider. Both the
                     desktop and the phone route through it, because "only main may reach
@@ -1201,6 +1205,13 @@ src/main/         Electron main process
                       the team JWKS (`AccessKeySet`: single-flight, kid cooldown, staleness),
                       the claims, and `discoverAccess` for Look it up. node:crypto only, fetch
                       and clock injected, no electron import, so verify:remote runs it. 124
+    push.ts           Web Push with node:crypto alone (no `web-push`, gotcha 40): the VAPID
+                      pair (minted only by `ensureRemoteToken`, a start path, gotcha 53; the
+                      private half sealed in secrets.json), the ES256 JWT, the RFC 8291
+                      `aes128gcm` message (verify:remote holds it to the RFC's Appendix A
+                      vector) and `sendPush` (404/410 forget the phone). WHEN a session pushes
+                      is `pushFor`, WHAT it says `pushPayload` (content-free), WHERE it may go
+                      `pushEndpointOk` (the real push services only), all in remotePhone.ts. 136
 src/preload/      contextBridge -> window.stoke
 src/renderer/     desktop React UI (all colour via CSS custom properties)
   src/components/BusyDialog.tsx  "a prompt is running — Force restart / Wait / Cancel", asked
@@ -1280,8 +1291,9 @@ src/remote/       mobile web UI, built separately to out/remote. Vanilla TS on o
                     so Connect's `?k=` navigation would), cache-first for the
                     content-hashed /assets and the icons, never /api or /ws. vite.remote.config.ts
                     stamps BUILD and the file list into the copy in out/remote, so each bundle is
-                    a new worker whose activation drops the old build's cache. verify:remote runs
-                    it in a vm sandbox
+                    a new worker whose activation drops the old build's cache. It also shows Web
+                    Push notifications (`pushNotice`: text cut to size, a tap only to a `#/`
+                    route of this shell). verify:remote runs it in a vm sandbox
   api.ts            the phone contract's shapes, the fetch wrapper (a 401 is the Connect
                     screen; a 403 `refused: 'access'` is the computer's Access reason,
                     `accessRefusalOf`), /api/theme -> :root including derived accent-ink and meters
@@ -1295,7 +1307,15 @@ src/remote/       mobile web UI, built separately to out/remote. Vanilla TS on o
                     (queued sends), Fit to phone via decideResize (gotcha 87), ended banner
   newSession.ts, history.ts, connect.ts, dom.ts   the new-session sheet, Recent (`mountRecent`),
                     a project's sessions and read-back, the paste-your-link screen, the
-                    builder/icons/sheets
+                    builder/icons/sheets. The sheet's confirm step draws what the chosen agent
+                    takes (`/api/host` `choices`: Claude's modes/models/efforts, another agent's
+                    one fixed model, an account picker), and main holds a start to the same
+                    (`phoneLaunchVerdict`)
+  notify.ts         the home bar's bell: Web Push on or off for this phone, and a test send.
+                    Says which thing is missing where it cannot (`pushAvailability`: a plain
+                    http LAN/tailnet link above all, iOS outside the Home Screen app, blocked);
+                    a tapped notification with the shell open is routed by the worker's
+                    `stoke:open` message
 src/shared/       types, IPC channel names, themes, profiles, colour maths
   secrets.ts        `SECRET_PATHS`, the one registry of which settings are secrets (a new
                     secret is one line here), the move between settings and a path->value

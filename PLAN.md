@@ -599,10 +599,14 @@ and phase 1 needs no server.
   owner's Windows PC.
 - The CI probe on each OS and Debian: a packaged app booted and driven, with sessions, several
   agents, a browser cookie and SSH.
-- Smaller follow-ups:
-  - The phone's model and effort lists served per agent.
-  - Web Push.
-  - A second Claude account seeing the default account's user-scope MCP servers.
+- Smaller follow-ups — built on the `follow-ups` branch, not yet merged:
+  - The phone's New session shows what the chosen agent takes (`/api/host` `choices`), with an
+    account picker, and main holds a start to it (`phoneLaunchVerdict`).
+  - Web Push for the installed phone shell: into waiting, a new prompt, an exit (gotcha 136).
+    Not driven on a real phone or a real push service.
+  - A second Claude account is handed the Default account's user-scope MCP servers in a 0600
+    `--mcp-config`, URL-only for OAuth http servers, and its row in Settings says so.
+  - Left: the desktop's Phone access panel does not list subscribed phones yet.
 
 ## Open work, in the order it is worth doing
 
