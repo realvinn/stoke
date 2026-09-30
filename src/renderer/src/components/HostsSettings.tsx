@@ -346,8 +346,8 @@ export function HostsSettings({
             </>
           }
         >
-          Only machines that ask. The key goes in that machine&rsquo;s{' '}
-          <span className="mono">authorized_keys</span>.
+          Offered only by machines that ask; &ldquo;Set up key login&rdquo; below works on any. The
+          key goes in that machine&rsquo;s <span className="mono">authorized_keys</span>.
         </FieldHint>
       </div>
 

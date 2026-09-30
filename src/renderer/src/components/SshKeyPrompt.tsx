@@ -103,8 +103,17 @@ export function SshKeyPrompt({
 }: Props): React.JSX.Element {
   useEffect(() => {
     if (!escapeDismisses) return
+    /*
+     * Only an Escape pressed AFTER this listener existed. The palette closes on
+     * its input's Escape, React flushes that discrete update — and this effect —
+     * while the same event is still bubbling, and a listener added to `window`
+     * before the event reaches it is called for it. Measured over CDP: one
+     * Escape closed the palette AND threw this offer away, and the detector
+     * fires once per connection, so it never came back.
+     */
+    const armedAt = performance.now()
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') onDismiss()
+      if (e.key === 'Escape' && e.timeStamp >= armedAt) onDismiss()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
