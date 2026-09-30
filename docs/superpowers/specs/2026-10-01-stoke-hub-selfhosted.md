@@ -633,6 +633,14 @@ this device**: the device re-posts the chain entries it holds (each still carrie
 signatures, so the hub accepts them as ordinary appends extending its head) and re-puts items
 whose local version is newer. Nothing is decided silently.
 
+An entry that opens an epoch the restored hub holds no wraps for needs them again, and the hub
+takes wraps **only from a device active before or after the entries** (by id and signed-in key)
+and **never replaces one** (found in review, 2026-10-01): otherwise a password holder, who may read
+the chain as a pending session, could republish first with wraps of its own for every device and
+a junk Kit wrap. So the republishing device re-wraps `VK_e` to each device active at that epoch
+and re-posts the Kit's wrap, which it cannot make (it has no RK) — the client keeps a copy of the
+Kit's wrap for every epoch it holds (ciphertext, fetched beside its own) for exactly this.
+
 ### 7.4 What the owner runs (none of this is automated or deployed by this change)
 
 1. **On the NUC:** Node 24; the hub from this repo as a systemd service under its own user, data

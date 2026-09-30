@@ -992,6 +992,22 @@ class HubServer {
    * vault device must hold a wrap for the chain's epoch, and the Recovery Kit
    * too — stored already or in this request — so no remaining device is ever
    * left without the key (a revoke or rotate must bring them all).
+   *
+   * Wraps are written ONCE and never replaced, and only a member may hand any
+   * out (found in review, 2026-10-01). Both writes used to be upserts, and any
+   * append — a plain `add` included — could carry a wrap for every active
+   * device plus a recovery wrap: an active device could overwrite the others'
+   * keys and the Kit's (the Kit would then open nothing, silently), and since
+   * this route takes a PENDING session, a password holder republishing old
+   * entries after a restore (spec §7.3) could attach wraps of their own for
+   * every device (box keys are public) before an honest device did. So: a
+   * wrap for a device or the Kit that already has one at this epoch must be
+   * byte-identical (a harmless repeat) or it is a conflict; and only a device
+   * active before or after these entries, by id AND the key it signed in with
+   * (gotcha 140), may supply any. A pending session may still post bare
+   * entries — whose wraps must then already be here. The chain's `vk`
+   * commitments (verifyChain) are the other half: a planted key is refused
+   * by every device even if it were ever stored.
    */
   private chainAppend(ctx: Ctx, body: Record<string, unknown>): unknown {
     const a = ctx.auth as Authed
@@ -1036,6 +1052,27 @@ class HubServer {
         recovery = w.recovery
       }
     }
+    if (wraps.size > 0 || recovery !== null) {
+      const memberAfter = verdict.active.some((d) => d.id === a.device && d.sign === a.session.sign_pub)
+      if (!a.active && !memberAfter) {
+        throw new HubError('forbidden', 'Only a device of this account may hand out its vault key. Post the entries without wraps.')
+      }
+    }
+    for (const [device, wrap] of [...wraps]) {
+      const stored = this.store.wrap(account, verdict.epoch, device)
+      if (stored === null) continue
+      if (stored !== canonicalJson(wrap)) {
+        throw new HubError('conflict', `${device} already holds its vault key for epoch ${verdict.epoch}, and the hub never replaces one.`)
+      }
+      wraps.delete(device)
+    }
+    if (recovery !== null) {
+      const stored = this.store.recovery(account, verdict.epoch)
+      if (stored !== null && stored !== canonicalJson(recovery)) {
+        throw new HubError('conflict', `The Recovery Kit already holds the vault key for epoch ${verdict.epoch}, and the hub never replaces it.`)
+      }
+      if (stored !== null) recovery = null
+    }
     const missing = required.filter((d) => !wraps.has(d) && this.store.wrap(account, verdict.epoch, d) === null)
     if (missing.length > 0) throw new HubError('bad-request', `The vault key for epoch ${verdict.epoch} is not wrapped to ${missing.join(', ')}.`)
     if (recovery === null && this.store.recovery(account, verdict.epoch) === null) {
@@ -1045,8 +1082,12 @@ class HubServer {
     const added = entries as ChainEntry[]
     this.store.tx(() => {
       for (const e of added) this.store.insertChainRow(account, e.seq, canonicalJson(e), verdict.links[e.seq])
-      for (const [device, wrap] of wraps) this.store.putWrap(account, verdict.epoch, device, canonicalJson(wrap))
-      if (recovery !== null) this.store.putRecovery(account, verdict.epoch, canonicalJson(recovery))
+      for (const [device, wrap] of wraps) {
+        if (!this.store.insertWrap(account, verdict.epoch, device, canonicalJson(wrap))) throw new HubError('conflict', `${device} already holds its vault key for epoch ${verdict.epoch}.`)
+      }
+      if (recovery !== null && !this.store.insertRecovery(account, verdict.epoch, canonicalJson(recovery))) {
+        throw new HubError('conflict', `The Recovery Kit already holds the vault key for epoch ${verdict.epoch}.`)
+      }
     })
     this.chains.set(account, { entries: all as ChainEntry[], verdict, broken: null, keys: keysOf(all as ChainEntry[]) })
 

@@ -351,8 +351,14 @@ export interface RecoveryWrap {
  * - add: `wraps` for the current epoch = the added device.
  * - revoke/rotate: `wraps` for the new epoch = every device active after it
  *   (`wrapsRequiredAfter`), plus `recovery`.
+ * A wrap is stored once and never replaced: one for a device (or the Kit)
+ * that already holds one at that epoch must be byte-identical, else 409
+ * `conflict`. Only a device active before or after the entries — by id AND
+ * the key it signed in with — may supply any (else 403 `forbidden`); a
+ * pending session may post bare entries only.
  * Republishing after a restore (spec §7.3) is the same call with entries the
- * hub no longer has and no wraps.
+ * hub no longer has, plus — from a device those entries leave active — the
+ * wraps the restored hub lacks for any epoch they open.
  */
 export interface ChainAppendRequest {
   entries: ChainEntry[]

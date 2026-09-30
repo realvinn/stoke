@@ -415,10 +415,22 @@ export class HubStore {
 
   /* --------------------------------------------------------- wraps */
 
-  putWrap(accountId: string, epoch: number, deviceId: string, wrapJson: string): void {
-    this.q(
-      'INSERT INTO wraps(account_id, epoch, device_id, wrap_json) VALUES (?, ?, ?, ?) ON CONFLICT(account_id, epoch, device_id) DO UPDATE SET wrap_json = excluded.wrap_json'
-    ).run(accountId, epoch, deviceId, wrapJson)
+  /**
+   * Store a device's wrap for an epoch, once. False when one is there already:
+   * a wrap is never replaced (hub/app.ts `chainAppend` says why), and the
+   * caller checks first, so a false here is a race it treats as a conflict.
+   */
+  insertWrap(accountId: string, epoch: number, deviceId: string, wrapJson: string): boolean {
+    return (
+      Number(
+        this.q('INSERT INTO wraps(account_id, epoch, device_id, wrap_json) VALUES (?, ?, ?, ?) ON CONFLICT(account_id, epoch, device_id) DO NOTHING').run(
+          accountId,
+          epoch,
+          deviceId,
+          wrapJson
+        ).changes
+      ) === 1
+    )
   }
 
   wrap(accountId: string, epoch: number, deviceId: string): string | null {
@@ -428,12 +440,9 @@ export class HubStore {
     return r?.wrap_json ?? null
   }
 
-  putRecovery(accountId: string, epoch: number, wrapJson: string): void {
-    this.q('INSERT INTO recovery(account_id, epoch, wrap_json) VALUES (?, ?, ?) ON CONFLICT(account_id, epoch) DO UPDATE SET wrap_json = excluded.wrap_json').run(
-      accountId,
-      epoch,
-      wrapJson
-    )
+  /** The Recovery Kit's wrap for an epoch, once; false when there is one already (never replaced). */
+  insertRecovery(accountId: string, epoch: number, wrapJson: string): boolean {
+    return Number(this.q('INSERT INTO recovery(account_id, epoch, wrap_json) VALUES (?, ?, ?) ON CONFLICT(account_id, epoch) DO NOTHING').run(accountId, epoch, wrapJson).changes) === 1
   }
 
   recovery(accountId: string, epoch: number): string | null {

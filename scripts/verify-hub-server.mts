@@ -624,8 +624,27 @@ let liveItemId = ''
     const codeB = pairCode({ account: ACCOUNT, pair: pairId, device: recB, approver: seen.body.approver, nonceN: nN, nonceE: seen.body.nonceE })
     ok(`both screens show the same six digits (${codeA})`, codeA === codeB && /^\d{3} \d{3}$/.test(codeA))
     const add = entry(ACCOUNT, g0, { kind: 'add', epoch: 1, signer: A.id, device: onA.body.reveal.device }, A.keys.signPriv)
-    const approved = await call('POST', '/v1/chain', { entries: [add], wraps: { epoch: 1, devices: [wrapFor(VK1, ACCOUNT, 1, B)] } }, { dev: A })
-    check('the approver appends the add with the wrap for the new device', [approved.status, approved.body?.seq], [200, 1])
+    // Wraps are written once: an append may not replace another device's, or the Kit's.
+    const junk = newVaultKey()
+    const overA = await call('POST', '/v1/chain', { entries: [add], wraps: { epoch: 1, devices: [wrapFor(VK1, ACCOUNT, 1, B), wrapFor(junk, ACCOUNT, 1, A)] } }, { dev: A })
+    check('an add carrying a second, different wrap for a device that has one is refused', [overA.status, overA.body?.error, /never replaces/.test(overA.body?.message ?? '')], [409, 'conflict', true])
+    const overKit = await call(
+      'POST',
+      '/v1/chain',
+      { entries: [add], wraps: { epoch: 1, devices: [wrapFor(VK1, ACCOUNT, 1, B)], recovery: sealRecoveryWrap(junk, R1.wrapKey, { account: ACCOUNT, epoch: 1 }) } },
+      { dev: A }
+    )
+    check('and so is an add carrying a recovery wrap over the Kit’s', [overKit.status, overKit.body?.error], [409, 'conflict'])
+    const aWrap = await call('GET', '/v1/vault/wrap', undefined, { dev: A })
+    const aStill = unwrapVaultKey(aWrap.body?.wrap, { account: ACCOUNT, epoch: 1, device: A.id, boxPriv: A.keys.boxPriv, commit: await commitFromChain(A, 1) })
+    const kitWrap = await call('GET', '/v1/vault/recovery', undefined, { dev: A })
+    const kitStill = openRecoveryWrap(kitWrap.body?.wrap, R1.wrapKey, { account: ACCOUNT, epoch: 1, commit: await commitFromChain(A, 1) })
+    ok(
+      'after both, the device’s wrap and the Kit’s still open the real key, and the chain did not move',
+      !!aStill && Buffer.from(aStill).equals(Buffer.from(VK1)) && !!kitStill && Buffer.from(kitStill).equals(Buffer.from(VK1)) && (await call('GET', '/v1/account', undefined, { dev: A })).body?.chain?.seq === 0
+    )
+    const approved = await call('POST', '/v1/chain', { entries: [add], wraps: { epoch: 1, devices: [wrapFor(VK1, ACCOUNT, 1, B), { device: A.id, wrap: aWrap.body?.wrap }] } }, { dev: A })
+    check('the approver appends the add with the wrap for the new device (repeating its own, byte for byte, is harmless)', [approved.status, approved.body?.seq], [200, 1])
     const after = await call('GET', `/v1/pair/${pairId}`, undefined, { dev: B })
     check('and the pair reads approved', after.body?.state, 'approved')
     ok('presence carried the new chain head', !!(await presA.frame((f) => f.t === 'chain' && f.seq === 1)))
@@ -701,7 +720,28 @@ let liveItemId = ''
     check('the squatter’s session stays pending: active means the listed id AND the key it signed in with', [sqItems.status, sqItems.body?.error], [403, 'pending'])
     const sqAgain = await login(squatter, OWNER_EMAIL, OWNER_PW)
     check('and it cannot sign in under that id again', [sqAgain.status, sqAgain.body?.error], [403, 'forbidden'])
-    const rot = entry(ACCOUNT, addC, { kind: 'rotate', epoch: 2, signer: C.id, recovery: R2.signPub, vk: vaultKeyCommit(VK2, { account: ACCOUNT, epoch: 2 }) }, C.keys.signPriv)
+    {
+      // As after a restore (spec §7.3): entries an honest device signed that the
+      // hub does not hold, in the hands of a session that is only the password.
+      const E = newDevice('never joins')
+      const signedByA = entry(ACCOUNT, addC, { kind: 'add', epoch: 1, signer: A.id, device: recordOf(E) }, A.keys.signPriv)
+      const withWraps = await call(
+        'POST',
+        '/v1/chain',
+        { entries: [signedByA], wraps: { epoch: 1, devices: [wrapFor(newVaultKey(), ACCOUNT, 1, E)], recovery: sealRecoveryWrap(newVaultKey(), randomU8(32), { account: ACCOUNT, epoch: 1 }) } },
+        { dev: squatter }
+      )
+      check('a pending session republishing entries may not attach wraps (not a member before or after them)', [withWraps.status, withWraps.body?.error], [403, 'forbidden'])
+      const bare = await call('POST', '/v1/chain', { entries: [signedByA] }, { dev: squatter })
+      check('bare, an entry whose wraps the hub lacks does not land either', [bare.status, /not wrapped to/.test(bare.body?.message ?? '')], [400, true])
+      // An entry needing no new wrap — a device with no vault cap (a phone, later) — may be republished bare by anyone.
+      const P = newDevice('Phone', 'ios')
+      const phoneAdd = entry(ACCOUNT, addC, { kind: 'add', epoch: 1, signer: A.id, device: { ...recordOf(P), caps: ['remote-guest'] } }, A.keys.signPriv)
+      const republished = await call('POST', '/v1/chain', { entries: [phoneAdd] }, { dev: squatter })
+      check('while a bare republish whose wraps are all there lands', [republished.status, republished.body?.seq], [200, 3])
+      chainNow.push(phoneAdd)
+    }
+    const rot = entry(ACCOUNT, chainNow[chainNow.length - 1], { kind: 'rotate', epoch: 2, signer: C.id, recovery: R2.signPub, vk: vaultKeyCommit(VK2, { account: ACCOUNT, epoch: 2 }) }, C.keys.signPriv)
     const partial = await call('POST', '/v1/chain', { entries: [rot], wraps: { epoch: 2, devices: [wrapFor(VK2, ACCOUNT, 2, C)], recovery: sealRecoveryWrap(VK2, R2.wrapKey, { account: ACCOUNT, epoch: 2 }) } }, { dev: C })
     check('a rotate that leaves active devices without the new key is refused', [partial.status, new RegExp(`${A.id}.*${B.id}|${B.id}.*${A.id}`).test(partial.body?.message ?? '')], [400, true])
     const full = await call(
