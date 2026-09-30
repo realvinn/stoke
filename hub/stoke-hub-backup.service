@@ -1,0 +1,23 @@
+# /etc/systemd/system/stoke-hub-backup.service — one consistent copy of the hub's
+# database (VACUUM INTO, safe while the hub serves), keeping the newest 14.
+# Started nightly by stoke-hub-backup.timer. Point the directory at a SECOND
+# disk; hub/README.md says why and how to restore.
+#
+# NOT loaded on any machine yet.
+
+[Unit]
+Description=Back up the Stoke Hub database
+After=stoke-hub.service
+
+[Service]
+Type=oneshot
+User=stoke-hub
+Group=stoke-hub
+UMask=0077
+Environment=STOKE_HUB_DATA=/var/lib/stoke-hub
+ExecStart=/usr/bin/node --disable-warning=ExperimentalWarning /opt/stoke-hub/stoke-hub.mjs backup /var/backups/stoke-hub --keep 14
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/stoke-hub /var/backups/stoke-hub

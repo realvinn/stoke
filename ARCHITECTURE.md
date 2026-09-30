@@ -305,12 +305,26 @@ signed device list the hub cannot extend; a vault key per epoch; items sealed un
 pairing by a six-digit code both screens show; a Recovery Kit; relays carrying the phone API
 end-to-end encrypted between two devices, authorised on the host.
 
-What exists so far is the CONTRACT: `src/shared/hub/` (pure, both tsconfigs) and the node:crypto
-reference `src/main/hub/crypto.ts`, which imports only `node:crypto` and `src/shared` so the hub
-server can import it as is. `verify:hub` runs them against each other and pins test vectors over
-every label and byte layout — a changed label would strand every wrap and item already on a hub,
-so it must fail there first. The server, the client panel and sync engine, and the relay are built
-against it.
+The CONTRACT is `src/shared/hub/` (pure, both tsconfigs) and the node:crypto reference
+`src/main/hub/crypto.ts`, which imports only `node:crypto` and `src/shared` so the hub server can
+import it as is. `verify:hub` runs them against each other and pins test vectors over every label
+and byte layout — a changed label would strand every wrap and item already on a hub, so it must
+fail there first.
+
+The SERVER is `hub/`: a Node 24 service on `node:http`, `node:sqlite` (one WAL file,
+`synchronous = FULL`: a chain append the hub acknowledged and then lost to a power cut would look,
+to every device that pinned it, exactly like a rollback attack) and `ws`, runnable from source
+under strip-types (`npm run hub`) or as one bundled file (`npm run build:hub` ->
+`hub/dist/stoke-hub.mjs`, what the NUC runs). Two listeners: the EDGE one on loopback, which
+cloudflared targets and which demands the Worker's shared secret on every request, and an optional
+LAN one that asks for none and refuses anything carrying Cloudflare's headers. It runs the
+contract's own rules rather than trusting clients (`verifyChain` on every append, `putVerdict` on
+every put, the pairing commitment), counts a device ACTIVE only when the chain lists its id WITH
+the key it signed in with (gotcha 140), takes every claim before its one await (scrypt), and relays
+frames between two sockets of one account without parsing them. The hub is reached publicly
+through a second Worker, `worker/hub-edge.ts`, on the route `stoke.vinn.dev/hub/*`; the installer
+Worker is not changed. The runbook for the NUC is `hub/README.md`. Still to build: the client
+panel and sync engine in Stoke, and the relay's host side.
 
 ## Remote access
 
@@ -874,6 +888,20 @@ npm run verify:installer-art  # the committed installer bitmaps: BMP3 headers de
                               # the four SVG sources name the same files and share one campfire,
                               # and — via build/installer-art.json — that every raster was
                               # generated from the SVG committed beside it
+npm run verify:hub-server     # the hub SERVER over real sockets on a temp data dir and a fake
+                              # clock: the bootstrap invite, both listeners and the edge secret,
+                              # sign-up by invite only (a race on one invite has one winner),
+                              # lockout and its doubling, the per-IP counter, one sign-in in
+                              # flight per email, signed requests (replay, skew, body, query,
+                              # stolen token), genesis and wraps, compare-and-swap items and
+                              # epochs, pairing by the six digits, the Recovery Kit join and a
+                              # rotate, a squatter on a not-yet-listed id kept pending, a second
+                              # account kept apart, the relay (frames byte-for-byte, another
+                              # account refused, 1 MiB cap, idle and unjoined timeouts),
+                              # revocation, size caps, the rate bucket, the edge Worker in front
+                              # of it, logs and the SQLite file free of every planted secret,
+                              # graceful shutdown, and the `stoke-hub` command from source and
+                              # bundled (serve, invite, backup, reset-password, health, SIGTERM)
 npm run verify:install        # the one-line installer and the endpoint that serves it: the whole
                               # User-Agent matrix through the Worker's routing rule (PowerShell
                               # before anything browser-shaped, and HTML as the fallback), the
@@ -885,7 +913,10 @@ npm run verify:install        # the one-line installer and the endpoint that ser
                               # electron-builder.yml's appId, http answered with a 301, the
                               # Mac refusals (inside Stoke, several copies) run through main
                               # before any download, the Linux launcher run both as a user
-                              # and as root, and the macOS `stoke` link step via --link-cli
+                              # and as root, and the macOS `stoke` link step via --link-cli;
+                              # and that /hub/* is the hub edge Worker's: both wrangler configs
+                              # (names, one route, never a custom domain), who answers each URL,
+                              # and the edge's forwarding and refusals, run under node
 npm run verify:welcome        # the first-run campfire: which (lastSeen, current) version pairs
                               # play it and which must not, the settings field it remembers that
                               # in, that the component carries no colour and no second copy of
@@ -1795,7 +1826,24 @@ install/          the one-line installer, and the page a browser gets instead
                     file has not been parsed by one. Gotcha 71
   index.html        what a browser gets from stoke.vinn.dev, and the fallback for anything
                     the Worker could not identify. No frameworks, no fonts, Stoke's palette
-worker/           the Cloudflare Worker behind stoke.vinn.dev
+hub/              Stoke Hub, the server the owner runs on the NUC (spec:
+                  docs/superpowers/specs/2026-10-01-stoke-hub-selfhosted.md; runbook: README.md).
+                  Imports src/shared/hub and src/main/hub/crypto.ts by relative .ts path
+  server.ts         `stoke-hub`: serve, invite, backup, reset-password, health. Refusals are
+                    thrown, never process.exit (stdout/stderr on a macOS pipe are async)
+  app.ts            the HTTP routes, the auth pipeline (session, device signature, nonce,
+                    active = chain id AND key), the chain/items/pairing/relay handlers,
+                    graceful close. `startHub` is what verify:hub-server drives
+  store.ts          the SQLite file: WAL, synchronous FULL, 0600; hashes of tokens and invites,
+                    never the values; VACUUM INTO for backups
+  sockets.ts        presence registry and the relay broker (in memory, frames forwarded verbatim)
+  limits.ts         the per-IP bucket, the scrypt semaphore, the one-sign-in-per-email claim
+  log.ts            JSON-lines log that redacts by field name and by value shape
+  config.ts         env and flags; the edge secret never from argv
+  build.mjs         esbuild bundle -> hub/dist/stoke-hub.mjs (NOT out/: electron-builder ships out/**)
+  Dockerfile, compose.yaml, stoke-hub.service, stoke-hub-backup.{service,timer},
+  cloudflared.example.yml, hub.env.example   deployment artefacts, none run yet
+worker/           the Cloudflare Workers behind stoke.vinn.dev
   route.ts          which of the three bodies a request gets, and why. Pure and import-free
                     so verify:install can run the whole User-Agent matrix through it — the
                     PowerShell test must come before anything browser-shaped, because
@@ -1805,6 +1853,12 @@ worker/           the Cloudflare Worker behind stoke.vinn.dev
                     deploy time from install/, never fetched at request time, and the
                     Worker never learns what the current release is — the scripts resolve
                     that themselves, so cutting a release needs no deploy
+  hub-edge.ts       the SECOND Worker, on the route stoke.vinn.dev/hub/*: forwards to the
+                    hub's tunnel origin with the shared secret (the client's copy dropped),
+                    path and query exact so signatures verify; bridges WebSocket upgrades.
+                    Refuses http, paths outside /hub/, an unset secret, a looping origin
+wrangler.hub-edge.jsonc   the edge Worker's config: name stoke-hub-edge, one route, never a custom
+                    domain; `npm run deploy:hub-edge` after `wrangler secret put HUB_EDGE_SECRET`
 wrangler.jsonc    deployed by hand: `npx wrangler login`, then `npm run deploy:install`.
                     A custom domain, so Cloudflare makes the DNS record and the certificate
 ```
