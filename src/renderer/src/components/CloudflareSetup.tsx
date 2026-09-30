@@ -6,6 +6,7 @@ import type {
   StepResult
 } from '@shared/api'
 import { IconCopy } from './Icons'
+import { Spinner } from './Spinner'
 
 /**
  * Said once, in the step it is about. `tunnel route` has no way to read a
@@ -140,6 +141,7 @@ export function CloudflareSetup({
   const [setup, setSetup] = useState<Setup | null>(null)
   /** Which step is running, so only that one's button says so. */
   const [step, setStep] = useState<string | null>(null)
+  const stepRef = useRef(false)
   const [result, setResult] = useState<Record<string, StepResult>>({})
 
   /*
@@ -163,16 +165,50 @@ export function CloudflareSetup({
     // either moves rather than leaving a stale "no tunnel named X".
   }, [probe, tunnelName, hostname, running])
 
+  /*
+   * The manual re-check, which is the one a person waits on. It used to call
+   * `probe()` bare: the steps' pills are already drawn, so a re-check that
+   * took seconds (it asks Cloudflare, then the hostname) changed nothing on
+   * screen until it landed, and one that threw changed nothing at all. Its own
+   * state, not `step`'s, so the effect-driven probes above stay silent; the
+   * ref is the re-entry guard, claimed before the await (gotcha 20).
+   */
+  const [probing, setProbing] = useState(false)
+  const [probeError, setProbeError] = useState<string | null>(null)
+  const probingRef = useRef(false)
+  const recheck = (): void => {
+    if (probingRef.current) return
+    probingRef.current = true
+    setProbing(true)
+    setProbeError(null)
+    probe()
+      .catch((err: unknown) =>
+        setProbeError(
+          `Stoke could not check the setup: ${err instanceof Error ? err.message : String(err)}`
+        )
+      )
+      .finally(() => {
+        probingRef.current = false
+        setProbing(false)
+      })
+  }
+
   const act = async (
     id: 'login' | 'create' | 'route',
     opts?: { overwriteDns?: boolean }
   ): Promise<void> => {
+    // `step` disables the buttons only after a re-render; the ref refuses a
+    // second press in the same tick (gotcha 20), which would otherwise run the
+    // same cloudflared step twice at once — main keeps no guard of its own.
+    if (stepRef.current) return
+    stepRef.current = true
     setStep(id)
     try {
       const res = await window.stoke.remote.cloudflareStep(id, opts)
       setResult((prev) => ({ ...prev, [id]: res }))
       await probe()
     } finally {
+      stepRef.current = false
       setStep(null)
     }
   }
@@ -225,10 +261,22 @@ export function CloudflareSetup({
     <div className="field">
       <span className="field-label">
         Set it up, step by step{' '}
-        <button className="btn" data-variant="ghost" disabled={step !== null} onClick={() => void probe()}>
-          Check again
+        <button
+          className="btn"
+          data-variant="ghost"
+          disabled={step !== null || probing}
+          aria-busy={probing}
+          onClick={recheck}
+        >
+          {probing && <Spinner />}
+          {probing ? 'Checking…' : 'Check again'}
         </button>
       </span>
+      {probeError && (
+        <span className="field-hint" data-tone="danger" role="alert">
+          {probeError}
+        </span>
+      )}
 
       <Step
         n={1}
@@ -277,8 +325,10 @@ export function CloudflareSetup({
                 className="btn"
                 data-variant="primary"
                 disabled={step !== null || setup.install.state !== 'done'}
+                aria-busy={step === 'login'}
                 onClick={() => void act('login')}
               >
+                {step === 'login' && <Spinner />}
                 {step === 'login' ? 'Waiting for your browser…' : 'Log in'}
               </button>
               {loginResult?.url && (
@@ -320,8 +370,10 @@ export function CloudflareSetup({
                 className="btn"
                 data-variant="primary"
                 disabled={step !== null || setup.login.state !== 'done'}
+                aria-busy={step === 'create'}
                 onClick={() => void act('create')}
               >
+                {step === 'create' && <Spinner />}
                 {step === 'create' ? 'Creating…' : `Create ${name}`}
               </button>
             </div>
@@ -343,9 +395,11 @@ export function CloudflareSetup({
             className="btn"
             data-variant="primary"
             disabled={step !== null || !host || setup.create.state === 'todo'}
+            aria-busy={step === 'route'}
             onClick={() => void act('route')}
             title={host ? undefined : 'Set a public hostname above first'}
           >
+            {step === 'route' && <Spinner />}
             {step === 'route' ? 'Routing…' : 'Add the DNS record'}
           </button>
           {/*

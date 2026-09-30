@@ -4873,13 +4873,68 @@ summary.agent-picker-section:hover {
   }
 }
 
+/*
+ * The busy mark (components/Spinner.tsx). A ring with one arc in the ink
+ * colour: the arc is what turns, the ring is what is left when nothing may
+ * turn (the reduced-motion block below).
+ *
+ * `display: inline-block` because it is a <span>, and a span outside a flex
+ * row would otherwise ignore its width and draw nothing.
+ */
 .spinner {
+  display: inline-block;
+  flex: none;
   width: 0.875rem;
   height: 0.875rem;
   border: 2px solid var(--border-strong);
   border-top-color: var(--accent-ink);
   border-radius: var(--r-full);
   animation: spin 700ms linear infinite;
+}
+
+/*
+ * Inside a button it takes the label's size and the label's colour. The
+ * accent arc above is right on a page and wrong on a primary button, whose
+ * fill IS the accent: the arc would vanish into it. `currentColor` is the
+ * label's colour, which gotchas 44 and 65 already hold to contrast on every
+ * fill a button can have (ghost, surface, accent, danger), so the arc inherits
+ * that guarantee instead of needing its own.
+ */
+.btn .spinner {
+  width: 1em;
+  height: 1em;
+  border-color: color-mix(in srgb, currentColor 30%, transparent);
+  border-top-color: currentColor;
+}
+
+/*
+ * A busy button is not a refused one. `.btn:disabled` dims to 0.45, which is
+ * what "Check for updates" did while it checked — and it read as "cannot be
+ * pressed", not "working on it". The busy button keeps `disabled` (a second
+ * press must not start a second run: gotchas 20 and 51) but stays at full
+ * strength, and its label and spinner say what it is doing. Only the button
+ * that is busy: its siblings disabled by the same run still dim, since they
+ * really are unavailable.
+ */
+.btn[aria-busy='true']:disabled,
+.icon-btn[aria-busy='true']:disabled {
+  opacity: 1;
+  cursor: progress;
+}
+
+/*
+ * An icon button has no label to change, so its glyph is the spinner: the
+ * refresh arrow turns while the refresh runs. It also takes the ink colour,
+ * which is the still state under reduced motion — the one visible difference
+ * left once the turn is gone (gotcha 72).
+ */
+.icon-btn[aria-busy='true'] {
+  color: var(--accent-ink);
+}
+
+.icon-btn[aria-busy='true'] .icon {
+  transform-origin: center;
+  animation: spin 900ms linear infinite;
 }
 
 /* ------------------------------------------------------- reduced motion */
@@ -4899,8 +4954,18 @@ summary.agent-picker-section:hover {
     animation: fade 1ms;
   }
 
-  .spinner {
-    animation: spin 700ms linear infinite;
+  /*
+   * Still, deliberately (gotcha 72). This used to re-declare the full
+   * `spin 700ms linear infinite`, meaning to keep it turning — and did
+   * nothing: the `!important` duration and count above beat a normal
+   * declaration at any specificity, so the ring ran once for 1ms and froze
+   * on whatever frame that left. A spinner that runs is motion, which this
+   * user asked not to have; so it stands still as a ring with one arc, and
+   * the button's changed label and `aria-busy` carry the state.
+   */
+  .spinner,
+  .icon-btn[aria-busy='true'] .icon {
+    animation: none;
   }
 }
 

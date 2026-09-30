@@ -231,6 +231,16 @@ a frame of a moving one.
 > user with the OS setting actually boots into, and it needs no race against a splash that is
 > only up for `WELCOME_DISMISS_MS`.
 
+> **Checked against the code on 2026-09-30** — an override that tries to KEEP an animation under
+> reduced motion is dead too. `.spinner`'s block re-declared `animation: spin 700ms linear
+> infinite`, meaning to leave it turning; a normal declaration cannot beat the global block's
+> `!important` duration and count at any specificity, so it ran once for 1ms like everything else.
+> `animation: none` is what does win (the global block never sets `animation-name`), and it is now
+> the spinner's deliberate still state: a ring with one arc, with the busy button's changed label
+> and `aria-busy` carrying the state (components/Spinner.tsx). Measured under
+> `--force-prefers-reduced-motion`: `.spinner` `getAnimations()` empty, `animation-name: none`,
+> label "Checking…". A 1ms `CSSTransition` on every element is expected there, not a leak.
+
 ## 105. macOS's full-screen reveal is two windows over the page, 62px deep, and on macOS 27 it arrives with full screen
 
 **In native full screen, the top of the screen belongs to macOS.** Pushing the pointer against it

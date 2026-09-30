@@ -223,10 +223,15 @@ export function App(): React.JSX.Element {
    * on mount and again after an install tab exits — `fresh` re-reads the login
    * shell, since the installer has just added its bin directory to the rc.
    * `null` is "still looking", which the picker shows as such.
+   *
+   * Returns the run, which never rejects, so Settings' "Look again" can show
+   * that it is looking: a re-check keeps the last answer on screen (only the
+   * first read is `null`), and a `fresh` one re-reads the login shell, which
+   * takes seconds (gotcha 52) — during which the button used to do nothing.
    */
   const [agentDetection, setAgentDetection] = useState<CodingCliDetection | null>(null)
-  const refreshAgents = useCallback((fresh = false): void => {
-    void window.stoke.cli
+  const refreshAgents = useCallback((fresh = false): Promise<void> => {
+    return window.stoke.cli
       .detect({ fresh })
       .then(setAgentDetection)
       .catch(() => {
@@ -1559,7 +1564,7 @@ export function App(): React.JSX.Element {
             )
           )
           // An install tab has just changed what is on this machine.
-          if (t.installing?.length) refreshAgents(true)
+          if (t.installing?.length) void refreshAgents(true)
           // And a session that ended has just written its last transcript
           // line, which moves its project in Recent (QA L5).
           void refreshProjects()
@@ -3202,7 +3207,7 @@ export function App(): React.JSX.Element {
   }, [revealShifted, revealInset, revealLayout])
 
   useEffect(() => {
-    refreshAgents()
+    void refreshAgents()
   }, [refreshAgents])
 
   /*

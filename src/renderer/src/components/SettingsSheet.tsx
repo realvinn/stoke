@@ -234,7 +234,8 @@ interface Props {
    */
   agents: {
     detection: CodingCliDetection | null
-    onRefresh: () => void
+    /** Settles when the look is done, so "Look again" can say it is looking. */
+    onRefresh: () => Promise<void>
     onOpenPicker: () => void
     onInstall: (ids: CodingCliId[]) => void
   }

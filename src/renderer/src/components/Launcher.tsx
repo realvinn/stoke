@@ -24,6 +24,7 @@ import {
 import { ContextBar } from './ContextMeter'
 import { FolderSwitcher } from './FolderSwitcher'
 import { IconChevron } from './Icons'
+import { Spinner } from './Spinner'
 import { compactTokens, relativeTime } from '../lib/format'
 import { launcherActivationAllowed, launcherHoldingFocus, onDeliberate } from '../lib/pressBurst'
 import { EFFORT_LEVELS, PERMISSION_MODES, ULTRACODE_HINT } from '../lib/permissions'
@@ -341,7 +342,14 @@ export function Launcher(props: Props): React.JSX.Element {
               <span>{cli?.error}</span>
             </div>
             <div className="btn-row">
-              <button ref={retryRef} className="btn" onClick={props.onRetryCli} disabled={props.cliChecking}>
+              <button
+                ref={retryRef}
+                className="btn"
+                onClick={props.onRetryCli}
+                disabled={props.cliChecking}
+                aria-busy={props.cliChecking}
+              >
+                {props.cliChecking && <Spinner />}
                 {props.cliChecking ? 'Checking…' : 'Retry'}
               </button>
               <button className="btn" data-variant="ghost" onClick={props.onSetCliPath}>
