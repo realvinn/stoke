@@ -5837,8 +5837,103 @@ summary.agent-picker-section:hover {
   opacity: 0.8;
 }
 
+/*
+ * Every source Stoke reads, grouped by agent and then account, so the panel
+ * can outgrow the window: it scrolls, and `min-height: 0` lets a flex column
+ * shrink below its content (gotcha 47's dialog track, one element over).
+ */
 .usage-panel {
   width: 22rem;
+  max-height: min(78vh, 44rem);
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.usage-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  padding-top: var(--space-8);
+  border-top: 1px solid var(--border);
+}
+
+.usage-group-title {
+  margin: 0;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+/* The agent's colour on its heading, only while more than one agent is in view. */
+:root[data-agent-paint] .usage-group-title[data-agent] {
+  color: var(--agent-ink);
+}
+
+.usage-reading {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.usage-reading + .usage-reading {
+  padding-top: var(--space-4);
+}
+
+.usage-reading-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-8);
+  min-width: 0;
+}
+
+.usage-reading-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-sm);
+  color: var(--text);
+}
+
+.usage-plan,
+.usage-this-tab,
+.usage-reading-detail {
+  font-size: var(--fs-xs);
+  color: var(--text-faint);
+}
+
+.usage-reading[data-active] .usage-this-tab {
+  color: var(--accent-ink);
+}
+
+/* label · amount on one line, the label column the bars' own. */
+.usage-balance {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  column-gap: var(--space-8);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-tight);
+  color: var(--text-muted);
+}
+
+.usage-balance-value {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.usage-note {
+  color: var(--text-faint);
+}
+
+/* A balance-only source (Cline): one row, label and amount, no bar. */
+.usage-mini-balance {
+  grid-template-columns: auto auto;
 }
 
 .usage-head {

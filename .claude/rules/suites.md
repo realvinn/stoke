@@ -170,6 +170,15 @@ Two rules:
 2. **A missing reading is a failure, not a skip.** The two-row wrap check was
    `if (!shim) continue`, so renaming its step would have deleted the check silently.
 
+> **Checked against the code on 2026-09-30** — the same rehearsal for a Node suite's PATHS. A
+> path built with node's `join` has backslashes on Windows, so comparing it to a `'/a/b'` literal
+> (or taking a file name with `split('/').pop()`) passes on the Mac and fails on the portability
+> leg: verify:usage shipped ten such checks. On the Mac, rehearse it with an `--import` preload
+> that sets `path.join = path.win32.join` (and `basename`), wraps the fs calls the suite makes
+> to turn `\` into `/` (Windows accepts both, so files still nest for real; a bare swap
+> writes flat backslash-named files and misleads), then calls `syncBuiltinESMExports()`. That run failed
+> exactly those ten, and passes once the suite compares `slashed(...)` values and uses `basename`.
+
 The same shape one level up: `ci-verify.mjs` had never run on Windows either, and could not have —
 it started every suite with `execFileSync('npm')`, which cannot start `npm.cmd` there. Nothing
 showed it until a Windows leg was about to call it.

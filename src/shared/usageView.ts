@@ -1,4 +1,4 @@
-import type { UsageWindow } from './types'
+import type { UsageBalance, UsageWindow } from './types'
 
 /**
  * The plan-limit chip's arithmetic, kept pure so a suite can hold it.
@@ -99,7 +99,42 @@ export function isStale(readAt: number, now: number): boolean {
   return Number.isFinite(readAt) && now - readAt > STALE_AFTER_MS
 }
 
-/** Short labels for the chip's two rows. */
+/** Short labels for the chip's two rows. A source that names its own wins. */
 export function shortLabel(w: UsageWindow): string {
+  if (w.short) return w.short
   return w.kind === 'session' ? '5h' : w.kind === 'weekly' ? 'week' : w.label
+}
+
+/**
+ * The reset text for a window: the clock time and countdown when the source
+ * states an instant, else the rule it states instead ("resets monthly"), else
+ * `countdown`'s "reset unknown"/"unused".
+ */
+export function windowResetLabel(w: UsageWindow, now: number): string {
+  if (w.resetsAt === null && w.resetNote) return w.resetNote
+  return resetLabel(w.resetsAt, w.percent, now)
+}
+
+/**
+ * A money figure as Cline's own CLI prints one (`formatCreditBalance`,
+ * apps/cli/src/utils/output.ts): `$` and en-US grouping, two decimals.
+ */
+export function formatUsd(amount: number, decimals = 2): string {
+  const sign = amount < 0 ? '-' : ''
+  return `${sign}$${Math.abs(amount).toLocaleString('en-US', {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals
+  })}`
+}
+
+/**
+ * One balance as text. An unknown amount is its `text` or a dash — never
+ * "$0.00", the same rule as a missing window (gotcha 21). Codex credits stay
+ * in credits, whole, as Codex's own status line rounds them.
+ */
+export function balanceText(b: UsageBalance): string {
+  if (b.amount === null) return b.text ?? '\u2014'
+  if (b.unit === 'usd') return formatUsd(b.amount)
+  const n = Math.round(b.amount)
+  return `${n.toLocaleString('en-US')} credit${n === 1 ? '' : 's'}`
 }

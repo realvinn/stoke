@@ -278,6 +278,8 @@ rule file named on the group line.
 - **45.** Let `mergeUsageWindows` take figures from the newer of payload and account (ties to
   payload), as an ended session's payload goes stale; mark a message by per-session `prompt_id`,
   not mtime, and never let it skip the backoff.
+- **132.** Key every usage reading by account (`usageKey`, `claudeWindowsFor`) in its vendor's own unit
+  (Cline micro-dollars); Codex's is its last turn's — drop a window reset since (`codexUsageSnapshot`).
 
 **Finding and running `claude`** — `.claude/rules/cli.md`
 - **1.** Keep `STRIP_ENV`'s two copies (`pty.ts`, `agent.ts`) identical: they strip Claude's

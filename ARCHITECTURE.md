@@ -863,7 +863,11 @@ npm run verify:selection      # a selecting drag survives letting go of the mous
                               # shell. Opens a real Electron window, so it needs a
                               # display: CI's Linux gate runs it under xvfb-run
 npm run verify:extract        # page extractor regression set
-npm run verify:usage          # plan limits from the statusLine payload; STOKE_LIVE_USAGE=1 adds the account call
+npm run verify:usage          # usage for every account: plan limits, per-account tokens and backoff,
+                              # no cross-account merge, Codex rollouts, OpenRouter, Kimi, Cline
+                              # (synthetic homes); STOKE_LIVE_USAGE=1 adds the Default Claude
+                              # account call, this machine's newest Codex rollout and Cline's
+                              # balance (only while its own sign-in is live)
 npm run verify:security <url> <token> --access   # remote server, against a running instance
 # Access VERIFIED, with no Cloudflare account (gotcha 124): serve a fake team's JWKS first,
 #   node scripts/verify-remote-security.mjs --serve-fake-access 7991 /tmp/x/access.json
@@ -1005,7 +1009,18 @@ src/main/         Electron main process
                     so the event branch of the wrapper prints nothing, ever
   usage.ts          plan limits from the undocumented OAuth endpoint the CLI itself calls.
                     Reads the token from ~/.claude/.credentials.json OR, on macOS, the login
-                    Keychain - which is why the chip works with no session running (gotcha 36)
+                    Keychain - which is why the chip works with no session running (gotcha 36).
+                    Per Claude account: `readCredentials(home)` reads that account's own
+                    `<home>/.credentials.json` and hash-named Keychain item (`credentialSources`)
+  usageBoard.ts     every usage source, per account (gotcha 132): `planUsageSources` (each
+                    agent's Default and login accounts, the OpenRouter key), `UsageScheduler`
+                    (a cache, floor and backoff per `<source>:<account>`), `readUsageSource`,
+                    and the `STOKE_FAKE_USAGE` fixtures (`multi` fakes every source through
+                    the real parsers). A plan holds a key or a token path and never leaves main
+  codexUsage.ts     the newest `<CODEX_HOME>/sessions/…/rollout-*.jsonl` that states limits,
+                    by mtime, tail only (gotcha 103), under a deadline
+  usageVendors.ts   the OpenRouter key, Kimi Code and Cline readers: one read-only GET each,
+                    with the agent's own stored token, never refreshed, never logged
   claudePaths.ts    where Claude Code's own two config files are. Pure; env and home are
                     arguments, so a suite can ask about another machine's layout
   claudeSettings.ts ~/.claude/settings.json: read, and patch one allowlisted key, preserving
@@ -1361,8 +1376,8 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     account is today's behaviour, no variable; `resolveLaunchAccount` picks
                     the tab's account, else `agents.defaultAccount`, and refuses a removed or
                     another agent's one. A Claude account skips Settings › Providers (the
-                    Default account's auth). `usageShareOf` keeps a second account's rate
-                    limits out of the plan chip until usage is keyed per account.
+                    Default account's auth). Usage is keyed per account
+                    (usageSources.ts), so a second account's rate limits are its own.
                     `accountIndexText` is the line-shaped JSON `stoke account list|env` reads;
                     `mergeAccountIndex` keeps every other writer's rows (its `writers` record),
                     and a Stoke that never held an account never writes (`accountIndexNeedsWrite`)
@@ -1471,14 +1486,25 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     renders blank. settingsSchema.ts only spreads the defaults
   statusLine.ts     the two plan-limit windows the usage chip draws, from the payload
   usageView.ts      the plan-limit chip's arithmetic, framed as what is left and when it
-                    comes back. Pure, so a suite can hold it
+                    comes back, and money as the vendor's own client prints it. Pure
+  usageSources.ts   which reading answers for a tab (`usageRouteFor`: its agent, on its
+                    account; OpenRouter when pointed there; null for a removed or another
+                    agent's account), `claudeWindowsFor` (one Claude account's endpoint
+                    reading merged with only its own payloads), the panel's groups
+  codexUsage.ts     Codex's rate limits from a rollout's `token_count` lines: seconds to ms
+                    once, the plan's bucket first, a window reset since the turn dropped
+  openRouterUsage.ts  `GET /api/v1/key` (documented): key limit, spend, the free-model day
+  kimiUsage.ts      Kimi Code's own `/usages` and where its token lives, from its 2.1.1 package
+  clineUsage.ts     the Cline balance its CLI shows: providers.json's token, `workos:`
+                    bearer, micro-dollars; nothing is sent for an expired sign-in
   color.ts          contrast, APCA and oklch maths behind the ladder and the accent ink
   codingClis.ts     the coding CLIs Stoke can launch — id, label, and the executable
                     names to try per platform (Windows needs .exe/.cmd/.bat spelled out,
                     since an npm install is a .cmd shim) — and CLI_CAPS, what Stoke may
-                    honestly draw beside each. Only Claude Code feeds the ring, resume, the
-                    worklog and the plan chip; every other CLI starts at the floor, so a
-                    Codex tab shows nothing there rather than Claude's numbers. `modelArgs`
+                    honestly draw beside each. Only Claude Code feeds the ring, resume and
+                    the worklog; every other CLI starts at the floor, so a Codex tab shows
+                    nothing there rather than Claude's numbers. `usage` is raised for Codex,
+                    Kimi Code and Cline, each from its own source (usageSources.ts). `modelArgs`
                     is each agent's model flag, only where it was read in the vendor's own
                     artefact or docs (dated beside it); it raises `launchFlags.model`
   stokeArgs.ts      `stoke …` from a terminal: an argv into one request (focus, session,

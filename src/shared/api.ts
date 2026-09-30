@@ -60,8 +60,9 @@ import type {
   SshEnrollEvent,
   RemoteSessionList,
   StoredTabs,
+  UsageBoard,
   UsageReadReason,
-  UsageSnapshot,
+  UsageTarget,
   WorklogProposal,
   WorklogProposedEvent,
   WorklogScanReport,
@@ -499,13 +500,18 @@ export interface StokeApi {
 
   usage: {
     /**
-     * Plan limits: the 5-hour window, the weekly window, and any model-scoped one.
+     * Usage for the tab in front: its agent on its account (`target`; null is
+     * Claude Code's Default account). Asks only the source that tab spends —
+     * the board comes back with every other source's LAST reading beside it,
+     * unrefreshed — and `activeKey` names the one that answers for the tab.
      *
      * `reason` is not advisory — it picks which cache floor the main process
-     * applies. 'poll' is the 30s idle cadence; 'message' says a new turn just
+     * applies. 'poll' is the idle cadence; 'message' says a new turn just
      * started and may pre-empt it. See the `usageRead` handler.
      */
-    read(reason?: UsageReadReason): Promise<UsageSnapshot>
+    read(reason?: UsageReadReason, target?: UsageTarget | null): Promise<UsageBoard>
+    /** The same, but every source is asked (each under its own floor): the panel is open. */
+    all(reason?: UsageReadReason, target?: UsageTarget | null): Promise<UsageBoard>
   }
 
   projects: {
@@ -585,12 +591,13 @@ export interface StokeApi {
    */
   statusLine: {
     /**
-     * The newest reading seen this run, from whichever session produced it.
-     * Rate limits are account-wide, so any session answers for all of them,
-     * and this is what lets the usage chip show figures with an "as of HH:MM"
-     * when no session is open. Null before the first payload of the run.
+     * The newest reading seen this run PER ACCOUNT (`accountId` on each), from
+     * whichever of that account's sessions produced it. Rate limits are the
+     * account's, so any of its sessions answers for all of them — and only
+     * for that account. This is what lets the usage chip show figures with an
+     * "as of HH:MM" when no session is open. Empty before the first payload.
      */
-    last(): Promise<StatusLineSnapshot | null>
+    last(): Promise<StatusLineSnapshot[]>
     onUpdate(cb: (snapshot: StatusLineSnapshot) => void): () => void
   }
 

@@ -133,6 +133,35 @@ export function TitleBar({
 }: Props): React.JSX.Element {
   const isMac = platform === 'darwin'
   const listRef = useRef<HTMLDivElement>(null)
+  /*
+   * The usage chip follows the tab in front: its agent, on its account. Not a
+   * New tab, an install, a key enrollment or a sign-in tab (none runs a
+   * session), and not an SSH tab, whose agent spends the far machine's own
+   * sign-in — each of those leaves the chip on Claude Code's Default account.
+   */
+  const activeTab = tabs.find((t) => t.id === activeTabId)
+  const usageTarget = useMemo(
+    () =>
+      activeTab &&
+      activeTab.kind === 'session' &&
+      !activeTab.hostId &&
+      !activeTab.installing?.length &&
+      !activeTab.enrollHostId &&
+      !activeTab.accountLogin
+        ? { cli: activeTab.cliId, accountId: activeTab.accountId || 'default' }
+        : null,
+    // Keyed by value, so the chip does not re-read on every tabs update.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [
+      activeTab?.kind,
+      activeTab?.hostId,
+      activeTab?.installing?.length,
+      activeTab?.enrollHostId,
+      activeTab?.accountLogin,
+      activeTab?.cliId,
+      activeTab?.accountId
+    ]
+  )
   const ids = useMemo(() => tabs.map((t) => t.id), [tabs])
   const drag = useTabDrag({
     listRef,
@@ -479,7 +508,7 @@ export function TitleBar({
           <span className="sr-only">Toggle worklog review</span>
         </button>
         <PhonePopover onOpenSettings={onOpenPhoneSettings} settingsOpen={settingsOpen} />
-        <UsageChip />
+        <UsageChip target={usageTarget} />
 
         <button
           className="icon-btn"

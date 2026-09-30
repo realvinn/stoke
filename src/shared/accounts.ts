@@ -32,7 +32,6 @@
  */
 import { AGENT_SEEDS } from './agentColors.ts'
 import { cliFor, isCodingCliId, type CodingCliId } from './codingClis.ts'
-import type { StatusLineSnapshot } from './types.ts'
 
 /** The account a launch uses when it names none and no default is chosen: no variable set. */
 export const DEFAULT_ACCOUNT_ID = 'default'
@@ -444,24 +443,6 @@ export function accountEnv(account: AgentAccount): Record<string, string> {
   const spec = ACCOUNT_KEY_ENV[account.cli]
   if (!spec || !account.apiKey) return {}
   return { ...(spec.with ?? {}), [spec.key]: account.apiKey }
-}
-
-/* ------------------------------------------------------------------ usage */
-
-/**
- * A statusLine reading as the plan-limit chip may see it.
- *
- * The rate limits in a payload are the ACCOUNT's, and the chip, `keepUsage`
- * and `lastStatusLine` all assume there is one account (gotcha 45's merge).
- * Until usage is keyed per account, a session on any other account keeps its
- * per-session fields — context window, version, prompt id — and hands the
- * chip no rate limits, so `keepUsage` holds the Default account's figures
- * rather than mixing two accounts' numbers into one.
- */
-export function usageShareOf(snap: StatusLineSnapshot, accountId: string | null | undefined): StatusLineSnapshot {
-  if (!accountId || accountId === DEFAULT_ACCOUNT_ID) return snap
-  if (snap.fiveHour === null && snap.sevenDay === null) return snap
-  return { ...snap, fiveHour: null, sevenDay: null }
 }
 
 /* ---------------------------------------------------------- the index file */

@@ -29,7 +29,7 @@ export type { UsageSnapshot, UsageWindow }
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage'
 
 /** Window lengths, used to place the pace marker. `resets_at` gives only the end. */
-const WINDOW_MS: Record<UsageWindow['kind'], number> = {
+const WINDOW_MS: Record<'session' | 'weekly' | 'weekly_scoped', number> = {
   session: 5 * 60 * 60 * 1000,
   weekly: 7 * 24 * 60 * 60 * 1000,
   weekly_scoped: 7 * 24 * 60 * 60 * 1000
@@ -140,6 +140,36 @@ export function usageCredentialsPath(env: Record<string, string | undefined> = p
 }
 
 /**
+ * The environment a Claude account's `claude` runs with, which is what names
+ * its credentials: Stoke's own, plus the account's config dir
+ * (`accountEnv`, shared/accounts.ts — `CLAUDE_CONFIG_DIR` is the one variable
+ * a login account sets). Null is the Default account: the environment as
+ * inherited. Mirrors the launch exactly, including an inherited
+ * `CLAUDE_SECURESTORAGE_CONFIG_DIR`, because the child's Keychain name is
+ * computed from what the CHILD sees.
+ */
+export function claudeAccountEnv(
+  home: string | null | undefined,
+  base: Record<string, string | undefined> = process.env
+): Record<string, string | undefined> {
+  return home ? { ...base, CLAUDE_CONFIG_DIR: home } : base
+}
+
+/**
+ * Where one Claude account keeps its token: `<home>/.credentials.json` and
+ * the Keychain service named after that exact home string. Pure, so
+ * `verify:usage` holds it per home against the formula computed by hand.
+ */
+export function credentialSources(
+  home: string | null | undefined,
+  base: Record<string, string | undefined> = process.env,
+  userHome: string = homedir()
+): { file: string; keychainService: string } {
+  const env = claudeAccountEnv(home, base)
+  return { file: usageCredentialsPath(env, userHome), keychainService: usageKeychainService(env) }
+}
+
+/**
  * macOS keeps the token in the login Keychain, not in a file.
  *
  * This is why the chip used to need a live session here: `fetchUsage` found no
@@ -154,11 +184,11 @@ export function usageCredentialsPath(env: Record<string, string | undefined> = p
  * is not worth hanging a main-process handler for; an unanswered prompt simply
  * reports unavailable, exactly like every other failure here.
  */
-async function readKeychain(): Promise<StoredCredentials | null> {
+async function readKeychain(service: string): Promise<StoredCredentials | null> {
   try {
     const { stdout } = await execFileAsync(
       '/usr/bin/security',
-      ['find-generic-password', '-s', usageKeychainService(), '-w'],
+      ['find-generic-password', '-s', service, '-w'],
       // The blob carries every connected MCP server's record too - 22 KB on
       // this machine - so the 1 MB default is raised well clear of it.
       { timeout: 5_000, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8' }
@@ -205,11 +235,18 @@ export function freshestCredentials(
  * Both stores are read on macOS rather than the file short-circuiting the
  * Keychain, because they disagree — see `freshestCredentials`. Elsewhere there
  * is only the file, and the Keychain read is not attempted at all.
+ *
+ * `home` is a Claude login account's folder (its `CLAUDE_CONFIG_DIR`), or
+ * null for the Default account. Each account's token is read from that
+ * account's own two stores and nowhere else — the file inside its folder and
+ * the Keychain item named after it — so one account's token can never answer
+ * for another's plan. Same mcpOAuth skip, same freshness rule, per account.
  */
-export async function readCredentials(): Promise<StoredCredentials | null> {
+export async function readCredentials(home: string | null = null): Promise<StoredCredentials | null> {
+  const where = credentialSources(home)
   let fromFile: StoredCredentials | null = null
   try {
-    const raw = await readFile(usageCredentialsPath(), 'utf8')
+    const raw = await readFile(where.file, 'utf8')
     fromFile = credentialsFrom(raw, 'file')
   } catch {
     // No file is ordinary rather than an error worth reporting.
@@ -221,11 +258,11 @@ export async function readCredentials(): Promise<StoredCredentials | null> {
    * prompt this function is careful about elsewhere.
    */
   if (fromFile && (fromFile.expiresAt === null || fromFile.expiresAt > Date.now())) return fromFile
-  return freshestCredentials([fromFile, await readKeychain()])
+  return freshestCredentials([fromFile, await readKeychain(where.keychainService)])
 }
 
-export async function readOauthToken(): Promise<string | null> {
-  return (await readCredentials())?.token ?? null
+export async function readOauthToken(home: string | null = null): Promise<string | null> {
+  return (await readCredentials(home))?.token ?? null
 }
 
 function elapsedFraction(resetsAt: number | null, windowMs: number, now: number): number | null {
@@ -291,7 +328,8 @@ export function parseUsage(body: unknown, now: number): UsageSnapshot {
       ? { percent: num(extra.utilization), enabled: extra.is_enabled === true }
       : null,
     fetchedAt: now,
-    error: null
+    error: null,
+    source: 'anthropic'
   }
 }
 
@@ -312,16 +350,40 @@ export function parseUsage(body: unknown, now: number): UsageSnapshot {
  * label the row's label column has to hold, so with it off that row could not
  * be looked at in the running app at all.
  */
-function fakeUsage(now: number): UsageSnapshot {
+export function fakeUsage(now: number, accountId = 'default'): UsageSnapshot {
+  if (accountId === 'default') {
+    return {
+      windows: [
+        { kind: 'session', label: '5 hours', percent: 9, severity: 'normal', resetsAt: now + 84 * 60_000, elapsed: 0.72, active: true },
+        { kind: 'weekly', label: 'Weekly', percent: 64, severity: 'normal', resetsAt: now + 3 * 86_400_000, elapsed: 0.41, active: true },
+        { kind: 'weekly_scoped', label: 'Fable', percent: 0, severity: 'normal', resetsAt: null, elapsed: null, active: false }
+      ],
+      extraCredits: { percent: 12, enabled: true },
+      fetchedAt: now,
+      error: null,
+      source: 'anthropic',
+      accountId
+    }
+  }
+  /*
+   * Every other Claude account gets figures of its own, told apart by its id,
+   * so a driven run can SEE the chip follow the account — a second account at
+   * the Default one's figures would pass for it. Deterministic per id.
+   */
+  let h = 0
+  for (const ch of accountId) h = (h * 31 + ch.charCodeAt(0)) >>> 0
+  const session = 38 + (h % 55)
+  const weekly = 12 + ((h >>> 8) % 40)
   return {
     windows: [
-      { kind: 'session', label: '5 hours', percent: 9, severity: 'normal', resetsAt: now + 84 * 60_000, elapsed: 0.72, active: true },
-      { kind: 'weekly', label: 'Weekly', percent: 64, severity: 'normal', resetsAt: now + 3 * 86_400_000, elapsed: 0.41, active: true },
-      { kind: 'weekly_scoped', label: 'Fable', percent: 0, severity: 'normal', resetsAt: null, elapsed: null, active: false }
+      { kind: 'session', label: '5 hours', percent: session, severity: session >= 90 ? 'critical' : 'normal', resetsAt: now + (30 + (h % 200)) * 60_000, elapsed: 0.5, active: true },
+      { kind: 'weekly', label: 'Weekly', percent: weekly, severity: 'normal', resetsAt: now + 5 * 86_400_000, elapsed: 0.28, active: true }
     ],
-    extraCredits: { percent: 12, enabled: true },
+    extraCredits: null,
     fetchedAt: now,
-    error: null
+    error: null,
+    source: 'anthropic',
+    accountId
   }
 }
 
@@ -390,7 +452,8 @@ export function keepLastGood(
   failure: UsageSnapshot,
   retryUntil: number
 ): UsageSnapshot {
-  if (!previous || previous.windows.length === 0) return { ...failure, retryUntil }
+  // A balance-only source (Cline) has figures and no windows: that is good too.
+  if (!previous || (previous.windows.length === 0 && !previous.balances?.length)) return { ...failure, retryUntil }
   return {
     ...previous,
     error: failure.error,
@@ -399,9 +462,19 @@ export function keepLastGood(
   }
 }
 
-export async function fetchUsage(now = Date.now()): Promise<UsageSnapshot> {
-  if (process.env.STOKE_FAKE_USAGE) return fakeUsage(now)
+/**
+ * One Claude account's plan limits from the account endpoint.
+ *
+ * @param home      the account's folder (`CLAUDE_CONFIG_DIR`), or null for Default
+ * @param accountId what the reading is stamped with, so no merge can take it
+ *                  for another account's (`claudeWindowsFor`)
+ */
+export async function fetchUsage(now = Date.now(), home: string | null = null, accountId = 'default'): Promise<UsageSnapshot> {
+  if (process.env.STOKE_FAKE_USAGE) return fakeUsage(now, accountId)
+  return { ...(await fetchAccountUsage(now, home)), source: 'anthropic', accountId }
+}
 
+async function fetchAccountUsage(now: number, home: string | null): Promise<UsageSnapshot> {
   const empty = (error: string): UsageSnapshot => ({
     windows: [],
     extraCredits: null,
@@ -409,7 +482,7 @@ export async function fetchUsage(now = Date.now()): Promise<UsageSnapshot> {
     error
   })
 
-  const creds = await readCredentials()
+  const creds = await readCredentials(home)
   if (!creds) return empty('Not signed in to Claude Code.')
   /*
    * Stated before the call rather than discovered as a 401, because the two

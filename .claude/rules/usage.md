@@ -7,6 +7,14 @@ paths:
   - "src/renderer/src/components/UsageMeter.tsx"
   - "scripts/verify-usage.mts"
   - "scripts/verify-statusline.mts"
+  - "src/shared/usageSources.ts"
+  - "src/shared/codexUsage.ts"
+  - "src/shared/openRouterUsage.ts"
+  - "src/shared/clineUsage.ts"
+  - "src/shared/kimiUsage.ts"
+  - "src/main/codexUsage.ts"
+  - "src/main/usageBoard.ts"
+  - "src/main/usageVendors.ts"
 ---
 
 # Plan-limit usage chip
@@ -188,3 +196,62 @@ read as a message every time. Main applies a 5s floor to a message-triggered rea
 a polled one, and `retryAfter` outranks both — a 429 is not something a message boundary gets
 to ignore. Verified against the running app: three reads inside the floor returned one
 `fetchedAt`, and the 15-minute 429 backoff held for `message` reads too.
+
+> **Checked against the code on 2026-09-30** — "account-wide" now means per ACCOUNT. With a second
+> Claude sign-in (gotcha 127) two sets of rate limits exist, so main keeps one `lastStatusLines`
+> entry per account (the pty's `accountIdForKey`, stamped on the payload as `accountId`), the
+> renderer keeps one line per account, `keepUsage` never borrows across accounts, and
+> `claudeWindowsFor` merges an account's endpoint reading only with that account's own payloads.
+> Proven in the built app with a stub `claude` piping payloads per account: the Work tab's chip read
+> the Work payload (77%), the Default tab's the Default one (3%), read moments apart. The floors and
+> the backoff above hold per source and account (`UsageScheduler`, `USAGE_FLOORS`).
+
+## 132. Every usage reading is one ACCOUNT's, in its vendor's own unit — and a Codex reading is its last turn's
+
+**The plan-limit chip became a usage chip for every account, and each new source had its own way
+to show a wrong number.** Written 2026-09-30 while adding them (`usageBoard.ts`,
+`usageSources.ts`); every rule below is held by `verify:usage`, and the account guards, the
+seconds conversion, the micro-dollar unit, the per-home token read and the rollout ordering were
+each shown to fail it when broken.
+
+**Keyed by account, everywhere.** A reading, its cache, its attempt time and its backoff are one
+`<source>:<account>` key (`usageKey`): a 429 on one Claude sign-in pauses that one only, and one
+account's last good figures are never kept in another's place. A Claude account's token is read
+only from its own two stores — `<home>/.credentials.json` and the Keychain item named after that
+exact home string (`credentialSources`, the sha256/NFC name of gotcha 127) — with the same
+`mcpOAuth` skip and freshness rule as Default. A removed account or another agent's account id
+routes to NOTHING (`usageRouteFor`), never to the Default account's figures, and a key account
+has no readable usage at all.
+
+**Codex: the newest rollout that STATES limits, and only the windows that have not reset since.**
+Measured on this machine the day this was written: the newest rollout (today's) held no
+`token_count` at all — a session opened with no finished turn — while the one before it did; and
+the live run of `verify:usage` read `Weekly 4%` and no 5-hour window, because that turn's
+`primary.resets_at` (epoch SECONDS) had passed two days earlier. Codex empties a window on its side
+when it resets, so the old figure is false and the new one unknown (another client on the same
+plan may have spent it): the window is dropped with a note, never drawn at its old percent and
+never guessed as 0%. `codexResetMs` is the one seconds-to-ms conversion; `newestRollouts` orders by
+mtime across the newest day folders, because `codex resume` appends to the day the session
+STARTED; the tail read cuts bytes at a newline before decoding (gotcha 103). Codex also reports
+model buckets (`limit_id`): the plan's own `codex` bucket wins over a newer model one.
+
+**Each vendor in its own unit, read from its own shipped code, never a third party's.** Cline's
+balance is MICRO-dollars (`normalizeCreditBalance` divides by 1,000,000; its test prints 500,000
+as `$0.50`) — a community monitor that divided by 100 is exactly the wrong number. Kimi's
+`expires_at` is epoch seconds and its `used_ratio` is 0–1. Codex credits are Codex's own unit and
+are never shown as dollars. OpenRouter's key `label` holds part of the key and is never carried.
+
+**Another app's token is read, never refreshed, and never sent anywhere else.** Cline's and
+Kimi's tokens sit in plaintext in their own homes; Stoke reads them for one GET, as it reads
+Claude Code's. An expired one is reported and NOT sent — Cline treats a token with no stated
+expiry as expired (it would refresh), Kimi treats `expires_at: 0` as never expiring, and each is
+mirrored. A Cline or Kimi pointed at another server (`baseUrl`, `CLINE_API_BASE_URL`,
+`CLINE_ENVIRONMENT`, `KIMI_CODE_BASE_URL`/`*_OAUTH_HOST`) gets no reading rather than its token
+sent to a server Stoke did not choose. `verify:usage` asserts the token file is byte-for-byte
+unchanged after a read.
+
+**Not verified live:** Cline's balance call (this machine's Cline token was expired, so none was
+sent) and Kimi Code (not installed); both stand on the vendor's own code and fixtures. Cline
+states no free-model or ClinePass allowance anywhere — its core learns of one only from an error's
+text — so none is shown; OpenRouter's `free_model_daily_requests` is the one honest "free usage"
+number. The Cline balance is the personal one; Cline's CLI shows an active organization's instead.

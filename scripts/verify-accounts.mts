@@ -66,7 +66,6 @@ import {
   nextSwatch,
   parseAccountIndex,
   resolveLaunchAccount,
-  usageShareOf,
   type AccountIndex,
   type AgentAccount
 } from '../src/shared/accounts.ts'
@@ -255,7 +254,7 @@ console.log('\na settings patch from the renderer')
 }
 
 /* ----------------------------------------------------------------- usage */
-console.log('\nthe plan-limit chip reads the Default account only (gotcha 45)')
+console.log('\neach account\u2019s payload keeps its own rate limits (gotcha 45; verify:usage holds the rest)')
 {
   const snap = (receivedAt: number, five: number | null): StatusLineSnapshot => ({
     sessionId: `s${receivedAt}`,
@@ -271,16 +270,16 @@ console.log('\nthe plan-limit chip reads the Default account only (gotcha 45)')
     receivedAt
   })
   const mine = snap(1000, 20)
-  const theirs = snap(2000, 90)
-  check('the Default account\u2019s reading passes as it is', usageShareOf(mine, 'default'), mine)
-  check('so does one from a session whose account is unknown', usageShareOf(mine, undefined), mine)
-  check('another account keeps its per-session fields and hands over no rate limits', usageShareOf(theirs, 'claude-work'), { ...theirs, fiveHour: null, sevenDay: null })
-  // Both arrival orders, as main (`lastStatusLine`) and the chip merge them.
-  const afterTheirs = keepUsage(keepUsage(null, mine), usageShareOf(theirs, 'claude-work'))
-  check('Default first, then a NEWER reading from account 2: the figures stay Default\u2019s', afterTheirs.fiveHour?.percent, 20)
-  const theirsFirst = keepUsage(keepUsage(null, usageShareOf(theirs, 'claude-work')), mine)
-  check('account 2 first, then Default: Default\u2019s figures', theirsFirst.fiveHour?.percent, 20)
-  check('and nothing from account 2 alone', keepUsage(null, usageShareOf(theirs, 'claude-work')).fiveHour, null)
+  const theirs = { ...snap(2000, 90), accountId: 'claude-work' }
+  // Main (`lastStatusLines`) and the chip keep one reading per account; within
+  // one account a newer payload stating nothing still borrows the older one's.
+  const quiet = { ...snap(3000, null), accountId: 'claude-work' }
+  check('within one account, a newer payload with no limits keeps that account\u2019s figures', keepUsage(theirs, quiet).fiveHour?.percent, 90)
+  // Across accounts nothing is ever borrowed, in either arrival order.
+  const quietDefault = snap(4000, null)
+  check('Default\u2019s quiet payload never borrows account 2\u2019s figures', keepUsage(theirs, quietDefault).fiveHour, null)
+  check('and account 2\u2019s quiet payload never borrows Default\u2019s', keepUsage(mine, quiet).fiveHour, null)
+  check('an account id absent reads as Default: it keeps Default\u2019s own figures', keepUsage(mine, { ...quietDefault, accountId: 'default' }).fiveHour?.percent, 20)
 }
 
 /* -------------------------------------------------------------- Keychain */

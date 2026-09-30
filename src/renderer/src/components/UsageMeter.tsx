@@ -1,26 +1,30 @@
 import { useEffect, useRef, useState } from 'react'
-import type { StatusLineSnapshot, UsageSnapshot, UsageWindow } from '@shared/types'
-import { keepUsage, mergeUsageWindows, statusLineWindows } from '@shared/statusLine'
+import type { StatusLineSnapshot, UsageBoard, UsageReading, UsageTarget, UsageWindow } from '@shared/types'
+import { keepUsage } from '@shared/statusLine'
+import { CLAUDE_DEFAULT_KEY, chipRows, claudeWindowsFor, panelGroups } from '@shared/usageSources'
+import { cliFor } from '@shared/codingClis'
 import { useFloatingLayer } from '../lib/floatingLayers'
 import {
+  balanceText,
   clock,
   countdown,
   isStale,
   remainingLabel,
-  resetLabel,
   shortLabel,
   tone,
+  windowResetLabel,
   worstTone
 } from '@shared/usageView'
 import { agentMark } from '../lib/agentColor'
 
 /**
- * How often the account reading is refreshed with nothing else happening.
+ * How often the reading the chip shows is refreshed with nothing else happening.
  *
  * 30s. The account endpoint is polled on this interval *or* whenever a new
  * message starts, whichever comes first — see the `promptId` branch below. The
- * main process holds a cache of the same length, so an interval shorter than
- * this one would return the same object rather than a fresher reading.
+ * main process holds a floor of the same length per source, so an interval
+ * shorter than this one would return the same object rather than a fresher
+ * reading.
  */
 const POLL_MS = 30_000
 
@@ -63,7 +67,7 @@ function Bar({ window: w, now }: { window: UsageWindow; now: number }): React.JS
       <span className="usage-pct">{w.percent}%</span>
       <span className="usage-reset">
         {ahead && <span className="usage-ahead">ahead · </span>}
-        {w.active ? resetLabel(w.resetsAt, w.percent, now) : 'not in use'}
+        {w.active ? windowResetLabel(w, now) : 'not in use'}
       </span>
       <span
         className="usage-track"
@@ -80,17 +84,156 @@ function Bar({ window: w, now }: { window: UsageWindow; now: number }): React.JS
 }
 
 /**
- * The plan-limit chip in the title bar, and the panel behind it.
- *
- * The chip answers the common question without a click: how much of each
- * window is left, and when the 5-hour one comes back. Its colour is the worst
- * of the two windows' tones. The panel is the detail: bars with the pace
- * marker, the reset as a clock time, extra usage, and which source the figures
- * came from and when.
+ * What one reading draws: its windows (a Claude account's merged with that
+ * account's own sessions' payload, and nothing of any other account's), when
+ * they were read, and from where.
  */
-export function UsageChip(): React.JSX.Element | null {
-  const [snap, setSnap] = useState<UsageSnapshot | null>(null)
-  const [line, setLine] = useState<StatusLineSnapshot | null>(null)
+interface ReadingView {
+  reading: UsageReading
+  windows: UsageWindow[]
+  /** When the figures shown were read; -Infinity for none. */
+  readAt: number
+  /** Where they came from, for the panel's meta line. */
+  from: string
+}
+
+function viewOf(reading: UsageReading, lines: Record<string, StatusLineSnapshot>, now: number): ReadingView {
+  const snap = reading.snapshot
+  if (reading.source === 'anthropic') {
+    /*
+     * Whichever of the two sources was read more recently states the
+     * figures, and the account states severity either way.
+     * mergeUsageWindows explains why that comparison exists; the short
+     * version is that the payload stops being rewritten when its session
+     * ends, and outranking the account on the strength of being "the live
+     * one" is how the chip came to freeze for the rest of the run.
+     * `claudeWindowsFor` adds the account rule: only THIS account's payload.
+     */
+    const m = claudeWindowsFor(reading.accountId, lines[reading.accountId] ?? null, snap, now)
+    const readAt = Math.max(m.payloadAt, m.accountAt)
+    return { reading, windows: m.windows, readAt, from: m.accountAt > m.payloadAt ? 'from the account' : 'from the open session' }
+  }
+  const has = snap.windows.length > 0 || (snap.balances?.length ?? 0) > 0
+  return {
+    reading,
+    windows: snap.windows,
+    readAt: has ? snap.fetchedAt : -Infinity,
+    from: snap.asOfLastTurn ? 'as of the last Codex turn' : reading.source === 'openrouter' ? 'from the key' : 'from the account'
+  }
+}
+
+/** One source's block in the panel. */
+function ReadingBlock({
+  view,
+  now,
+  tag,
+  onRetry
+}: {
+  view: ReadingView
+  now: number
+  /** "this tab" for the reading the chip shows for the tab in front; "in the chip" for its fallback. */
+  tag: string | null
+  onRetry: () => void
+}): React.JSX.Element {
+  const { reading, windows, readAt } = view
+  const snap = reading.snapshot
+  const asOf = Number.isFinite(readAt) ? clock(readAt) : null
+  const stale = Number.isFinite(readAt) && isStale(readAt, now)
+  const waitingUntil = snap.error && snap.retryUntil && snap.retryUntil > now ? clock(snap.retryUntil) : null
+  const vendor = { anthropic: 'Anthropic', openrouter: 'OpenRouter', cline: 'Cline', kimi: 'Kimi', codex: 'Codex' }[reading.source]
+  return (
+    <div className="usage-reading" data-active={tag ? true : undefined} data-key={reading.key}>
+      <div className="usage-reading-head">
+        <span className="usage-reading-name">
+          {reading.label}
+          {reading.snapshot.plan ? <span className="usage-plan"> · {reading.snapshot.plan}</span> : null}
+          {tag ? <span className="usage-this-tab"> · {tag}</span> : null}
+        </span>
+        {asOf && (
+          <span className="usage-head-meta" data-stale={stale || undefined}>
+            {view.from} · {asOf}
+            {stale ? ' · stale' : ''}
+          </span>
+        )}
+      </div>
+      {reading.detail && <span className="usage-reading-detail">{reading.detail}</span>}
+
+      {windows.map((w) => (
+        <Bar key={`${w.kind}-${w.label}`} window={w} now={now} />
+      ))}
+
+      {snap.extraCredits?.enabled && (
+        <div className="usage-row" title="Paid overage, once a window is spent">
+          <span className="usage-label">Extra usage</span>
+          <span className="usage-pct">{Math.round(snap.extraCredits.percent)}%</span>
+          <span className="usage-reset">paid overage</span>
+          <span
+            className="usage-track"
+            data-tone="normal"
+            style={{ '--usage-fill': Math.min(1, snap.extraCredits.percent / 100) } as React.CSSProperties}
+          >
+            <span className="usage-fill" />
+          </span>
+        </div>
+      )}
+
+      {(snap.balances ?? []).map((b) => (
+        <div className="usage-balance" key={b.label} title={b.title}>
+          <span className="usage-label">{b.label}</span>
+          <span className="usage-balance-value">{balanceText(b)}</span>
+        </div>
+      ))}
+
+      {snap.note && <span className="popover-text usage-note">{snap.note}</span>}
+
+      {snap.error && (
+        <div className="usage-error">
+          <span className="popover-text" data-tone="warning">
+            {snap.error}
+            {reading.source === 'anthropic' && snap.error.startsWith('Not signed in')
+              ? ' Plan limits need a Claude.ai sign-in; an API key has none.'
+              : ''}
+            {/*
+              When a read is paused, say until when: main will not re-fetch
+              before then, so "Try again" genuinely cannot do anything yet.
+              Whose pause it is gets said accurately: `retryAfter` is set only
+              when the source sent `Retry-After`; without it the wait is
+              Stoke's own escalating guess.
+            */}
+            {waitingUntil &&
+              (snap.retryAfter
+                ? ` ${vendor} asked for a pause; trying again at ${waitingUntil}.`
+                : ` Trying again at ${waitingUntil}.`)}
+            {(windows.length > 0 || (snap.balances?.length ?? 0) > 0) && asOf
+              ? ` The figures above are the last good reading, from ${asOf}.`
+              : ''}
+          </span>
+          <button className="btn" data-size="sm" disabled={waitingUntil !== null} onClick={onRetry}>
+            Try again
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * The usage chip in the title bar, and the panel behind it.
+ *
+ * The chip follows the tab in front: its agent, on its account (`target`).
+ * A Claude tab on a second account shows THAT account's plan limits; a Codex
+ * tab its Codex home's; a tab pointed at OpenRouter the key; a Cline tab the
+ * Cline balance. An agent with nothing Stoke can read falls back to Claude
+ * Code's Default account, as the chip always was, and says so.
+ *
+ * The panel lists every source Stoke can read, grouped by agent and then
+ * account, hiding each one that has no reading — so it answers "how much is
+ * left anywhere" without a tab per account.
+ */
+export function UsageChip({ target }: { target: UsageTarget | null }): React.JSX.Element | null {
+  const [board, setBoard] = useState<UsageBoard | null>(null)
+  // The newest payload per account: `keepUsage` within an account only.
+  const [lines, setLines] = useState<Record<string, StatusLineSnapshot>>({})
   const [now, setNow] = useState(() => Date.now())
   const [open, setOpen] = useState(false)
   const panelRef = useRef<HTMLDivElement>(null)
@@ -99,25 +242,44 @@ export function UsageChip(): React.JSX.Element | null {
   const chipRef = useRef<HTMLButtonElement>(null)
 
   /*
-   * The account pull, reachable from the statusLine effect below without
-   * making that effect depend on this one — the same ref idiom `TerminalView`
-   * uses for `openUrlRef`, and for the reason CLAUDE.md gotcha 31 gives:
-   * re-running an effect to pick up a new closure tears down the subscription
-   * it owns, and here that subscription is the thing being listened to.
+   * The tab being followed and whether the panel is open, read by the poll
+   * without re-arming it (gotcha 31: re-running an effect to pick up a new
+   * closure tears down what it owns).
    */
-  const pullRef = useRef<(reason: 'poll' | 'message') => void>(() => {})
+  const targetRef = useRef(target)
+  targetRef.current = target
+  const openRef = useRef(open)
+  openRef.current = open
 
+  /*
+   * One pull, reachable from every effect below. With `forAccount` it is a
+   * read made for another account's message: its readings are taken, but
+   * which reading answers for the tab in front stays what the last read FOR
+   * that tab said.
+   */
+  const pullRef = useRef<(reason: 'poll' | 'message', forAccount?: UsageTarget) => void>(() => {})
   useEffect(() => {
     let live = true
-    const pull = (reason: 'poll' | 'message'): void => {
-      void window.stoke.usage.read(reason).then((next) => {
-        if (live) setSnap(next)
+    // Counts reads made FOR the tab in front; only the newest may say which reading that is.
+    let targetSeq = 0
+    const pull = (reason: 'poll' | 'message', forAccount?: UsageTarget): void => {
+      const mine = forAccount ? -1 : ++targetSeq
+      const asked = forAccount ?? targetRef.current
+      const call = openRef.current ? window.stoke.usage.all : window.stoke.usage.read
+      void call(reason, asked).then((next) => {
+        if (!live) return
+        setBoard((prev) => {
+          // A read for another account, or one overtaken by a newer read,
+          // brings its readings but not its idea of which one is in front.
+          const own = mine === targetSeq
+          return { readings: next.readings, activeKey: own || !prev ? next.activeKey : prev.activeKey }
+        })
       })
     }
     pullRef.current = pull
     pull('poll')
-    // The main process caches, and backs off further when rate-limited; this
-    // only has to be often enough that the countdown does not visibly stall.
+    // Main caches per source, and backs off further when one is rate-limited;
+    // this only has to be often enough that the countdown does not stall.
     const poll = setInterval(() => pull('poll'), POLL_MS)
     const tick = setInterval(() => setNow(Date.now()), TICK_MS)
     return () => {
@@ -126,6 +288,12 @@ export function UsageChip(): React.JSX.Element | null {
       clearInterval(tick)
     }
   }, [])
+
+  // A new tab in front, or the panel opening: read now, not at the next poll.
+  const targetKey = target ? `${target.cli}:${target.accountId}` : ''
+  useEffect(() => {
+    pullRef.current('poll')
+  }, [targetKey, open])
 
   useEffect(() => {
     let live = true
@@ -144,22 +312,25 @@ export function UsageChip(): React.JSX.Element | null {
     const lastPrompt = new Map<string, string>()
 
     const take = (s: StatusLineSnapshot): void => {
+      const account = s.accountId || 'default'
       // Keep the newest reading rather than the newest arrival — and keep the
-      // account-wide rate limits even when the newest payload states none,
-      // which is every payload until its session's first API response lands.
-      // Same rule main applies to `lastStatusLine`; see `keepUsage`.
-      setLine((prev) => keepUsage(prev, s))
+      // account's rate limits even when the newest payload states none, which
+      // is every payload until its session's first API response lands. Per
+      // account: another account's payload is another account's figures.
+      // Same rule main applies to `lastStatusLines`; see `keepUsage`.
+      setLines((prev) => ({ ...prev, [account]: keepUsage(prev[account] ?? null, s) }))
 
       if (s.promptId && lastPrompt.get(s.sessionId) !== s.promptId) {
         lastPrompt.set(s.sessionId, s.promptId)
-        pullRef.current('message')
+        // Refresh the account that session spends, which need not be the tab in front.
+        pullRef.current('message', { cli: 'claude', accountId: account })
       }
     }
 
-    // The last reading of the run, so closing every tab does not blank the
-    // chip — it goes quiet and says when it last heard anything.
-    void window.stoke.statusLine.last().then((s) => {
-      if (live && s) take(s)
+    // The last reading per account this run, so closing every tab does not
+    // blank the chip — it goes quiet and says when it last heard anything.
+    void window.stoke.statusLine.last().then((all) => {
+      if (live) for (const s of all ?? []) take(s)
     })
     const off = window.stoke.statusLine.onUpdate(take)
     return () => {
@@ -182,88 +353,75 @@ export function UsageChip(): React.JSX.Element | null {
     }
   }, [open])
 
-  /*
-   * Whichever of the two sources was read more recently states the figures,
-   * and the account states severity either way. mergeUsageWindows explains
-   * why that comparison exists and what it fixed; the short version is that
-   * the payload stops being rewritten when its session ends, and outranking
-   * the account on the strength of being "the live one" is exactly how the
-   * chip came to freeze for the rest of the run.
-   *
-   * -Infinity, not 0, for a source that has not answered: it has to lose every
-   * comparison, and a real timestamp is never below it.
-   */
-  const fromLine = line ? statusLineWindows(line, now) : []
-  /**
-   * When the account reading is paused after a failure, the clock time it
-   * resumes.
-   *
-   * Read off `retryUntil`, which main states as an absolute time, rather than
-   * computed from `fetchedAt + retryAfter`. Those came apart when a failed read
-   * stopped discarding the last good answer: `fetchedAt` now belongs to the
-   * DATA, which may be minutes older than the attempt that failed, so adding a
-   * duration to it would name a time already in the past and the panel would
-   * silently stop saying anything.
-   */
-  const waitingUntil =
-    snap?.error && snap.retryUntil && snap.retryUntil > now ? clock(snap.retryUntil) : null
+  const readings = board?.readings ?? []
+  const shownKey = board?.activeKey ?? CLAUDE_DEFAULT_KEY
+  const fellBack = !!board && board.activeKey === null
+  const active = readings.find((r) => r.key === shownKey) ?? null
+  // Before the first answer, the Default account's payload alone can still speak.
+  const view: ReadingView | null = active
+    ? viewOf(active, lines, now)
+    : lines.default && !board
+      ? viewOf(
+          { key: CLAUDE_DEFAULT_KEY, source: 'anthropic', cli: 'claude', accountId: 'default', label: 'Default', detail: null, snapshot: { windows: [], extraCredits: null, fetchedAt: 0, error: null } },
+          lines,
+          now
+        )
+      : null
 
-  /*
-   * An errored snapshot still contributes its windows, because main now keeps
-   * the last good ones on it. This line used to read `!snap.error ? … : []`,
-   * which is what turned one transient 429 into a chip with no numbers at all —
-   * the data was in hand and the error was allowed to veto it. Staleness is
-   * communicated by `asOf`/`data-stale` below, which is what those exist for.
-   */
-  const fromAccount = snap ? snap.windows : []
-  const payloadAt = fromLine.length > 0 && line ? line.receivedAt : -Infinity
-  const accountAt = fromAccount.length > 0 && snap ? snap.fetchedAt : -Infinity
-  const windows: UsageWindow[] = mergeUsageWindows(fromLine, fromAccount, payloadAt, accountAt)
+  // Before the first read has answered there is nothing to say, and a wrong
+  // number here would be believed. Once it HAS answered, an error is drawn as
+  // an error rather than as the chip vanishing.
+  if (!board && !view?.windows.length) return null
 
-  // Before the first account read has answered there is nothing to say, and a
-  // wrong number here would be believed. Once it HAS answered, an error is
-  // drawn as an error rather than as the chip vanishing.
-  if (!snap && !windows.length) return null
-
-  const readAt = Math.max(payloadAt, accountAt)
-  const asOf = Number.isFinite(readAt) ? clock(readAt) : null
-  const stale = Number.isFinite(readAt) && isStale(readAt, now)
-
-  // The two windows that actually run out. A model-scoped one is shown in the
-  // panel but would make the chip a wall of digits.
-  const session = windows.find((w) => w.kind === 'session')
-  const weekly = windows.find((w) => w.kind === 'weekly')
-  const rows = [session, weekly].filter((w): w is UsageWindow => w !== undefined)
+  const windows = view?.windows ?? []
+  const snap = view?.reading.snapshot ?? null
+  const asOf = view && Number.isFinite(view.readAt) ? clock(view.readAt) : null
+  const stale = !!view && Number.isFinite(view.readAt) && isStale(view.readAt, now)
+  const rows = chipRows(windows)
   const worst = worstTone(rows)
+  const balance = !rows.length ? snap?.balances?.[0] : undefined
 
+  const who = view
+    ? view.reading.cli
+      ? `${cliFor(view.reading.cli).label}${view.reading.accountId !== 'default' ? ` (${view.reading.label})` : ''}`
+      : view.reading.label
+    : 'Claude Code'
+  const followed = target ? cliFor(target.cli).label : null
+  const fallbackNote = fellBack && followed ? `. ${followed} states no usage Stoke can read, so this is Claude Code’s Default account` : ''
   const label = rows.length
     ? rows
         .map(
           (w) =>
-            `${w.label}: ${remainingLabel(w)}${w.kind === 'session' ? `, ${resetLabel(w.resetsAt, w.percent, now)}` : ''}`
+            `${w.label}: ${remainingLabel(w)}${w.kind === 'session' ? `, ${windowResetLabel(w, now)}` : ''}`
         )
         .join('; ')
-    : (snap?.error ?? 'Plan limits unavailable')
+    : balance
+      ? `${balance.label}: ${balanceText(balance)}`
+      : (snap?.error ?? snap?.note ?? 'Usage unavailable')
+
+  // Whose figures these are, in that agent's (or that account's) colour.
+  const markKey = view ? (view.reading.cli && view.reading.accountId !== 'default' ? view.reading.accountId : view.reading.cli) : 'claude'
+  const groups = panelGroups(readings, board?.activeKey ?? null, (r) => (r.source === 'anthropic' ? viewOf(r, lines, now).windows.length : 0))
+  const retry = (): void => pullRef.current('message')
 
   return (
     <div className="usage-chip-wrap">
       <button
         ref={chipRef}
         className="usage-chip"
-        /* Claude Code's plan limits — the only agent Stoke reads usage for — so
-           while another agent is in view the chip wears Claude Code's colour,
-           the same as its tabs and its model in the status bar. */
-        {...agentMark('claude')}
+        {...agentMark(markKey)}
+        data-source={view?.reading.source}
+        data-account={view?.reading.accountId}
         data-tone={rows.length ? worst : 'none'}
         data-stale={stale || undefined}
         aria-expanded={open}
-        aria-label={`Plan limits. ${label}${stale && asOf ? `. As of ${asOf}` : ''}`}
+        aria-label={`Usage, ${who}. ${label}${stale && asOf ? `. As of ${asOf}` : ''}${fallbackNote}`}
         onClick={() => setOpen((v) => !v)}
-        title={`${label}${asOf ? ` — as of ${asOf}` : ''}. Click for detail.`}
+        title={`${who} — ${label}${asOf ? ` — as of ${asOf}` : ''}${fallbackNote}. Click for every account.`}
       >
         {rows.length ? (
           rows.map((w) => (
-            <span className="usage-mini" data-tone={tone(w)} key={w.kind} aria-hidden="true">
+            <span className="usage-mini" data-tone={tone(w)} key={`${w.kind}-${w.label}`} aria-hidden="true">
               <span className="usage-mini-label">{shortLabel(w)}</span>
               <span
                 className="usage-track usage-mini-track"
@@ -280,9 +438,14 @@ export function UsageChip(): React.JSX.Element | null {
               </span>
             </span>
           ))
+        ) : balance ? (
+          <span className="usage-mini usage-mini-balance" aria-hidden="true">
+            <span className="usage-mini-label">{balance.unit === 'usd' ? 'credit' : 'cr'}</span>
+            <span className="usage-mini-left">{balanceText(balance)}</span>
+          </span>
         ) : (
           <span className="usage-mini" aria-hidden="true">
-            <span className="usage-mini-label">limits</span>
+            <span className="usage-mini-label">usage</span>
             <span className="usage-mini-left">—</span>
           </span>
         )}
@@ -292,90 +455,36 @@ export function UsageChip(): React.JSX.Element | null {
         <>
           {/* Click-away, behind the panel and above everything else. */}
           <div className="popover-backdrop" onClick={() => setOpen(false)} />
-          <div className="popover usage-panel" role="dialog" aria-label="Plan limits" ref={panelRef}>
+          <div className="popover usage-panel" role="dialog" aria-label="Usage" ref={panelRef}>
             <div className="usage-head">
-              <span className="popover-title">Plan limits</span>
-              {asOf && (
-                <span className="usage-head-meta" data-stale={stale || undefined}>
-                  {accountAt > payloadAt ? 'from your account' : 'from the open session'} · {asOf}
-                  {stale ? ' · stale' : ''}
-                </span>
-              )}
+              <span className="popover-title">Usage</span>
+              {fellBack && followed && <span className="usage-head-meta">{followed}: none readable</span>}
             </div>
 
-            {windows.map((w) => (
-              <Bar key={`${w.kind}-${w.label}`} window={w} now={now} />
+            {groups.map((g) => (
+              <section className="usage-group" key={g.source} aria-label={g.title}>
+                <h3 className="usage-group-title" {...agentMark(g.source === 'openrouter' ? null : g.readings[0]?.cli)}>
+                  {g.title}
+                </h3>
+                {g.readings.map((r) => (
+                  <ReadingBlock
+                    key={r.key}
+                    view={viewOf(r, lines, now)}
+                    now={now}
+                    tag={r.key !== shownKey ? null : target && !fellBack ? 'this tab' : 'in the chip'}
+                    onRetry={retry}
+                  />
+                ))}
+              </section>
             ))}
-
-            {snap?.extraCredits?.enabled && (
-              <div className="usage-row" title="Paid overage, once a window is spent">
-                <span className="usage-label">Extra usage</span>
-                <span className="usage-pct">{Math.round(snap.extraCredits.percent)}%</span>
-                <span className="usage-reset">paid overage</span>
-                <span
-                  className="usage-track"
-                  data-tone="normal"
-                  style={{ '--usage-fill': Math.min(1, snap.extraCredits.percent / 100) } as React.CSSProperties}
-                >
-                  <span className="usage-fill" />
-                </span>
-              </div>
-            )}
-
-            {snap?.error && (
-              <div className="usage-error">
-                <span className="popover-text" data-tone="warning">
-                  {snap.error}
-                  {snap.error.startsWith('Not signed in')
-                    ? ' Plan limits need a Claude.ai sign-in; an API key has none.'
-                    : ''}
-                  {/*
-                    When a read is paused, say until when: main will not
-                    re-fetch before then, so "Try again" genuinely cannot do
-                    anything yet, and a button that silently does nothing is
-                    worse than one that says why.
-
-                    Whose pause it is gets said accurately. `retryAfter` is set
-                    only when the endpoint sent `Retry-After`; without it the
-                    wait is Stoke's own escalating guess, and attributing that
-                    to Anthropic would be inventing a fact about them — the same
-                    error as printing a diagnosis the tool can disprove.
-                  */}
-                  {waitingUntil &&
-                    (snap.retryAfter
-                      ? ` Anthropic asked for a pause; trying again at ${waitingUntil}.`
-                      : ` Trying again at ${waitingUntil}.`)}
-                  {/*
-                    And say that the numbers above are still real, just frozen.
-                    Without this the panel shows figures and an error together
-                    and leaves the reader to guess which one to believe.
-                  */}
-                  {windows.length > 0 && asOf
-                    ? ` The figures above are the last good reading, from ${asOf}.`
-                    : ''}
-                </span>
-                <button
-                  className="btn"
-                  data-size="sm"
-                  disabled={waitingUntil !== null}
-                  onClick={() => pullRef.current('message')}
-                >
-                  Try again
-                </button>
-              </div>
-            )}
+            {!groups.length && <p className="popover-text">No reading yet.</p>}
 
             <p className="popover-text">
-              {windows.length
-                ? 'The marker is where you would be at an even pace; fill past it means you are going faster than the window refills.'
-                : 'No reading yet.'}
-              {accountAt > payloadAt
-                ? ` Refreshed every ${POLL_MS / 1000}s, and again whenever a message starts.`
-                : fromAccount.length > 0
-                  ? ' The account is read too, so these keep updating once every session is closed.'
-                  : windows.length
-                    ? ' The account could not be reached, so this stops updating when the last session closes.'
-                    : ''}
+              The marker is where you would be at an even pace; fill past it means you are going faster than the window refills.
+              {' '}Claude Code accounts refresh every {POLL_MS / 1000}s and whenever a message starts; Codex figures are its last turn&rsquo;s.
+              {groups.some((g) => g.source === 'cline')
+                ? ' Cline states no free-model allowance, so only its credit balance is shown.'
+                : ''}
             </p>
           </div>
         </>
