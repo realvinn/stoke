@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { DEFAULT_HUB_URL, emptyHubView, type HubLocalKeyView, type HubResult, type HubView } from '@shared/hub/client'
 import { FieldHint } from './FieldHint'
+import { useHubRemote } from '../lib/hubRemote'
 import { Spinner } from './Spinner'
 
 /*
@@ -142,6 +143,7 @@ export function AccountSyncSettings(): React.JSX.Element {
           {view.notes.length > 0 && <Conflicts view={view} />}
           <SshKeys view={view} />
           <Devices view={view} />
+          <OtherMachinesSettings />
           <RecoveryKit view={view} />
         </>
       )}
@@ -865,6 +867,66 @@ function Syncing({ view, now }: { view: HubView; now: number }): React.JSX.Eleme
           <Busy on={busy === 'sync' || view.busy === 'Syncing…'} idle="Sync now" working="Syncing…" />
         </button>
       </div>
+      <Status note={note} />
+    </div>
+  )
+}
+
+/*
+ * "Other machines" on THIS computer: the tick that lets the owner's other
+ * signed-in devices see and open its sessions (default off), the devices it
+ * always lets in, and who is attached now. The tick is `hub.shareSessions`,
+ * written by main alone (gotcha 57); grants are this computer's own and never
+ * sync, so neither the hub nor another device can give itself one.
+ */
+function OtherMachinesSettings(): React.JSX.Element {
+  const remote = useHubRemote()
+  const { busy, note, run } = useRun()
+  return (
+    <div className="field" data-hub="other-machines-settings">
+      <span className="field-label">Other machines</span>
+      <label className="check-row">
+        <input
+          type="checkbox"
+          checked={remote.sharing}
+          disabled={busy !== null}
+          data-hub="share-sessions"
+          onChange={(e) => run('share', () => window.stoke.hub.remote.setSharing(e.target.checked))}
+        />
+        <span>
+          <span>Let my other devices see and open my sessions</span>
+          <span className="field-hint">
+            Your other signed-in computers list this one’s running sessions — a project’s folder name and the session’s title, never a
+            path — and can open one as a tab. Each open asks here first: Allow once, Always, or Deny. The list and the session travel
+            end to end encrypted between your devices; your hub passes them on and cannot read them.
+          </span>
+        </span>
+      </label>
+      {remote.grants.length > 0 && (
+        <>
+          <span className="field-hint">Always allowed here, without asking:</span>
+          {remote.grants.map((g) => (
+            <div key={g.device} className="settings-item-card" data-hub="grant" style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-8)' }}>
+              <span style={{ flex: 1 }}>
+                <strong>{g.label}</strong> <span className="field-hint">since {new Date(g.at).toLocaleDateString()}{g.mode === 'view' ? ', to watch only' : ''}</span>
+              </span>
+              <button className="btn" disabled={busy !== null} onClick={() => run(`grant-${g.device}`, () => window.stoke.hub.remote.revokeGrant(g.device))}>
+                Take back
+              </button>
+            </div>
+          ))}
+        </>
+      )}
+      {remote.guests.length > 0 && (
+        <div className="btn-row">
+          <span className="field-hint" style={{ flex: 1 }}>
+            Attached now: {remote.guests.map((g) => `${g.label} (${g.title ?? 'a session'})`).join(', ')}.
+          </span>
+          <button className="btn" onClick={() => void window.stoke.hub.remote.dropGuests()}>
+            Disconnect
+          </button>
+        </div>
+      )}
       <Status note={note} />
     </div>
   )

@@ -80,6 +80,19 @@ export function TabIndicator({
     )
   }
 
+  if (kind === 'remote') {
+    // Another machine's session: no context reading here, and a mark that says whose it is not.
+    return (
+      <span className="tab-indicator" data-kind="remote" data-status={status}>
+        <svg className="ring" viewBox="0 0 16 16" data-level="empty" aria-hidden="true">
+          <circle className="ring-track" cx="8" cy="8" r={RING_R} />
+          <path className="ring-remote" d="M5.2 6.2h5.6M8.8 4.4l2 1.8-2 1.8M10.8 9.8H5.2M7.2 8l-2 1.8 2 1.8" />
+        </svg>
+        <span className="sr-only">Another machine’s session</span>
+      </span>
+    )
+  }
+
   const ready = context?.ready === true
   const bypass = permissionMode === 'bypassPermissions'
 

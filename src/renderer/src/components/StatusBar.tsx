@@ -243,10 +243,14 @@ export function StatusBar({
   // A New tab has no session behind it, so it gets the same footer as no tab
   // at all — "waiting for first turn…" on a launcher was a promise about a
   // turn that could not come.
-  if (!tab || tab.kind === 'new') {
+  if (!tab || tab.kind === 'new' || tab.kind === 'remote') {
     return (
       <footer className="statusbar">
-        <span className="status-item">No active session</span>
+        {/* Another machine's session: its mode, context and version are that
+            machine's, not this one's, so none of them is claimed here. */}
+        <span className="status-item">
+          {tab?.kind === 'remote' ? `On ${tab.remote?.deviceLabel ?? 'another machine'}: another machine’s session` : 'No active session'}
+        </span>
         {profilePill}
         <span className="status-spacer" />
         {/* Carried here too: a relaunch kills its session before the

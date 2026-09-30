@@ -100,6 +100,8 @@ interface Props {
   onOpenChat?: (hit: ChatSearchHit) => void
   /** Settings › Chat history, from the group's "set up" line. */
   onSetUpChats?: () => void
+  /** The "Other machines" group (OtherMachines.tsx), shown above the projects while browsing. */
+  otherMachines?: React.ReactNode
 }
 
 export function Sidebar({
@@ -132,7 +134,8 @@ export function Sidebar({
   projectHints = {},
   chatSearch,
   onOpenChat,
-  onSetUpChats
+  onSetUpChats,
+  otherMachines
 }: Props): React.JSX.Element {
   /* One picker open at a time, keyed by path — two open popovers in a scrolling
      list is a way to change the wrong folder without noticing. */
@@ -627,6 +630,8 @@ export function Sidebar({
       </div>
 
       <div className="sidebar-scroll">
+        {!searching && otherMachines}
+
         {loading && (
           <p className="sidebar-group" aria-live="polite">
             Loading projects…

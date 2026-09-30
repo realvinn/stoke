@@ -3621,6 +3621,211 @@ mark.hit {
   flex-shrink: 0;
 }
 
+/* -------------------------------------------------------- other machines */
+
+/*
+ * The owner's other signed-in desktops and their sessions (OtherMachines.tsx,
+ * src/main/hub/remote.ts). A sidebar group like "Pinned" and "Recent", with a
+ * header that folds it; every name in it is another machine's text, so each
+ * line ellipsises rather than widening the column.
+ */
+.other-machines {
+  padding-bottom: var(--space-4);
+  border-bottom: 1px solid var(--border-subtle);
+  margin-bottom: var(--space-4);
+}
+
+.other-machines-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  width: 100%;
+  border: none;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.other-machines-head:hover {
+  color: var(--text-muted);
+}
+
+.other-machines-chevron {
+  flex-shrink: 0;
+  transition: transform var(--dur) var(--ease);
+}
+
+.other-machines-head[aria-expanded='true'] .other-machines-chevron {
+  transform: rotate(90deg);
+}
+
+.other-machines-count {
+  margin-left: auto;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--text-faint);
+}
+
+.machine-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  min-width: 0;
+  padding: var(--space-4) var(--space-8);
+  font-size: var(--fs-sm);
+  color: var(--text);
+}
+
+/* Online: the hub says so, and this list shows no other kind. */
+.machine-dot {
+  width: 0.375rem;
+  height: 0.375rem;
+  border-radius: 50%;
+  background: var(--success);
+  flex-shrink: 0;
+}
+
+.machine-name {
+  flex: 1 1 0%;
+  min-width: 0;
+  font-weight: 600;
+}
+
+.machine-platform {
+  flex-shrink: 0;
+  font-size: var(--fs-xs);
+  color: var(--text-faint);
+}
+
+.machine-note {
+  padding-left: var(--space-24);
+}
+
+.remote-session .session-meta {
+  min-width: 0;
+}
+
+.remote-session-status {
+  flex-shrink: 0;
+  color: var(--text-faint);
+}
+
+.remote-session-status[data-status='waiting'] {
+  color: var(--warning);
+  font-weight: 600;
+}
+
+/*
+ * A remote tab: the banner that says whose session this is, over a terminal
+ * held at the OTHER machine's grid (gotcha 87: a remote viewer never resizes
+ * the pty), which scrolls when it is larger than this pane.
+ */
+.remote-pane:not([hidden]) {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+}
+
+.remote-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  flex-shrink: 0;
+  min-height: 2.25rem;
+  padding: var(--space-4) var(--space-8);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg));
+  font-size: var(--fs-sm);
+  overflow: hidden;
+}
+
+.remote-banner-kind {
+  flex-shrink: 0;
+  padding: 0.0625rem var(--space-8);
+  border-radius: var(--r-full);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.remote-banner-text {
+  flex: 1 1 0%;
+  min-width: 0;
+  margin: 0;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.remote-banner-text strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.remote-banner-state[data-state='refused'],
+.remote-banner-state[data-state='lost'] {
+  color: var(--danger);
+}
+
+.remote-banner-state[data-state='asking'],
+.remote-banner-state[data-state='reconnecting'] {
+  color: var(--warning);
+}
+
+.remote-banner .btn {
+  flex-shrink: 0;
+}
+
+.remote-pane .remote-host {
+  flex: 1;
+  min-height: 0;
+  height: auto;
+  overflow: auto;
+}
+
+/* The tab strip's mark for another machine's session: two arrows in the ring. */
+.ring-remote {
+  fill: none;
+  stroke: var(--accent-ink);
+  stroke-width: 1.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/*
+ * On the host: someone is attached from another machine. A steady ring that
+ * breathes; under reduced motion it rests as the solid dot, which still says
+ * it (gotcha 72).
+ */
+.remote-live {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--success);
+  flex-shrink: 0;
+  animation: remote-live 1.6s ease-out infinite;
+}
+
+@keyframes remote-live {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--success) 60%, transparent);
+  }
+  70%,
+  100% {
+    box-shadow: 0 0 0 0.3125rem transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .remote-live {
+    animation: none;
+  }
+}
+
 /* --------------------------------------------------------------- resizer */
 
 .resizer {
