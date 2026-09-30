@@ -1195,8 +1195,21 @@ fi
 
 # The AppImage runtime reads its own --appimage-* options from the FIRST
 # argument only, so those go through untouched and in the foreground: they are
-# commands (extract, print the offset) as often as launches.
+# commands (extract, print the offset) as often as launches. One of them IS a
+# launch -- --appimage-extract-and-run, the no-FUSE route the installer itself
+# advises -- so as root it needs --no-sandbox exactly as a plain launch does,
+# after the flag the runtime reads (gotcha 76).
 case "\${1:-}" in
+  --appimage-extract-and-run)
+    if [ "\$(id -u)" = 0 ]; then
+      printf '%s\n' \\
+        'stoke: running as root, so Chromium sandbox is off. Stoke can reach every' \\
+        'stoke: file on this machine. A normal user account is recommended.' >&2
+      shift
+      exec "\$STOKE_APPIMAGE" --appimage-extract-and-run --no-sandbox "\$@"
+    fi
+    exec "\$STOKE_APPIMAGE" "\$@"
+    ;;
   --appimage-*) exec "\$STOKE_APPIMAGE" "\$@" ;;
 esac
 
@@ -1223,8 +1236,9 @@ unset ELECTRON_RUN_AS_NODE
 # setsid gives it a session with no controlling terminal, so the hangup never
 # reaches it. nohup is only the fallback where setsid is missing: an ignored
 # SIGHUP lasts only until the process installs a handler of its own. Watched
-# for a moment first, so a copy that cannot start at all -- a missing
-# libfuse2 -- still says why here instead of vanishing.
+# for a moment first, so a copy that cannot start at all -- no FUSE, which
+# the AppImage runtime reports as "No suitable fusermount binary found" --
+# still says why here instead of vanishing.
 stoke_log=\$(mktemp "\${TMPDIR:-/tmp}/stoke-launch.XXXXXX" 2>/dev/null || true)
 [ -n "\$stoke_log" ] || stoke_log=/dev/null
 if command -v setsid >/dev/null 2>&1; then
@@ -1779,8 +1793,13 @@ main() {
   else
     say "  Stoke $REL_VERSION is installed. Run 'stoke' to start it, or 'stoke .' to"
     say "  open this folder in it; 'stoke --help' says the rest."
-    say '  If it refuses to start with a FUSE error, run it as'
-    say '  `stoke --appimage-extract-and-run` or install libfuse2.'
+    # FUSE 3, not libfuse2: the AppImage carries the static type-2 runtime
+    # (electron-builder.yml `toolsets.appimage`), which has libfuse built in and
+    # needs only a fusermount binary -- libfuse2 ships none. Measured in the CI
+    # probe's Debian legs: without FUSE the runtime says "No suitable fusermount
+    # binary found on the $PATH"; with fuse3 installed the same AppImage mounts.
+    say '  If it refuses to start with a FUSE error, install FUSE 3 (on Debian and'
+    say '  Ubuntu: sudo apt install fuse3), or run it as `stoke --appimage-extract-and-run`.'
     # Said out loud because the replacement is a rename and a rename is silent:
     # a running copy keeps the old inode and carries on being the old version
     # with no warning anywhere, which reads as "the upgrade did nothing".
