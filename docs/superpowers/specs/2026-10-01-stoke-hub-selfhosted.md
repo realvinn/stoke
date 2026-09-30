@@ -696,6 +696,21 @@ the hub works with Phone access off and binds nothing new. The relay can carry o
 > Disconnect, which also drops every Allow once), a banner and tab mark on the guest, and Settings ›
 > Account & sync lists Always grants with Take back. A remote tab never resizes the host's pty (the
 > phone's `decideResize` in `native` layout) and never types xterm's own reports.
+>
+> **Reviewed 2026-10-01.** Four gaps closed, each held by `verify:hub-relay`. (1) "A revoked device
+> is refused because it is no longer in the chain the host verifies" was true only at the
+> handshake: a relay already open outlived the revoke on both ends. The host now re-checks the
+> guest against its chain, by the key the handshake pinned, on every frame and answer, and
+> `HubService` calls `HubRemote.chainChanged` whenever its verdict moves, ending every relay,
+> question and remote tab to a device the chain no longer holds and deleting its grants. (2) Always
+> was every relayed route (new sessions, folders, every project path and past conversation) while
+> the question was about one session: it now reaches only the session the relay attached to, like
+> Allow once, and only stops the question. (3) Nothing sent the inner `ping`, so the hub closed a
+> quiet remote tab as idle every 10 min: the guest pings every 4 min (`RELAY_PING_MS`) and closes a
+> channel with no pong inside 60 s. (4) The status replay guard was the status on show, which a
+> presence reconnect clears: it is now a per-(device, epoch) mark kept for the process; and a
+> status is cut to the sessions that fit `HUB_LIMITS.statusBytes` before it is sent, where the hub
+> used to drop an oversize one without a word.
 
 ### 6.6 What the relay (and the hub) sees, and failure
 

@@ -183,7 +183,7 @@ rule file named on the group line.
 - **141.** Never keep the Recovery Kit's wrap key on a device: a revoke needs the Kit typed, or a new Kit when the
   target has had it (`kitHandlers`); a Kit join replaces the Kit in the same append (`postRecovery`).
 - **142.** Send every hub relay frame through `relayFrameParts` (a 512 K pty replay is 1.23 MB as JSON in JSON, over the
-  1 MiB cap), stamp a presence status `max(now, lastAt + 1)`, and serve a relayed frame only past BOTH verdicts.
+  1 MiB cap), stamp a status `max(now, lastAt + 1)`, serve a frame only past BOTH verdicts and a live chain (`chainChanged`).
 
 **Terminal** — `.claude/rules/terminal.md`
 - **5.** Never read the terminal from the DOM: WebGL paints a canvas, so `.xterm-rows` is empty.

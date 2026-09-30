@@ -516,3 +516,35 @@ reaches one session and NOT `/api/sessions`, whose rows carry every session's fo
 presence summary carries folder names only); the host refuses an `hs1` whose guest is not the
 device the hub named, and takes no relay at all from a device its own chain does not hold as
 active (gotcha 140).
+
+> **Checked against the code on 2026-10-01 (a review of "Other machines")** — four gaps and a
+> misleading button, each now held by `verify:hub-relay` and each shown red by mutating its fix back:
+> - **The chain was read only at the handshake.** After it, `hostFrame` served every frame on the
+>   grant alone, and nothing told `HubRemote` when `refreshChain` installed a new verdict — so a
+>   guest removed from the host's chain kept its pty for as long as its relay stayed open, a waiting
+>   question could still be answered Always (storing a grant for it), and a tab kept typing into a
+>   host since removed (a stolen laptop). `refreshChain` (both branches) and the hub's "removed" bye
+>   now call `HubRemote.chainChanged()`: it ends every hosted relay and question whose guest the
+>   chain no longer holds BY THE KEY ITS HANDSHAKE PINNED (`RelayChannel.peerSignKey`, gotcha 140),
+>   every tab to a host it no longer holds (never reconnected), and deletes that device's Allow once
+>   and Always. `hostFrame`, `answer` and `serve` re-check too, so a frame that lands before the
+>   hook runs is refused.
+> - **Nothing sent the inner `ping`.** Both ends only answered one. The hub's idle close
+>   (`RELAY_IDLE_MS`, 10 min) counts forwarded frames only — its WebSocket pings do not move
+>   `lastActivity` — so a tab on a quiet session (Claude at its prompt, the owner reading) was closed
+>   every ten minutes, dropping keys typed during the reconnect. The guest pings every
+>   `RELAY_PING_MS` (4 min) and closes a channel with no pong inside `RELAY_PONG_WAIT_MS`.
+> - **The replay guard was the status on show**, which `presenceClosed` and an offline clear, so
+>   after a reconnect a hub could hand back any older status of the epoch (one from before sharing
+>   was unticked). The mark is per (device, epoch), kept for the process. An EQUAL `at` is taken: the
+>   hub hands every device's latest back on each connect, and refusing it (`<=`) blanked the list
+>   after every reconnect — the suite holds both directions.
+> - **Every status string was capped, the whole never.** 24 sessions of emoji and CJK titles and
+>   folder names (each at its cap) sealed to 30,955 characters, measured, past `HUB_LIMITS.statusBytes`
+>   (24,576); the hub's `parsePresenceClientFrame` dropped it silently and the sender recorded it as
+>   sent. `sealToFit` drops the last-listed sessions until `sealedStatusProblem` passes (18 fit).
+> - **"Always" was `{ kind: 'any' }`** — every relayed route, so starting agents, creating folders,
+>   every project path and every past conversation — under a button that said "open any session
+>   here without asking", in a question about one session. Both answers now reach only the session
+>   the relay attached to (`RelayScope` has no `any`); Always only stops the question. The guest
+>   never used anything wider, so nothing a remote tab does changed.

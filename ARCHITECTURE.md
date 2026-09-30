@@ -365,12 +365,18 @@ AES-GCM with a counter per direction; any dropped, repeated, reordered or edited
 an `attach` naming the session, then the phone's own pty-socket protocol. The HOST decides
 (`attachDecision`): not sharing or no such session refuses; an Always grant (`hub.grants`, T0) or a
 live Allow once serves; anything else asks the owner in a strip — Allow once / Always / Deny,
-refused after 60 s. Allow once reaches that one session only (`relayScopeVerdict`: not even the
-session list, whose rows carry paths) and outlives a dropped relay by two minutes. Every relayed
-request and socket runs the phone server's own handlers (`api`, `relaySocket`) in a second
-`RemoteServer` that is never started — so it binds nothing and works with Phone access off — after
-the grant's mode (`relayFrameVerdict`) and the answer's reach. Large frames go as `part`s: a full
-pty replay measures past the hub's 1 MiB frame cap (gotcha 142).
+refused after 60 s. Either answer reaches only the session the relay attached to
+(`relayScopeVerdict`: not even the session list, whose rows carry paths, nor new sessions, folders,
+history or transcripts) — Always only stops the question — and an Allow once outlives a dropped
+relay by two minutes. Every relayed request and socket runs the phone server's own handlers (`api`,
+`relaySocket`) in a second `RemoteServer` that is never started — so it binds nothing and works
+with Phone access off — after the grant's mode (`relayFrameVerdict`) and the answer's reach, and
+only while the host's verified chain still holds the guest by the key its handshake pinned: when
+the chain moves, `HubService` calls `chainChanged`, which ends every relay, question and tab to a
+device it no longer holds, and takes back its grants. A guest pings through the channel every
+4 min, as the hub closes a relay that forwarded nothing for 10. Large frames go as `part`s: a full
+pty replay measures past the hub's 1 MiB frame cap (gotcha 142), and a status is cut to the
+sessions that fit the hub's 24 KiB cap before it is sealed and sent.
 
 ## Remote access
 
@@ -986,8 +992,13 @@ npm run verify:hub-relay      # "Other machines": two RelayChannels through an i
                               # host's rules (attachDecision, the Allow once grace, the scope).
                               # Then two HubRemotes through a fake hub with a fake pty: list,
                               # ask, Allow once / Always / Deny, type and see the echo, revoke,
-                              # Disconnect, sharing off, a raw guest reaching outside its scope,
-                              # and a canary no relayed byte carries in the clear
+                              # Disconnect, sharing off, a raw guest reaching outside its scope
+                              # (under Always too), and a canary no relayed byte carries in the
+                              # clear. A device dropped from either end's chain mid-serve (the
+                              # relay ends though the hub keeps it open; a waiting question and
+                              # a grant go), a quiet tab past the hub's idle close on a fake
+                              # clock (and its unpinged control), a missing pong, a status
+                              # replayed after a presence reconnect, and one too large to send
 npm run verify:install        # the one-line installer and the endpoint that serves it: the whole
                               # User-Agent matrix through the Worker's routing rule (PowerShell
                               # before anything browser-shaped, and HTML as the fallback), the
@@ -1272,9 +1283,10 @@ src/main/         Electron main process
                     holds, per-direction AES-GCM with counters, `part` frames. Transport
                     agnostic, no electron import. verify:hub-relay
   hub/remote.ts     "Other machines" (HubRemote): the sealed presence status, remote tabs (the
-                    guest), and relays asked of this machine (the host: the owner's question,
-                    grants, the scope, relayed requests and sockets through the phone server's
-                    handlers). No electron import. verify:hub-relay
+                    guest, with its keepalive), and relays asked of this machine (the host: the
+                    owner's question, grants, the scope, relayed requests and sockets through the
+                    phone server's handlers); `chainChanged` ends what the chain stopped
+                    vouching for. No electron import. verify:hub-relay
   accounts.ts       an agent account's folder, `~/.stoke/accounts/<cli>-<slug>` (not userData:
                     dev and packaged differ, and the `stoke` command reads it with no app),
                     realpath'd once — Claude's Keychain item is named after that exact string
