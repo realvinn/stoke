@@ -11,7 +11,7 @@ import { collapseTurns, middleTruncate, plural, relativeTime, splitMarkdown, too
 import { api, folderName, resumeSession, type HistoryRow, type ProjectRow, type TurnRow } from './api'
 import { confirmSheet, el, failure, humanError, icon, iconButton, skeleton, toast } from './dom'
 import { meterMini } from './list'
-import { pathRoom } from './newSession'
+import { openNewSession, pathRoom } from './newSession'
 import { pendingMeta } from './session'
 
 export interface Page {
@@ -94,7 +94,10 @@ export function mountHistory(): Page {
 /* --------------------------------------------------- one project's sessions */
 
 export function mountProjectHistory(cwd: string): Page {
-  const { root, body } = page(folderName(cwd), '#/history')
+  // A new conversation where the old ones are, without re-finding the folder.
+  const here = iconButton('plus', 'New session here', { class: 'icon-btn', 'data-variant': 'primary' })
+  here.addEventListener('click', () => openNewSession({ cwd, name: folderName(cwd) }))
+  const { root, body } = page(folderName(cwd), '#/history', [here])
   const content = el('div', { class: 'content' })
   body.append(content)
 
