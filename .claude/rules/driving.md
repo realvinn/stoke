@@ -109,3 +109,30 @@ of those assertions runs against a synthetic filesystem on a Mac. **Nobody has w
 file appear on real Windows.** Treat it as unverified, not merely untested, until someone runs a
 statusLine-driven session there — once with Git for Windows installed and once without, which are
 genuinely different code paths.
+
+## 110. `require` from a main-process inspector exists only during the evaluation, and the error it throws later is a modal nobody can click
+
+**Driving the main process through its Node inspector (`--inspect=<port>`, `Runtime.evaluate`
+with `includeCommandLineAPI`) gives you a `require` that is part of the console's command-line
+API, not of the module scope** — so it is there for the synchronous body of the evaluation and
+gone by the time a callback it scheduled runs. Measured 2026-09-30 against the built app:
+`typeof require` read `"function"` inside the evaluation, and a `setTimeout(() => require(…), 10)`
+from the same evaluation caught `ReferenceError: require is not defined`.
+
+Uncaught, that error is fatal in a way that does not look like one. It was
+`setTimeout(() => require("electron").app.quit(), 100)`, written so the reply could arrive before
+the process went. The app did not quit, and `sample <pid>` put the whole main thread in
+`-[NSAlert runModal]` under a `uv__run_timers` frame — Electron's uncaught-exception dialog, raised
+from that timer. From then on nothing answers: the renderer's CDP port accepts a connection and
+never replies to `/json/list`, and the inspector takes `Runtime.evaluate` and never returns. The
+alert needs a click, which this sandbox cannot post (`osascript is not allowed assistive access`),
+and it sits on the user's screen meanwhile. A first `SIGTERM` did nothing in 20 seconds (queued
+behind the modal); a second ended the process with status 143 — Chromium puts `SIG_DFL` back after
+the first signal — ungracefully, with no `before-quit`. That was tolerable only because the
+instance had no pty children (`pgrep -P <pid>`: Electron helpers only); with a session open it is
+the standing "never force-kill" case, orphans and all.
+
+So: **call `require("electron")` synchronously inside the evaluation**, or keep what it returns in
+a variable before scheduling anything, and wrap anything deferred in `try/catch`. Quitting a
+sandbox instance with a synchronous `(() => { require("electron").app.quit(); return 1 })()` was
+measured clean (the reply still arrived, the process exited 0).
