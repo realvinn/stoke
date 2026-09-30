@@ -529,6 +529,44 @@ Claude. Every id that is not a plain uuid is refused before it can reach a remot
 **Still never exercised:** a real SSH connection. The command is proven against a local shell and
 the fetch against an injected transport; no host has ever answered.
 
+## Roadmap — 2026-09-30
+
+The owner's 18-item list, triaged against the code and worked in waves. Each wave's items are
+built on their own branches, reviewed adversarially, merged, and pass `npm run check`.
+
+**The owner's answers, do not re-ask:** "chips" means the per-tab agent tag (a show/hide toggle
+plus a custom title per agent). "Talk mode" means a hold threshold for Stoke's own dictation: a tap
+types a space and a hold records. That dictation is what SSH tabs and non-Claude CLIs rely on, since
+Claude's `/voice` only covers local Claude tabs. The chat index means detecting and importing ANY
+AI chats (Claude Code, Codex, claude.ai exports and the rest), with hard caps. The auth hub is a
+PUBLIC multi-tenant service; its design is `docs/superpowers/specs/2026-09-30-auth-hub-design.md`,
+and phase 1 needs no server.
+
+**Wave 1 — shipped to `windows-install`:**
+- SSH key login works on a password-only host. The password is typed into a visible "Add key"
+  tab, and enrollment is proven by the tab's own login (gotcha 109).
+- The Activity header is back in one row, the review strip is reachable at narrow widths, and
+  busy check buttons show a spinner and a label.
+- Default agent: Start, `stoke .` and the phone's New session all start it (gotcha 112).
+- The speech server moved to Settings › Voice, and the phone reads it per call (gotcha 111).
+- `.github/workflows/ci.yml` runs the suite gate on every push and PR (gotcha 113).
+
+**Still open, roughly in order:**
+- The agent tag toggle and titles, plus per-agent colours.
+- Agents settings pages.
+- Voice: the hold threshold, the level line and the mic picker.
+- Secrets in safeStorage, and setup export/import.
+- Skills shared into Claude.
+- The status-line gap.
+- The chat import.
+- Phone folders, then the web UI pass and the PWA.
+- Managed tmux in place of byobu.
+- Multi-account plus usage for every account.
+- STT API providers.
+- The MCP model.
+- Chrome logins on Windows, via the user's own `chrome.exe` over CDP.
+- The CI probe on each OS and Debian.
+
 ## Open work, in the order it is worth doing
 
 ### 1. Verify 0.3.2 against a real install — DONE, 2026-08-03
