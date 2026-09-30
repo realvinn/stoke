@@ -186,8 +186,14 @@ export const AGENT_TAG_MAX = 16
  * A file an older build rewrote loses the number (its hydrate names no such
  * key) and is upgraded again, which is right: that build's mode switch keeps
  * the model too.
+ *
+ *   3  The agent colours are the vendors' own (`AGENT_SEEDS`, agentColors.ts).
+ *      An override equal to an agent's format-2 seed is a default nobody chose
+ *      — no build stores a colour equal to its own seed — and is dropped once
+ *      (`hydrateAgentColors`), so an untouched Claude turns orange. After the
+ *      upgrade the old pink is an ordinary colour, kept if picked on purpose.
  */
-export const AGENTS_FORMAT = 2
+export const AGENTS_FORMAT = 3
 
 /** The format a stored `agents.format` names; anything but a whole number ≥ 1 is 1. */
 export function agentsFormatOf(raw: unknown): number {
@@ -354,7 +360,7 @@ export function hydrateAgents(raw: unknown): AgentSettings {
     shareSkillsToClaude: r.shareSkillsToClaude !== false,
     mcp: hydrateAgentMcp(r.mcp, isCodingCliId),
     tag: hydrateAgentTag(r.tag),
-    colors: hydrateAgentColors(r.colors),
+    colors: hydrateAgentColors(r.colors, from),
     defaultAccount: hydrateDefaultAccounts(r.defaultAccount),
     // Upgraded above, so this build's number whatever was read — a newer
     // build's included, since only this build's fields survived the hydrate.

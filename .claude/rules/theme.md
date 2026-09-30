@@ -176,6 +176,24 @@ than the 0.04 perceptual distance this repo already calls "the same colour".
 > the title bar, measured in the built app). Before painting any `-ink` token as `color:` on the
 > chrome, check which floor its suite holds it to on THAT ground.
 
+> **Decided on 2026-10-01: the agent seeds are the vendors' own colours, and Claude Code is orange
+> by the owner's choice** ("claude should default to claude[,] codex to codex colour like a orangy
+> for claude and a purplish for codex"). That overrides the rule that kept Claude pink — "orange
+> belongs to the meter" — for Claude ONLY, and the exception is data, not a comment:
+> `clearanceFloor` (agentColors.ts) gives `claude` no floor against the meter's orange and
+> `CLAUDE_CLEAR_DISTANCE` (0.065 dark, 0.05 light) against `--danger`/`--warning`; every other
+> agent, an account key like `claude-work`, and any colour a user picks keep the full 0.08, and
+> `verify:agents` fails if the exception list grows. The smaller danger/warning floor is measured,
+> not chosen: `--danger` (h ~30) and `--warning` (h ~82) bracket every orange, and a sweep of hues
+> 50-66, chroma 0.13-0.21, lightness 0.64-0.80 found none past 0.070 on a dark theme or 0.056 on a
+> light one — the light text is solved to 4.5:1, which lands every orange at the lightness both are
+> solved to. So the seed is the most separated orange, `#de7b2e` (h54, 15° amber-ward of Anthropic's
+> `#d97757`, whose own light-theme text measured 0.021 from `--danger`). The same squeeze decided
+> the rest: a vendor whose only colour is orange (Cursor, Factory, Mistral) got a warm neutral, a
+> green vendor (Aider, Augment) a muted green, because the meter owns vivid green on a light theme.
+> The seed table in agentColors.ts cites the source of each. A stored override equal to an agent's
+> OLD seed is dropped once (agents format 3): no build ever stored its own seed, so it was a default.
+
 ## 65. `--accent-contrast` is chosen for the solid fill and painted on the hover fill too
 
 **`--accent-contrast` is chosen for the solid fill and painted on the hover fill too.**

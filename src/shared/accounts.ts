@@ -30,7 +30,6 @@
  * are relative with `.ts` (gotcha 78). The parts that touch a disk — the home,
  * its links, the Keychain service name — are `src/main/accounts.ts`.
  */
-import { AGENT_SEEDS } from './agentColors.ts'
 import { cliFor, isCodingCliId, type CodingCliId } from './codingClis.ts'
 
 /** The account a launch uses when it names none and no default is chosen: no variable set. */
@@ -234,20 +233,23 @@ export function isAccountHome(v: unknown): v is string {
 /* ----------------------------------------------------------------- colour */
 
 /**
- * The colours an account can wear. Each is one of the agent seeds, so each
- * already clears every floor `verify:agents` holds a seed to (the meter's
- * three tiers, --danger, --warning) — an account's tag is drawn by the same
+ * The colours an account can wear. They were the agent seeds until those became
+ * the vendors' own colours (agentColors.ts, agents format 3); they are pinned
+ * here as literals so an account stored as `pink` stays pink and every name
+ * still says what it paints. `verify:accounts` holds each one to the floors a
+ * seed is held to — the meter's three tiers, --danger and --warning on every
+ * theme (`reservedNear`) — because an account's tag is drawn by the same
  * writer, under its own key (`agentTokenNames('claude-work')`).
  */
 export const ACCOUNT_SWATCHES: readonly { id: string; name: string; seed: string }[] = [
-  { id: 'sky', name: 'Sky', seed: AGENT_SEEDS.gemini },
-  { id: 'violet', name: 'Violet', seed: AGENT_SEEDS.opencode },
-  { id: 'teal', name: 'Teal', seed: AGENT_SEEDS.grok },
-  { id: 'periwinkle', name: 'Periwinkle', seed: AGENT_SEEDS.codex },
-  { id: 'jade', name: 'Jade', seed: AGENT_SEEDS.aider },
-  { id: 'azure', name: 'Azure', seed: AGENT_SEEDS.droid },
-  { id: 'orchid', name: 'Orchid', seed: AGENT_SEEDS.amp },
-  { id: 'pink', name: 'Pink', seed: AGENT_SEEDS.claude }
+  { id: 'sky', name: 'Sky', seed: '#48bff5' },
+  { id: 'violet', name: 'Violet', seed: '#b781ec' },
+  { id: 'teal', name: 'Teal', seed: '#47d6cf' },
+  { id: 'periwinkle', name: 'Periwinkle', seed: '#829eff' },
+  { id: 'jade', name: 'Jade', seed: '#75c2b3' },
+  { id: 'azure', name: 'Azure', seed: '#2d88e2' },
+  { id: 'orchid', name: 'Orchid', seed: '#c765ce' },
+  { id: 'pink', name: 'Pink', seed: '#eb77b6' }
 ]
 
 function isSwatchId(v: unknown): v is string {
