@@ -432,6 +432,8 @@ rule file named on the group line.
   macOS 27) by sliding `.app` with `top`, never a row (`nextReveal`, `revealInsetFor`).
 - **114.** Add a terminal-card shadow as a `--pane-*` layer of `.term-host`'s one `box-shadow`, never
   a `box-shadow` of its own: set outright, the frame's rule hid the drop ring on every framed pane.
+- **137.** Never show-then-focus through `visibility`: under reduced motion the global 1ms transition
+  covers every property, so `focus()` meets a still-hidden element (`ColorPicker`).
 
 **React state** — `.claude/rules/renderer.md`
 - **31.** `npm run check` cannot see a side effect inside a closure, or the wire from real input

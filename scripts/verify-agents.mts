@@ -118,18 +118,27 @@ import {
   skillReport
 } from '../src/shared/skills.ts'
 import {
+  accentNear,
+  AGENT_BRAND_FAMILIES,
   AGENT_CLEAR_DISTANCE,
   AGENT_DISTINCT_DISTANCE,
   AGENT_SEEDS,
   agentColorTokens,
   agentSeed,
   agentTokenNames,
+  BRAND_SEEDS_FORMAT,
+  CLAUDE_CLEAR_DISTANCE,
+  clearanceFloor,
   COMMON_AGENTS,
   hydrateAgentColors,
-  paintAgentColors
+  paintAgentColors,
+  PREVIOUS_AGENT_SEEDS,
+  reservedColors,
+  reservedNear,
+  SAME_COLOUR_DISTANCE
 } from '../src/shared/agentColors.ts'
-import { parseColor, perceptualDistance } from '../src/shared/color.ts'
-import { meterScale } from '../src/shared/meter.ts'
+import { deriveAccent } from '../src/shared/accent.ts'
+import { parseColor, perceptualDistance, toOklch } from '../src/shared/color.ts'
 import { BUILT_IN_THEMES } from '../src/shared/themes.ts'
 import { scanSkills } from '../src/main/skillsScan.ts'
 import {
@@ -416,6 +425,53 @@ check(
   { codex: '#123456' }
 )
 
+console.log('\nagent colours: the seeds became the vendors’ own (agents format 3), and stored overrides follow sanely')
+{
+  check('the colour table and the agents block agree on the format that brought it', BRAND_SEEDS_FORMAT, AGENTS_FORMAT)
+  // Every earlier build dropped a value equal to its own seed on write AND on
+  // read, so an old seed in a file is a default carried in by hand or by an
+  // import — never a choice. The first read under format 3 lets it go.
+  check(
+    'a format-2 file holding Claude’s old pink and Codex’s old periwinkle: both go, so both take their new colour',
+    hydrateAgents({ colors: { claude: PREVIOUS_AGENT_SEEDS.claude, codex: PREVIOUS_AGENT_SEEDS.codex.toUpperCase() }, format: 2 }).colors,
+    {}
+  )
+  check(
+    'and a real pick in that same file stays',
+    hydrateAgents({ colors: { claude: PREVIOUS_AGENT_SEEDS.claude, gemini: '#123456' }, format: 2 }).colors,
+    { gemini: '#123456' }
+  )
+  check(
+    'an old seed filed under ANOTHER agent is a real pick (Codex painted the old Claude pink)',
+    hydrateAgents({ colors: { codex: PREVIOUS_AGENT_SEEDS.claude }, format: 2 }).colors,
+    { codex: PREVIOUS_AGENT_SEEDS.claude }
+  )
+  check(
+    'once the block says format 3, the old pink is an ordinary colour: picked on purpose, it is kept',
+    hydrateAgents({ colors: { claude: PREVIOUS_AGENT_SEEDS.claude }, format: 3 }).colors,
+    { claude: PREVIOUS_AGENT_SEEDS.claude }
+  )
+  {
+    const up = hydrateAgents({ colors: { claude: PREVIOUS_AGENT_SEEDS.claude, gemini: '#123456' }, format: 2 })
+    check('and the upgrade runs once: a second hydrate changes nothing (gotcha 116)', hydrateAgents(up), up)
+  }
+  check(
+    'the new seed stored under any format is still "untouched"',
+    [2, 3].map((format) => hydrateAgents({ colors: { claude: AGENT_SEEDS.claude }, format }).colors),
+    [{}, {}]
+  )
+  check(
+    'hydrateAgentColors on its own (no format) reads as this build’s: the old pink is kept',
+    hydrateAgentColors({ claude: PREVIOUS_AGENT_SEEDS.claude }),
+    { claude: PREVIOUS_AGENT_SEEDS.claude }
+  )
+  check(
+    'every agent’s seed moved, so no old seed silently means the new one',
+    CODING_CLIS.filter((c) => AGENT_SEEDS[c.id] === PREVIOUS_AGENT_SEEDS[c.id]).map((c) => c.id),
+    []
+  )
+}
+
 console.log('\nagent colours: every agent has one, and the tokens are keyed for accounts to extend')
 ok('every agent in the table has a seed', CODING_CLIS.every((c) => typeof AGENT_SEEDS[c.id] === 'string'))
 ok('every seed parses as an opaque colour', CODING_CLIS.every((c) => parseColor(AGENT_SEEDS[c.id])?.a === 1))
@@ -495,36 +551,237 @@ const dist = (a: string, b: string): number => perceptualDistance(parseColor(a)!
   ok(`no two of all eighteen seeds are the same colour (nearest ${allPair} ${nearestAll.toFixed(3)})`, nearestAll >= 0.04)
 
   /*
+   * Where two vendors' own colours collide (six oranges, five purples, three
+   * blues, two greens) the table pulled them apart by hand. Each family is
+   * held to the common five's floor, so a brand that was nudged cannot drift
+   * back onto its neighbour.
+   */
+  for (const [family, members] of Object.entries(AGENT_BRAND_FAMILIES)) {
+    let near = Infinity
+    let who = ''
+    for (let i = 0; i < members.length; i++) {
+      for (let j = i + 1; j < members.length; j++) {
+        const d = dist(AGENT_SEEDS[members[i]], AGENT_SEEDS[members[j]])
+        if (d < near) [near, who] = [d, `${members[i]}/${members[j]}`]
+      }
+    }
+    ok(
+      `the ${family} family (${members.join(', ')}) is pulled apart: nearest ${who} ${near.toFixed(3)}`,
+      near >= AGENT_DISTINCT_DISTANCE,
+      `under ${AGENT_DISTINCT_DISTANCE}`
+    )
+  }
+
+  /*
+   * Any agent can be open beside one of the five most people have, so none of
+   * the other thirteen may become the same colour as one of them — ink or text,
+   * on any theme. (Among the thirteen themselves only the seeds are held: on a
+   * light theme every ink is solved to one lightness, and Cursor, Droid and
+   * Vibe, whose only brand colour is the meter's orange, read as one grey.)
+   */
+  for (const part of ['ink', 'text'] as const) {
+    let near = Infinity
+    let who = ''
+    for (const t of BUILT_IN_THEMES) {
+      const toks = new Map(agentColorTokens({}, t.appearance, t.colors).map((x) => [x.key, x[part]]))
+      for (const c of CODING_CLIS) {
+        if (COMMON_AGENTS.includes(c.id)) continue
+        for (const common of COMMON_AGENTS) {
+          const d = dist(toks.get(c.id)!, toks.get(common)!)
+          if (d < near) [near, who] = [d, `${t.id} ${c.id}/${common}`]
+        }
+      }
+    }
+    ok(`no other agent's ${part} becomes a common agent's on any theme (nearest ${who} ${near.toFixed(3)})`, near >= 0.04)
+  }
+
+  /*
    * Against what each theme actually paints: the meter's three tiers (solved per
    * theme by meterScale, exactly as applyAppearance writes them), --danger and
    * --warning. An agent's ink this close to one would read as context
-   * pressure, an error, or "waiting for you".
+   * pressure, an error, or "waiting for you". Held through `clearanceFloor`,
+   * the one place the Claude exception is written down.
    */
   for (const c of CODING_CLIS) {
     for (const part of ['ink', 'text'] as const) {
       let worst = Infinity
       let where = ''
+      let floorAt = AGENT_CLEAR_DISTANCE
       for (const t of BUILT_IN_THEMES) {
         const ink = agentColorTokens({}, t.appearance, t.colors).find((x) => x.key === c.id)![part]
-        const m = meterScale(t.colors.bg, t.colors.bgSunken, t.appearance)
-        for (const [name, colour] of [
-          ['meter-low', m.low],
-          ['meter-mid', m.mid],
-          ['meter-high', m.high],
-          ['danger', t.colors.danger],
-          ['warning', t.colors.warning]
-        ] as const) {
-          const d = dist(ink, colour)
-          if (d < worst) [worst, where] = [d, `${t.id} ${name}`]
+        for (const r of reservedColors(t)) {
+          const floor = clearanceFloor(c.id, r.name, t.appearance)
+          if (floor === null) continue
+          const d = dist(ink, r.colour)
+          // Worst relative to its own floor, so Claude's light-theme 0.05 and
+          // everyone's 0.08 are compared like for like.
+          if (d - floor < worst - floorAt) [worst, where, floorAt] = [d, `${t.id} ${r.name}`, floor]
         }
       }
       ok(
-        `${c.id}: its ${part} stays clear of the meter, danger and warning (nearest ${where} ${worst.toFixed(3)})`,
-        worst >= AGENT_CLEAR_DISTANCE,
-        `under ${AGENT_CLEAR_DISTANCE}`
+        `${c.id}: its ${part} stays clear of the meter, danger and warning (nearest ${where} ${worst.toFixed(3)}, floor ${floorAt})`,
+        worst >= floorAt,
+        `under ${floorAt}`
       )
     }
   }
+}
+
+console.log('\nagent colours: what the owner asked for, and the one exception it costs')
+{
+  /*
+   * "claude should default to claude[,] codex to codex colour like a orangy for
+   * claude and a purplish for codex". Held by hue, so a later retune that
+   * drifts Claude back to pink or Codex to blue fails here rather than in a
+   * screenshot.
+   */
+  const hue = (hex: string): number => toOklch(parseColor(hex)!).h
+  const chroma = (hex: string): number => toOklch(parseColor(hex)!).c
+  ok(
+    `Claude Code is orange: hue ${hue(AGENT_SEEDS.claude).toFixed(0)} in 50-70, chroma ${chroma(AGENT_SEEDS.claude).toFixed(3)} ≥ 0.12`,
+    hue(AGENT_SEEDS.claude) >= 50 && hue(AGENT_SEEDS.claude) <= 70 && chroma(AGENT_SEEDS.claude) >= 0.12
+  )
+  ok(
+    `and amber-leaning, not the red-orange of Anthropic's #d97757 (h${hue('#d97757').toFixed(0)}): at least 12° further from --danger`,
+    hue(AGENT_SEEDS.claude) - hue('#d97757') >= 12
+  )
+  ok(
+    `Codex is purple: hue ${hue(AGENT_SEEDS.codex).toFixed(0)} in 290-330, chroma ${chroma(AGENT_SEEDS.codex).toFixed(3)} ≥ 0.12`,
+    hue(AGENT_SEEDS.codex) >= 290 && hue(AGENT_SEEDS.codex) <= 330 && chroma(AGENT_SEEDS.codex) >= 0.12
+  )
+
+  // The exception is Claude's, and only Claude's.
+  const excepted = CODING_CLIS.flatMap((c) =>
+    (['dark', 'light'] as const).flatMap((a) =>
+      (['meter-low', 'meter-mid', 'meter-high', 'danger', 'warning'] as const)
+        .filter((r) => clearanceFloor(c.id, r, a) !== AGENT_CLEAR_DISTANCE)
+        .map((r) => `${c.id} ${a} ${r} ${clearanceFloor(c.id, r, a)}`)
+    )
+  )
+  check(
+    'every relaxed floor belongs to Claude Code: none against the meter orange, CLAUDE_CLEAR_DISTANCE from danger and warning',
+    excepted,
+    [
+      'claude dark meter-mid null',
+      `claude dark danger ${CLAUDE_CLEAR_DISTANCE.dark}`,
+      `claude dark warning ${CLAUDE_CLEAR_DISTANCE.dark}`,
+      'claude light meter-mid null',
+      `claude light danger ${CLAUDE_CLEAR_DISTANCE.light}`,
+      `claude light warning ${CLAUDE_CLEAR_DISTANCE.light}`
+    ]
+  )
+  ok(
+    'and each relaxed floor is still well past "the same colour" (0.04)',
+    CLAUDE_CLEAR_DISTANCE.dark > 0.04 && CLAUDE_CLEAR_DISTANCE.light > 0.04
+  )
+  check('an account key is not Claude, so it is held to the full floor', clearanceFloor('claude-work', 'meter-mid', 'dark'), AGENT_CLEAR_DISTANCE)
+
+  /*
+   * What the exception does NOT relax: the meter's red and green, at the full
+   * floor on every theme — so Claude's orange never reads as the red tier —
+   * and --danger at its own floor on both appearances, printed separately so
+   * "never an error" is its own line.
+   */
+  const worstFor = (appearance: 'dark' | 'light', names: readonly string[]): [number, string] => {
+    let worst: [number, string] = [Infinity, '']
+    for (const t of BUILT_IN_THEMES.filter((x) => x.appearance === appearance)) {
+      const tok = agentColorTokens({}, t.appearance, t.colors).find((x) => x.key === 'claude')!
+      for (const r of reservedColors(t).filter((x) => names.includes(x.name))) {
+        for (const part of [tok.ink, tok.text]) {
+          const d = dist(part, r.colour)
+          if (d < worst[0]) worst = [d, `${t.id} ${r.name}`]
+        }
+      }
+    }
+    return worst
+  }
+  for (const appearance of ['dark', 'light'] as const) {
+    const [d, w] = worstFor(appearance, ['meter-high', 'meter-low'])
+    ok(`${appearance} themes: Claude clears the meter's red and green at the full ${AGENT_CLEAR_DISTANCE} (nearest ${w} ${d.toFixed(3)})`, d >= AGENT_CLEAR_DISTANCE)
+    const [dd, dw] = worstFor(appearance, ['danger'])
+    ok(
+      `${appearance} themes: never an error — Claude's orange keeps ${CLAUDE_CLEAR_DISTANCE[appearance]} from --danger (nearest ${dw} ${dd.toFixed(3)})`,
+      dd >= CLAUDE_CLEAR_DISTANCE[appearance]
+    )
+  }
+  /*
+   * And the counterfactual that justifies the exception's size: Anthropic's
+   * own #d97757, painted as Claude's tag on a light theme, IS the error colour.
+   */
+  {
+    let worst = Infinity
+    for (const t of BUILT_IN_THEMES.filter((x) => x.appearance === 'light')) {
+      const tok = agentColorTokens({ claude: '#d97757' }, t.appearance, t.colors).find((x) => x.key === 'claude')!
+      worst = Math.min(worst, dist(tok.text, t.colors.danger), dist(tok.ink, t.colors.danger))
+    }
+    ok(`counterfactual: the brand's own #d97757 would sit ${worst.toFixed(3)} from a light theme's --danger — under the floor`, worst < CLAUDE_CLEAR_DISTANCE.light)
+  }
+  // The exception is real, not a formality: Claude's ink does sit on the
+  // meter's orange, which is exactly what the owner traded the old rule for.
+  {
+    let near = Infinity
+    for (const t of BUILT_IN_THEMES) {
+      const tok = agentColorTokens({}, t.appearance, t.colors).find((x) => x.key === 'claude')!
+      near = Math.min(near, dist(tok.ink, reservedColors(t).find((r) => r.name === 'meter-mid')!.colour))
+    }
+    ok(`and the exception is used: Claude's ink comes within ${near.toFixed(3)} of the meter's orange (under ${AGENT_CLEAR_DISTANCE})`, near < AGENT_CLEAR_DISTANCE)
+  }
+  // The same floors, through the function the colour picker warns with.
+  check(
+    'reservedNear agrees: the seeds clear every floor on every theme',
+    CODING_CLIS.flatMap((c) =>
+      BUILT_IN_THEMES.flatMap((t) => reservedNear(AGENT_SEEDS[c.id], t, (r) => clearanceFloor(c.id, r, t.appearance)).map((r) => `${c.id} ${t.id} ${r.name}`))
+    ),
+    []
+  )
+  check(
+    'and it names what a pick lands on: Codex painted the meter orange reads as the meter on every theme',
+    BUILT_IN_THEMES.filter((t) => reservedNear('#fe860f', t).some((r) => r.name === 'meter-mid')).length,
+    BUILT_IN_THEMES.length
+  )
+}
+
+console.log('\nagent colours against each theme\'s own accent: reported, and only the known coincidences')
+{
+  /*
+   * Not a floor (agentColors.ts, "NOT kept clear of"): the owner's vendor
+   * colours and the themes' accents were each chosen on their own, and where
+   * they meet — Claude on Ember — the agent's tag and rule are drawn in the
+   * accent chrome's colour. Decided and left. So this prints every common
+   * agent's distance from every theme's accent ink, and holds the set under
+   * "the same colour" to the one written down here: a seed or theme change
+   * that makes a NEW coincidence fails until someone looks at it and adds it.
+   */
+  const known = [
+    'ember claude',
+    'nocturne gemini',
+    'lagoon opencode',
+    'ink gemini',
+    'daylight claude',
+    'paper claude',
+    'mist opencode'
+  ]
+  const found: string[] = []
+  for (const t of BUILT_IN_THEMES) {
+    const accent = deriveAccent(t.colors.accent, t.appearance, t.colors.bg).accentInk
+    const toks = agentColorTokens({}, t.appearance, t.colors)
+    const row = COMMON_AGENTS.map((id) => {
+      const tok = toks.find((x) => x.key === id)!
+      const d = Math.min(dist(tok.ink, accent), dist(tok.text, accent))
+      if (d < SAME_COLOUR_DISTANCE) found.push(`${t.id} ${id}`)
+      return `${id} ${d.toFixed(3)}`
+    })
+    console.log(`  ${t.id.padEnd(9)} accent ${accent}  ${row.join('  ')}`)
+  }
+  check(`the common five meet a theme's accent (under ${SAME_COLOUR_DISTANCE}) only where it is written down`, found, known)
+  // The picker's note reads the same thing through accentNear.
+  const ember = BUILT_IN_THEMES.find((t) => t.id === 'ember')!
+  const emberAccent = deriveAccent(ember.colors.accent, ember.appearance, ember.colors.bg).accentInk
+  ok(
+    'accentNear names Claude on Ember and not Codex there',
+    accentNear(agentColorTokens({}, 'dark', ember.colors).find((x) => x.key === 'claude')!, emberAccent) !== null &&
+      accentNear(agentColorTokens({}, 'dark', ember.colors).find((x) => x.key === 'codex')!, emberAccent) === null
+  )
 }
 
 console.log('\nagent colours are painted only while more than one agent is in view')
@@ -958,7 +1215,7 @@ console.log('\na file from before the Default model: its default-mode models are
     [undefined, null, '2', 0, -1, 1.5, NaN, 1, 2, 3].map(agentsFormatOf),
     [1, 1, 1, 1, 1, 1, 1, 1, 2, 3]
   )
-  check('this build writes format 2', AGENTS_FORMAT, 2)
+  check('this build writes format 3', AGENTS_FORMAT, 3)
 
   check('upgradeEndpoint from 1: a default-mode model is cleared', upgradeEndpoint(leftover, 1), DEFAULT_ENDPOINT)
   check('from 2 it is kept — it was set through the Default model field', upgradeEndpoint(leftover, 2), leftover)
@@ -972,7 +1229,7 @@ console.log('\na file from before the Default model: its default-mode models are
 
   const up = hydrateAgents(before)
   check('hydrate: the leftover is gone, and with it the whole stored entry', up.endpoints, {})
-  check('and the block now says format 2, so the upgrade runs once', up.format, AGENTS_FORMAT)
+  check('and the block now says this build’s format, so the upgrade runs once', up.format, AGENTS_FORMAT)
   check('so Codex launches on its own sign-in with no model flag', planOk(plan('codex', up.endpoints.codex)), { args: [], env: {}, model: '' })
   check(
     'counterfactual: the same entry in a format-2 file IS the Default model — which is what the upgrade prevents for old files',
@@ -992,11 +1249,11 @@ console.log('\na file from before the Default model: its default-mode models are
   )
   check(
     'a newer build’s format is not upgraded again, and is written back as this build’s',
-    [hydrateAgents({ ...before, format: 3 }).endpoints, hydrateAgents({ ...before, format: 3 }).format],
+    [hydrateAgents({ ...before, format: 4 }).endpoints, hydrateAgents({ ...before, format: 4 }).format],
     [{ codex: leftover }, AGENTS_FORMAT]
   )
   check('a junk format is 1, and upgraded', hydrateAgents({ ...before, format: '2' }).endpoints, {})
-  check('no agents block at all is this build’s format', [hydrateAgents(undefined).format, hydrateAgents('junk').format], [2, 2])
+  check('no agents block at all is this build’s format', [hydrateAgents(undefined).format, hydrateAgents('junk').format], [3, 3])
   check('the default settings carry it', DEFAULT_SETTINGS.agents.format, AGENTS_FORMAT)
 }
 

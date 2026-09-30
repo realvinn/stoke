@@ -25,6 +25,7 @@ paths:
   - "src/renderer/src/components/PhonePopover.tsx"
   - "src/renderer/src/components/FolderSwitcher.tsx"
   - "src/renderer/src/components/ProjectMetaPicker.tsx"
+  - "src/renderer/src/components/ColorPicker.tsx"
   - "scripts/verify-layers.mts"
 ---
 
@@ -367,3 +368,34 @@ FitAddon no row, where a border would.
 The rule: **a new shadow on the terminal card is a `--pane-*` layer added to that one
 declaration, never a `box-shadow` of its own.** The same holds for any element two features
 decorate — grep the selector for `box-shadow` before adding one.
+
+## 137. Under reduced motion every property transitions for 1ms, `visibility` included, so an element shown and focused in one step is still hidden
+
+**The colour picker opened with focus on its swatch instead of its map, but only under reduced
+motion — and then Escape closed the whole Settings sheet, whose unmount KEPT the pick Escape meant
+to throw away.** Found driving the built app on 2026-10-01 with `Emulation.setEmulatedMedia`
+(and again with `--force-prefers-reduced-motion`): `document.activeElement` was the swatch at
+300 ms, where without reduced motion it was the map.
+
+The cause is gotcha 72's global block, one property further than 72 looked. It sets
+`transition-duration: 1ms !important` on `*` and never touches `transition-property`, whose
+initial value is `all` — so under reduced motion EVERY element transitions EVERY property for
+1ms, including ones nobody meant to animate. `visibility` interpolates discretely and is
+`hidden` at the start of a hidden → visible transition, so an element un-hidden and focused in
+the same task is still hidden when `focus()` asks, and `focus()` refuses it without a word.
+Measured on a bare `<div tabindex=0>`: set `visibility: hidden`, force layout, clear it, call
+`focus()` — under reduced motion `activeElement` is not the div and its computed visibility
+reads `hidden`, `transitionProperty` `all 0.001s`; without reduced motion it is focused.
+`visibility` is inherited, so a focusable DESCENDANT's own computed value changes too and it runs
+its own transition — reasoned, not measured: `transition: none` on the hidden element alone is
+probably not enough, and the fix below does not rely on it.
+
+The picker had hidden itself only for the frame before its first placement — which is a layout
+effect, so that frame never paints anyway — and now does not hide at all (ColorPicker.tsx). It
+also takes Escape on the window in the capture phase while it is open, so Escape reverts the
+pick wherever focus is, rather than falling through to App's close-the-sheet listener.
+
+The rule: **never show-then-focus through `visibility`** — anything that un-hides with
+`visibility` and focuses in the same task fails for exactly the users who asked for less
+motion. Position it off-screen, give it `opacity: 0`, or do not hide it; then focus. And prove
+focus under `--force-prefers-reduced-motion`, not only the look (72).

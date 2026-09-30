@@ -692,7 +692,7 @@ console.log('\nan import from before the Default model brings no hidden leftover
       gemini: { mode: 'openrouter', model: 'google/gemini-3-pro', baseUrl: '', apiKey: '' }
     }
   )
-  check('and the merged block is format 2', old.next.agents.format, 2)
+  check('and the merged block is this build’s format (3)', old.next.agents.format, 3)
   const current = planImport(here, payload({ chosen: ['codex'], endpoints, format: 2 }), { includeSecrets: false }, hydrateSettings)
   check(
     'a format-2 file’s default-mode model was chosen on purpose, and is imported',

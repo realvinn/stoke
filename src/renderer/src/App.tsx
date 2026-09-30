@@ -8,7 +8,7 @@ import {
 } from '@shared/chatIndex'
 import type { CodingCliDetection, CodingCliId } from '@shared/codingClis'
 import { installedAgents, resolveDefaultAgent, visibleAgents } from '@shared/agents'
-import { paintAgentColors, type AgentColors } from '@shared/agentColors'
+import { agentSeed, paintAgentColors, type AgentColors } from '@shared/agentColors'
 import { accountSeed, accountsOf, DEFAULT_ACCOUNT_ID } from '@shared/accounts'
 import { nextReveal, REVEAL_ENTRY_GRACE_MS } from '@shared/fullScreenReveal'
 import type { RevealInfo, RevealInput, RevealState } from '@shared/fullScreenReveal'
@@ -1626,7 +1626,51 @@ export function App(): React.JSX.Element {
     paintAgentColors(primaryCli, visibleAgentIds, openAgentIds) ||
     accountTabOpen ||
     Object.keys(storedAccounts ?? {}).length > 0
-  const agentColorsKey = JSON.stringify(settings?.agents.colors ?? {})
+  /*
+   * An agent colour picker's live pick, unsaved (ColorPicker's `onPreview`).
+   * Merged over the stored colours here so `applyAppearance` stays the one
+   * writer of every colour on :root (gotcha 57) — the tab tags, pane rules and
+   * Settings' own agent dots repaint through it, and nothing touches
+   * settings.json until the picker commits. An entry is dropped once the
+   * stored colour catches up with it (the commit's round trip), so a kept pick
+   * never flashes back to the old colour in between; a revert drops it at once.
+   * It is also dropped when the stored colour moves to anything else: a write
+   * from outside the picker (the colour's text field, its Reset button) is
+   * newer than any preview, and an entry left standing over it hid that change
+   * — the tags kept the preview while the swatch showed the new colour — until
+   * Settings closed. Compared by value, so a settings push that does not touch
+   * that agent's colour leaves a live preview alone.
+   */
+  const [agentColorPreview, setAgentColorPreview] = useState<AgentColors>({})
+  const previewAgentColor = useCallback((id: CodingCliId, hex: string | null): void => {
+    setAgentColorPreview((prev) => {
+      if (hex === null) {
+        if (!(id in prev)) return prev
+        const { [id]: _drop, ...rest } = prev
+        return rest
+      }
+      return prev[id] === hex ? prev : { ...prev, [id]: hex }
+    })
+  }, [])
+  const storedAgentColors = settings?.agents.colors
+  const storedBefore = useRef(storedAgentColors)
+  useEffect(() => {
+    const before = storedBefore.current ?? {}
+    const now = storedAgentColors ?? {}
+    storedBefore.current = storedAgentColors
+    setAgentColorPreview((prev) => {
+      const keep = Object.entries(prev).filter(([id, hex]) => {
+        const stored = agentSeed(id as CodingCliId, now).toLowerCase()
+        return stored !== hex.toLowerCase() && stored === agentSeed(id as CodingCliId, before).toLowerCase()
+      })
+      return keep.length === Object.keys(prev).length ? prev : (Object.fromEntries(keep) as AgentColors)
+    })
+  }, [storedAgentColors])
+  // A preview never outlives the sheet it was made in.
+  useEffect(() => {
+    if (!settingsOpen) setAgentColorPreview((prev) => (Object.keys(prev).length ? {} : prev))
+  }, [settingsOpen])
+  const agentColorsKey = JSON.stringify({ ...(settings?.agents.colors ?? {}), ...agentColorPreview })
   const accountSeedsKey = JSON.stringify(
     Object.values(storedAccounts ?? {}).map((a) => ({ key: a.id, seed: accountSeed(a) }))
   )
@@ -5783,7 +5827,8 @@ export function App(): React.JSX.Element {
               setPreviewTheme(null)
               setSettingsOpen(false)
               void startAccountLogin(accountId)
-            }
+            },
+            onPreviewColor: previewAgentColor
           }}
           onRestartToUpdate={requestSelfRestart}
           chats={{ status: chatStatus, detection: chatDetection }}

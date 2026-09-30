@@ -797,7 +797,8 @@ npm run verify:campfire       # the installer's campfire: the locked alphabet th
 npm run verify:color          # colour maths: contrast, APCA, oklch; every theme's tokens, the
                               # accent matrix, every agent's ink on every theme and its tag
                               # text at 4.5:1 on the tab strip's three grounds, the meter
-                              # colours and the bypass mark at 3:1
+                              # colours and the bypass mark at 3:1; the colour picker's HSV
+                              # round trips, ring/map geometry, keys, names and placement
 npm run verify:theme-gen      # the theme generator: that a five-field seed reproduces every
                               # built-in byte-for-byte, that no slider position can breach a
                               # contrast floor, and that a saved seed survives hydration
@@ -1330,6 +1331,16 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     strength instead of dimming it, and changes its label ("Checking…"). The
                     ring is drawn in `currentColor` inside a `.btn`, and stands still under
                     reduced motion (gotcha 72) — the label is what carries the state
+  src/components/ColorPicker.tsx  the colour wheel every colour field opens (ColorField's
+                    swatch, a profile's Custom… chip): a hue ring round a saturation/brightness
+                    map, the hex, presets, Reset to default, an EyeDropper where Chromium has
+                    one, and the ink Stoke will paint on this theme. Previews live once a
+                    frame (`onPreview`, unsaved — an agent's goes through App's single writer)
+                    and commits once, on Enter/Done/outside/unmount; Escape reverts. Portalled
+                    into its dialog, fixed, flipped and clamped (`placePopover`), a floating
+                    layer (gotcha 14). Never hidden while unplaced (gotcha 137)
+  src/lib/rootTheme.ts  the theme in force, read back off `:root` (draft previews included),
+                    for the picker's "on this theme" preview
   src/components/FolderSwitcher.tsx  the launcher's title as a combobox: recent projects
                     (profile-scoped, same names told apart), the default folder, scratch,
                     remote machines, Open folder…. Replaced the separate "Start a session"
@@ -1444,13 +1455,20 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     in the vault). `CLI_CAPS[id].mcp` says which agents have no route. Claude's
                     OAuth sign-ins are never copied (gotcha 36); names are a whitelist
                     (`isSafeServerName`), as they become TOML keys and reach cmd.exe (gotcha 13)
-  agentColors.ts    each coding agent's colour: `AGENT_SEEDS`, the user's override, and
-                    `agentColorTokens` — deriveAccent per seed, which applyAppearance writes
-                    as `--agent-<key>-ink`/`-text`/`-fill` and the suites assert; `-text` is
-                    the ink re-solved where it misses 4.5:1 on the tab strip. Clear of the meter,
-                    --danger and --warning by measurement; painted only while more than one
-                    agent is in view (`paintAgentColors`). Keyed by string so an account can
-                    add `claude-work` — accounts pass their seeds as `extra`
+  agentColors.ts    each coding agent's colour: `AGENT_SEEDS` (each vendor's own colour, the
+                    source cited per row; format 3 drops a stored old seed once), the user's
+                    override, and `agentColorTokens` — deriveAccent per seed, which
+                    applyAppearance writes as `--agent-<key>-ink`/`-text`/`-fill` and the
+                    suites assert; `-text` is the ink re-solved where it misses 4.5:1 on the tab
+                    strip. Clear of the meter, --danger and --warning by measurement
+                    (`clearanceFloor`, `reservedNear`), Claude's orange the one documented
+                    exception; painted only while more than one agent is in view
+                    (`paintAgentColors`). Keyed by string so an account can add `claude-work` —
+                    accounts pass their seeds as `extra`
+  colorPicker.ts    the colour picker's maths: HSV <-> sRGB, the hue ring's and the S/V map's
+                    geometry, arrow-key steps, colour names for aria-valuetext, the typed-hex
+                    reader, the "painted darker here" note, and the popover's flip-and-clamp.
+                    Pure so verify:color can assert it
   accounts.ts       agent accounts: a login account is a config HOME per agent
                     (`ACCOUNT_HOME_ENV`, each read from the vendor's artefact; Cursor and Vibe
                     get none, their sign-ins do not follow a home), a key account is an API key

@@ -1,5 +1,6 @@
 /**
- * One colour, editable in whichever notation the reader thinks in.
+ * One colour, editable in whichever notation the reader thinks in — or picked
+ * on the wheel its swatch opens (ColorPicker).
  *
  * The four notations are not four formats to store -- everything is stored as
  * `#rrggbb`. They are four ways to TYPE the same value, and the reason to offer
@@ -16,6 +17,7 @@
  */
 import { useEffect, useRef, useState } from 'react'
 import { format, parseNotation, type Notation } from '@shared/notation'
+import { ColorPicker, type ColorPreset, type InkPreview } from './ColorPicker'
 
 interface Props {
   value: string
@@ -29,9 +31,34 @@ interface Props {
    * so the theme editor, whose draft is its own, keeps its behaviour.
    */
   commitOnUnmount?: boolean
+  /** The picker's preset row. */
+  presets?: readonly ColorPreset[]
+  /** The picker's "Reset to default". */
+  defaultValue?: string
+  /** What the picker previews the colour as ("on this theme"). */
+  ink?: InkPreview | null
+  /**
+   * Unsaved preview while the picker moves, null to withdraw it. Where the
+   * owner's value is itself a draft — the theme editor's seed — pass `live`
+   * instead, and every frame of a drag goes to `onChange`, which repaints the
+   * whole window and writes nothing.
+   */
+  onPreview?: (hex: string | null) => void
+  live?: boolean
 }
 
-export function ColorField({ value, notation, label, onChange, commitOnUnmount }: Props): React.JSX.Element {
+export function ColorField({
+  value,
+  notation,
+  label,
+  onChange,
+  commitOnUnmount,
+  presets,
+  defaultValue,
+  ink,
+  onPreview,
+  live
+}: Props): React.JSX.Element {
   /*
    * A draft, not a controlled field on `value`.
    *
@@ -43,6 +70,10 @@ export function ColorField({ value, notation, label, onChange, commitOnUnmount }
    */
   const [draft, setDraft] = useState(() => format(value, notation))
   const [bad, setBad] = useState(false)
+  const [open, setOpen] = useState(false)
+  const swatchRef = useRef<HTMLButtonElement>(null)
+  /** What the value was when the picker opened, for a `live` revert. */
+  const openedAt = useRef(value)
 
   const latest = useRef({ draft, value, onChange, commitOnUnmount })
   latest.current = { draft, value, onChange, commitOnUnmount }
@@ -73,10 +104,28 @@ export function ColorField({ value, notation, label, onChange, commitOnUnmount }
     onChange(hex)
   }
 
+  const preview = live
+    ? (hex: string | null): void => onChange(hex ?? openedAt.current)
+    : onPreview
+
   return (
-    <label className="color-field">
-      <span className="color-field-swatch" style={{ background: value }} aria-hidden="true" />
-      <span className="sr-only">{label}</span>
+    <div className="color-field">
+      <button
+        ref={swatchRef}
+        type="button"
+        className="color-field-swatch"
+        style={{ background: value }}
+        aria-label={`${label}: open the colour picker`}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        title="Pick a colour"
+        onClick={() => {
+          // A second press closes it, keeping the pick: the picker's unmount
+          // commits (it treats the swatch as its own, not as "outside").
+          if (!open) openedAt.current = value
+          setOpen(!open)
+        }}
+      />
       <input
         className="input mono"
         value={draft}
@@ -95,6 +144,19 @@ export function ColorField({ value, notation, label, onChange, commitOnUnmount }
           if (e.key === 'Escape') setDraft(format(value, notation))
         }}
       />
-    </label>
+      {open && (
+        <ColorPicker
+          anchor={swatchRef.current}
+          value={value}
+          label={label}
+          presets={presets}
+          defaultValue={defaultValue}
+          ink={ink}
+          onPreview={preview}
+          onCommit={onChange}
+          onClose={() => setOpen(false)}
+        />
+      )}
+    </div>
   )
 }

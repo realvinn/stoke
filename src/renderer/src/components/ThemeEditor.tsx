@@ -38,6 +38,7 @@ import {
   themeSlotFor
 } from '@shared/themes'
 import { ColorField } from './ColorField'
+import type { ColorPreset } from './ColorPicker'
 import { IconCheck, IconCopy } from './Icons'
 import { NOTATIONS, type Notation } from '@shared/notation'
 
@@ -84,6 +85,38 @@ const ANSI = [
   'brightMagenta',
   'brightCyan'
 ] as const
+
+/**
+ * The theme's own colours, named: the colour picker's presets in the editor,
+ * so a token can be set to one the theme already uses in one click. The
+ * semantic colours, the text and page ramp's anchors, then the terminal's
+ * twelve chromatic slots; a colour two names share is offered once.
+ */
+function themePalette(t: Theme): ColorPreset[] {
+  const c = t.colors
+  const named: [string, string][] = [
+    ['Accent', c.accent],
+    ['Success', c.success],
+    ['Warning', c.warning],
+    ['Danger', c.danger],
+    ['Info', c.info],
+    ['Text', c.text],
+    ['Muted text', c.textMuted],
+    ['Border', c.borderStrong],
+    ['Surface', c.surface],
+    ['Page', c.bg],
+    ...ANSI.map((slot): [string, string] => [`Terminal ${slot.replace(/([A-Z])/g, ' $1').toLowerCase()}`, t.terminal[slot]])
+  ]
+  const seen = new Set<string>()
+  return named
+    .filter(([, hex]) => {
+      const key = hex.toLowerCase()
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+    .map(([name, hex]) => ({ name, hex }))
+}
 
 /** One theme as a small window. */
 function ThemeCard({
@@ -180,6 +213,11 @@ export function ThemeEditor({
   const [confirming, setConfirming] = useState<string | null>(null)
 
   const draft = useMemo(() => (seed ? buildTheme(seed) : null), [seed])
+  /** The same seed with no overrides: what "Reset to default" means for a token. */
+  const generated = useMemo(() => (seed ? buildTheme({ ...seed, overrides: {} }) : null), [seed])
+  const palette = useMemo(() => (draft ? themePalette(draft) : []), [draft])
+  /** The accent this edit started from, the accent picker's default. */
+  const [startAccent, setStartAccent] = useState<string | null>(null)
   const findings = useMemo(
     () => (draft ? contrastReport(draft.colors, draft.appearance) : []),
     [draft]
@@ -206,6 +244,7 @@ export function ThemeEditor({
   const start = (from: Theme, copy: boolean): void => {
     const base = seedFrom(from)
     setGuessed(!from.seed)
+    setStartAccent(base.accent)
     setSeed(
       copy || from.builtIn
         ? { ...base, id: freshId(`${base.name} copy`, taken), name: `${base.name} copy` }
@@ -410,7 +449,9 @@ export function ThemeEditor({
   }
   const override = (token: keyof ThemeColors, hex: string | null): void => {
     const next = { ...(seed.overrides ?? {}) }
-    if (hex) next[token] = hex
+    // A pick equal to the generated value is no override: the picker's "Reset
+    // to default" lands here, and must clear "set by hand", not pin it.
+    if (hex && hex.toLowerCase() !== generated?.colors[token]?.toLowerCase()) next[token] = hex
     else delete next[token]
     patch({ overrides: next })
   }
@@ -522,6 +563,10 @@ export function ThemeEditor({
           notation={notation}
           label="Accent colour"
           onChange={(hex) => patch({ accent: hex })}
+          presets={palette}
+          defaultValue={startAccent ?? undefined}
+          ink={{ kind: 'accent' }}
+          live
         />
       </div>
 
@@ -576,6 +621,9 @@ export function ThemeEditor({
                     notation={notation}
                     label={`${token} colour`}
                     onChange={(hex) => override(token, hex)}
+                    presets={palette}
+                    defaultValue={generated?.colors[token]}
+                    live
                   />
                   {overridden && (
                     <button className="btn" onClick={() => override(token, null)}>

@@ -748,7 +748,7 @@ console.log('\nagents: a default model, and Claude Code’s launch defaults, thr
       opencode: { mode: 'custom', model: 'qwen3-coder', baseUrl: 'http://127.0.0.1:11434/v1', apiKey: '' }
     }
   )
-  check('and it is written back as format 2', upgraded.agents.format, 2)
+  check('and it is written back as this build’s format (3)', upgraded.agents.format, 3)
   check('a second pass changes nothing (gotcha 116)', roundTrip(upgraded).agents, upgraded.agents)
   const chosenLater = roundTrip({
     ...upgraded,
@@ -759,7 +759,7 @@ console.log('\nagents: a default model, and Claude Code’s launch defaults, thr
     roundTrip(chosenLater).agents.endpoints.codex,
     { mode: 'default', model: 'gpt-6.1-sol', baseUrl: '', apiKey: '' }
   )
-  check('a file with no agents block at all is format 2', roundTrip({ themeId: DEFAULT_SETTINGS.themeId }).agents.format, 2)
+  check('a file with no agents block at all is this build’s format (3)', roundTrip({ themeId: DEFAULT_SETTINGS.themeId }).agents.format, 3)
 
   const defaults = { permissionMode: 'plan', model: 'opus', effort: 'high', ultracode: true }
   check(

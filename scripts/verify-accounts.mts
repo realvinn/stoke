@@ -69,7 +69,9 @@ import {
   type AccountIndex,
   type AgentAccount
 } from '../src/shared/accounts.ts'
-import { AGENT_SEEDS } from '../src/shared/agentColors.ts'
+import { AGENT_CLEAR_DISTANCE, AGENT_DISTINCT_DISTANCE, AGENT_SEEDS, reservedNear } from '../src/shared/agentColors.ts'
+import { parseColor, perceptualDistance } from '../src/shared/color.ts'
+import { BUILT_IN_THEMES } from '../src/shared/themes.ts'
 import { CODING_CLIS, type CodingCliId } from '../src/shared/codingClis.ts'
 import { keepUsage } from '../src/shared/statusLine.ts'
 import type { StatusLineSnapshot } from '../src/shared/types.ts'
@@ -195,14 +197,52 @@ console.log('\nnames and ids')
   check('homes: absolute, on either platform, no control characters', ['/a/b', 'C:\\a\\b', '\\\\srv\\share\\x', 'rel/x', '/a\nb', '/a\tb', '', 7].map(isAccountHome), [true, true, true, false, false, false, false, false])
 }
 
-console.log('\ncolour: every account swatch is an agent seed, so it clears every floor a seed does')
+console.log('\ncolour: every account swatch clears every floor a seed does')
 {
-  const seeds = new Set(Object.values(AGENT_SEEDS))
-  ok('each swatch is one of AGENT_SEEDS (held to the meter/danger/warning floors by verify:agents)', ACCOUNT_SWATCHES.every((s) => seeds.has(s.seed)))
+  /*
+   * The swatches were the agent seeds, and so cleared their floors by being
+   * them. The seeds became the vendors' colours (agents format 3) and the
+   * swatches stayed, as literals \u2014 so they are held to the same floors here,
+   * on every theme, through the function the colour picker warns with.
+   */
+  for (const s of ACCOUNT_SWATCHES) {
+    const near = BUILT_IN_THEMES.flatMap((t) => reservedNear(s.seed, t).map((r) => `${t.id} ${r.name} ${r.distance.toFixed(3)}`))
+    ok(`${s.name} ${s.seed} stays ${AGENT_CLEAR_DISTANCE} clear of the meter, --danger and --warning on every theme`, near.length === 0, near.join(', '))
+  }
   check('swatch ids are unique', new Set(ACCOUNT_SWATCHES.map((s) => s.id)).size, ACCOUNT_SWATCHES.length)
-  ok('a new Claude account never wears Claude\u2019s own pink', ACCOUNT_SWATCHES.find((s) => s.id === nextSwatch('claude', [], AGENT_SEEDS.claude))?.seed !== AGENT_SEEDS.claude)
-  const first = nextSwatch('claude', [], AGENT_SEEDS.claude)
-  ok('and a second one wears a third colour', nextSwatch('claude', [first], AGENT_SEEDS.claude) !== first)
+  check(
+    'the names still say what they paint: the swatches are the colours they were stored as',
+    ACCOUNT_SWATCHES.map((s) => `${s.id} ${s.seed}`),
+    ['sky #48bff5', 'violet #b781ec', 'teal #47d6cf', 'periwinkle #829eff', 'jade #75c2b3', 'azure #2d88e2', 'orchid #c765ce', 'pink #eb77b6']
+  )
+  // Pink WAS Claude's seed; with Claude orange, the rule is exercised on an
+  // agent whose seed is still a swatch \u2014 a Claude user who painted it pink.
+  ok('a new account never wears its agent\u2019s own colour', ACCOUNT_SWATCHES.find((s) => s.id === nextSwatch('claude', [], '#eb77b6'))?.seed !== '#eb77b6')
+  const first = nextSwatch('claude', [], '#eb77b6')
+  ok('and a second one wears a third colour', nextSwatch('claude', [first], '#eb77b6') !== first)
+  /*
+   * "Its own colour" by eye, for every agent's real seed. The exact-hex rule
+   * stopped firing once the seeds became the vendors' colours: every first
+   * account took Sky, 0.020 from Kimi's own #1fc0ff. Now the first two picks
+   * clear the common agents' distinctness floor from the agent AND from each
+   * other, so an agent and two of its accounts are three colours.
+   */
+  const seedDist = (a: string, b: string): number => perceptualDistance(parseColor(a)!, parseColor(b)!)
+  const swatchSeed = (id: string): string => ACCOUNT_SWATCHES.find((s) => s.id === id)!.seed
+  const tooClose: string[] = []
+  for (const c of CODING_CLIS) {
+    const own = AGENT_SEEDS[c.id]
+    const a = nextSwatch(c.id, [], own)
+    const b = nextSwatch(c.id, [a], own)
+    for (const [which, id] of [['first', a], ['second', b]] as const) {
+      const d = seedDist(swatchSeed(id), own)
+      if (d < AGENT_DISTINCT_DISTANCE) tooClose.push(`${c.id} ${which} ${id} ${d.toFixed(3)}`)
+    }
+    if (a === b) tooClose.push(`${c.id} first and second both ${a}`)
+  }
+  check(`every agent's first two accounts clear ${AGENT_DISTINCT_DISTANCE} from its own seed, and each other`, tooClose, [])
+  check('Kimi\u2019s first account is not Sky, its near-twin', nextSwatch('kimi', [], AGENT_SEEDS.kimi) !== 'sky', true)
+  check('an agent far from every swatch still takes the first', nextSwatch('claude', [], AGENT_SEEDS.claude), 'sky')
 }
 
 /* ---------------------------------------------------------------- launch */

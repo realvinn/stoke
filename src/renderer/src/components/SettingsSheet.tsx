@@ -251,6 +251,8 @@ interface Props {
     onInstall: (ids: CodingCliId[]) => void
     /** Open an account's sign-in tab (shared/accounts.ts). App's, because it opens a tab. */
     onSignIn: (accountId: string) => void
+    /** An agent's colour while its picker moves, unsaved; App paints it (null withdraws). */
+    onPreviewColor: (id: CodingCliId, hex: string | null) => void
   }
   /**
    * Which section to open on. Three other panels say "open Settings" and used
@@ -971,6 +973,7 @@ export function SettingsSheet({
                 onOpenProviders={() => setSection('providers')}
                 onOpenClaudeConfig={() => setSection('claude')}
                 onSignIn={agents.onSignIn}
+                onPreviewColor={agents.onPreviewColor}
               />
             )}
 

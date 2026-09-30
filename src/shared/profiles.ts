@@ -30,6 +30,9 @@ import type { ProfileConfig } from './types'
  * tsconfigs allow the extension after Steps 5a and 5b.
  */
 import { foldGroup } from './paths.ts'
+import { deriveAccent } from './accent.ts'
+import { contrastRatio, fitToSrgb, parseColor, toHex, toOklch } from './color.ts'
+import { EMBER } from './themes.ts'
 
 /** The derived seed's shape. `ResolvedProfile` is assignable to this. */
 export interface Profile {
@@ -203,6 +206,60 @@ const FALLBACK = PROFILE_SWATCHES.slice(4).map((s) => ({
   accentSoft: s.accentSoft,
   accentContrast: s.accentContrast
 }))
+
+/** The four colour fields a profile stores. */
+export type ProfileAccent = Pick<Profile, 'accent' | 'accentHover' | 'accentSoft' | 'accentContrast'>
+
+/** WCAG floor for a chip's label on its own fill, the one verify:profiles holds every swatch to. */
+export const PROFILE_LABEL_WCAG = 4.5
+
+/**
+ * A profile's four stored colours for any picked colour: a shipped swatch's
+ * own fields when the pick IS one (so choosing Moss stores exactly what it
+ * always did), otherwise derived — the list above used to be "the only way the
+ * UI assigns colour" precisely because a hand-typed fill and label go
+ * unreadable without erroring, and the colour picker ends that, so the label
+ * is solved here instead.
+ *
+ * `applyAppearance` repaints the chrome from `accent` alone (deriveAccent),
+ * so what the other three fields still paint is the profile chip: its fill is
+ * `accent` and its label `accentContrast`. Derived against a dark page, as
+ * every shipped swatch was tuned; the fill keeps the pick unless it sits in
+ * the dead band, and then moves by less than "the same colour" (gotcha 44).
+ * `deriveAccent` chooses the label by APCA Lc 60, which on a mid-tone fill can
+ * land a hair under WCAG's 4.5:1 — so the fill is walked further from the
+ * label, in OKLCH lightness at the same hue, until both hold. Null for
+ * something that is not an opaque colour.
+ */
+export function profileAccentFor(pick: string): ProfileAccent | null {
+  const c = parseColor(pick)
+  if (!c || c.a < 1) return null
+  const hex = toHex(c)
+  const swatch = PROFILE_SWATCHES.find((s) => s.accent.toLowerCase() === hex)
+  if (swatch) {
+    return {
+      accent: swatch.accent,
+      accentHover: swatch.accentHover,
+      accentSoft: swatch.accentSoft,
+      accentContrast: swatch.accentContrast
+    }
+  }
+  let t = deriveAccent(hex, 'dark', EMBER.colors.bg)
+  const label = parseColor(t.accentContrast)
+  const fill = parseColor(t.accent)
+  if (label && fill && contrastRatio(fill, label) < PROFILE_LABEL_WCAG) {
+    const o = toOklch(fill)
+    const away = toOklch(label).l > o.l ? -1 : 1
+    for (let step = 0.005; step <= 0.4; step += 0.005) {
+      const moved = toHex(fitToSrgb({ l: Math.min(1, Math.max(0, o.l + away * step)), c: o.c, h: o.h }))
+      if (contrastRatio(parseColor(moved)!, label) >= PROFILE_LABEL_WCAG) {
+        t = deriveAccent(moved, 'dark', EMBER.colors.bg)
+        break
+      }
+    }
+  }
+  return { accent: t.accent, accentHover: t.accentHover, accentSoft: t.accentSoft, accentContrast: t.accentContrast }
+}
 
 /**
  * The one way group names and profile ids are compared, anywhere.

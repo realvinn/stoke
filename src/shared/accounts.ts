@@ -30,8 +30,9 @@
  * are relative with `.ts` (gotcha 78). The parts that touch a disk — the home,
  * its links, the Keychain service name — are `src/main/accounts.ts`.
  */
-import { AGENT_SEEDS } from './agentColors.ts'
+import { AGENT_DISTINCT_DISTANCE } from './agentColors.ts'
 import { cliFor, isCodingCliId, type CodingCliId } from './codingClis.ts'
+import { parseColor, perceptualDistance } from './color.ts'
 
 /** The account a launch uses when it names none and no default is chosen: no variable set. */
 export const DEFAULT_ACCOUNT_ID = 'default'
@@ -234,20 +235,23 @@ export function isAccountHome(v: unknown): v is string {
 /* ----------------------------------------------------------------- colour */
 
 /**
- * The colours an account can wear. Each is one of the agent seeds, so each
- * already clears every floor `verify:agents` holds a seed to (the meter's
- * three tiers, --danger, --warning) — an account's tag is drawn by the same
+ * The colours an account can wear. They were the agent seeds until those became
+ * the vendors' own colours (agentColors.ts, agents format 3); they are pinned
+ * here as literals so an account stored as `pink` stays pink and every name
+ * still says what it paints. `verify:accounts` holds each one to the floors a
+ * seed is held to — the meter's three tiers, --danger and --warning on every
+ * theme (`reservedNear`) — because an account's tag is drawn by the same
  * writer, under its own key (`agentTokenNames('claude-work')`).
  */
 export const ACCOUNT_SWATCHES: readonly { id: string; name: string; seed: string }[] = [
-  { id: 'sky', name: 'Sky', seed: AGENT_SEEDS.gemini },
-  { id: 'violet', name: 'Violet', seed: AGENT_SEEDS.opencode },
-  { id: 'teal', name: 'Teal', seed: AGENT_SEEDS.grok },
-  { id: 'periwinkle', name: 'Periwinkle', seed: AGENT_SEEDS.codex },
-  { id: 'jade', name: 'Jade', seed: AGENT_SEEDS.aider },
-  { id: 'azure', name: 'Azure', seed: AGENT_SEEDS.droid },
-  { id: 'orchid', name: 'Orchid', seed: AGENT_SEEDS.amp },
-  { id: 'pink', name: 'Pink', seed: AGENT_SEEDS.claude }
+  { id: 'sky', name: 'Sky', seed: '#48bff5' },
+  { id: 'violet', name: 'Violet', seed: '#b781ec' },
+  { id: 'teal', name: 'Teal', seed: '#47d6cf' },
+  { id: 'periwinkle', name: 'Periwinkle', seed: '#829eff' },
+  { id: 'jade', name: 'Jade', seed: '#75c2b3' },
+  { id: 'azure', name: 'Azure', seed: '#2d88e2' },
+  { id: 'orchid', name: 'Orchid', seed: '#c765ce' },
+  { id: 'pink', name: 'Pink', seed: '#eb77b6' }
 ]
 
 function isSwatchId(v: unknown): v is string {
@@ -258,10 +262,20 @@ function isSwatchId(v: unknown): v is string {
  * The swatch a new account of `cli` gets: the first that is neither the
  * agent's own colour nor worn by another of its accounts, so two accounts of
  * one agent and the agent itself are three different colours while they can be.
+ *
+ * "The agent's own colour" is judged by eye, not by hex: any swatch within
+ * `AGENT_DISTINCT_DISTANCE` of it (the floor the common agents are held to).
+ * The exact-hex test worked while the swatches WERE the agent seeds; once the
+ * seeds became the vendors' colours no swatch matched one, and every agent's
+ * first account took Sky — for Kimi (#1fc0ff) 0.020 from its own colour.
  */
 export function nextSwatch(cli: CodingCliId, taken: readonly (string | undefined)[], agentSeed: string): string {
   const used = new Set(taken.filter(Boolean))
-  const free = ACCOUNT_SWATCHES.filter((s) => s.seed.toLowerCase() !== agentSeed.toLowerCase())
+  const own = parseColor(agentSeed)
+  const free = ACCOUNT_SWATCHES.filter((s) => {
+    const c = parseColor(s.seed)
+    return !own || !c || perceptualDistance(c, own) >= AGENT_DISTINCT_DISTANCE
+  })
   return (free.find((s) => !used.has(s.id)) ?? free[0] ?? ACCOUNT_SWATCHES[0]).id
 }
 

@@ -84,7 +84,8 @@ const FLOATING_CLASSES = new Set([
   'confirm-modal',
   'palette',
   'settings-modal',
-  'agent-picker'
+  'agent-picker',
+  'color-picker'
 ])
 const FLOATING_ROLE = /\brole="(dialog|alertdialog|menu)"/
 
@@ -149,7 +150,7 @@ console.log('\nevery component that floats something registers it')
   // The scan must have found the layers this suite was written against, or a
   // renamed class has quietly turned it into a check of nothing.
   check('the scan still finds the known layers (at least ten files)', seen >= 10, true)
-  for (const known of ['UsageMeter.tsx', 'PhonePopover.tsx', 'ContextMenu.tsx', 'Launcher.tsx', 'FolderSwitcher.tsx']) {
+  for (const known of ['UsageMeter.tsx', 'PhonePopover.tsx', 'ContextMenu.tsx', 'Launcher.tsx', 'FolderSwitcher.tsx', 'ColorPicker.tsx']) {
     const src = readFileSync(join(rendererDir, 'components', known), 'utf8')
     check(`${known} is still recognised as a floating layer`, floatingMarkers(src).length > 0, true)
   }

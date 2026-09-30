@@ -22,17 +22,51 @@
  *    theme: it is solved against the page, and the tag sits on sunken chrome;
  *  - `--agent-<key>-fill`, its fill, for a swatch that shows the colour itself.
  *
+ * Each seed is its vendor's own colour where one can be used (the table on
+ * `AGENT_SEEDS` says where each came from), because the owner asked for
+ * exactly that: "claude should default to claude[,] codex to codex colour like
+ * a orangy for claude and a purplish for codex and whatever else".
+ *
  * Three things the palette is kept clear of, and all three are asserted:
  *  - the context meter's green, orange and red (shared/meter.ts): an agent
- *    colour near them would read as context pressure. That is why Claude Code
- *    is not its brand terracotta — orange and red belong to the meter;
+ *    colour near them would read as context pressure;
  *  - `--danger`, the worklog dot and every error;
  *  - `--warning`, which pulses on a tab that is waiting for you.
- * Every seed's derived ink sits at least `AGENT_CLEAR_DISTANCE` from all four
- * on every built-in theme, and the five common agents' seeds sit at least
- * `AGENT_DISTINCT_DISTANCE` from each other. Eighteen agents cannot all be told
- * apart by colour; the tag and the tooltip carry the name, and the user can
- * override any seed.
+ * Every seed's derived ink sits at least `AGENT_CLEAR_DISTANCE` from all five
+ * on every built-in theme (`clearanceFloor`), with ONE deliberate exception:
+ * Claude Code is orange because the owner chose it over the rule that used to
+ * keep it pink, so it shares the meter's orange, and it is held to
+ * `CLAUDE_CLEAR_DISTANCE` from `--danger` and `--warning` — no orange can do
+ * better on any theme (see that constant). The five common agents'
+ * seeds sit at least `AGENT_DISTINCT_DISTANCE` from each other, so do the
+ * members of every brand family whose vendors share a colour
+ * (`AGENT_BRAND_FAMILIES`), and no other agent's ink comes within 0.04 of a
+ * common agent's on any theme. Eighteen agents cannot all be told apart by
+ * colour; the tag and the tooltip carry the name, and the user can override
+ * any seed.
+ *
+ * That last floor is 0.04, "not the same colour", and on a light theme several
+ * pairs sit just over it — measured 2026-10-01: Cursor/Grok 0.041 (Paper),
+ * Copilot/Codex and Qwen/Gemini 0.045, Vibe/Grok 0.046, Kimi/OpenCode 0.048,
+ * Droid/Grok 0.050. Every ink there is solved to the same 4.5:1, so four
+ * near-neutrals (Grok's silver, Cursor's stone, Droid's taupe, Vibe's ivory)
+ * become four dark greys told apart by a trace of warmth. It is structural,
+ * not one seed's fault: swept, the best warm stone for Cursor reaches 0.060
+ * from Grok and the best Grok 0.054 from everyone, each by leaving its brand.
+ * So "never the same colour" is what is promised on a light theme, not
+ * "never alike".
+ *
+ * NOT kept clear of: the theme's own accent. Claude's orange is Ember's accent
+ * (0.011), and Daylight's and Paper's (0.037, 0.035); Gemini's blue is
+ * Nocturne's and Ink's (0.019); OpenCode's cyan Lagoon's and Mist's. The owner
+ * asked for the vendors' colours and the themes chose theirs, so where they
+ * meet, the Claude tab's tag and pane rule are drawn in the same colour as the
+ * accent chrome beside them (the active tab's top border, the focus ring).
+ * Decided 2026-10-01 and left as is: pushing Claude off orange on the orange
+ * themes would undo the request, and the tag's text names the agent. The
+ * colour picker says so ("The same colour as this theme's accent",
+ * `SAME_COLOUR_DISTANCE`), and `verify:agents` prints every coincidence and
+ * fails on one it was not told about, so the next seed or theme change sees it.
  *
  * Keyed by a string rather than by `CodingCliId` alone so an account can extend
  * it: a second Claude account would file its colour under `claude-work` and get
@@ -46,18 +80,104 @@
  */
 import { deriveAccent, type Appearance } from './accent.ts'
 import { CODING_CLIS, isCodingCliId, type CodingCliId } from './codingClis.ts'
-import { contrastRatio, parseColor, toHex } from './color.ts'
+import { contrastRatio, parseColor, perceptualDistance, toHex } from './color.ts'
+import { meterScale } from './meter.ts'
 
 /**
- * The colour each agent starts with. Measured, not picked by eye: see the
- * header for the floors, and `verify:agents` for the numbers each one clears.
+ * The colour each agent starts with: its vendor's own, nudged only as far as
+ * the floors in the header need. Measured, not picked by eye — `verify:agents`
+ * prints the number each one clears. Looked up on 2026-10-01; OKLCH is L C h.
  *
- * The five common agents (Claude Code, Codex, Gemini, Grok, OpenCode) are
- * spread round the half of the wheel the meter leaves free — pink, periwinkle,
- * sky, teal and violet. The rest reuse those families at another lightness or
- * chroma, or are near-neutral where the vendor's own mark is monochrome.
+ *   agent     seed     OKLCH            based on
+ *   claude    #de7b2e  0.68 0.15 54     Anthropic's accent orange #d97757 (brand guidelines;
+ *                                      Claude Code's own TUI colour, rgb 215 119 87), moved
+ *                                      from h39 to h54 — amber-leaning, not red-orange.
+ *                                      #d97757 itself, derived for a light theme's tab
+ *                                      strip, measured 0.021 from `--danger`: an error.
+ *                                      h54 is the point furthest from both --danger and
+ *                                      --warning (CLAUDE_CLEAR_DISTANCE).
+ *   codex     #ba66e9  0.66 0.20 312    codex-rs/tui/styles.md: "Codex: Use ANSI magenta".
+ *                                      A purple on the magenta side, as asked ("purplish").
+ *   grok      #c8d2e0  0.86 0.02 257    xAI / Grok: a black-on-white mark, no colour at all.
+ *                                      Silver, kept faintly cool so it is not Cursor's stone.
+ *   opencode  #4bc8d5  0.77 0.11 205    opencode.ai is monochrome (#201d1d / #fdfcfc); its TUI
+ *                                      theme's primary is peach #fab283 (the meter's orange,
+ *                                      --danger and --warning all sit there) and its accent
+ *                                      #9d7cd8 is Codex's purple, so it takes the same
+ *                                      theme's cyan (#56b6c2), brightened.
+ *   pi        #81a9d2  0.72 0.07 250    pi.dev's --accent "thread blue" #6a9fcc, lifted.
+ *   gemini    #4796e4  0.66 0.14 251    gemini-cli theme.ts GradientColors[0], the Gemini blue.
+ *   qwen      #5265f9  0.58 0.22 272    qwen.ai's brand blue #0a28f0 / #2e4aff, towards the
+ *                                      mark's purple: an indigo between Gemini and Copilot.
+ *   kimi      #1fc0ff  0.76 0.15 232    The Kimi brand book's #00A1FF, towards its #00F6FF, so
+ *                                      it is not Gemini's blue.
+ *   copilot   #8534f3  0.55 0.26 296    brand.github.com Copilot: "Copilot Purple" #8534F3.
+ *   cursor    #c4bdb0  0.80 0.02 83     Cursor Orange #f54e00 is the meter's orange and, on a
+ *                                      light theme, --danger; so its cream canvas #f7f7f4 and
+ *                                      warm ink #26251e, as a warm stone.
+ *   amp       #789f70  0.66 0.08 140    Amp's orange #f6833b is reserved too; ampcode.com's
+ *                                      other colour is a sage (#7fb08a, h151), turned to h140
+ *                                      and kept low in chroma, off the meter's green. Its
+ *                                      dark theme-color's teal (#091c1e) was tried and came
+ *                                      within 0.04 of OpenCode's cyan on a light theme.
+ *   kilo      #d4f4bd  0.93 0.08 132    kilocode.ai --brand-primary oklch(95% .15 108), a lemon.
+ *                                      On a light theme a lemon solves to an olive between
+ *                                      --warning and the meter's green, so +24° and half the
+ *                                      chroma: a pale lemon-lime.
+ *   aider     #a8e0c3  0.86 0.07 162    Aider's logo #14b014 is the meter's own green (h143),
+ *                                      so a pale mint, off its hue and chroma.
+ *   crush     #ff60ff  0.75 0.26 328    charmtone Dolly #FF60FF, Charm's pink. Its Charple
+ *                                      #6B50FF would be the fifth purple.
+ *   droid     #af998f  0.70 0.03 46     Factory's orange #ef6f2e is reserved; its warm greys
+ *                                      (#948781, #342f2d), as a taupe.
+ *   cline     #e64ead  0.66 0.21 346    cline.bot's purple #9f58fa measured 0.049 from Codex
+ *                                      and 0.080 from Copilot; its --brand-pink (245 57 105),
+ *                                      turned from h12 (the meter's red) to h346.
+ *   auggie    #74b597  0.72 0.08 164    augmentcode.com --primary #1aa049 is the meter's green
+ *                                      (h149, C0.17). A vivid green anywhere from h125 to h175
+ *                                      reads as the meter on a light theme, and a vivid jade
+ *                                      past it came within 0.04 of OpenCode's cyan there; so
+ *                                      a muted jade-green.
+ *   vibe      #f0ebd9  0.94 0.02 94     Mistral's orange #fa520f and its yellow #ffd900 are
+ *                                      reserved (yellow is --warning on a light theme); its
+ *                                      cream #fffaeb, as an ivory.
+ *
+ * Three brands came out neutral — Cursor, Droid and Vibe — because their only
+ * colour is the one the meter owns, and the greens (Aider, Auggie, Amp, Kilo)
+ * came out muted because the meter owns vivid green. On a dark theme each set
+ * is told apart by lightness (stone, taupe, ivory; mint, jade, sage, lime); on
+ * a light one every ink is solved to the same 4.5:1, so within a set they read
+ * as one colour there — never as one of the common five (asserted).
  */
 export const AGENT_SEEDS: Readonly<Record<CodingCliId, string>> = {
+  claude: '#de7b2e',
+  codex: '#ba66e9',
+  grok: '#c8d2e0',
+  opencode: '#4bc8d5',
+  pi: '#81a9d2',
+  gemini: '#4796e4',
+  qwen: '#5265f9',
+  kimi: '#1fc0ff',
+  copilot: '#8534f3',
+  cursor: '#c4bdb0',
+  amp: '#789f70',
+  kilo: '#d4f4bd',
+  aider: '#a8e0c3',
+  crush: '#ff60ff',
+  droid: '#af998f',
+  cline: '#e64ead',
+  auggie: '#74b597',
+  vibe: '#f0ebd9'
+}
+
+/**
+ * The seeds this table held before it took the vendors' colours (agents
+ * format 2). Only `hydrateAgentColors` reads it: a stored override equal to
+ * one of these, in a file written before format 3, is a default that was
+ * never chosen — the Settings field has never stored a value equal to its
+ * seed — so it is dropped once and the agent takes its new colour.
+ */
+export const PREVIOUS_AGENT_SEEDS: Readonly<Record<CodingCliId, string>> = {
   claude: '#eb77b6',
   codex: '#829eff',
   grok: '#47d6cf',
@@ -78,6 +198,25 @@ export const AGENT_SEEDS: Readonly<Record<CodingCliId, string>> = {
   vibe: '#e2baeb'
 }
 
+/** The agents format whose seeds are `AGENT_SEEDS` (agents.ts `AGENTS_FORMAT`). */
+export const BRAND_SEEDS_FORMAT = 3
+
+/**
+ * Agents whose vendors' own colours collide, and so were pulled apart by hand
+ * in the table above. Each family is held to `AGENT_DISTINCT_DISTANCE`, the
+ * common five's floor, seed against seed.
+ */
+export const AGENT_BRAND_FAMILIES: Readonly<Record<string, readonly CodingCliId[]>> = {
+  /** Anthropic, Cursor, Factory, Mistral, Amp, and OpenCode's TUI peach. */
+  orange: ['claude', 'cursor', 'droid', 'vibe', 'amp', 'opencode'],
+  /** Codex's magenta, Copilot, Cline's site, Qwen's mark, Charm's Charple. */
+  purple: ['codex', 'copilot', 'cline', 'qwen', 'crush'],
+  /** Gemini, Kimi, Pi, and qwen.ai's own blue. */
+  blue: ['gemini', 'kimi', 'pi', 'qwen'],
+  /** Aider and Augment, both on the meter's green. */
+  green: ['aider', 'auggie']
+}
+
 /** The agents most people have, held to the stricter distinctness floor. */
 export const COMMON_AGENTS: readonly CodingCliId[] = ['claude', 'codex', 'grok', 'opencode', 'gemini']
 
@@ -89,11 +228,114 @@ export const COMMON_AGENTS: readonly CodingCliId[] = ['claude', 'codex', 'grok',
 export const AGENT_DISTINCT_DISTANCE = 0.083
 
 /**
+ * Under this OKLab distance two colours are "the same colour" (gotcha 44's
+ * nudge budget, and the floor every suite here uses for it).
+ */
+export const SAME_COLOUR_DISTANCE = 0.04
+
+/**
+ * How close an agent's ink or text comes to the theme's `--accent-ink`, when it
+ * is under `SAME_COLOUR_DISTANCE` — the coincidence the header describes — else
+ * null. Not a floor anything is held to; the picker reports it.
+ */
+export function accentNear(tokens: Pick<AgentTokens, 'ink' | 'text'>, accentInk: string): number | null {
+  const a = parseColor(accentInk)
+  const ink = parseColor(tokens.ink)
+  const text = parseColor(tokens.text)
+  if (!a || !ink || !text) return null
+  const d = Math.min(perceptualDistance(ink, a), perceptualDistance(text, a))
+  return d < SAME_COLOUR_DISTANCE ? d : null
+}
+
+/**
  * How far every agent's derived ink stays from the meter's three tiers,
  * `--danger` and `--warning`, on every built-in theme. The meter's own
  * "visibly a different tier" bar (verify:color's METER_TIER_DISTANCE).
  */
 export const AGENT_CLEAR_DISTANCE = 0.08
+
+/**
+ * Claude Code's floor against `--danger` and `--warning`, per appearance.
+ *
+ * Not a preference: close to the most any orange can get. `--danger` is a red
+ * (h ~30) and `--warning` a gold (h ~82), 50° apart, and an orange sits between
+ * them by definition. On a dark theme both are pastels at OKLCH L ~0.80 and the
+ * ink is lifted to Lc 60, into their lightness; on a light theme the tag's text
+ * is solved to 4.5:1 on the title bar, which lands every orange at L ~0.52 —
+ * where `--danger` (a brick) and `--warning` (an ochre) are solved too, and
+ * sRGB holds no more than C ~0.13. Swept on 2026-10-01 over hues 50-66, chroma
+ * 0.13-0.21 and lightness 0.64-0.80, the best seed measured 0.070 from both on
+ * the dark themes and 0.056 on the light ones, and no seed reached 0.08 on
+ * either. The seed is that best one (h54), and these floors keep it there —
+ * both well over the 0.04 this repo calls "the same colour" (gotcha 44). The
+ * meter's red and green still get the full `AGENT_CLEAR_DISTANCE` everywhere.
+ */
+export const CLAUDE_CLEAR_DISTANCE: Readonly<Record<Appearance, number>> = { dark: 0.065, light: 0.05 }
+
+/** What an agent's colour is kept clear of, by name, on one theme. */
+export type ReservedName = 'meter-low' | 'meter-mid' | 'meter-high' | 'danger' | 'warning'
+
+/**
+ * The five reserved colours of one theme, exactly as `applyAppearance` paints
+ * them: the meter's tiers solved per theme by `meterScale`, and the theme's own
+ * `--danger` and `--warning`.
+ */
+export function reservedColors(theme: {
+  appearance: Appearance
+  colors: AgentGrounds & { danger: string; warning: string }
+}): { name: ReservedName; colour: string }[] {
+  const m = meterScale(theme.colors.bg, theme.colors.bgSunken, theme.appearance)
+  return [
+    { name: 'meter-low', colour: m.low },
+    { name: 'meter-mid', colour: m.mid },
+    { name: 'meter-high', colour: m.high },
+    { name: 'danger', colour: theme.colors.danger },
+    { name: 'warning', colour: theme.colors.warning }
+  ]
+}
+
+/**
+ * How far an agent's ink and text must stay from one reserved colour, or null
+ * for no floor at all.
+ *
+ * Everyone is held to `AGENT_CLEAR_DISTANCE` everywhere, except Claude Code:
+ * the owner asked for Claude orange, and orange is the meter's middle tier, so
+ * that one pairing has no floor; and no orange can clear `--danger` and
+ * `--warning` by the full distance, so those two take `CLAUDE_CLEAR_DISTANCE`.
+ * Only the AGENT is excepted, never its colour: a Codex the user paints orange
+ * is still told it reads as the meter (the colour picker's note).
+ */
+export function clearanceFloor(key: AgentColorKey, reserved: ReservedName, appearance: Appearance): number | null {
+  if (key === 'claude') {
+    if (reserved === 'meter-mid') return null
+    if (reserved === 'danger' || reserved === 'warning') return CLAUDE_CLEAR_DISTANCE[appearance]
+  }
+  return AGENT_CLEAR_DISTANCE
+}
+
+/**
+ * The reserved colours one seed comes too close to on one theme: each one
+ * whose distance from the derived ink or text is under `floor`. What the
+ * colour picker warns about, and what the suites hold every seed to.
+ */
+export function reservedNear(
+  seed: string,
+  theme: { appearance: Appearance; colors: AgentGrounds & { danger: string; warning: string } },
+  floor: (reserved: ReservedName) => number | null = () => AGENT_CLEAR_DISTANCE
+): { name: ReservedName; distance: number }[] {
+  const tokens = agentTokensFor('probe', seed, theme.appearance, theme.colors)
+  const ink = parseColor(tokens.ink)
+  const text = parseColor(tokens.text)
+  const out: { name: ReservedName; distance: number }[] = []
+  for (const r of reservedColors(theme)) {
+    const at = floor(r.name)
+    const c = parseColor(r.colour)
+    if (at === null || !c || !ink || !text) continue
+    const distance = Math.min(perceptualDistance(ink, c), perceptualDistance(text, c))
+    if (distance < at) out.push({ name: r.name, distance })
+  }
+  return out
+}
 
 /** A colour key: an agent id today, `<id>-<account>` once accounts have colours. */
 export type AgentColorKey = string
@@ -125,8 +367,15 @@ export type AgentColors = Partial<Record<CodingCliId, string>>
  * names an agent this build does not know is dropped; one equal to the seed is
  * dropped too, so "reset" and "never touched" are the same stored state and a
  * later change of seed reaches everyone who never picked a colour.
+ *
+ * `from` is the agents format the block was written in (agents.ts). Below
+ * `BRAND_SEEDS_FORMAT` a value equal to that agent's PREVIOUS seed goes the
+ * same way — it can only be a default carried in by hand or by an import,
+ * since no build ever stored its own seed — so a Claude that was never
+ * recoloured turns orange rather than staying pink. Once the block says the
+ * new format, the old pink is an ordinary colour: picked on purpose, it stays.
  */
-export function hydrateAgentColors(raw: unknown): AgentColors {
+export function hydrateAgentColors(raw: unknown, from: number = BRAND_SEEDS_FORMAT): AgentColors {
   const out: AgentColors = {}
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out
   for (const [id, v] of Object.entries(raw)) {
@@ -134,7 +383,9 @@ export function hydrateAgentColors(raw: unknown): AgentColors {
     const c = parseColor(v)
     if (!c || c.a < 1) continue
     const hex = toHex(c).toLowerCase()
-    if (hex !== AGENT_SEEDS[id]) out[id] = hex
+    if (hex === AGENT_SEEDS[id]) continue
+    if (from < BRAND_SEEDS_FORMAT && hex === PREVIOUS_AGENT_SEEDS[id]) continue
+    out[id] = hex
   }
   return out
 }
@@ -197,10 +448,22 @@ export function agentColorTokens(
   extra: readonly { key: AgentColorKey; seed: string }[] = []
 ): AgentTokens[] {
   const keyed = [...CODING_CLIS.map((c) => ({ key: c.id as AgentColorKey, seed: agentSeed(c.id, colors) })), ...extra]
-  return keyed.map(({ key, seed }) => {
-    const t = deriveAccent(seed, appearance, grounds.bg)
-    return { key, seed, ink: t.accentInk, text: textInk(seed, t.accentInk, appearance, grounds), fill: t.accent }
-  })
+  return keyed.map(({ key, seed }) => agentTokensFor(key, seed, appearance, grounds))
+}
+
+/**
+ * One key's tokens from one seed — what `agentColorTokens` does per agent, for
+ * a colour that is not stored yet (the picker's preview of the ink Stoke will
+ * paint, and `reservedNear`).
+ */
+export function agentTokensFor(
+  key: AgentColorKey,
+  seed: string,
+  appearance: Appearance,
+  grounds: AgentGrounds
+): AgentTokens {
+  const t = deriveAccent(seed, appearance, grounds.bg)
+  return { key, seed, ink: t.accentInk, text: textInk(seed, t.accentInk, appearance, grounds), fill: t.accent }
 }
 
 /**

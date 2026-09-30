@@ -29,6 +29,35 @@ import {
   toOklch
 } from '../src/shared/color.ts'
 import type { Rgb } from '../src/shared/color.ts'
+import {
+  anchorShown,
+  clamp01,
+  clampHsv,
+  colorName,
+  FILL_VANISH_RATIO,
+  fillVanishes,
+  hexToHsv,
+  hsvToHex,
+  hsvToRgb,
+  hueAt,
+  hueName,
+  hueRingGradient,
+  INK_NOTE_DISTANCE,
+  inkShift,
+  intersectBox,
+  parseTyped,
+  placePopover,
+  pureHue,
+  rgbToHsv,
+  ringOffset,
+  sameColor,
+  stepHue,
+  stepSv,
+  svAt,
+  typedIsComplete,
+  worstContrast,
+  wrapHue
+} from '../src/shared/colorPicker.ts'
 import { neutralTokens, PAGE_CHROMA_MAX, TINT_MAX } from '../src/shared/ladder.ts'
 import { meterScale, METER_WCAG } from '../src/shared/meter.ts'
 import { PROFILE_SWATCHES } from '../src/shared/profiles.ts'
@@ -90,6 +119,12 @@ function atLeast(label: string, actual: number, floor: number, suffix = ''): voi
  * scheduled to be fixed: a baseline is worth having, a red run about something
  * already known is not.
  */
+/** A plain condition, for the checks that are one yes-or-no. */
+function okp(label: string, cond: boolean): void {
+  if (!cond) failures++
+  console.log(`${cond ? 'ok  ' : 'FAIL'} ${label}`)
+}
+
 function note(label: string, value: string, suffix = ''): void {
   console.log(`     ${label.padEnd(46)} ${value.padStart(10)}${suffix}`)
 }
@@ -967,6 +1002,323 @@ for (const t of BUILT_IN_THEMES) {
   }
   eq(`${t.id}: text is the ink wherever the ink clears (${inkClears} of 18)`, same, inkClears)
   if (t.appearance === 'dark') eq(`${t.id}: dark, so the ink clears for every agent`, inkClears, 18)
+}
+
+console.log('\n-- the colour picker: HSV, the ring and the map, keys, names, placement --')
+/*
+ * `shared/colorPicker.ts`, the maths behind every colour field's wheel. Each
+ * block is a rule the picker leans on: a hex read into HSV and written back is
+ * the same hex (or the handles drift on their own); the ring's 0° is its top
+ * and turns clockwise, exactly as its conic gradient paints; the map's two CSS
+ * gradients composite to the HSV colour the handle reports; arrow keys wrap on
+ * the ring and clamp on the map; a grey or black keeps the hue it came from.
+ */
+{
+  // Round trips: every 17th step of each channel, 4,096 colours.
+  let bad = 0
+  let first = ''
+  for (let r = 0; r <= 255; r += 17) {
+    for (let g = 0; g <= 255; g += 17) {
+      for (let b = 0; b <= 255; b += 17) {
+        const hex = toHex(rgb(r, g, b))
+        const back = hsvToHex(rgbToHsv(rgb(r, g, b)))
+        if (back !== hex) {
+          bad++
+          first ||= `${hex} -> ${back}`
+        }
+      }
+    }
+  }
+  eq(`hex -> HSV -> hex is the same hex for 4096 colours${first ? ` (first miss ${first})` : ''}`, bad, 0)
+  eq('the primaries and secondaries', [0, 60, 120, 180, 240, 300].map((h) => hsvToHex({ h, s: 1, v: 1 })), [
+    '#ff0000',
+    '#ffff00',
+    '#00ff00',
+    '#00ffff',
+    '#0000ff',
+    '#ff00ff'
+  ])
+  eq('hue 360 is hue 0, -120 is 240, 750 is 30', [360, -120, 750].map((h) => hsvToHex({ h, s: 1, v: 1 })), [
+    '#ff0000',
+    '#0000ff',
+    hsvToHex({ h: 30, s: 1, v: 1 })
+  ])
+  eq('wrapHue: 360, -30, 719.5, NaN', [360, -30, 719.5, NaN].map(wrapHue), [0, 330, 359.5, 0])
+  eq('clampHsv pulls every channel into range', clampHsv({ h: 370, s: -1, v: 2 }), { h: 10, s: 0, v: 1 })
+  eq('out-of-range saturation and value clamp before converting', hsvToHex({ h: 30, s: 1.5, v: -0.2 }), '#000000')
+  eq('clamp01 of junk is 0', [NaN, Infinity, -Infinity, 0.5].map(clamp01), [0, 0, 0, 0.5])
+
+  // Greys and black: the hex cannot say the hue, so the position stands.
+  eq('a grey reports hue 0 and no saturation', [rgbToHsv(rgb(128, 128, 128)).h, rgbToHsv(rgb(128, 128, 128)).s], [0, 0])
+  eq(
+    'but read back into the picker it keeps the hue it was dragged from',
+    hexToHsv('#808080', { h: 200, s: 0.6, v: 0.8 }),
+    { h: 200, s: 0, v: rgbToHsv(rgb(128, 128, 128)).v }
+  )
+  eq('and black keeps the hue AND the saturation: only brightness went', hexToHsv('#000000', { h: 200, s: 0.6, v: 0.8 }), {
+    h: 200,
+    s: 0.6,
+    v: 0
+  })
+  {
+    const at = { h: 123.4, s: 0.567, v: 0.891 }
+    eq('the hex the picker already shows keeps its exact position (no drift from rounding)', hexToHsv(hsvToHex(at), at), at)
+  }
+  eq('an unparseable colour is null', hexToHsv('nonsense'), null)
+  eq('sameColor ignores case and notation', [sameColor('#E07B2E', 'rgb(224, 123, 46)'), sameColor('#e07b2e', '#e07b2f')], [true, false])
+
+  // Typed values.
+  eq(
+    'parseTyped: hex with or without #, 3 or 6 digits, any case, and every notation',
+    ['#E07B2E', 'e07b2e', 'abc', '#abc', 'rgb(224, 123, 46)', 'hsl(26 73% 53%)'].map(parseTyped),
+    ['#e07b2e', '#e07b2e', '#aabbcc', '#aabbcc', '#e07b2e', parseTyped('hsl(26 73% 53%)')]
+  )
+  okp('an oklch() typed in is fitted into sRGB, not refused', /^#[0-9a-f]{6}$/.test(parseTyped('oklch(0.7 0.4 51)') ?? ''))
+  eq('parseTyped refuses junk, a short hex, and anything translucent', ['nonsense', '#12345', 'transparent', '#e07b2e80', ''].map(parseTyped), [
+    null,
+    null,
+    null,
+    null,
+    null
+  ])
+  eq('typedIsComplete: six digits or a closed function, never a prefix', ['#e07', 'e07b2e', '#E07B2E', 'rgb(1 2 3)', 'rgb(1 2'].map(typedIsComplete), [
+    false,
+    true,
+    true,
+    true,
+    false
+  ])
+
+  // The ring: 0° at the top, clockwise, as `conic-gradient(from 0deg …)` paints.
+  eq('hueAt: top, right, bottom, left of the centre', [hueAt(50, 0, 50, 50), hueAt(100, 50, 50, 50), hueAt(50, 100, 50, 50), hueAt(0, 50, 50, 50)], [0, 90, 180, 270])
+  eq('the centre itself is 0, not NaN', hueAt(50, 50, 50, 50), 0)
+  {
+    let worst = 0
+    for (let h = 0; h < 360; h += 7.5) {
+      const p = ringOffset(h, 80)
+      const back = hueAt(100 + p.x, 100 + p.y, 100, 100)
+      worst = Math.max(worst, Math.abs(((back - h + 540) % 360) - 180))
+    }
+    near('ringOffset and hueAt invert each other (worst error, degrees)', worst, 0, 1e-9)
+  }
+  const ring = hueRingGradient()
+  eq('the ring is painted from hsvToHex, seven exact stops, red at both ends', ring, `conic-gradient(from 0deg, ${[0, 60, 120, 180, 240, 300, 360].map((h) => `${hsvToHex({ h: h % 360, s: 1, v: 1 })} ${h}deg`).join(', ')})`)
+  eq('pureHue is the top-right corner of the map', pureHue(240), '#0000ff')
+
+  // The map: saturation across, brightness up, clamped at its edges.
+  const box = { left: 10, top: 20, width: 100, height: 200 }
+  eq('svAt corners: top-left, top-right, bottom-left, bottom-right', [svAt(10, 20, box), svAt(110, 20, box), svAt(10, 220, box), svAt(110, 220, box)], [
+    { s: 0, v: 1 },
+    { s: 1, v: 1 },
+    { s: 0, v: 0 },
+    { s: 1, v: 0 }
+  ])
+  eq('a drag past the edge clamps to it', [svAt(-50, -50, box), svAt(500, 500, box)], [{ s: 0, v: 1 }, { s: 1, v: 0 }])
+  eq('a map with no size yet reads 0, not NaN', svAt(5, 5, { left: 0, top: 0, width: 0, height: 0 }), { s: 0, v: 0 })
+  {
+    /*
+     * The map is `linear-gradient(to top, black, transparent), linear-gradient(to
+     * right, white, transparent), <pure hue>`, composited in sRGB. That IS HSV:
+     * across, white fades to the hue (s); up, a black veil of alpha 1 - v. So the
+     * colour under the handle is the colour the handle reports.
+     */
+    let worst = 0
+    for (const h of [0, 37, 120, 205, 300]) {
+      const hue = hsvToRgb({ h, s: 1, v: 1 })
+      for (let s = 0; s <= 1; s += 0.125) {
+        for (let v = 0; v <= 1; v += 0.125) {
+          const white = { r: 255 * (1 - s) + hue.r * s, g: 255 * (1 - s) + hue.g * s, b: 255 * (1 - s) + hue.b * s }
+          const painted = { r: white.r * v, g: white.g * v, b: white.b * v }
+          const said = hsvToRgb({ h, s, v })
+          worst = Math.max(worst, Math.abs(painted.r - said.r), Math.abs(painted.g - said.g), Math.abs(painted.b - said.b))
+        }
+      }
+    }
+    near('the map’s two CSS gradients composite to exactly the HSV colour (worst channel error)', worst, 0, 1e-9)
+  }
+
+  // Keys.
+  eq('ring: Left from 0 wraps to 359, Right from 359 to 0', [stepHue(0, 'ArrowLeft', false), stepHue(359, 'ArrowRight', false)], [359, 0])
+  eq('ring: Up/Down move like Right/Left; Shift is 15°', [stepHue(10, 'ArrowUp', false), stepHue(10, 'ArrowDown', false), stepHue(10, 'ArrowRight', true), stepHue(10, 'ArrowLeft', true)], [11, 9, 25, 355])
+  eq('ring: Home, End, Page Up, Page Down', [stepHue(200, 'Home', false), stepHue(200, 'End', false), stepHue(200, 'PageUp', false), stepHue(200, 'PageDown', false)], [0, 359, 215, 185])
+  eq('ring: a fractional hue steps from its whole degree', stepHue(10.6, 'ArrowRight', false), 12)
+  eq('ring: a key it does not take is null (Enter, Tab and letters pass through)', ['Enter', 'Tab', 'a'].map((k) => stepHue(10, k, false)), [null, null, null])
+  eq(
+    'map: arrows move the axis they point along, 1% or 10% with Shift',
+    [stepSv({ s: 0.5, v: 0.5 }, 'ArrowRight', false), stepSv({ s: 0.5, v: 0.5 }, 'ArrowLeft', true), stepSv({ s: 0.5, v: 0.5 }, 'ArrowUp', true), stepSv({ s: 0.5, v: 0.5 }, 'ArrowDown', false)],
+    [{ s: 0.51, v: 0.5 }, { s: 0.4, v: 0.5 }, { s: 0.5, v: 0.6 }, { s: 0.5, v: 0.49 }]
+  )
+  eq('map: clamped at every edge', [stepSv({ s: 1, v: 1 }, 'ArrowRight', true), stepSv({ s: 0, v: 0 }, 'ArrowDown', true)], [{ s: 1, v: 1 }, { s: 0, v: 0 }])
+  eq('map: Home and End are the grey and the vivid edge; Page keys step brightness', [stepSv({ s: 0.3, v: 0.4 }, 'Home', false), stepSv({ s: 0.3, v: 0.4 }, 'End', false), stepSv({ s: 0.3, v: 0.4 }, 'PageUp', false), stepSv({ s: 0.3, v: 0.4 }, 'PageDown', false)], [
+    { s: 0, v: 0.4 },
+    { s: 1, v: 0.4 },
+    { s: 0.3, v: 0.5 },
+    { s: 0.3, v: 0.3 }
+  ])
+  eq('map: a value read from a hex snaps to a whole percent on the first press', stepSv({ s: 0.5327, v: 0.5 }, 'ArrowRight', false), { s: 0.54, v: 0.5 })
+  eq('map: a key it does not take is null', stepSv({ s: 0.5, v: 0.5 }, 'Enter', false), null)
+
+  // Names, for aria-valuetext.
+  eq(
+    'colorName: vivid, plain, dark, pale, greyish, and the greys by brightness',
+    [
+      colorName({ h: 30, s: 1, v: 1 }),
+      colorName(rgbToHsv(parseColor('#de7b2e')!)),
+      colorName({ h: 240, s: 0.9, v: 0.3 }),
+      colorName({ h: 210, s: 0.2, v: 0.95 }),
+      colorName({ h: 120, s: 0.25, v: 0.5 }),
+      colorName({ h: 0, s: 0, v: 0.05 }),
+      colorName({ h: 0, s: 0.02, v: 0.98 }),
+      colorName({ h: 77, s: 0.05, v: 0.8 }),
+      colorName({ h: 77, s: 0.05, v: 0.5 }),
+      colorName({ h: 77, s: 0.05, v: 0.2 })
+    ],
+    ['vivid orange', 'orange', 'dark blue', 'pale azure', 'greyish green', 'black', 'white', 'light grey', 'grey', 'dark grey']
+  )
+  /*
+   * Found by the visual QA: a salmon (Ember's --danger, #ffa192) was "red",
+   * and an ochre (#c4942d, h41) and an amber (#ffbf00, h45) were "yellow".
+   */
+  eq(
+    'colorName: light for the bright half-saturated band, and amber between orange and yellow',
+    ['#ffa192', '#c4942d', '#ffbf00', '#ffd700', '#e07b2e'].map((x) => colorName(rgbToHsv(parseColor(x)!))),
+    ['light red', 'amber', 'vivid amber', 'vivid yellow', 'orange']
+  )
+  eq('hueName wraps red round both ends', [hueName(0), hueName(355), hueName(360), hueName(-5)], ['red', 'red', 'red', 'red'])
+  eq('Codex’s seed is named as the purple it was asked to be', hueName(rgbToHsv(parseColor('#ba66e9')!).h), 'purple')
+
+  // The "Stoke paints it darker" note.
+  eq('inkShift: no note for an ink the eye reads as the pick', inkShift('#de7b2e', '#dd7b2e'), null)
+  {
+    const s = inkShift('#f0ebd9', '#6a6656')
+    okp(`inkShift: a pale pick solved dark for a light theme is noted, as darker (${s?.distance.toFixed(3)})`, s !== null && s.darker && s.distance >= INK_NOTE_DISTANCE)
+  }
+  eq('inkShift: junk is no note', inkShift('nonsense', '#000000'), null)
+
+  // The fill that vanishes, and the figure the picker prints.
+  {
+    const gone = fillVanishes('#261104', ['#181716', '#0d0c0c'])
+    okp(`fillVanishes: a near-black fill on Ember's page is reported (${gone?.toFixed(2)}:1, under ${FILL_VANISH_RATIO})`, gone !== null && gone < FILL_VANISH_RATIO)
+  }
+  eq('fillVanishes: a fill with an edge is not', fillVanishes('#ff9552', ['#181716', '#0d0c0c']), null)
+  eq('fillVanishes: junk is not reported', fillVanishes('nonsense', ['#181716']), null)
+  near('worstContrast: black text on white and grey is the grey', worstContrast('#000000', ['#ffffff', '#777777'])!, contrastRatio(parseColor('#000000')!, parseColor('#777777')!), 1e-9)
+
+  // Placement: below, flipped above, never over the swatch, scrolling in its room.
+  const vp = { width: 1000, height: 800 }
+  const sz = { width: 250, height: 400 }
+  eq(
+    'fits below: below, left-aligned, held by its top one gap under the swatch',
+    placePopover({ left: 100, top: 100, right: 132, bottom: 122 }, sz, vp, 6, 8),
+    { left: 100, top: 128, bottom: null, maxHeight: 664, side: 'below' }
+  )
+  eq(
+    'no room below, room above: above, held by its BOTTOM one gap over the swatch, so growing moves its top',
+    placePopover({ left: 100, top: 700, right: 132, bottom: 722 }, sz, vp, 6, 8),
+    { left: 100, top: null, bottom: 106, maxHeight: 686, side: 'above' }
+  )
+  eq(
+    'at the right edge: slid left to stay in the window',
+    placePopover({ left: 900, top: 100, right: 932, bottom: 122 }, sz, vp, 6, 8).left,
+    742
+  )
+  {
+    /*
+     * The QA's scale-1.4 case: a swatch at y 300-331 and a 605px picker in an
+     * 800px window. Neither side fits. The first cut clamped the top to 257,
+     * over the swatch; now it takes the roomier side and scrolls there.
+     */
+    const a = { left: 100, top: 300, right: 145, bottom: 331 }
+    const p = placePopover(a, { width: 347, height: 605 }, vp, 8.4, 8)
+    eq('room on neither side: the roomier side (below), capped to its room', p, { left: 100, top: 339, bottom: null, maxHeight: 452, side: 'below' })
+    okp('and the popover never covers its swatch', p.top !== null && p.top >= a.bottom)
+    const q = placePopover({ left: 100, top: 480, right: 145, bottom: 511 }, { width: 347, height: 605 }, vp, 8.4, 8)
+    okp(
+      `and above, its bottom edge stays over the swatch (bottom ${q.bottom}, swatch top ${480})`,
+      q.side === 'above' && q.bottom !== null && vp.height - q.bottom <= 480 && q.maxHeight === Math.floor(480 - 8.4 - 8)
+    )
+  }
+  {
+    // Every swatch position down an 800px window, for a picker too tall for either side.
+    let covered = 0
+    for (let top = 10; top < 780; top += 5) {
+      const a = { left: 100, top, right: 132, bottom: top + 22 }
+      const p = placePopover(a, { width: 250, height: 900 }, vp, 6, 8)
+      const box = p.side === 'below' ? { top: p.top!, bottom: p.top! + p.maxHeight } : { top: vp.height - p.bottom! - p.maxHeight, bottom: vp.height - p.bottom! }
+      if (box.top < a.bottom && box.bottom > a.top) covered++
+      if (box.top < 8 - 0.5 || box.bottom > vp.height - 8 + 0.5) covered++
+    }
+    eq('a picker taller than the window, anywhere down it: never over its swatch, never off screen', covered, 0)
+  }
+
+  // The swatch scrolled away closes it.
+  const clip = { left: 0, top: 100, right: 800, bottom: 600 }
+  eq(
+    'anchorShown: inside the pane, half out past its top, wholly out',
+    [
+      anchorShown({ left: 10, top: 200, right: 42, bottom: 222 }, clip),
+      anchorShown({ left: 10, top: 95, right: 42, bottom: 117 }, clip),
+      anchorShown({ left: 10, top: 80, right: 42, bottom: 102 }, clip),
+      anchorShown({ left: 10, top: -70, right: 42, bottom: -48 }, clip)
+    ],
+    [true, true, false, false]
+  )
+  eq('intersectBox: the overlap of the window and a pane', intersectBox({ left: 0, top: 0, right: 1000, bottom: 800 }, { left: 200, top: 60, right: 1200, bottom: 700 }), {
+    left: 200,
+    top: 60,
+    right: 1000,
+    bottom: 700
+  })
+}
+
+{
+  /*
+   * The wheel's two handles, from app.css's own declarations. The QA drove a
+   * vivid amber (h45) into the map's top-right corner and the map handle sat
+   * 5px inside the ring handle: the map was sized from the hole and ignored
+   * both handles and their halos. `--cp-map` is now solved from the six
+   * `.color-picker` tokens; this evaluates exactly what the stylesheet says, at
+   * the Interface scales Settings offers, and holds the corner handle's outer
+   * edge short of the ring handle's inner edge.
+   */
+  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'renderer', 'src', 'styles', 'app.css'), 'utf8')
+  const rule = (sel: string): string => {
+    const m = css.match(new RegExp(`\\n${sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\{([^}]*)\\}`))
+    return m ? m[1] : ''
+  }
+  const decl = (body: string, prop: string): string => body.match(new RegExp(`(?:^|[;\\s])${prop}:\\s*([^;]+);`))?.[1].trim() ?? ''
+  const tokens: Record<string, string> = {}
+  for (const m of rule('.color-picker').matchAll(/(--cp-[a-z-]+):\s*([^;]+);/g)) tokens[m[1]] = m[2].trim()
+  tokens['--cp-map'] = decl(rule('.cp-map'), '--cp-map')
+  /** A calc() of rem, px and the tokens above, in px at `rem`. Only arithmetic survives to the eval. */
+  const px = (expr: string, rem: number, depth = 0): number => {
+    if (depth > 8 || !expr) return NaN
+    const flat = expr
+      .replace(/var\((--[a-z-]+)\)/g, (_, name: string) => `(${px(tokens[name] ?? '', rem, depth + 1)})`)
+      .replace(/calc\(/g, '(')
+      .replace(/(-?[\d.]+)rem/g, (_, n: string) => `(${Number(n) * rem})`)
+      .replace(/(-?[\d.]+)px/g, (_, n: string) => `(${n})`)
+    if (!/^[\d.\s()+\-*/eE]+$/.test(flat)) return NaN
+    return Number(new Function(`return (${flat})`)())
+  }
+  okp('the six wheel tokens and --cp-map are all declared', ['--cp-size', '--cp-ring-w', '--cp-ring-handle', '--cp-map-handle', '--cp-halo', '--cp-clear', '--cp-map'].every((t) => tokens[t]))
+  eq('both handles are sized and haloed by those tokens', [decl(rule('.cp-ring-handle'), 'width'), decl(rule('.cp-map-handle'), 'width')], ['var(--cp-ring-handle)', 'var(--cp-map-handle)'])
+  okp('and both halos are --cp-halo', [rule('.cp-ring-handle'), rule('.cp-map-handle')].every((b) => /0 0 0 var\(--cp-halo\) var\(--cp-black\)/.test(b)))
+  for (const scale of [0.8, 1, 1.2, 1.4]) {
+    const rem = 16 * scale
+    const size = px('var(--cp-size)', rem)
+    const ringW = px('var(--cp-ring-w)', rem)
+    const halo = px('var(--cp-halo)', rem)
+    const ringInner = size / 2 - ringW / 2 - px('var(--cp-ring-handle)', rem) / 2 - halo
+    const side = px('var(--cp-map)', rem)
+    const mapOuter = side / Math.SQRT2 + px('var(--cp-map-handle)', rem) / 2 + halo
+    const hole = size / 2 - ringW
+    okp(
+      `scale ${scale}: the map handle at a corner ends ${(ringInner - mapOuter).toFixed(2)}px short of the ring handle (map ${side.toFixed(1)}px, hole radius ${hole.toFixed(1)})`,
+      // A visible gap, not a kiss: at 1px the two black halos read as touching.
+      ringInner - mapOuter >= 2 && side / Math.SQRT2 < hole
+    )
+  }
 }
 
 console.log('\n-- the ladder: borders and the surface ramp --')
