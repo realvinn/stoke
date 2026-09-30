@@ -296,6 +296,29 @@ export const CH = {
   hubShareKey: 'hub:share-key',
   hubUnshareKey: 'hub:unshare-key',
   hubInstallKey: 'hub:install-key',
+  /*
+   * "Other machines" (src/main/hub/remote.ts, spec §6): the owner's other
+   * signed-in devices and their sessions, remote tabs, and — on the host —
+   * the question and who is attached. What crosses is `HubRemoteView` (names,
+   * titles, states) and a remote tab's pty frames; never a key, never a path.
+   */
+  hubRemoteView: 'hub:remote-view',
+  /** main -> renderer: the "Other machines" view moved. */
+  hubRemoteChanged: 'hub:remote-changed',
+  /** main -> renderer: one pty-socket frame for a remote tab (tabId, frame). */
+  hubRemoteFrame: 'hub:remote-frame',
+  hubRemoteOpen: 'hub:remote-open',
+  /** renderer -> main, fire and forget: keystrokes typed into a remote tab. */
+  hubRemoteInput: 'hub:remote-input',
+  hubRemoteClose: 'hub:remote-close',
+  hubRemoteRetry: 'hub:remote-retry',
+  /** On the host: the owner's answer to "Let <device> open <session>?". */
+  hubRemoteAnswer: 'hub:remote-answer',
+  /** On the host: drop every attached device. */
+  hubRemoteDrop: 'hub:remote-drop',
+  /** "Let my other devices see and open my sessions" on this computer. */
+  hubSetSharing: 'hub:set-sharing',
+  hubRevokeGrant: 'hub:revoke-grant',
 
   /*
    * Claude Code's own configuration, which is not Stoke's Settings. These read

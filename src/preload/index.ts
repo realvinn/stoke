@@ -243,7 +243,20 @@ const api: StokeApi = {
     localKeys: () => ipcRenderer.invoke(CH.hubLocalKeys),
     shareKey: (name) => ipcRenderer.invoke(CH.hubShareKey, name),
     unshareKey: (keyId) => ipcRenderer.invoke(CH.hubUnshareKey, keyId),
-    installKey: (keyId) => ipcRenderer.invoke(CH.hubInstallKey, keyId)
+    installKey: (keyId) => ipcRenderer.invoke(CH.hubInstallKey, keyId),
+    remote: {
+      view: () => ipcRenderer.invoke(CH.hubRemoteView),
+      onChange: (cb) => on<[Parameters<typeof cb>[0]]>(CH.hubRemoteChanged, cb),
+      onFrame: (cb) => on<Parameters<typeof cb>>(CH.hubRemoteFrame, cb),
+      open: (deviceId, ptyId) => ipcRenderer.invoke(CH.hubRemoteOpen, deviceId, ptyId),
+      input: (tabId, data) => ipcRenderer.send(CH.hubRemoteInput, tabId, data),
+      close: (tabId) => ipcRenderer.invoke(CH.hubRemoteClose, tabId),
+      retry: (tabId) => ipcRenderer.invoke(CH.hubRemoteRetry, tabId),
+      answer: (askId, answer) => ipcRenderer.invoke(CH.hubRemoteAnswer, askId, answer),
+      dropGuests: () => ipcRenderer.invoke(CH.hubRemoteDrop),
+      setSharing: (share) => ipcRenderer.invoke(CH.hubSetSharing, share),
+      revokeGrant: (deviceId) => ipcRenderer.invoke(CH.hubRevokeGrant, deviceId)
+    }
   },
 
   claudeConfig: {

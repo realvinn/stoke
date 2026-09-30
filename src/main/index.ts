@@ -106,6 +106,7 @@ import {
 } from '../shared/stokeArgs.ts'
 import { installCommand, readCommandState, removeCommand, type CommandEnv } from './stokeCommand.ts'
 import { keepUsage } from '../shared/statusLine.ts'
+import { emptyRemoteView } from '../shared/hub/remote.ts'
 import {
   advertisedRemoteToken,
   livePushSubscriptions,
@@ -291,6 +292,21 @@ const claudeConfigReader = new ClaudeConfigReader()
 /** The owner-only MCP files Qwen, Copilot and Claude Code are pointed at; keyed on userData, so made on first use. */
 let mcpFiles: McpFileStore | null = null
 let remote: RemoteServer | null = null
+/**
+ * The phone server's handlers as the hub relay serves them to the owner's
+ * other machines (src/main/hub/remote.ts, spec §6.4): a second RemoteServer
+ * that is never `start`ed, so it binds nothing and runs whether or not Phone
+ * access is on, and whose attached sockets are relayed ones only. Made on the
+ * first relayed request or status.
+ */
+let relayServer: RemoteServer | null = null
+function relayRemote(): RemoteServer {
+  if (!relayServer) {
+    relayServer = new RemoteServer(remoteDeps())
+    relayServer.serveRelay()
+  }
+  return relayServer
+}
 /**
  * Stoke Hub's client (hub/service.ts), made on first use — a hub panel opened,
  * or a boot with a hub configured — and loaded lazily, never by a static
@@ -1048,6 +1064,9 @@ async function launchSession(
   // A brand-new row for /ws/events, whichever side started it — a phone
   // watching the list should see a desktop-started session appear too.
   remote?.notifySessionsChanged()
+  relayServer?.notifySessionsChanged()
+  // And the owner's other machines, when this one shares its sessions.
+  hubClient?.remoteSessionsChanged()
   if (origin === 'remote') {
     /*
      * An SSH start is adopted the way `startHostSession` makes its own tab:
@@ -2543,10 +2562,15 @@ function createWindow(): void {
         // frame to any phone attached to this pty directly (phone contract
         // point 5).
         remote?.onRegistryState(st.ptyId)
+        relayServer?.onRegistryState(st.ptyId)
+        hubClient?.remoteSessionsChanged()
       },
       // The phone's prompt identity can move on a pass that changed nothing
       // the renderer cares about (`trackPrompt`'s re-confirmation).
-      passed: () => remote?.onRegistryPass()
+      passed: () => {
+        remote?.onRegistryPass()
+        relayServer?.onRegistryPass()
+      }
     }
   )
   timers.push(setInterval(() => void registry?.pass(), REGISTRY_POLL_MS))
@@ -2834,6 +2858,7 @@ function registerIpc(): void {
     // cannot reach — the window's own background and the Windows overlay.
     paintWindowChrome(effectiveTheme(s), null)
     remote?.onThemeChanged()
+    relayServer?.onThemeChanged()
   })
 
   /* ------------------------------------------------------------------- cli */
@@ -3752,6 +3777,7 @@ function registerIpc(): void {
     paintWindowChrome(effectiveTheme(next), prevTheme.colors.bg)
     // A phone paints this theme too; it re-fetches only if it moved (audit PX-21).
     remote?.onThemeChanged()
+    relayServer?.onThemeChanged()
     /*
      * Load-bearing, not merely correct in advance.
      *
@@ -3967,7 +3993,19 @@ function registerIpc(): void {
           await new Promise<void>((resolve) => page.webContents.print({}, () => resolve()))
           page.destroy()
         },
-        log: (message, err) => (err ? console.error(`[stoke] ${message}`, err) : console.warn(`[stoke] ${message}`))
+        log: (message, err) => (err ? console.error(`[stoke] ${message}`, err) : console.warn(`[stoke] ${message}`)),
+        /*
+         * "Other machines": this computer's sessions and the phone server's
+         * own handlers, through the relay instance above — the host's grant
+         * and scope are judged in hub/remote.ts before any of these runs.
+         */
+        remote: {
+          sessions: () => relayRemote().sessionRows(),
+          request: (method, path, body) => relayRemote().relayRequest(method, path, body),
+          socket: (path, sock) => relayRemote().relaySocket(path, sock),
+          emit: (view) => send(CH.hubRemoteChanged, view),
+          frame: (tab, frame) => send(CH.hubRemoteFrame, tab, frame)
+        }
       })
       await svc.start()
       hubClient = svc
@@ -4024,6 +4062,17 @@ function registerIpc(): void {
   ipcMain.handle(CH.hubShareKey, async (_e, name: unknown) => (await hubService()).shareKey(str(name)))
   ipcMain.handle(CH.hubUnshareKey, async (_e, keyId: unknown) => (await hubService()).unshareKey(str(keyId)))
   ipcMain.handle(CH.hubInstallKey, async (_e, keyId: unknown) => (await hubService()).installKey(str(keyId)))
+  // "Other machines" (hub/remote.ts). Every argument is re-checked there.
+  // Read by the window at boot: never STARTS the hub client (a Stoke with no hub set up loads none of it).
+  ipcMain.handle(CH.hubRemoteView, () => hubClient?.remoteView() ?? emptyRemoteView())
+  ipcMain.handle(CH.hubRemoteOpen, async (_e, device: unknown, ptyId: unknown) => (await hubService()).remoteOpen(str(device), str(ptyId)))
+  ipcMain.on(CH.hubRemoteInput, (_e, tab: unknown, data: unknown) => hubClient?.remoteInput(str(tab), str(data)))
+  ipcMain.handle(CH.hubRemoteClose, (_e, tab: unknown) => hubClient?.remoteClose(str(tab)))
+  ipcMain.handle(CH.hubRemoteRetry, async (_e, tab: unknown) => (await hubService()).remoteRetry(str(tab)))
+  ipcMain.handle(CH.hubRemoteAnswer, async (_e, ask: unknown, answer: unknown) => (await hubService()).remoteAnswer(str(ask), answer))
+  ipcMain.handle(CH.hubRemoteDrop, async () => (await hubService()).remoteDropGuests())
+  ipcMain.handle(CH.hubSetSharing, async (_e, on: unknown) => (await hubService()).setSharing(on === true))
+  ipcMain.handle(CH.hubRevokeGrant, async (_e, device: unknown) => (await hubService()).revokeGrant(str(device)))
 
   /* -------------------------------------------------------------- profiles */
   /*

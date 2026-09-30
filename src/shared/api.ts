@@ -37,6 +37,7 @@ import type { ClaudeLaunchDefaults } from './launch'
 import type { SecretStoreStatus } from './secrets'
 import type { SetupPreview } from './setupFile'
 import type { HubLocalKeyView, HubResult, HubView } from './hub/client'
+import type { AttachAnswer, HubRemoteView, RemoteTabFrame } from './hub/remote'
 import type { AccessLookup, RemoteAccessStatus } from './cfAccess'
 import type { ChatDetection, ChatImportResult, ChatIndexStatus, ChatSearchHit, ChatTranscript } from './chatIndex'
 import type {
@@ -830,6 +831,21 @@ export interface StokeApi {
     shareKey(name: string): Promise<HubResult<{ keyId: string }>>
     unshareKey(keyId: string): Promise<HubResult>
     installKey(keyId: string): Promise<HubResult<{ message: string; name: string | null }>>
+    /** "Other machines" (src/main/hub/remote.ts). */
+    remote: {
+      view(): Promise<HubRemoteView>
+      onChange(cb: (view: HubRemoteView) => void): () => void
+      /** One pty-socket frame (`attached`, `data`, `exit`, `status`, `size`) for a remote tab. */
+      onFrame(cb: (tabId: string, frame: RemoteTabFrame) => void): () => void
+      open(deviceId: string, ptyId: string): Promise<HubResult<{ tab: string }>>
+      input(tabId: string, data: string): void
+      close(tabId: string): Promise<void>
+      retry(tabId: string): Promise<void>
+      answer(askId: string, answer: AttachAnswer): Promise<HubResult>
+      dropGuests(): Promise<void>
+      setSharing(on: boolean): Promise<HubResult>
+      revokeGrant(deviceId: string): Promise<HubResult>
+    }
   }
 
   /**

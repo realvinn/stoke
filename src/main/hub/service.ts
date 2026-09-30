@@ -97,10 +97,12 @@ import {
   HUB_PROTOCOL,
   parsePresenceServerFrame,
   reconnectDelayMs,
+  type PresenceClientFrame,
   type RecoveryWrap,
   type VaultWrap
 } from '../../shared/hub/protocol.ts'
-import { keyFingerprint } from '../../shared/hub/relay.ts'
+import { keyFingerprint, RELAY_MAX_FRAME_BYTES, type HubGrant } from '../../shared/hub/relay.ts'
+import { emptyRemoteView, isAttachAnswer, type HubRemoteView } from '../../shared/hub/remote.ts'
 import { applySyncedSettings, runsCode, sshKeyPayloadProblem, type SshKeyPayload, type SyncableHost } from '../../shared/hub/settings.ts'
 import type { SecretBackend } from '../secrets.ts'
 import type { ExecRun } from '../sshEnroll.ts'
@@ -114,6 +116,7 @@ import {
   openRecoveryWrap,
   pairCode,
   pairCommit,
+  presenceKey,
   randomB64u,
   randomU8,
   recoveryKeys,
@@ -130,6 +133,7 @@ import {
 } from './crypto.ts'
 import { HubFiles, type HubDevice } from './files.ts'
 import { hubRequest, HubRequestError } from './http.ts'
+import { HubRemote, type RelaySocket, type RemoteContext, type RemoteMachineDeps } from './remote.ts'
 import { defaultSshPaths, identityFilesFor, installReceivedKey, listKeyPairs, readKeyForShare, type SshPaths } from './sshKeys.ts'
 
 type ChainOk = Extract<ChainVerdict, { ok: true }>
@@ -170,6 +174,14 @@ export interface HubServiceDeps {
   /** Poll interval for a pairing in progress. */
   pairPollMs?: number
   log?(message: string, err?: unknown): void
+  /**
+   * "Other machines" (src/main/hub/remote.ts): this computer's sessions and
+   * the phone server's handlers. Absent (the suite's services), no status is
+   * sent and no relay is taken.
+   */
+  remote?: RemoteMachineDeps
+  /** Open a signed relay socket; default `ws`. */
+  relaySocket?: (url: string, headers: Record<string, string>) => Promise<RelaySocket>
 }
 
 /** A Kit made and shown, waiting to be confirmed before the chain entry that uses it is posted. */
@@ -269,12 +281,16 @@ export class HubService {
   private socketTimer: ReturnType<typeof setTimeout> | null
   private socketPing: ReturnType<typeof setInterval> | null
   private socketOpening: boolean
+  /** The presence socket answered `open` and has not closed. */
+  private socketOpen: boolean
   private revokeReport: HubView['revokeReport']
   private vkCache: Map<number, Uint8Array>
   private keysCache: Map<number, ItemKeys>
   private digestKey: { text: string; bytes: Uint8Array } | null
   private offSettings: (() => void) | null
   private started: boolean
+  private readonly remote: HubRemote | null
+  private presenceKeys: Map<number, Uint8Array>
 
   constructor(deps: HubServiceDeps) {
     this.deps = deps
@@ -307,12 +323,29 @@ export class HubService {
     this.socketTimer = null
     this.socketPing = null
     this.socketOpening = false
+    this.socketOpen = false
     this.revokeReport = null
     this.vkCache = new Map()
     this.keysCache = new Map()
     this.digestKey = null
     this.offSettings = null
     this.started = false
+    this.presenceKeys = new Map()
+    this.remote = deps.remote
+      ? new HubRemote({
+          ...deps.remote,
+          now: () => this.now(),
+          context: () => this.remoteContext(),
+          presenceKey: (epoch) => this.presenceKeyFor(epoch),
+          sendPresence: (frame) => this.sendPresence(frame),
+          createRelay: (host) => this.createRelay(host),
+          openRelay: (relay) => this.openRelay(relay),
+          sharing: () => this.settings().hub.shareSessions,
+          grants: () => this.settings().hub.grants,
+          setGrant: (device, grant) => this.setGrant(device, grant),
+          log: (message, err) => this.log(message, err)
+        })
+      : null
   }
 
   /* ======================================================== plumbing */
@@ -2398,6 +2431,8 @@ export class HubService {
         ws.on('open', () => {
           this.socketAttempts = 0
           ws.send(JSON.stringify({ t: 'hello', protocol: HUB_PROTOCOL, app: this.deps.appVersion }))
+          this.socketOpen = true
+          this.remote?.presenceOpened()
           this.socketPing = setInterval(() => {
             try {
               ws.send(JSON.stringify({ t: 'ping' }))
@@ -2411,7 +2446,11 @@ export class HubService {
         ws.on('close', () => {
           if (this.socketPing) clearInterval(this.socketPing)
           this.socketPing = null
-          if (this.socket === ws) this.socket = null
+          if (this.socket === ws) {
+            this.socket = null
+            this.socketOpen = false
+            this.remote?.presenceClosed()
+          }
           this.online = []
           if (!this.signedIn() || this.revoked) return
           const delay = reconnectDelayMs(this.socketAttempts++, Math.random())
@@ -2428,12 +2467,15 @@ export class HubService {
   }
 
   private stopPresence(): void {
+    this.remote?.reset()
+    this.presenceKeys.clear()
     if (this.socketTimer) clearTimeout(this.socketTimer)
     this.socketTimer = null
     if (this.socketPing) clearInterval(this.socketPing)
     this.socketPing = null
     const ws = this.socket
     this.socket = null
+    this.socketOpen = false
     try {
       ws?.close(1000, 'bye')
     } catch {
@@ -2448,7 +2490,14 @@ export class HubService {
       case 'welcome':
       case 'presence':
         this.online = f.online
+        this.remote?.onOnline(f.online)
         this.emit()
+        break
+      case 'status':
+        void this.remote?.onStatus(f.device, f.status)
+        break
+      case 'relay':
+        void this.remote?.onRelay(f.relay, f.guest)
         break
       case 'items':
       case 'chain':
@@ -2470,6 +2519,139 @@ export class HubService {
       default:
         break
     }
+  }
+
+  /* ======================================================== other machines */
+
+  /**
+   * Who this device is for "Other machines": only while it is in the vault by
+   * id AND key, in a chain holding its own anchor (gotcha 140). Every other
+   * device named is one that chain holds as active.
+   */
+  private remoteContext(): RemoteContext | null {
+    const v = this.verdict
+    const d = this.dev
+    if (!v || !d?.account || !d.token || this.revoked || !this.isActiveIn(v)) return null
+    return {
+      account: d.account,
+      epoch: v.epoch,
+      me: { id: d.id, label: this.deviceName(d.id, d.label), platform: d.platform, signPriv: d.keys.signPriv },
+      active: v.active.map((a) => ({ id: a.id, label: this.deviceName(a.id, a.label), platform: a.platform, sign: a.sign }))
+    }
+  }
+
+  /**
+   * The epoch's presence key, from a vault key this device already holds and
+   * the chain vouches for — never fetched here (a sync pass fetches and checks
+   * wraps; this runs beside it, outside the queue).
+   */
+  private async presenceKeyFor(epoch: number): Promise<Uint8Array | null> {
+    const v = this.verdict
+    const account = this.dev?.account
+    if (!v || !account || !this.state) return null
+    const hit = this.presenceKeys.get(epoch)
+    if (hit) return hit
+    const commit = v.vkCommits[epoch]
+    if (!commit) return null
+    const f = { account, epoch }
+    let vk = this.vkCache.get(epoch) ?? null
+    if (!vk || !vaultKeyMatches(vk, f, commit)) {
+      const sealed = this.state.vaultKeys[String(epoch)]
+      vk = sealed ? this.files.openVault(account, epoch, sealed) : null
+      if (!vk || !vaultKeyMatches(vk, f, commit)) return null
+    }
+    const key = presenceKey(vk, account, epoch)
+    this.presenceKeys.set(epoch, key)
+    return key
+  }
+
+  private sendPresence(frame: PresenceClientFrame): boolean {
+    const ws = this.socket
+    if (!ws || !this.socketOpen) return false
+    try {
+      ws.send(JSON.stringify(frame))
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  private async createRelay(host: string): Promise<{ relay: string }> {
+    const res = await this.req('POST', '/v1/relays', { host })
+    if (typeof res.relay !== 'string' || !isId('relay', res.relay)) throw new Error('The hub did not open a relay.')
+    return { relay: res.relay }
+  }
+
+  private async openRelay(relay: string): Promise<RelaySocket> {
+    const dev = this.me()
+    if (!dev.token) throw new Stop('Sign in first.')
+    const pathFromV1 = `/v1/ws/relay/${relay}`
+    const url = hubSocketUrl(this.base(), pathFromV1)
+    const headers = signRequest({ method: 'GET', pathFromV1, device: dev.id, signPriv: dev.keys.signPriv, token: dev.token, body: '', now: this.now() })
+    if (this.deps.relaySocket) return this.deps.relaySocket(url, headers)
+    const { WebSocket } = await import('ws')
+    return new WebSocket(url, { headers, maxPayload: RELAY_MAX_FRAME_BYTES + 1024 }) as unknown as RelaySocket
+  }
+
+  /** One device's standing on THIS machine (T0: `hub.grants`, never synced); null takes it away. */
+  private async setGrant(device: string, grant: HubGrant | null): Promise<void> {
+    if (!isId('device', device)) return
+    const grants = { ...this.settings().hub.grants }
+    if (grant) grants[device] = grant
+    else delete grants[device]
+    await this.commitHub({ grants })
+  }
+
+  /** The "Other machines" view, for the sidebar, the remote tabs and Account & sync. */
+  remoteView(): HubRemoteView {
+    return this.remote?.view() ?? emptyRemoteView()
+  }
+
+  /** "Let my other devices see and open my sessions" on this computer. */
+  async setSharing(on: boolean): Promise<HubResult> {
+    await this.commitHub({ shareSessions: on === true })
+    this.remote?.sharingChanged()
+    this.emit()
+    return { ok: true }
+  }
+
+  async revokeGrant(device: string): Promise<HubResult> {
+    if (!isId('device', device)) return { ok: false, message: 'That is not a device.' }
+    await this.remote?.revokeGrant(device)
+    return { ok: true }
+  }
+
+  remoteOpen(device: string, ptyId: string): HubResult<{ tab: string }> {
+    if (!this.remote) return { ok: false, message: 'Other machines are not available here.' }
+    const r = this.remote.open(device, ptyId)
+    return r.ok ? { ok: true, tab: r.tab } : { ok: false, message: r.message }
+  }
+
+  remoteInput(tab: string, data: string): void {
+    this.remote?.input(tab, data)
+  }
+
+  remoteClose(tab: string): void {
+    this.remote?.close(tab)
+  }
+
+  remoteRetry(tab: string): void {
+    this.remote?.retry(tab)
+  }
+
+  async remoteAnswer(ask: string, answer: unknown): Promise<HubResult> {
+    if (!this.remote || !isAttachAnswer(answer)) return { ok: false, message: 'That is not an answer.' }
+    const r = await this.remote.answer(ask, answer)
+    return r.ok ? { ok: true } : { ok: false, message: 'That question is no longer waiting.' }
+  }
+
+  remoteDropGuests(): void {
+    this.remote?.dropGuests()
+  }
+
+  /** This computer's sessions moved (a start, an exit, a registry change): the status may need sending. */
+  remoteSessionsChanged(): void {
+    this.remote?.sessionsChanged()
   }
 }
 
