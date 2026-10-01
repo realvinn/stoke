@@ -177,6 +177,12 @@ export interface Relay {
   /** Both ends must have joined by then. */
   expiresAt: number
   sockets: Record<RelayRole, WebSocket | null>
+  /**
+   * The session (token hash) each end joined under. A relay outlives nothing
+   * that opened it: a sign-out closes it (`closeSession`), and the ping round
+   * closes one whose session is gone by any other road (`closeWhere`).
+   */
+  tokens: Record<RelayRole, string | null>
   /** Frames sent before the other end joined, delivered when it does. */
   queue: { to: RelayRole; data: RawData; binary: boolean; bytes: number }[]
   queuedBytes: number
@@ -245,6 +251,7 @@ export class RelayBroker {
       createdAt: now,
       expiresAt: now + RELAY_OPEN_TTL_MS,
       sockets: { guest: null, host: null },
+      tokens: { guest: null, host: null },
       queue: [],
       queuedBytes: 0,
       lastActivity: now,
@@ -275,12 +282,13 @@ export class RelayBroker {
     return !relay.closed && relay.sockets[role] === null && this.now() < relay.expiresAt
   }
 
-  join(relay: Relay, role: RelayRole, ws: WebSocket): void {
+  join(relay: Relay, role: RelayRole, ws: WebSocket, tokenHash: string): void {
     if (!this.canJoin(relay, role)) {
       closeQuietly(ws, 1008, 'that end of the relay is taken')
       return
     }
     relay.sockets[role] = ws
+    relay.tokens[role] = tokenHash
     const other = otherEnd(role)
     ws.on('message', (data: RawData, isBinary: boolean) => this.forward(relay, other, data, isBinary))
     ws.on('close', (code: number, reason: Buffer) => this.closeRelay(relay, code, reason.toString('utf8') || `${role} left`))
@@ -374,6 +382,18 @@ export class RelayBroker {
   /** Every relay one device is an end of (revoked, signed out). */
   closeDevice(account: string, device: string, code: number, reason: string): void {
     for (const r of [...this.relays.values()]) if (r.account === account && (r.guest === device || r.host === device)) this.closeRelay(r, code, reason)
+  }
+
+  /** Every relay an end of which joined under this session (signed out). */
+  closeSession(tokenHash: string, code: number, reason: string): void {
+    for (const r of [...this.relays.values()]) if (r.tokens.guest === tokenHash || r.tokens.host === tokenHash) this.closeRelay(r, code, reason)
+  }
+
+  /** Every relay with an end whose session `live` no longer vouches for. */
+  closeWhere(live: (tokenHash: string) => boolean, code: number, reason: string): void {
+    for (const r of [...this.relays.values()]) {
+      if ((r.tokens.guest !== null && !live(r.tokens.guest)) || (r.tokens.host !== null && !live(r.tokens.host))) this.closeRelay(r, code, reason)
+    }
   }
 
   /** Relays never opened in time, and relays idle for RELAY_IDLE_MS. */
