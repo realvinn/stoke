@@ -637,7 +637,8 @@ await phase('1. device A signs up with the invite and makes the vault', async ()
       note(`A signed in again: ${back.ok ? back.state : back.message}`)
     }
     await until(() => A!.svc.view().phase === 'active' && A!.svc.view().lastSyncAt !== null, 20_000)
-    check(`A (resumed from ${TMP}) is active in its vault`, [A.svc.view().phase, A.svc.view().role], ['active', 'owner'])
+    // (HubView.role is filled only at sign-in, so a restored device reads null until then; the owner role is checked below, by the hub.)
+    check(`A (resumed from ${TMP}) is active in its vault`, A.svc.view().phase, 'active')
   } else {
     const c = await A.svc.checkUrl(URL_)
     check('Stoke’s own check of the address: a hub that needs its first account', [c.ok, c.ok && c.needsBootstrap], [true, true])
@@ -753,17 +754,19 @@ await phase('3. items: an API key and an SSH private key, sealed by A and opened
   )
   note(`item ${target!.envelope.id.slice(0, 12)}… at version ${target!.envelope.version}; put with baseVersion ${target!.envelope.version - 1} → ${JSON.stringify({ ok: r0?.ok, error: r0?.error })}`)
 
-  // Two devices change one setting: the later edit wins, and the loser's device says so.
-  a.set({ themeId: 'lagoon' } as Partial<Settings>)
+  // Two devices change one setting: the later edit wins, and the loser's device says so. Both values
+  // differ from the vault's current one (a resumed account already holds an earlier run's winner).
+  const [themeA, themeB] = ['lagoon', 'rose', 'moss', 'graphite'].filter((t) => t !== a.settings().themeId && t !== b.settings().themeId)
+  a.set({ themeId: themeA } as Partial<Settings>)
   await sleep(1200)
-  b.set({ themeId: 'rose' } as Partial<Settings>)
+  b.set({ themeId: themeB } as Partial<Settings>)
   await sleep(1200)
   await a.svc.syncNow()
   await b.svc.syncNow()
-  const noted = await until(() => b.svc.view().notes.find((n) => n.path === 't1/settings/themeId'), 15_000)
-  check('two devices changed the theme: the later edit (B’s) wins and B reports the conflict', [b.settings().themeId, noted?.kept, noted?.otherDevice], ['rose', 'mine', 'E2E Mac (A)'])
+  const noted = await until(() => b.svc.view().notes.find((n) => n.path === 't1/settings/themeId' && n.at >= T0), 15_000)
+  check(`two devices changed the theme (A to ${themeA}, then B to ${themeB}): the later edit (B’s) wins and B reports the conflict`, [b.settings().themeId, noted?.kept, noted?.otherDevice], [themeB, 'mine', 'E2E Mac (A)'])
   await a.svc.syncNow()
-  check('A converges on it', (await until(() => a.settings().themeId === 'rose', 15_000)) ?? false, true)
+  check('A converges on it', (await until(() => a.settings().themeId === themeB, 15_000)) ?? false, true)
 })
 
 await phase('4. presence over the WebSocket, through the edge', async () => {
@@ -975,28 +978,38 @@ await phase('5. relay through the edge: B opens A’s session, A allows once, fr
 
 if (IDLE_MS > 0) {
   await phase(`5b. the relay held quiet for ${Math.round(IDLE_MS / 1000)} s, and every socket's life so far`, async () => {
-    need(A && B && tab, 'no open relay tab')
+    need(A && B && B.svc.view().phase === 'active', 'A and B are not both active')
     const a = A as Box
     const b = B as Box
-    const bSock = lastOpen(b.relaySocks)
-    need(bSock, 'no open relay socket at B')
+    const bSock = tab && b.svc.remoteView().tabs.find((x) => x.id === tab)?.state === 'open' ? lastOpen(b.relaySocks) : null
+    // Without a relay (5 failed) the quiet spell still holds the presence sockets past the hub's ping rounds.
+    ok('a relay is open to hold quiet', !!bSock, 'none opened in 5: only the presence sockets are held quiet')
     const quietFrom = Date.now()
-    const closedAt = await until(() => bSock!.closedAt, IDLE_MS, 1000)
-    if (closedAt) {
-      observations.push(`idle: B's quiet relay socket was closed after ${((closedAt - quietFrom) / 1000).toFixed(0)} s with code ${bSock!.code} "${bSock!.reason}"`)
-      note(`B’s relay socket closed after ${((closedAt - quietFrom) / 1000).toFixed(0)} s quiet: ${bSock!.code} ${bSock!.reason}; tab log: ${b.tabLog.slice(-4).join(' | ')}`)
-    } else note(`B’s relay socket stayed open through ${Math.round(IDLE_MS / 1000)} s with nothing typed`)
-    ok(`the quiet relay is still the one that was open ${Math.round(IDLE_MS / 1000)} s ago`, !closedAt, `closed ${bSock!.code} ${bSock!.reason}`)
-    const back = await until(() => b.svc.remoteView().tabs.find((x) => x.id === tab)?.state === 'open', 60_000)
-    const f0 = b.frames.length
-    b.svc.remoteInput(tab, `after-idle-${RUN}\r`)
-    const echo = await until(() => framesSince(b, f0, tab).find((f) => f.frame.type === 'data' && f.frame.data === `after-idle-${RUN}\r`), 20_000)
-    check('after the quiet spell the tab still types and echoes', [!!back, !!echo], [true, true])
+    const closedAt = bSock ? await until(() => bSock.closedAt, IDLE_MS, 1000) : (await sleep(IDLE_MS), null)
+    if (bSock) {
+      if (closedAt) {
+        observations.push(`idle: B's quiet relay socket was closed after ${((closedAt - quietFrom) / 1000).toFixed(0)} s with code ${bSock.code} "${bSock.reason}"`)
+        note(`B’s relay socket closed after ${((closedAt - quietFrom) / 1000).toFixed(0)} s quiet: ${bSock.code} ${bSock.reason}; tab log: ${b.tabLog.slice(-4).join(' | ')}`)
+      } else note(`B’s relay socket stayed open through ${Math.round(IDLE_MS / 1000)} s with nothing typed`)
+      ok(`the quiet relay is still the one that was open ${Math.round(IDLE_MS / 1000)} s ago`, !closedAt, `closed ${bSock.code} ${bSock.reason}`)
+      const back = await until(() => b.svc.remoteView().tabs.find((x) => x.id === tab)?.state === 'open', 60_000)
+      const f0 = b.frames.length
+      b.svc.remoteInput(tab, `after-idle-${RUN}\r`)
+      const echo = await until(() => framesSince(b, f0, tab).find((f) => f.frame.type === 'data' && f.frame.data === `after-idle-${RUN}\r`), 20_000)
+      check('after the quiet spell the tab still types and echoes', [!!back, !!echo], [true, true])
+    }
     for (const x of [a, b]) {
       for (const s of x.presenceSocks) note(`${x.name} presence: opened ${at(s.openedAt)}${s.closedAt ? `, closed ${at(s.closedAt)} ${s.code} ${s.reason}${s.error ? ` (${s.error})` : ''}` : ', open'}`)
     }
     const presenceDrops = [a, b].flatMap((x) => x.presenceSocks.filter((s) => s.closedAt !== null).map((s) => `${x.name} ${s.code} ${s.reason}`))
-    ok(`A’s and B’s presence sockets stayed up the whole run so far (${((Date.now() - T0) / 1000).toFixed(0)} s, past the hub’s 25 s ping rounds)`, presenceDrops.length === 0, presenceDrops.join('; '))
+    const oldest = Math.min(...[a, b].map((x) => x.presenceSocks[0]?.openedAt ?? Date.now()))
+    const lived = (Date.now() - oldest) / 1000
+    ok(
+      `A’s and B’s presence sockets stayed up the whole run so far (${lived.toFixed(0)} s: ${Math.floor(lived / 25)} of the hub’s 25 s ping rounds, each needing a pong with the ping’s own payload)`,
+      // Two rounds (past 50 s) prove the path answers the hub's pings; a short --idle-ms rehearsal may not get there.
+      presenceDrops.length === 0 && (IDLE_MS < 60_000 || lived > 55),
+      presenceDrops.join('; ') || `only ${lived.toFixed(0)} s`
+    )
   })
 }
 
