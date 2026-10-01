@@ -181,10 +181,22 @@ export interface ItemPlaintext {
   deleted: boolean
   /** Any JSON; null for a tombstone. */
   value: unknown
+  /**
+   * The device that WROTE this value, when that is not the envelope's author:
+   * a re-seal (a revoke, a rotate, a carry-forward) puts another device's
+   * value under its own name, because the hub insists the author is the
+   * signer. Without it a removed device's change, re-sealed by the revoker,
+   * reached the next device as the revoker's (found in review, 2026-10-02).
+   * Only as good as the device that sealed it, so the client shows both and
+   * carries it forward only from a sealer still in the vault (`putResealed`).
+   * Absent on an ordinary write, so the sealed text of one is unchanged.
+   */
+  by?: string
 }
 
 export function itemPlaintextText(p: ItemPlaintext): string {
-  return canonicalJson({ path: p.path, editedAt: p.editedAt, deleted: p.deleted, value: p.deleted ? null : p.value })
+  const base = { path: p.path, editedAt: p.editedAt, deleted: p.deleted, value: p.deleted ? null : p.value }
+  return canonicalJson(p.by === undefined ? base : { ...base, by: p.by })
 }
 
 /** Parse a decrypted item, or null for anything that is not one (the path is checked by the caller against the id). */
@@ -198,7 +210,9 @@ export function parseItemPlaintext(text: string): ItemPlaintext | null {
   if (!isRecord(raw) || typeof raw.path !== 'string' || !isNonNegInt(raw.editedAt) || typeof raw.deleted !== 'boolean') return null
   if (!parseItemPath(raw.path)) return null
   if (raw.deleted && raw.value !== null) return null
-  return { path: raw.path, editedAt: raw.editedAt, deleted: raw.deleted, value: raw.deleted ? null : raw.value }
+  const item: ItemPlaintext = { path: raw.path, editedAt: raw.editedAt, deleted: raw.deleted, value: raw.deleted ? null : raw.value }
+  if (isId('device', raw.by)) item.by = raw.by as string
+  return item
 }
 
 /* ------------------------------------------------ the hub's put rule */
