@@ -251,7 +251,7 @@ function HubAddress({ view }: { view: HubView }): React.JSX.Element {
         disabled={busy !== null}
         onChange={(e) => setUrl(e.target.value)}
         onKeyDown={(e) => {
-          if (e.key === 'Enter') run('save', () => window.stoke.hub.setUrl(url), (r) => ({ tone: r.warning ? 'warning' : 'success', text: r.warning ?? 'Saved.' }))
+          if (e.key === 'Enter') run('save', () => window.stoke.hub.setUrl(url), () => ({ tone: 'success', text: 'Saved.' }))
         }}
       />
       {view.urlWarning && saved && (
@@ -279,7 +279,7 @@ function HubAddress({ view }: { view: HubView }): React.JSX.Element {
           disabled={busy !== null || saved}
           aria-busy={busy === 'save' || undefined}
           data-hub="save-url"
-          onClick={() => run('save', () => window.stoke.hub.setUrl(url), (r) => ({ tone: r.warning ? 'warning' : 'success', text: r.warning ?? 'Saved.' }))}
+          onClick={() => run('save', () => window.stoke.hub.setUrl(url), () => ({ tone: 'success', text: 'Saved.' }))}
         >
           <Busy on={busy === 'save'} idle={saved ? 'Saved' : 'Use this hub'} working="Saving…" />
         </button>

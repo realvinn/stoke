@@ -137,7 +137,7 @@ lumps your LAN together; the per-email lockout is unaffected.
 
 ## 3. Sign up from Stoke
 
-In Stoke: **Settings › Hub**, address `http://nuc.local:8788` (Stoke appends `/hub`), or your
+In Stoke: **Settings › Account & sync**, address `http://nuc.local:8788` (Stoke appends `/hub`), or your
 tailnet name if you front the LAN port with `tailscale serve --bg http://127.0.0.1:8788`
 (`https://nuc.<tailnet>.ts.net`). Paste the invite, choose an email and a password of 12+
 characters. The first account is the owner.

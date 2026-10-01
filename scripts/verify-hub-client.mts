@@ -789,6 +789,14 @@ try {
   A.intercept = null
   check('a hub that ends the session signs this computer out…', A.svc.view().phase, 'signed-out')
   check('…but cannot have it pointed at another hub while it belongs to this account', (await A.svc.setUrl('http://127.0.0.1:1/hub')).ok, false)
+  // The same hub typed the way the README and the field's hint say (no /hub,
+  // or a trailing slash) is not "another hub" — the field already reads Saved
+  // for it, and Enter used to answer "Sign out of this hub before…".
+  check(
+    '…while the same hub, typed without /hub or with a trailing slash, is still that hub',
+    [(await A.svc.setUrl(URL_.replace(/\/hub$/, ''))).ok, (await A.svc.setUrl(`${URL_}/`)).ok, A.svc.view().url],
+    [true, true, URL_]
+  )
   check('signing in again finds the same vault: anchor and pin were kept', [(await A.svc.signIn({ email: EMAIL, password: PASSWORD })).ok, A.svc.view().phase, A.svc.view().alarm], [true, 'active', null])
   check('(a clean pass first, so no error is left over from one)', (await A.svc.syncNow()).ok, true)
   A.intercept = (url) => (/^\/v1\/pair\/[^/]+\/nonce$/.test(v1(url)) ? json({ error: 'unauthorized', message: 'Your hub session ended. Sign in again.' }, 401) : null)

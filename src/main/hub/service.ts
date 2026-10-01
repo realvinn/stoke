@@ -89,7 +89,7 @@ import {
   syncLabel
 } from '../../shared/hub/client.ts'
 import { b64uDecode, idFromBytes, isId, isRecord } from '../../shared/hub/codec.ts'
-import { hubSocketUrl, hubUrlVerdict } from '../../shared/hub/edge.ts'
+import { hubSocketUrl, hubUrlVerdict, sameHubUrl } from '../../shared/hub/edge.ts'
 import { decideConflict, conflictNote, itemLabel, nextEditedAt, parseItemPath, versionRegression, type ItemEnvelope, type StoredItem } from '../../shared/hub/items.ts'
 import { formatRecoverySecret, isPairRecord, parseRecoverySecret, type PairRecord } from '../../shared/hub/pairing.ts'
 import {
@@ -718,7 +718,10 @@ export class HubService {
    */
   async setUrl(text: string): Promise<HubResult<{ url: string; warning: string | null }>> {
     const t = typeof text === 'string' ? text.trim() : ''
-    if ((this.signedIn() || !!this.dev?.account) && t !== this.settings().hub.url) {
+    // The same hub typed another way (`http://nuc:8788` for the stored
+    // `…/hub`, a trailing slash) is not "another hub": sameHubUrl normalises
+    // the text the way hubUrlVerdict will, as the field's own Saved test does.
+    if ((this.signedIn() || !!this.dev?.account) && !sameHubUrl(t, this.settings().hub.url)) {
       return { ok: false, message: 'Sign out of this hub before pointing Stoke at another: this computer’s hub keys and vault belong to the account there.' }
     }
     if (t === '') {
