@@ -2054,7 +2054,8 @@ hub/              Stoke Hub, the server the owner runs on the NUC (spec:
   store.ts          the SQLite file: WAL, synchronous FULL, 0600; hashes of tokens and invites,
                     never the values; VACUUM INTO for backups
   sockets.ts        presence registry and the relay broker (in memory, frames forwarded verbatim)
-  limits.ts         the per-IP bucket, the scrypt semaphore, the one-sign-in-per-email claim
+  limits.ts         `clientKey` (an IPv6 sender is its /64), the per-client bucket, the scrypt
+                    semaphores (a proven device's apart), the one-sign-in-per-email claim
   log.ts            JSON-lines log that redacts by field name and by value shape
   config.ts         env and flags; the edge secret never from argv
   build.mjs         esbuild bundle -> hub/dist/stoke-hub.mjs (NOT out/: electron-builder ships out/**)

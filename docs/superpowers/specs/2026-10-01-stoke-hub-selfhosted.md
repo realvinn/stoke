@@ -244,10 +244,20 @@ Two counters, both kept by the hub, both judged by `throttleVerdict`/`recordLogi
 |---|---|---|
 | Normalised email (known or not) | 5 failures inside 15 min | locked 15 min, doubling per repeat lockout, capped at 24 h; a success clears it |
 | An active device's PROVEN sign-in (below), instead of the email | the same | the same, on `device:<account>:<id>`; a proven success clears only this |
-| Client IP (`x-stoke-client-ip` from the edge, else the socket's) | 30 failures inside 15 min | refused 15 min |
+| Client IP (`x-stoke-client-ip` from the edge, else the socket's), IPv6 as its /64 | 30 failures inside 15 min | refused 15 min |
 
 Refusals are HTTP 429 `{error: 'locked' | 'rate-limited', retryAfterMs}`. Invite redemption and
 signup share the IP counter.
+
+> **2026-10-02 (review of the server).** Every per-client limit — the request bucket, the IP
+> counter, sign-ins in flight per IP, the refusal log — is keyed by `clientKey` (hub/limits.ts):
+> an IPv6 address counts as its /64, an IPv4-mapped one as its IPv4. Keyed by the full /128, one
+> subscriber rotating the low 64 bits had unlimited buckets, filled the shared scrypt queue with
+> unknown-email sign-ins, and every proven sign-in of the owner's device came back "busy" — the
+> promise below did not hold. So a proven sign-in also has a scrypt slot and queue of its own, a
+> "busy" refusal counts against the sender's IP counter, the refusal log has a cap across all
+> senders, and an `ip:` row is swept once its window has passed and it is unlocked (an IP lock
+> never escalates, so a day of memory bought nothing but rows).
 
 **The owner's own devices are not locked out by a stranger (found in review, 2026-10-01).** The
 email lock is judged before the password and refuses the right one too, so anyone who knows the
