@@ -27,7 +27,17 @@
   // The tunnel hostname cloudflared serves on the NUC (hub/README.md). Gotcha
   // 77 DOES apply to it: `cloudflared tunnel route dns` writes that record.
   // HUB_EDGE_SECRET is a secret (wrangler secret put), never a var here.
-  "vars": { "HUB_ORIGIN": "https://hub-origin.vinn.dev" },
+  //
+  // Deployed 2026-10-02 with the tunnel `stoke-hub` in the ProTech Cloudflare
+  // account, because that is the account `cloudflared` on the owner's Mac is
+  // signed in to (its cert.pem covers protechitsolutions.com.au only), while
+  // vinn.dev and this Worker live in the personal account wrangler uses. A
+  // hostname in another zone is fine for an origin: it is never advertised,
+  // and without the edge secret the hub answers 403 to everything. To move it
+  // onto vinn.dev later: `cloudflared tunnel login` into the personal account,
+  // `cloudflared tunnel route dns stoke-hub hub-origin.vinn.dev`, change this
+  // var, `npm run deploy:hub-edge`.
+  "vars": { "HUB_ORIGIN": "https://stoke-hub-origin.protechitsolutions.com.au" },
 
   "observability": { "enabled": true }
 }

@@ -33,6 +33,36 @@ The LAN listener refuses anything that carries Cloudflare's or Tailscale Funnel'
 tunnel pointed at the wrong port fails loudly instead of opening a door. The edge listener with
 no secret configured refuses everything, which is how a missing secret gets noticed.
 
+## As deployed on protech-nuc (2026-10-02)
+
+The NUC this first ran on (`protech-nuc`, Debian 13 x86_64, reached over Tailscale) gives the
+`vin` account no root and no Docker group, so the hub runs entirely as `vin` instead of the
+systemd units below — same binary, same listeners, same secret, different supervisor:
+
+| What | Where |
+|---|---|
+| Node 24 (official tarball, SHA-256 checked) | `~/stoke-hub/node/` |
+| The hub bundle, data, edge secret, backups, logs | `~/stoke-hub/` (all `0700`/`0600`) |
+| cloudflared 2026.9.3 (SHA-256 checked) + config + tunnel credentials | `~/stoke-hub/bin/`, `~/stoke-hub/cloudflared/` |
+| Supervisors (restart on exit) | `run-hub.sh`, `run-tunnel.sh`, single-instance by `flock` |
+| Start at boot, re-check every 5 min, trim logs | `ensure.sh`, from `vin`'s crontab |
+| Nightly `backup --keep 14` | `backup.sh`, 03:00 from the crontab |
+
+The listeners are the edge one on `127.0.0.1:8787` and the LAN one on the **tailnet address
+only** (`100.82.168.7:8788`). The tunnel is `stoke-hub` in the **ProTech** Cloudflare account,
+hostname `stoke-hub-origin.protechitsolutions.com.au` (the account `cloudflared` on the owner's
+Mac is signed in to); the `stoke-hub-edge` Worker on `stoke.vinn.dev/hub/*` lives in the
+personal account and forwards there with the edge secret (`wrangler.hub-edge.jsonc` says how to
+move the origin onto `vinn.dev`). If root ever becomes available, the systemd units below are
+the better home: they add `ProtectSystem`, `NoNewPrivileges` and `MemoryMax`, which a crontab
+supervisor cannot.
+
+```sh
+ssh vin@protech-nuc
+tail -f ~/stoke-hub/logs/hub.log                       # JSON lines; the bootstrap invite is at the top
+H=~/stoke-hub; STOKE_HUB_DATA=$H/data $H/node/bin/node $H/stoke-hub.mjs invite   # another invite
+```
+
 ## 0. Build the one file
 
 On any machine with this repo (your Mac):
