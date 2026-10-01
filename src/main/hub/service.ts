@@ -233,6 +233,12 @@ const REVOKED_SENTENCE =
 const UNANCHORED_SENTENCE =
   'The hub’s device list says this computer is in the vault, but this computer never joined it: no pairing code was confirmed here and no Recovery Kit was used here. A hub that built a vault of its own would look like this, so nothing was taken or synced. If you approved this computer from another one and Stoke restarted before you confirmed the code here, remove it there, then sign out here and join again.'
 const LOGOUT_TIMEOUT_MS = 5000
+/** What each held group is, on its card (`heldChangesFor` names the groups; a host is its own). */
+const HELD_GROUP_LABELS: Record<string, string> = {
+  agents: 'MCP servers and agent endpoints (Settings › Agents)',
+  providers: 'Claude Code’s provider (Settings › Agents › Claude Code › Provider & keys)',
+  voice: 'Dictation (Settings › Voice)'
+}
 
 function cleanLabel(text: string, fallback: string): string {
   const t = (text ?? '').replace(/[\r\n\t]+/g, ' ').trim()
@@ -665,7 +671,7 @@ export class HubService {
       const host = /^t3\/host\/(.+)$/.exec(h.group)?.[1]
       groups.set(h.group, {
         group: h.group,
-        label: host ? (this.hostName(host) === host ? 'A new SSH host' : `SSH host ${this.hostName(host)}`) : 'MCP servers (Settings › Agents)',
+        label: host ? (this.hostName(host) === host ? 'A new SSH host' : `SSH host ${this.hostName(host)}`) : (HELD_GROUP_LABELS[h.group] ?? HELD_GROUP_LABELS.agents),
         from: h.author ? this.deviceName(h.author, this.labelFromChain(h.author)) : 'another device',
         lines: [...h.lines],
         at: h.at

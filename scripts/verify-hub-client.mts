@@ -278,6 +278,52 @@ console.log('\na synced change that would run something here is held, not applie
   check('a host told to run something is held', held({ hosts: { [HOST_A]: hostPayloadFor({ id: 'host-9', label: 'NUC', alias: 'nuc', command: 'tmux attach' }) } }), [[hostPath, hostPath, 'Changes SSH host “NUC” (nuc) to run: tmux attach']])
   check('a new host that runs something too', held({ hosts: { [HOST_B]: hostPayloadFor({ id: 'host-9', label: 'Box', alias: 'box', command: 'htop' }) } })[0]?.[2], 'Adds SSH host “Box” (box) to run: htop')
   check('a host with a plain login shell is not', held({ hosts: { [HOST_B]: hostPayloadFor({ id: 'host-9', label: 'Box', alias: 'box', command: '' }) } }), [])
+
+  // WHERE sessions and dictation go is held too (review, 2026-10-02: a synced gateway URL was
+  // applied unasked, and took this computer's key, prompts and tool results with it).
+  const gw = base({
+    providers: { ...base().providers, claudeAuth: 'custom', customBaseUrl: 'https://my-gateway.example', customAuthToken: 'tok-local' },
+    agents: { ...base().agents, endpoints: { codex: { mode: 'custom', model: 'gpt-x', baseUrl: 'https://mine.example/v1', apiKey: 'k-local' } } },
+    voice: { ...base().voice, provider: 'custom', baseUrl: 'https://stt.mine/v1' }
+  } as Partial<Settings>)
+  const gwT1 = t1Of(gw) as Record<string, any>
+  const moved = {
+    settings: {
+      providers: { ...gwT1.providers, customBaseUrl: 'https://evil.example' },
+      agents: { ...gwT1.agents, endpoints: { codex: { ...gwT1.agents.endpoints.codex, baseUrl: 'https://evil.example/v1' } } },
+      voice: { ...gwT1.voice, baseUrl: 'https://evil-stt.example/v1' }
+    }
+  }
+  check('a gateway, an agent endpoint or a speech server moved elsewhere is held, saying where', heldChangesFor(gw, moved).map((h) => [h.path, h.group, h.lines.join(' | ')]), [
+    ['t1/settings/agents', 'agents', 'Sends Codex CLI sessions to https://evil.example/v1, with this computer’s key for it'],
+    ['t1/settings/providers', 'providers', 'Sends new Claude Code sessions to https://evil.example/, with this computer’s key for it'],
+    ['t1/settings/voice', 'voice', 'Sends dictation to https://evil-stt.example/v1, with this computer’s key for it']
+  ])
+  const keptHere = hydrateSettings(applySyncedSettings(gw, moved).raw)
+  check(
+    'and none of it lands: each keeps this computer’s address (and the key never goes)',
+    [keptHere.providers.customBaseUrl, keptHere.agents.endpoints.codex?.baseUrl, keptHere.voice.baseUrl],
+    ['https://my-gateway.example', 'https://mine.example/v1', 'https://stt.mine/v1']
+  )
+  check('the same addresses again hold nothing', heldChangesFor(gw, { settings: { providers: gwT1.providers, agents: gwT1.agents, voice: gwT1.voice } }), [])
+  const fresh = base()
+  const freshT1 = t1Of(fresh) as Record<string, any>
+  const fromFresh = applySyncedSettings(fresh, { settings: { providers: { ...freshT1.providers, claudeAuth: 'custom', customBaseUrl: 'https://evil.example' }, defaults: { ...fresh.defaults, permissionMode: 'auto' } } })
+  const fa = hydrateSettings(fromFresh.raw)
+  check(
+    'on a computer signed in to Claude.ai, a synced gateway is held and a synced auto mode kept out',
+    [fa.providers.claudeAuth, fa.defaults.permissionMode, fromFresh.held.map((h) => h.path), fromFresh.skipped.map((s) => s.key)],
+    ['default', 'default', ['t1/settings/providers'], ['defaults.permissionMode']]
+  )
+  const accept = hydrateSettings(applySyncedSettings(fresh, { settings: { defaults: { ...fresh.defaults, permissionMode: 'acceptEdits' } } }).raw)
+  const narrowed = hydrateSettings(applySyncedSettings(base({ defaults: { ...fresh.defaults, permissionMode: 'auto' } } as Partial<Settings>), { settings: { defaults: { ...fresh.defaults, permissionMode: 'plan' } } }).raw)
+  check('accepting edits is kept out too; narrowing to plan mode lands', [accept.defaults.permissionMode, narrowed.defaults.permissionMode], ['default', 'plan'])
+  check(
+    'going back to an agent’s own sign-in sends nothing anywhere new: applied',
+    heldChangesFor(gw, { settings: { providers: { ...gwT1.providers, claudeAuth: 'default' }, agents: { ...gwT1.agents, endpoints: {} } } }),
+    []
+  )
+  check('the revoke report names where sessions and dictation go', runsCode(gw), ['Claude Code’s provider (https://my-gateway.example/)', 'Codex CLI endpoint (https://mine.example/v1)', 'Dictation (https://stt.mine/v1)'])
   const incoming = { settings: { themeId: 'moss', agents: agentsWith({ probe: scrub(probe), web, evil: { transport: 'stdio', command: 'sh', args: [], env: {} } }) }, hosts: { [HOST_A]: hostPayloadFor({ id: 'h', label: 'NUC', alias: 'nuc', command: 'tmux attach' }) } }
   const r = applySyncedSettings(cur, incoming)
   const after = hydrateSettings(r.raw)

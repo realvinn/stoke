@@ -11,8 +11,12 @@
  * Pure (gotcha 27); imports only src/shared by relative `.ts` path (gotcha 78).
  * Design: docs/superpowers/specs/2026-10-01-stoke-hub-selfhosted.md §5.
  */
-import type { Settings, SshHost } from '../types.ts'
+import type { PermissionMode, Settings, SshHost } from '../types.ts'
+import { OPENROUTER_OPENAI_BASE_URL } from '../agents.ts'
+import { CODING_CLIS } from '../codingClis.ts'
+import { OPENROUTER_BASE_URL } from '../providers.ts'
 import { applySecrets, collectSecrets, scrubSecrets, secretSpecFor } from '../secrets.ts'
+import { baseFor, STT_PROVIDERS, sttConfigFrom } from '../speechProviders.ts'
 import { PARTIAL_KEYS, portableSecrets, portableSettings } from '../setupFile.ts'
 import { isId, isRecord, stableJson } from './codec.ts'
 import type { HubGrant } from './relay.ts'
@@ -165,12 +169,17 @@ export interface SyncApplyResult {
 
 /**
  * An incoming item that would change what runs on this computer: an MCP
- * server's program, arguments or variables, an MCP server's URL, or what an
- * SSH host runs. Held whole — the local value stays — until the owner applies
- * it on THIS computer, as `bypassPermissions` is. Anyone who can seal an item
- * could otherwise make every device run a command at its next session: a
- * device before it was removed (removing it undoes nothing it wrote), or a
- * hub that got a device into a vault of its own.
+ * server's program, arguments or variables, an MCP server's URL, what an SSH
+ * host runs — or WHERE model or speech traffic goes: Claude Code's provider,
+ * an agent's endpoint, the dictation server. Held whole — the local value
+ * stays — until the owner applies it on THIS computer, as `bypassPermissions`
+ * is. Anyone who can seal an item could otherwise make every device run a
+ * command at its next session, or send its prompts, files, tool results and
+ * the key this computer holds for that endpoint to a server of their own (a
+ * gateway answers as the model, so it drives the tool calls too): a device
+ * before it was removed (removing it undoes nothing it wrote), or a hub that
+ * got a device into a vault of its own. The endpoint half was missing until a
+ * review on 2026-10-02 measured a synced gateway URL applied unasked.
  */
 export interface HeldChange {
   /** The item path (`t1/settings/agents`, `t2/secret/…`, `t3/host/…`). */
@@ -246,6 +255,73 @@ function mcpLines(mine: Record<string, unknown>, theirs: Record<string, unknown>
 
 const MCP_SECRET = /^agents\.mcp\.extra\.([^.]+)\.(env|headers|bearer)(?:\.(.+))?$/
 
+const trimUrl = (v: unknown): string => (typeof v === 'string' ? v.trim().replace(/\/+$/, '') : '')
+
+/**
+ * Where Claude Code's local sessions go when it is somewhere other than
+ * Anthropic, as `applyProviderEnv` reads `providers`: OpenRouter's base, a
+ * custom gateway's URL, or null (its own sign-in, or Anthropic's API).
+ */
+export function claudeRoute(providers: unknown): string | null {
+  if (!isRecord(providers)) return null
+  if (providers.claudeAuth === 'openrouter') return OPENROUTER_BASE_URL
+  if (providers.claudeAuth === 'custom') return trimUrl(providers.customBaseUrl) || null
+  return null
+}
+
+/** Where one agent's sessions go, as `hydrateEndpoint` reads it; null for the agent's own sign-in. */
+export function endpointRoute(ep: unknown): string | null {
+  if (!isRecord(ep)) return null
+  if (ep.mode === 'openrouter') return OPENROUTER_OPENAI_BASE_URL
+  if (ep.mode === 'custom') return trimUrl(ep.baseUrl) || null
+  return null
+}
+
+/** Where dictation's audio (and the provider's key) goes: the base `baseFor` sends to, null when none is set up. */
+export function voiceRoute(voice: unknown): string | null {
+  return isRecord(voice) ? baseFor(sttConfigFrom(voice)) : null
+}
+
+function endpointsOf(agents: unknown): Record<string, unknown> {
+  if (!isRecord(agents) || !isRecord(agents.endpoints)) return {}
+  return agents.endpoints
+}
+
+function agentLabel(id: string): string {
+  return CODING_CLIS.find((c) => c.id === id)?.label ?? id
+}
+
+/** Each agent an incoming `agents` block would send somewhere new. Back to an agent's own sign-in is not held. */
+function endpointLines(mine: unknown, theirs: unknown): string[] {
+  const a = endpointsOf(mine)
+  const b = endpointsOf(theirs)
+  const lines: string[] = []
+  for (const id of Object.keys(b).sort()) {
+    const to = endpointRoute(b[id])
+    if (to !== null && to !== endpointRoute(a[id])) lines.push(`Sends ${agentLabel(id)} sessions to ${urlText(to)}, with this computer’s key for it`)
+  }
+  return lines
+}
+
+/**
+ * How much each permission mode approves without asking. A synced default
+ * may narrow (to `default` or `plan`) but never widen: `acceptEdits`, `auto`
+ * and `bypassPermissions` each keep this computer's own until it is chosen
+ * here (`auto` was applied unasked until a review on 2026-10-02).
+ */
+const PERMISSION_REACH: Record<PermissionMode, number> = { plan: 0, default: 1, acceptEdits: 2, auto: 3, bypassPermissions: 4 }
+
+export function widensPermissions(mine: unknown, theirs: unknown): boolean {
+  const reach = (m: unknown): number => (typeof m === 'string' && m in PERMISSION_REACH ? PERMISSION_REACH[m as PermissionMode] : PERMISSION_REACH.default)
+  return reach(theirs) > Math.max(reach(mine), PERMISSION_REACH.default)
+}
+
+const PERMISSION_NAMES: Partial<Record<PermissionMode, string>> = {
+  acceptEdits: 'edits accepted without asking',
+  auto: 'auto mode',
+  bypassPermissions: 'permissions bypassed'
+}
+
 /**
  * The incoming items that would change what runs here, judged against
  * `current` (spec §5.3). Removing a server or a host's command runs nothing,
@@ -258,9 +334,23 @@ export function heldChangesFor(current: Settings, incoming: SyncedIncoming): Hel
   const agents = incoming.settings?.agents
   if (agents !== undefined) {
     const theirs = extraOf(agents)
-    const lines = mcpLines(mine, theirs)
+    const lines = [...mcpLines(mine, theirs), ...endpointLines(current.agents, agents)]
     if (lines.length) held.push({ path: 't1/settings/agents', group: 'agents', lines })
     else after = theirs
+  }
+  const providers = incoming.settings?.providers
+  if (providers !== undefined) {
+    const to = claudeRoute(providers)
+    if (to !== null && to !== claudeRoute(current.providers)) {
+      held.push({ path: 't1/settings/providers', group: 'providers', lines: [`Sends new Claude Code sessions to ${urlText(to)}, with this computer’s key for it`] })
+    }
+  }
+  const voice = incoming.settings?.voice
+  if (voice !== undefined) {
+    const to = voiceRoute(voice)
+    if (to !== null && to !== voiceRoute(current.voice)) {
+      held.push({ path: 't1/settings/voice', group: 'voice', lines: [`Sends dictation to ${urlText(to)}, with this computer’s key for it`] })
+    }
   }
   const localSecrets = collectSecrets(current)
   for (const [path, value] of Object.entries(incoming.secrets ?? {})) {
@@ -289,7 +379,7 @@ export function heldChangesFor(current: Settings, incoming: SyncedIncoming): Hel
   return held
 }
 
-/** What synced here runs something, for the revoke report: a removed device could have set any of it. */
+/** What synced here runs something, or decides where sessions and dictation go, for the revoke report: a removed device could have set any of it. */
 export function runsCode(s: Settings): string[] {
   const out: string[] = []
   for (const [name, raw] of Object.entries(extraOf(s.agents))) {
@@ -297,6 +387,14 @@ export function runsCode(s: Settings): string[] {
     if (t?.transport === 'stdio' && t.command) out.push(`MCP server “${name}” (${argvText(t.command, t.args)})`)
     else if (t?.transport === 'http' && t.url) out.push(`MCP server “${name}” (${urlText(t.url)})`)
   }
+  const claude = claudeRoute(s.providers)
+  if (claude) out.push(`Claude Code’s provider (${urlText(claude)})`)
+  for (const [id, ep] of Object.entries(endpointsOf(s.agents)).sort(([a], [b]) => a.localeCompare(b))) {
+    const to = endpointRoute(ep)
+    if (to) out.push(`${agentLabel(id)} endpoint (${urlText(to)})`)
+  }
+  const dictation = voiceRoute(s.voice)
+  if (dictation && dictation !== STT_PROVIDERS.sidecar.defaultBaseUrl) out.push(`Dictation (${urlText(dictation)})`)
   for (const h of s.hosts as SyncableHost[]) {
     if (isId('host', h.syncId) && (h.command ?? '').trim()) out.push(`SSH host “${h.label || h.alias}” (${h.command.trim()})`)
   }
@@ -312,10 +410,11 @@ function cloneJson<T>(v: T): T {
  *
  * - T1 REPLACES the local value of its key — a synced key is the whole truth
  *   for that key, unlike the one-shot `.stoke-setup` import, whose union by
- *   id would mean a deletion never propagates. Two guards shared with
- *   `mergeSetup`: a synced `bypassPermissions` default is never applied
- *   unasked, and a PARTIAL block (`wallpaper`, `browser`) replaces only its
- *   portable sub-keys.
+ *   id would mean a deletion never propagates. Two guards: a synced
+ *   permission default that approves more than this computer's own
+ *   (`widensPermissions`: `acceptEdits`, `auto`, `bypassPermissions`) is never
+ *   applied unasked, and a PARTIAL block (`wallpaper`, `browser`) replaces
+ *   only its portable sub-keys.
  * - T3 hosts match by SYNC id, never by settings id: `SshHost.id` is a
  *   per-machine counter, so two machines' `host-1` are usually two different
  *   servers (measured 2026-10-01: the shipped import, which matches by that
@@ -354,11 +453,12 @@ export function applySyncedSettings(current: Settings, incoming: SyncedIncoming,
     }
     if (key === 'defaults' && isRecord(value)) {
       const d = cloneJson(value)
-      if (d.permissionMode === 'bypassPermissions' && current.defaults.permissionMode !== 'bypassPermissions') {
+      if (widensPermissions(current.defaults.permissionMode, d.permissionMode)) {
+        const name = PERMISSION_NAMES[d.permissionMode as PermissionMode] ?? String(d.permissionMode)
         d.permissionMode = current.defaults.permissionMode
         skipped.push({
           key: 'defaults.permissionMode',
-          why: 'Another device starts sessions with permissions bypassed. Choose that here, in Settings › Sessions, if you want it on this machine too.'
+          why: `Another device starts sessions with ${name}. Choose that here, in Settings › Agents › Claude Code › Launch defaults, if you want it on this machine too.`
         })
       }
       next.defaults = d
