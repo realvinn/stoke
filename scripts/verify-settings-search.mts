@@ -599,6 +599,17 @@ console.log('\nthe jump: a row inside a disclosure it opens, and a row taller th
     ],
     [true, true, true]
   )
+  // Claude Code settings draws its dropdowns disabled until its file has loaded (review, 2026-10-02).
+  const cc = read('components/ClaudeCodeSettings.tsx')
+  check(
+    'a row whose control is still disabled keeps focus waiting on the pane, then moves it to the control once enabled',
+    [
+      /disabled=\{busy === spec\.key \|\| !state\}/.test(cc),
+      /if \(!control && el\.querySelector\(DISABLED_IN_ROW\)\) awaitControl\(el\)/.test(jump),
+      /if \(stopped \|\| document\.activeElement !== pane\) return/.test(jump)
+    ],
+    [true, true, true]
+  )
 }
 
 /* -------------------------------------- messages that name Provider & keys */
