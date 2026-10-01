@@ -1863,6 +1863,15 @@ export class HubService {
 
   syncNow(): Promise<HubResult> {
     return this.action('Syncing…', async () => {
+      /*
+       * `pass` returns quietly with no session, and `lastError` is only what
+       * the last PASS met — so a session ended by some other request (a relay
+       * or a pairing answer met a 401, which clears the token in `req`) left
+       * Sync now answering "Synced." for a pass that never ran. Found by
+       * scripts/hub-e2e.mts against the deployed hub (a revoked device).
+       */
+      if (this.revoked) return { ok: false, message: this.revoked }
+      if (!this.signedIn()) return { ok: false, message: 'Your hub session ended. Sign in again.' }
       await this.pass()
       if (this.lastError) return { ok: false, message: this.lastError.message }
       return { ok: true }
