@@ -27,7 +27,7 @@ import { startHub, type HubHandle } from '../hub/app.ts'
 import { configFrom, parseListen, parseMount, readEdgeSecret } from '../hub/config.ts'
 import { HubLog } from '../hub/log.ts'
 import { HubStore } from '../hub/store.ts'
-import { forwardHttp } from '../worker/hub-edge.ts'
+import { bridgeSockets, forwardHttp, type EdgeSocket } from '../worker/hub-edge.ts'
 import {
   generateDeviceKeys,
   itemKeys,
@@ -1178,6 +1178,90 @@ let liveItemId = ''
     check('an origin that does not answer is a 502 hub error', [down.status, ((await down.json()) as any)?.error], [502, 'server-error'])
     const direct = await call('GET', path, undefined, { dev: A, secret: null })
     check('the same request straight to the edge listener, without the Worker, is refused', direct.status, 403)
+  }
+
+  /* ------------------------------------------ the edge Worker's socket bridge */
+  console.log('\nthe edge Worker’s socket bridge (bridgeSockets), between stand-ins for the Workers runtime’s sockets')
+  {
+    /**
+     * One accepted socket as the Workers runtime behaves since compatibility
+     * date 2026-03-17 (`websocket_standard_binary_type`, on by default):
+     * `binaryType` starts as 'blob' and is read at `accept()`; a binary frame
+     * reaches `message` as a Blob unless it was 'arraybuffer' then; `send()`
+     * puts a string on the wire as text, bytes as binary, and anything else as
+     * its String() — measured on the deployed edge on 2026-10-02, where a
+     * binary frame came out of the old bridge as TEXT (the hub closed presence
+     * 1007 "not JSON" instead of 1003) and every relay died at its first
+     * sealed frame (scripts/hub-e2e.mts).
+     */
+    class RuntimeSocket {
+      binaryType = 'blob'
+      acceptedAs: string | null = null
+      readonly wire: { kind: 'text' | 'binary'; data: string }[] = []
+      closed: { code: number; reason: string } | null = null
+      private readonly fns: Record<string, ((e: any) => void)[]> = {}
+      accept(): void {
+        this.acceptedAs = this.binaryType
+      }
+      addEventListener(type: string, fn: (e: any) => void): void {
+        ;(this.fns[type] ??= []).push(fn)
+      }
+      send(data: unknown): void {
+        if (this.closed) throw new Error('closed')
+        if (typeof data === 'string') this.wire.push({ kind: 'text', data })
+        else if (data instanceof ArrayBuffer) this.wire.push({ kind: 'binary', data: Buffer.from(data).toString('base64') })
+        else if (ArrayBuffer.isView(data)) this.wire.push({ kind: 'binary', data: Buffer.from(data.buffer, data.byteOffset, data.byteLength).toString('base64') })
+        else this.wire.push({ kind: 'text', data: String(data) })
+      }
+      close(code = 1000, reason = ''): void {
+        this.closed ??= { code, reason }
+      }
+      /** A frame arriving from this socket's own far end. */
+      arrive(frame: string | Uint8Array): void {
+        const data = typeof frame === 'string' ? frame : this.acceptedAs === 'arraybuffer' ? frame.slice().buffer : new Blob([frame])
+        for (const fn of this.fns.message ?? []) fn({ data })
+      }
+      hangUp(code: number, reason: string): void {
+        for (const fn of this.fns.close ?? []) fn({ code, reason })
+      }
+    }
+    const bridged = (): { device: RuntimeSocket; hub: RuntimeSocket } => {
+      const device = new RuntimeSocket()
+      const hubEnd = new RuntimeSocket()
+      bridgeSockets(device as unknown as EdgeSocket, hubEnd as unknown as EdgeSocket)
+      return { device, hub: hubEnd }
+    }
+    const b64 = (u: Uint8Array): string => Buffer.from(u).toString('base64')
+    const { device, hub: hubEnd } = bridged()
+    check('both ends are accepted asking for ArrayBuffer delivery', [device.acceptedAs, hubEnd.acceptedAs], ['arraybuffer', 'arraybuffer'])
+    const sealedUp = randomU8(600)
+    const sealedDown = randomU8(300_000)
+    device.arrive('{"t":"hs1"}')
+    device.arrive(sealedUp)
+    hubEnd.arrive('{"t":"hs2"}')
+    hubEnd.arrive(sealedDown)
+    check(
+      'a device’s text frame reaches the hub as text and its binary frame as binary, byte for byte',
+      hubEnd.wire,
+      [
+        { kind: 'text', data: '{"t":"hs1"}' },
+        { kind: 'binary', data: b64(sealedUp) }
+      ]
+    )
+    check('and the hub’s reach the device the same way', device.wire, [
+      { kind: 'text', data: '{"t":"hs2"}' },
+      { kind: 'binary', data: b64(sealedDown) }
+    ])
+    ok('no frame crossed as "[object Blob]"', ![...device.wire, ...hubEnd.wire].some((w) => w.data.includes('[object')))
+    hubEnd.hangUp(1008, 'a device was removed')
+    check('the hub’s close reaches the device with its code and reason', device.closed, { code: 1008, reason: 'a device was removed' })
+    const quiet = bridged()
+    quiet.device.hangUp(1005, '')
+    check('a close with no code (1005) is passed on as 1000, a code a close may carry', quiet.hub.closed, { code: 1000, reason: '' })
+    const odd = bridged()
+    odd.device.acceptedAs = 'blob'
+    odd.device.arrive(randomU8(32))
+    check('a frame the runtime hands over as something other than text or bytes closes both ends (1011), and nothing crosses', [odd.hub.wire.length, odd.device.closed?.code, odd.hub.closed?.code], [0, 1011, 1011])
   }
 
   /* ------------------------------------------------ nothing leaks */

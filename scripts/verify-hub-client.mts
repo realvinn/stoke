@@ -744,6 +744,17 @@ try {
   check('a hub that ends the session signs this computer out…', A.svc.view().phase, 'signed-out')
   check('…but cannot have it pointed at another hub while it belongs to this account', (await A.svc.setUrl('http://127.0.0.1:1/hub')).ok, false)
   check('signing in again finds the same vault: anchor and pin were kept', [(await A.svc.signIn({ email: EMAIL, password: PASSWORD })).ok, A.svc.view().phase, A.svc.view().alarm], [true, 'active', null])
+  check('(a clean pass first, so no error is left over from one)', (await A.svc.syncNow()).ok, true)
+  A.intercept = (url) => (/^\/v1\/pair\/[^/]+\/nonce$/.test(v1(url)) ? json({ error: 'unauthorized', message: 'Your hub session ended. Sign in again.' }, 401) : null)
+  const endedElsewhere = await A.svc.approveStart('p0000000000000000')
+  A.intercept = null
+  const syncedNothing = await A.svc.syncNow()
+  check(
+    'a session ended OUTSIDE a sync (a 401 on a pairing answer, as on a relay request) makes Sync now say so, never “Synced.”',
+    [endedElsewhere.ok, syncedNothing.ok, A.svc.view().phase],
+    [false, false, 'signed-out']
+  )
+  check('and signing in again picks up the same vault', [(await A.svc.signIn({ email: EMAIL, password: PASSWORD })).ok, A.svc.view().phase], [true, 'active'])
 
   /* ------------------------------------------ a hub gone back in time: republish, never re-trust */
   const aChain = JSON.parse(readFileSync(join(A.userData, 'hub-state.json'), 'utf8')).chain as ChainEntry[]

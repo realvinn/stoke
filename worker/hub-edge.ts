@@ -27,9 +27,10 @@
  *   `edgeForwardHeaders`);
  * - bridges a WebSocket upgrade: it opens the upstream socket with `fetch()`
  *   and `Upgrade: websocket`, accepts both ends, and copies every message
- *   across unchanged (the pattern Cloudflare documents end to end; returning
- *   the origin's 101 directly is UNVERIFIED and not relied on). An evicted
- *   isolate drops the socket, which the protocol is built to survive (§2.2).
+ *   across unchanged, binary as binary (`bridgeSockets`; the pattern
+ *   Cloudflare documents end to end; returning the origin's 101 directly is
+ *   UNVERIFIED and not relied on). An evicted isolate drops the socket, which
+ *   the protocol is built to survive (§2.2).
  * - answers every refusal of its own as a hub error body (JSON with a known
  *   code), so a Stoke shows the sentence rather than "not a hub" (gotcha 71's
  *   lesson: a 200 is not a success, and neither is a non-JSON page).
@@ -37,8 +38,11 @@
  * Not typechecked (worker/ is in neither tsconfig, as modules.d.ts says), so
  * the HTTP half is written against the Fetch API only and RUN under node by
  * verify:install (matrix, headers, refusals) and verify:hub-server (a signed
- * request through this function to a real hub). The socket bridge needs
- * `WebSocketPair`, which only the Workers runtime has.
+ * request through this function to a real hub). The upgrade itself needs
+ * `WebSocketPair`, which only the Workers runtime has; the bridge between the
+ * two accepted sockets (`bridgeSockets`) runs under node in verify:hub-server
+ * against stand-ins that behave as the runtime does, and scripts/hub-e2e.mts
+ * drives the deployed one.
  *
  * Deployed BY HAND, like the installer and for the same reason:
  *   npx wrangler secret put HUB_EDGE_SECRET -c wrangler.hub-edge.jsonc
@@ -154,13 +158,71 @@ function sendable(code: number): number {
   return 1000
 }
 
-interface EdgeSocket {
+export interface EdgeSocket {
+  /** How the runtime hands a binary frame to `message`: set before `accept()`. */
+  binaryType: string
   accept(): void
-  send(data: string | ArrayBuffer): void
+  send(data: string | ArrayBuffer | ArrayBufferView): void
   close(code?: number, reason?: string): void
-  addEventListener(type: 'message', fn: (e: { data: string | ArrayBuffer }) => void): void
+  addEventListener(type: 'message', fn: (e: { data: unknown }) => void): void
   addEventListener(type: 'close', fn: (e: { code: number; reason: string }) => void): void
   addEventListener(type: 'error', fn: () => void): void
+}
+
+/** A frame `send()` puts on the wire as itself: text as text, bytes as a binary frame. */
+function forwardable(data: unknown): data is string | ArrayBuffer | ArrayBufferView {
+  return typeof data === 'string' || data instanceof ArrayBuffer || ArrayBuffer.isView(data)
+}
+
+/**
+ * Accept both ends and copy every message across unchanged, in order — text
+ * as text, binary as binary — and every close across with a sendable code.
+ * Exported so verify:hub-server can drive it with stand-in sockets.
+ *
+ * `binaryType = 'arraybuffer'` on BOTH ends, before `accept()`, is the fix for
+ * the first frames this bridge ever carried (2026-10-02, scripts/hub-e2e.mts
+ * against the deployed edge): since compatibility date 2026-03-17
+ * (`websocket_standard_binary_type`, on by default) the runtime hands a binary
+ * frame to `message` as a Blob, and `send(blob)` put the TEXT "[object Blob]"
+ * on the wire. Presence (all text) worked; every relay — binary after its
+ * handshake — died at its first sealed frame with 1008 "a text frame arrived
+ * after the handshake", and a binary frame sent on presence reached the hub
+ * as text (1007 "not JSON" where a binary frame gets 1003). `forwardable` is
+ * the backstop: a frame that is neither text nor bytes closes both ends
+ * rather than crossing as something it was not.
+ */
+export function bridgeSockets(server: EdgeSocket, upstream: EdgeSocket): void {
+  upstream.binaryType = 'arraybuffer'
+  server.binaryType = 'arraybuffer'
+  upstream.accept()
+  server.accept()
+  const shut = (ws: EdgeSocket, code: number, reason: string): void => {
+    try {
+      ws.close(sendable(code), reason)
+    } catch {
+      /* already closed */
+    }
+  }
+  const pipe = (from: EdgeSocket, to: EdgeSocket, gone: string): void => {
+    from.addEventListener('message', (e) => {
+      if (!forwardable(e.data)) {
+        shut(from, 1011, 'the edge could not forward a frame')
+        shut(to, 1011, 'the edge could not forward a frame')
+        return
+      }
+      try {
+        to.send(e.data)
+      } catch {
+        shut(from, 1011, gone)
+      }
+    })
+  }
+  pipe(server, upstream, 'the hub went away')
+  pipe(upstream, server, 'the device went away')
+  server.addEventListener('close', (e) => shut(upstream, e.code, e.reason))
+  upstream.addEventListener('close', (e) => shut(server, e.code, e.reason))
+  server.addEventListener('error', () => shut(upstream, 1011, 'edge error'))
+  upstream.addEventListener('error', () => shut(server, 1011, 'hub error'))
 }
 
 /** Bridge a WebSocket upgrade to the origin (Workers runtime only: `WebSocketPair`, `resp.webSocket`). */
@@ -186,33 +248,7 @@ export async function forwardSocket(request: Request, env: HubEdgeEnv): Promise<
   const pair = new Pair()
   const client = pair[0]
   const server = pair[1]
-  upstream.accept()
-  server.accept()
-  const shut = (ws: EdgeSocket, code: number, reason: string): void => {
-    try {
-      ws.close(sendable(code), reason)
-    } catch {
-      /* already closed */
-    }
-  }
-  server.addEventListener('message', (e) => {
-    try {
-      upstream.send(e.data)
-    } catch {
-      shut(server, 1011, 'the hub went away')
-    }
-  })
-  upstream.addEventListener('message', (e) => {
-    try {
-      server.send(e.data)
-    } catch {
-      shut(upstream, 1011, 'the device went away')
-    }
-  })
-  server.addEventListener('close', (e) => shut(upstream, e.code, e.reason))
-  upstream.addEventListener('close', (e) => shut(server, e.code, e.reason))
-  server.addEventListener('error', () => shut(upstream, 1011, 'edge error'))
-  upstream.addEventListener('error', () => shut(server, 1011, 'hub error'))
+  bridgeSockets(server, upstream)
   return new Response(null, { status: 101, webSocket: client } as unknown as ResponseInit)
 }
 
