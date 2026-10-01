@@ -148,6 +148,19 @@ export async function forwardHttp(request: Request, env: HubEdgeEnv, fetchImpl: 
   } catch {
     return edgeError('server-error', 'The hub did not answer. It may be offline.', 502)
   }
+  /*
+   * Cloudflare answers for an origin that is down with its own HTML page — a
+   * 502 while the hub restarts (measured on the NUC: about seven seconds per
+   * upgrade), a 530 while the tunnel is down. Passed through, a Stoke reads
+   * that as "answered with a web page … not a Stoke hub — a Cloudflare
+   * challenge, a sign-in page, or the wrong URL" (readHubResponse), which
+   * sends the owner hunting for a wrong address when the hub is only away.
+   * The hub's own errors are JSON and pass through untouched.
+   */
+  if (res.status >= 500 && !/^application\/json\b/i.test(res.headers.get('content-type') ?? '')) {
+    await res.body?.cancel()
+    return edgeError('server-error', 'The hub did not answer. It may be offline or restarting.', 502)
+  }
   return new Response(res.body, { status: res.status, statusText: res.statusText, headers: res.headers })
 }
 

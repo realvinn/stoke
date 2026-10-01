@@ -424,6 +424,18 @@ console.log('\n  what the edge Worker sends, and what it refuses (worker/hub-edg
   })
   const downRead = readHubResponse(down.status, down.headers.get('content-type'), await down.text())
   check('an origin that does not answer is a 502 a Stoke can read', [down.status, !downRead.ok && downRead.error.error], [502, 'server-error'])
+  // Cloudflare's own pages for a down origin: 502 while the hub restarts, 530 while the tunnel is down.
+  for (const [what, status] of [['a hub restarting (Cloudflare\u2019s HTML 502)', 502], ['a tunnel down (Cloudflare\u2019s HTML 530)', 530]] as const) {
+    const page = await forwardHttp(new Request('https://stoke.vinn.dev/hub/v1/health'), env, async () =>
+      new Response('<!DOCTYPE html><title>Bad gateway</title>', { status, headers: { 'content-type': 'text/html; charset=UTF-8' } })
+    )
+    const read = readHubResponse(page.status, page.headers.get('content-type'), await page.text())
+    check(`${what} reads as the hub being offline, never as "a web page, not a Stoke hub"`, [page.status, !read.ok && read.error.error, !read.ok && /offline/.test(read.error.message)], [502, 'server-error', true])
+  }
+  const hubError = await forwardHttp(new Request('https://stoke.vinn.dev/hub/v1/health'), env, async () =>
+    new Response('{"error":"server-error","message":"the hub\u2019s own words"}', { status: 503, headers: { 'content-type': 'application/json' } })
+  )
+  check('but the hub\u2019s own JSON error passes through as it said it', [hubError.status, await hubError.text()], [503, '{"error":"server-error","message":"the hub\u2019s own words"}'])
 }
 
 // ---------------------------------------------------------------------------
