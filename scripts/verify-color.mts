@@ -1287,6 +1287,19 @@ console.log('\n-- the colour picker: HSV, the ring and the map, keys, names, pla
     return m ? m[1] : ''
   }
   const decl = (body: string, prop: string): string => body.match(new RegExp(`(?:^|[;\\s])${prop}:\\s*([^;]+);`))?.[1].trim() ?? ''
+  {
+    // A picker short of room scrolls inside its box; Cancel and Done must stay on screen
+    // (review, 2026-10-02: cut in half at scale 1, gone at 1.4). Chromium measures a sticky
+    // offset from the scroll container's CONTENT edge, so the row reaches the border only
+    // with a bottom of minus the picker's padding, matched by its own margin and padding.
+    const pickerPad = decl(rule('.color-picker'), 'padding')
+    const actions = rule('.cp-actions')
+    eq(
+      'the action row sticks to the picker’s bottom border, out over its padding',
+      [decl(actions, 'position'), decl(actions, 'bottom'), decl(actions, 'background'), pickerPad],
+      ['sticky', 'calc(-1 * var(--space-12))', 'var(--bg-elevated)', 'var(--space-12)']
+    )
+  }
   const tokens: Record<string, string> = {}
   for (const m of rule('.color-picker').matchAll(/(--cp-[a-z-]+):\s*([^;]+);/g)) tokens[m[1]] = m[2].trim()
   tokens['--cp-map'] = decl(rule('.cp-map'), '--cp-map')
