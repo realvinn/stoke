@@ -106,7 +106,7 @@ import {
   verifyRequest
 } from '../src/main/hub/crypto.ts'
 import { HubLog, LogThrottle } from './log.ts'
-import { InFlight, RateBuckets, Semaphore } from './limits.ts'
+import { clientKey, InFlight, RateBuckets, Semaphore } from './limits.ts'
 import { Presence, RelayBroker, type PresenceConn } from './sockets.ts'
 import { HubStore, type AccountRow, type PairRow, type Role, type SessionRow } from './store.ts'
 
@@ -155,6 +155,15 @@ export const DEFAULT_RATE = { capacity: 300, refillPerSec: 5 }
 /** Concurrent scrypt runs (128 MiB each) and how many more may wait. */
 const SCRYPT_SLOTS = 2
 const SCRYPT_QUEUE = 16
+/**
+ * A sign-in that PROVES it comes from an active device (`provenDevice`) has a
+ * slot and queue of its own: strangers' sign-ins, which anyone can send from
+ * any number of addresses, filled the shared queue and every proven sign-in
+ * was refused "busy" (found in review, 2026-10-02). Only a device's key can
+ * get into this queue.
+ */
+const PROVEN_SCRYPT_SLOTS = 1
+const PROVEN_SCRYPT_QUEUE = 4
 /** Sign-in attempts in flight: one per email (so the throttle counts every guess), four per IP. */
 const LOGIN_PER_EMAIL = 1
 const LOGIN_PER_IP = 4
@@ -423,9 +432,12 @@ class HubServer {
   private readonly relays: RelayBroker
   private readonly buckets: RateBuckets
   private readonly scrypt = new Semaphore(SCRYPT_SLOTS, SCRYPT_QUEUE)
+  private readonly provenScrypt = new Semaphore(PROVEN_SCRYPT_SLOTS, PROVEN_SCRYPT_QUEUE)
   private readonly loginByEmail = new InFlight(LOGIN_PER_EMAIL)
   private readonly loginByIp = new InFlight(LOGIN_PER_IP)
+  /** Strangers' refusals in the log: 20 a minute per client (`clientKey`), and 100 a minute from all of them together. */
   private readonly refusalLog = new LogThrottle(20)
+  private readonly refusalTotal = new LogThrottle(100)
   private readonly chains = new Map<string, ChainState | null>()
   private readonly alive = new WeakMap<WebSocket, boolean>()
   /** The random payload of the last ping each socket was sent: only a pong echoing it counts. */
@@ -546,6 +558,7 @@ class HubServer {
         now,
         nonceBefore: now - NONCE_MEMORY_MS,
         throttleBefore: now - LOCKOUT_MEMORY_MS,
+        ipThrottleBefore: now - IP_THROTTLE.windowMs,
         pairsEndedBefore: now - 24 * 60 * 60_000
       })
       if (Object.values(swept).some((n) => n > 0)) this.log.debug('swept', swept)
@@ -579,6 +592,7 @@ class HubServer {
    * pong sits unread, and the end it waits on is the one being judged.
    */
   private pingAll(): void {
+    this.closeOrphans()
     for (const ws of [...this.wssPresence.clients, ...this.wssRelay.clients]) {
       if (ws.isPaused) continue
       if (this.alive.get(ws) === false) {
@@ -594,6 +608,36 @@ class HubServer {
         ws.terminate()
       }
     }
+  }
+
+  /**
+   * Close every socket whose session is gone. A socket is authenticated once,
+   * at its upgrade, and used to outlive its session: a relay kept forwarding
+   * after its device signed out, and `stoke-hub reset-password --sign-out` —
+   * another process deleting the rows — closed nothing at all (found in
+   * review, 2026-10-02). Run each ping round, so an expiry, a delete from the
+   * CLI or a database restore all reach the sockets within one.
+   */
+  private closeOrphans(): void {
+    const now = this.now()
+    const seen = new Map<string, boolean>()
+    const live = (tokenHash: string): boolean => {
+      let v = seen.get(tokenHash)
+      if (v === undefined) {
+        let row: SessionRow | null = null
+        try {
+          row = this.store.session(tokenHash)
+        } catch (err) {
+          this.log.error('could not read a session for the ping round', { err })
+          return true
+        }
+        v = row !== null && row.expires_at > now
+        seen.set(tokenHash, v)
+      }
+      return v
+    }
+    for (const conn of this.presence.all()) if (!live(conn.tokenHash)) this.presence.kickSession(conn.tokenHash, 'your hub session ended', 1000)
+    this.relays.closeWhere(live, 1000, 'session ended')
   }
 
   private close(): Promise<void> {
@@ -645,7 +689,7 @@ class HubServer {
   }
 
   private rateLimit(ip: string): void {
-    const r = this.buckets.take(`ip:${ip}`, this.now())
+    const r = this.buckets.take(`ip:${clientKey(ip)}`, this.now())
     if (!r.ok) throw new HubError('rate-limited', undefined, r.retryAfterMs)
   }
 
@@ -736,8 +780,12 @@ class HubServer {
       account: ctx.auth?.account.id,
       device: ctx.auth?.device
     }
-    // A stranger's refusals (no route matched, no session) are rate-limited in the log.
-    if (code && !ctx.auth && !this.refusalLog.allow(`refused:${ctx.ip}`, this.now(), this.log)) return
+    // A stranger's refusals (no route matched, no session) are rate-limited in the log: per client,
+    // by the same key as every other limit, and in total, so rotating addresses cannot fill the disk.
+    if (code && !ctx.auth) {
+      if (!this.refusalLog.allow(`refused:${clientKey(ctx.ip)}`, this.now(), this.log)) return
+      if (!this.refusalTotal.allow('refused:all', this.now(), this.log)) return
+    }
     this.log.info('request', fields)
   }
 
@@ -801,7 +849,7 @@ class HubServer {
         if (!this.relays.canJoin(relay, role)) throw new HubError('conflict', 'That end of the relay is already connected.')
         this.wssRelay.handleUpgrade(req, socket, head, (ws) => {
           this.watchAlive(ws)
-          this.relays.join(relay, role, ws)
+          this.relays.join(relay, role, ws, auth.tokenHash)
         })
       }
       this.logRequest(ctx, 'GET', 101, null, 0)
@@ -879,7 +927,7 @@ class HubServer {
   }
 
   private ipGate(ip: string): string {
-    const key = `ip:${ip}`
+    const key = `ip:${clientKey(ip)}`
     const v = throttleVerdict(this.store.throttle(key), this.now())
     if (!v.ok) throw new HubError('rate-limited', 'Too many failed attempts from this address. Try again later.', v.retryAfterMs)
     return key
@@ -889,9 +937,18 @@ class HubServer {
     this.store.saveThrottle(key, recordLoginFailure(this.store.throttle(key), this.now(), IP_THROTTLE))
   }
 
-  private async scryptSlot(): Promise<() => void> {
-    const slot = this.scrypt.acquire()
-    if (!slot) throw new HubError('rate-limited', 'The hub is busy checking passwords. Try again in a moment.', 2000)
+  /**
+   * A scrypt slot from `queue`, or `rate-limited` at once when its queue is
+   * full. That refusal is charged to the sender's IP counter (`chargeTo`): it
+   * used to cost nothing, so a flood of strangers' sign-ins could hold the
+   * queue full indefinitely without ever tripping a lock.
+   */
+  private async scryptSlot(queue: Semaphore, chargeTo: string | null): Promise<() => void> {
+    const slot = queue.acquire()
+    if (!slot) {
+      if (chargeTo) this.ipFailure(chargeTo)
+      throw new HubError('rate-limited', 'The hub is busy checking passwords. Try again in a moment.', 2000)
+    }
     return slot
   }
 
@@ -917,7 +974,7 @@ class HubServer {
     }
     let pwHash: string
     try {
-      const release = await this.scryptSlot()
+      const release = await this.scryptSlot(this.scrypt, ipKey)
       try {
         pwHash = await hashPassword(password)
       } finally {
@@ -993,7 +1050,7 @@ class HubServer {
     }
     try {
       let good: boolean
-      const release = await this.scryptSlot()
+      const release = await this.scryptSlot(proven ? this.provenScrypt : this.scrypt, proven ? null : ipKey)
       try {
         // An unknown email costs one scrypt too, so timing names no account (spec §3.2).
         good = await verifyPassword(body.password, account?.pw_hash ?? UNMATCHABLE_PASSWORD_HASH)
@@ -1044,6 +1101,7 @@ class HubServer {
     const a = ctx.auth as Authed
     this.store.deleteSession(a.tokenHash)
     this.presence.kickSession(a.tokenHash, 'signed out', 1000)
+    this.relays.closeSession(a.tokenHash, 1000, 'signed out')
     return { ok: true }
   }
 

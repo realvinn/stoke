@@ -25,6 +25,14 @@ services:
     volumes:
       - stoke-hub-data:/data
     stop_grace_period: 20s
+    # Docker's default json-file driver keeps every line forever. The hub caps
+    # strangers' refusals in its own log, but a cap on the file is what bounds
+    # the disk whatever writes to it.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 secrets:
   hub_edge_secret:

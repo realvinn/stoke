@@ -5915,10 +5915,26 @@ button.color-field-swatch[aria-expanded='true'] {
   border-radius: 50%;
 }
 
+/*
+ * Cancel and Done stay on screen when the picker has less room than its height
+ * and scrolls inside it (placePopover's maxHeight): at the end of the content
+ * they were cut in half at Interface scale 1 on a short window, and gone at 1.4
+ * (found in review, 2026-10-02). Sticky to the bottom, out over the picker's
+ * padding: Chromium measures a sticky offset from the scroll container's
+ * CONTENT edge (measured: `bottom: 0` stopped 12px above the border), so the
+ * row reaches the border with a negative `bottom` and the same negative margin,
+ * which leaves it exactly where it was at rest. The margins and padding cancel,
+ * so nothing moves when it does not need to stick.
+ */
 .cp-actions {
+  position: sticky;
+  bottom: calc(-1 * var(--space-12));
   display: flex;
   align-items: center;
   gap: var(--space-4);
+  margin: calc(-1 * var(--space-8)) calc(-1 * var(--space-12)) calc(-1 * var(--space-12));
+  padding: var(--space-8) var(--space-12) var(--space-12);
+  background: var(--bg-elevated);
 }
 
 .cp-actions .btn[data-size='sm'] {

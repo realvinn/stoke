@@ -558,12 +558,24 @@ export class HubStore {
 
   /* --------------------------------------------------------- sweep */
 
-  /** Forget what has aged out. Returns how many rows each kind lost, for the log. */
-  sweep(f: { now: number; nonceBefore: number; throttleBefore: number; pairsEndedBefore: number }): Record<string, number> {
+  /**
+   * Forget what has aged out. Returns how many rows each kind lost, for the log.
+   *
+   * A per-IP row (`ip:` key) goes once its window has passed and it is not
+   * locked (`ipThrottleBefore`), not after `throttleBefore`'s day: an IP lock
+   * never escalates, so its lockout count is worth nothing, and a row per
+   * address a day was the one write a stranger could make without limit — a
+   * bogus invite costs no scrypt but wrote a row (found in review, 2026-10-02:
+   * 36,429 rows in 8 s from one /64, all kept for 24 h).
+   */
+  sweep(f: { now: number; nonceBefore: number; throttleBefore: number; ipThrottleBefore: number; pairsEndedBefore: number }): Record<string, number> {
     return this.tx(() => ({
       nonces: Number(this.q('DELETE FROM nonces WHERE seen_at < ?').run(f.nonceBefore).changes),
       sessions: Number(this.q('DELETE FROM sessions WHERE expires_at <= ?').run(f.now).changes),
       throttles: Number(this.q('DELETE FROM login_failures WHERE last_at < ? AND locked_until <= ?').run(f.throttleBefore, f.now).changes),
+      ipThrottles: Number(
+        this.q("DELETE FROM login_failures WHERE key >= 'ip:' AND key < 'ip;' AND last_at < ? AND locked_until <= ?").run(f.ipThrottleBefore, f.now).changes
+      ),
       invites: Number(this.q('DELETE FROM invites WHERE used_by IS NULL AND expires_at <= ?').run(f.now).changes),
       pairsExpired: Number(
         this.q("UPDATE pairs SET state = 'expired', ended_at = ? WHERE state IN ('waiting', 'nonce', 'revealed') AND expires_at <= ?").run(f.now, f.now).changes

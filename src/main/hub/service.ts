@@ -103,7 +103,7 @@ import {
 } from '../../shared/hub/protocol.ts'
 import { keyFingerprint, RELAY_MAX_FRAME_BYTES, type HubGrant } from '../../shared/hub/relay.ts'
 import { emptyRemoteView, isAttachAnswer, type HubRemoteView } from '../../shared/hub/remote.ts'
-import { applySyncedSettings, runsCode, sshKeyPayloadProblem, type SshKeyPayload, type SyncableHost } from '../../shared/hub/settings.ts'
+import { applySyncedSettings, heldChangesFor, runsCode, sshKeyPayloadProblem, type SshKeyPayload, type SyncableHost } from '../../shared/hub/settings.ts'
 import type { SecretBackend } from '../secrets.ts'
 import type { ExecRun } from '../sshEnroll.ts'
 import {
@@ -227,12 +227,29 @@ interface Approving {
 class StaleEpoch extends Error {}
 class Stop extends Error {}
 
+/**
+ * Who wrote an item's value, to carry into its re-seal (`ItemPlaintext.by`).
+ * The `by` a sealer claimed is only as good as that sealer: carried forward
+ * while it is still in the vault, and replaced by the sealer itself once it is
+ * not — so a removed device can neither hide behind the revoker nor launder a
+ * claim it made while it was in.
+ */
+function writerOf(item: RemoteItem, v: ChainOk): string {
+  return item.by && v.active.some((d) => d.id === item.author) ? item.by : item.author
+}
+
 const PAIR_POLL_MS = 1500
 const REVOKED_SENTENCE =
   'This device was removed from your hub account. What it synced stays on this computer; sign out to forget its hub keys, then sign in again to join as a new device.'
 const UNANCHORED_SENTENCE =
   'The hub’s device list says this computer is in the vault, but this computer never joined it: no pairing code was confirmed here and no Recovery Kit was used here. A hub that built a vault of its own would look like this, so nothing was taken or synced. If you approved this computer from another one and Stoke restarted before you confirmed the code here, remove it there, then sign out here and join again.'
 const LOGOUT_TIMEOUT_MS = 5000
+/** What each held group is, on its card (`heldChangesFor` names the groups; a host is its own). */
+const HELD_GROUP_LABELS: Record<string, string> = {
+  agents: 'MCP servers and agent endpoints (Settings › Agents)',
+  providers: 'Claude Code’s provider (Settings › Agents › Claude Code › Provider & keys)',
+  voice: 'Dictation (Settings › Voice)'
+}
 
 function cleanLabel(text: string, fallback: string): string {
   const t = (text ?? '').replace(/[\r\n\t]+/g, ' ').trim()
@@ -663,10 +680,14 @@ export class HubService {
         continue
       }
       const host = /^t3\/host\/(.+)$/.exec(h.group)?.[1]
+      const who = (id: string): string => {
+        const name = this.deviceName(id, this.labelFromChain(id))
+        return this.verdict && !this.verdict.active.some((d) => d.id === id) ? `${name} (since removed)` : name
+      }
       groups.set(h.group, {
         group: h.group,
-        label: host ? (this.hostName(host) === host ? 'A new SSH host' : `SSH host ${this.hostName(host)}`) : 'MCP servers (Settings › Agents)',
-        from: h.author ? this.deviceName(h.author, this.labelFromChain(h.author)) : 'another device',
+        label: host ? (this.hostName(host) === host ? 'A new SSH host' : `SSH host ${this.hostName(host)}`) : (HELD_GROUP_LABELS[h.group] ?? HELD_GROUP_LABELS.agents),
+        from: h.author ? `${who(h.author)}${h.sealer ? `, re-sealed by ${who(h.sealer)}` : ''}` : 'another device',
         lines: [...h.lines],
         at: h.at
       })
@@ -844,7 +865,10 @@ export class HubService {
 
   /**
    * Sign out: tell the hub (best effort), then forget everything hub on this
-   * computer — device keys, vault keys, session, records. Settings and keys
+   * computer — device keys, vault keys, session, records, and this machine's
+   * "Always" grants and "share my sessions" tick (kept, they came back on at
+   * the next sign-in, to any account: a grant is keyed by a device id, which a
+   * device picks for itself — found in review, 2026-10-02). Settings and keys
    * that already arrived stay: they are this computer's settings now.
    */
   signOut(): Promise<HubResult> {
@@ -876,7 +900,7 @@ export class HubService {
       this.failures = 0
       this.revokeReport = null
       this.vkCache.clear()
-      await this.commitHub({ email: '', deviceId: '', token: '' })
+      await this.commitHub({ email: '', deviceId: '', token: '', grants: {}, shareSessions: false })
       return { ok: true }
     })
   }
@@ -1568,10 +1592,18 @@ export class HubService {
     this.storeVaultKey(epoch, vk)
     this.st().recoveryWraps[String(epoch)] = recovery
     this.saveState()
-    await this.resealOrOwe(now, oldKeys)
+    const carried = await this.resealOrOwe(now, oldKeys)
     if (f.target) {
       const label = this.deviceName(f.target, this.labelFromChain(f.target))
-      this.revokeReport = { device: label, ...heldBefore, commands: runsCode(this.settings()) }
+      /*
+       * What it changed that THIS computer never applied (held, or answered
+       * with "Keep this computer's") is still in the vault for every other
+       * device, and runsCode(settings) cannot see it: name it too.
+       */
+      const target = f.target
+      const its = carried.filter((i) => i.author === target || i.by === target)
+      const waiting = its.length ? heldChangesFor(this.settings(), incomingFrom(its).incoming).flatMap((h) => h.lines.map((l) => `${l} (in the vault, not applied here)`)) : []
+      this.revokeReport = { device: label, ...heldBefore, commands: [...runsCode(this.settings()), ...waiting] }
     }
   }
 
@@ -1621,7 +1653,7 @@ export class HubService {
    * was shut out by an earlier change, and is carried forward only where this
    * device had agreed on exactly that value.
    */
-  private async reseal(v: ChainOk, oldKeys: ItemKeys): Promise<void> {
+  private async reseal(v: ChainOk, oldKeys: ItemKeys): Promise<RemoteItem[]> {
     const keys = await this.keysFor(v, v.epoch)
     if (!keys) throw new Stop('The new vault key is not available.')
     const st = this.st()
@@ -1641,6 +1673,7 @@ export class HubService {
     await this.putResealed([...latest.values()], v, keys)
     await this.req('POST', '/v1/items/prune', { epochBelow: v.epoch })
     this.saveState()
+    return [...latest.values()]
   }
 
   /**
@@ -1648,20 +1681,22 @@ export class HubService {
    * in, so a failure here (the hub fell over, the network went) must not read
    * as "not removed": it is recorded as owed and finished by the next pass.
    */
-  private async resealOrOwe(v: ChainOk, oldKeys: ItemKeys): Promise<void> {
+  private async resealOrOwe(v: ChainOk, oldKeys: ItemKeys): Promise<RemoteItem[]> {
     const st = this.st()
     try {
-      await this.reseal(v, oldKeys)
+      const carried = await this.reseal(v, oldKeys)
       st.resealOwed = 0
       st.carriedEpoch = v.epoch
       this.saveState()
       this.dropOldVaultKeys(v.epoch)
+      return carried
     } catch (err) {
       st.resealOwed = oldKeys.epoch
       this.saveState()
       this.log('hub: re-sealing after a key change did not finish; the next sync finishes it', err)
       this.lastError = { message: `The vault key changed, but re-sealing everything under it did not finish (${messageOf(err)}). Stoke finishes it on the next sync.`, at: this.now(), retryAt: null }
       this.syncSoon(nextSyncDelay(1))
+      return []
     }
   }
 
@@ -1718,10 +1753,13 @@ export class HubService {
     const st = this.st()
     const me = this.me().id
     for (let i = 0; i < items.length; i += HUB_LIMITS.putsPerRequest) {
-      const batch = items.slice(i, i + HUB_LIMITS.putsPerRequest).map((item) => ({
-        item,
-        envelope: sealItem(keys, { version: 1, author: me, path: item.path, editedAt: item.editedAt, deleted: item.deleted, value: item.value })
-      }))
+      const batch = items.slice(i, i + HUB_LIMITS.putsPerRequest).map((item) => {
+        const by = writerOf(item, v)
+        return {
+          item,
+          envelope: sealItem(keys, { version: 1, author: me, path: item.path, editedAt: item.editedAt, deleted: item.deleted, value: item.value, ...(by !== me ? { by } : {}) })
+        }
+      })
       const res = await this.req('POST', '/v1/items', { puts: batch.map((b) => ({ baseVersion: 0, envelope: b.envelope })) })
       const results = Array.isArray(res.results) ? res.results : []
       batch.forEach((b, idx) => {
@@ -1929,7 +1967,7 @@ export class HubService {
     }
   }
 
-  private remoteOf(env: ItemEnvelope, item: { path: string; editedAt: number; deleted: boolean; value: unknown }): RemoteItem {
+  private remoteOf(env: ItemEnvelope, item: { path: string; editedAt: number; deleted: boolean; value: unknown; by?: string }): RemoteItem {
     return {
       path: item.path,
       id: env.id,
@@ -1937,6 +1975,7 @@ export class HubService {
       version: env.version,
       editedAt: item.editedAt,
       author: env.author,
+      ...(item.by && item.by !== env.author ? { by: item.by } : {}),
       deleted: item.deleted,
       value: item.value,
       hash: valueDigest(this.digest, { deleted: item.deleted, value: item.value })
@@ -2160,7 +2199,7 @@ export class HubService {
         for (const s of res.skipped) this.log(`hub: not applied ${s.key}: ${s.why}`)
         for (const h of res.held) {
           const r = items.find((i) => i.path === h.path)
-          if (r) st.held[h.path] = { group: h.group, hash: r.hash, lines: h.lines, author: r.author, at: this.now() }
+          if (r) st.held[h.path] = { group: h.group, hash: r.hash, lines: h.lines, author: r.by ?? r.author, ...(r.by ? { sealer: r.author } : {}), at: this.now() }
         }
         held = res.held.map((h) => h.path)
       } finally {

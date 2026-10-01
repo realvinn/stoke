@@ -447,6 +447,19 @@ export function SettingsSheet({
   const tabStop = focusId && visible.some((v) => v.node.id === focusId) ? focusId : (holder ?? visible[0]?.node.id)
   const treeRef = useRef<HTMLDivElement>(null)
 
+  /*
+   * The menu row of the page on show stays in sight. With Agents open the menu
+   * is taller than its column, so a jump to a page low in it (Backup &
+   * transfer, Account & sync, Updates) from the palette, or a search cleared
+   * after a pick there, showed the page with nothing in the menu selected
+   * (found in review, 2026-10-02). On every page change, and whenever the tree
+   * comes back from the results list.
+   */
+  useEffect(() => {
+    if (searching) return
+    treeRef.current?.querySelector<HTMLElement>('[aria-current="page"]')?.scrollIntoView({ block: 'nearest' })
+  }, [current, searching])
+
   const focusNode = (id: string): void => {
     treeRef.current?.querySelector<HTMLElement>(`[data-node="${id}"]`)?.focus()
   }

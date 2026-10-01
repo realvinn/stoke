@@ -928,6 +928,12 @@ console.log('\na device removed from the chain while its relay is open')
   await until(() => last(hostM).guests.length === 0)
   check('B leaves the vault itself: its tab ends, saying so, and A’s end goes', [tabOf(guestM, tab7)?.state, tabOf(guestM, tab7)?.message, last(hostM).guests.length], ['lost', 'This computer is no longer in your hub’s vault.', 0])
   check('and its banner still names A, though B’s chain no longer can', tabOf(guestM, tab7)?.deviceLabel, 'Studio')
+  // Try again cannot help while THIS computer is out: it stays final, never "Reconnecting…" for
+  // eight rounds that cannot succeed (review, 2026-10-02).
+  const relaysOut = relays.size
+  guestM.remote.retry(tab7)
+  await tick(300)
+  check('Try again while this computer is out of the vault stays final, asks the hub for nothing', [tabOf(guestM, tab7)?.state, tabOf(guestM, tab7)?.message, relays.size - relaysOut], ['lost', 'This computer is no longer in your hub’s vault.', 0])
   guestM.remote.close(tab7)
   guestM.out = false
   hostM.remote.reset()

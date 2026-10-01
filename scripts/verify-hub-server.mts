@@ -60,7 +60,7 @@ import {
   wrapVaultKey,
   type DeviceKeys
 } from '../src/main/hub/crypto.ts'
-import { isSessionToken, LOGIN_REFUSED, SESSION_TTL_MS } from '../src/shared/hub/auth.ts'
+import { IP_THROTTLE, isSessionToken, LOGIN_REFUSED, SESSION_TTL_MS } from '../src/shared/hub/auth.ts'
 import { chainLinkText, chainSigningText, DEVICE_CAPS, verifyChain, type ChainEntry, type DeviceRecord } from '../src/shared/hub/chain.ts'
 import { idFromBytes } from '../src/shared/hub/codec.ts'
 import { hubEndpoint } from '../src/shared/hub/edge.ts'
@@ -68,6 +68,7 @@ import { formatRecoverySecret, parseRecoverySecret } from '../src/shared/hub/pai
 import { HUB_HEADERS, HUB_LIMITS, readHubResponse } from '../src/shared/hub/protocol.ts'
 import { hs1Problem, RELAY_IDLE_MS, RELAY_MAX_FRAME_BYTES, RELAY_OPEN_TTL_MS, RELAYS_PER_ACCOUNT, type RelayHs1, type RelayHs2, type RelayHs3 } from '../src/shared/hub/relay.ts'
 import { RELAY_HIGH_WATER } from '../hub/sockets.ts'
+import { clientKey } from '../hub/limits.ts'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const WIN = process.platform === 'win32'
@@ -475,6 +476,42 @@ async function main(): Promise<void> {
     check('the thirty-first is the address being refused', [ipLocked.status, ipLocked.body?.error], [429, 'rate-limited'])
     const ipLogin = await login(newDevice('x'), OWNER_EMAIL, OWNER_PW, { ip: ipOnly })
     check('which covers sign-in from it too (the shared IP counter)', [ipLogin.status, ipLogin.body?.error], [429, 'rate-limited'])
+
+    // One IPv6 subscriber holds a /64: a fresh low half per request is still one client (review, 2026-10-02).
+    check(
+      'an IPv6 address counts as its /64, an IPv4-mapped one as its IPv4',
+      [clientKey('2001:db8:abcd:12::1'), clientKey('2001:DB8:ABCD:0012:ffff:1:2:3'), clientKey('[2001:db8::7]'), clientKey('::ffff:203.0.113.7'), clientKey('203.0.113.7')],
+      ['2001:db8:abcd:12::/64', '2001:db8:abcd:12::/64', '2001:db8:0:0::/64', '203.0.113.7', '203.0.113.7']
+    )
+    const rotating: string[] = []
+    for (let i = 0; i < 30; i++) rotating.push((await signup(`INV-${'B'.repeat(4)}-${'C'.repeat(4)}-DDDD-EEEE-FFFF-${String(2000 + i)}`, 'x@example.com', OWNER_PW, { ip: `2001:db8:abcd:12::${(i + 1).toString(16)}` })).body?.error)
+    ok('thirty bad invites from thirty addresses in one /64 are thirty refusals', rotating.every((c) => c === 'invite-invalid'), rotating.join(','))
+    const rotated = await signup(bootInvite, 'x@example.com', OWNER_PW, { ip: '2001:db8:abcd:12:9:8:7:6' })
+    check('and the thirty-first, from yet another address in it, is the /64 being refused', [rotated.status, rotated.body?.error], [429, 'rate-limited'])
+    const neighbour = await signup(`INV-${'B'.repeat(4)}-${'C'.repeat(4)}-DDDD-EEEE-FFFF-3000`, 'x@example.com', OWNER_PW, { ip: '2001:db8:abcd:13::1' })
+    check('while the next /64 is another client', neighbour.body?.error, 'invite-invalid')
+    const ipRows = (): string[] => {
+      const db = new DatabaseSync(join(TMP, 'hub', 'hub.db'), { timeout: 5000 })
+      try {
+        return (db.prepare("SELECT key FROM login_failures WHERE key LIKE 'ip:%' ORDER BY key").all() as { key: string }[]).map((r) => r.key)
+      } finally {
+        db.close()
+      }
+    }
+    check('the /64 is one row in the database, not one per address', ipRows().filter((k) => k.startsWith('ip:2001:db8:abcd:12')), ['ip:2001:db8:abcd:12::/64'])
+    const emailRows = (): number => {
+      const db = new DatabaseSync(join(TMP, 'hub', 'hub.db'), { timeout: 5000 })
+      try {
+        return Number((db.prepare("SELECT count(*) AS n FROM login_failures WHERE key LIKE 'email:%'").get() as { n: number }).n)
+      } finally {
+        db.close()
+      }
+    }
+    const emailsBefore = emailRows()
+    clock += IP_THROTTLE.lockMs + IP_THROTTLE.windowMs + 1
+    hub.tick()
+    check('once its window and lock have passed, the sweep forgets every IP row (an IP lock never escalates)', ipRows(), [])
+    check('while email counters keep their day (a repeat email lockout doubles)', emailRows(), emailsBefore)
   }
 
   /* ------------------------------------------------- signed requests */
@@ -577,6 +614,43 @@ async function main(): Promise<void> {
     const later = await login(B, OWNER_EMAIL, OWNER_PW)
     const deviceBack = await login(A, OWNER_EMAIL, OWNER_PW, { prove: true })
     check('both unlock on their own time', [later.status, deviceBack.status], [200, 200])
+
+    // Strangers' sign-ins (an unknown email costs a scrypt) from many /64s fill the shared queue:
+    // 2 run, 16 wait, and the rest come straight back "busy". The first of those says the queue is
+    // full NOW (a scrypt takes far longer than the round trip), so the proven sign-in and the next
+    // wave go then, not after a guessed delay: a fixed wait let the queue drain on a fast machine.
+    const busy = (r: Reply): boolean => r.status === 429 && /busy checking passwords/.test(r.body?.message ?? '')
+    const flood = Array.from({ length: 24 }, (_, i) =>
+      login(newDevice('x'), `flood-${i}@example.com`, `a stranger's guess ${i} ....`, { ip: `2001:db8:f${(i + 1).toString(16).padStart(3, '0')}::1` })
+    )
+    const full = await Promise.race([
+      ...flood.map((p) => p.then((r) => (busy(r) ? true : new Promise<boolean>(() => {})))),
+      new Promise<boolean>((r) => setTimeout(() => r(false), 10_000))
+    ])
+    ok('strangers’ sign-ins filled the scrypt queue (the ones past it were refused "busy")', full)
+    const busyFrom = '2001:db8:beef:1::'
+    const [proven2, ...waves] = await Promise.all([
+      login(A, OWNER_EMAIL, OWNER_PW, { prove: true }),
+      // Four at once: the in-flight cap per client (LOGIN_PER_IP).
+      ...[0, 1, 2, 3].map((i) => login(newDevice('x'), `busy-${i}@example.com`, 'whatever password 123', { ip: `${busyFrom}${i + 1}` }))
+    ])
+    await Promise.all(flood)
+    check('and the device that proves itself still got in: it has a queue of its own', [proven2.status, proven2.body?.state, proven2.body?.message], [200, 'active', undefined])
+    const charged = (() => {
+      const db = new DatabaseSync(join(TMP, 'hub', 'hub.db'), { timeout: 5000 })
+      try {
+        return (db.prepare('SELECT failures, locked_until FROM login_failures WHERE key = ?').get(`ip:${clientKey(busyFrom + '1')}`) as { failures: number } | undefined)?.failures ?? 0
+      } finally {
+        db.close()
+      }
+    })()
+    const refusedBusy = waves.filter(busy).length
+    const checked = waves.filter((r) => r.status === 401).length
+    ok(
+      `a "busy" refusal costs its sender: the /64's failures count every one (${refusedBusy} busy + ${checked} checked = ${charged})`,
+      refusedBusy > 0 && charged === refusedBusy + checked,
+      waves.map((r) => r.status).join(',')
+    )
   }
 
   /* ----------------------------------------------------- items */
@@ -1081,6 +1155,33 @@ let liveItemId = ''
     hub.ping()
     await new Promise((r) => setTimeout(r, 200))
     check('while a socket that reads echoes every ping and stays', [presA.closed, presA.ws.readyState], [null, WebSocket.OPEN])
+
+    // A socket must not outlive the session that opened it (review, 2026-10-02).
+    const r7 = (await call('POST', '/v1/relays', { host: A.id }, { dev: C })).body?.relay as string
+    const g7 = await mustOpen(`/v1/ws/relay/${r7}`, C, 'guest end')
+    const h7 = await mustOpen(`/v1/ws/relay/${r7}`, A, 'host end')
+    const out = await call('POST', '/v1/auth/logout', {}, { dev: C })
+    await g7.until(() => g7.closed, 3000)
+    await h7.until(() => h7.closed, 3000)
+    check('signing out closes the relays that session opened, at both ends', [out.status, g7.closed?.reason ?? null, h7.closed?.reason ?? null], [200, 'signed out', 'signed out'])
+    await login(C, OWNER_EMAIL, OWNER_PW)
+    const presC2 = await mustOpen('/v1/ws/presence', C, 'presence again after signing in')
+    const r8 = (await call('POST', '/v1/relays', { host: A.id }, { dev: C })).body?.relay as string
+    const g8 = await mustOpen(`/v1/ws/relay/${r8}`, C, 'guest end')
+    const h8 = await mustOpen(`/v1/ws/relay/${r8}`, A, 'host end')
+    {
+      // What `stoke-hub reset-password --sign-out` does: another process deletes the rows.
+      const db = new DatabaseSync(join(TMP, 'hub', 'hub.db'), { timeout: 5000 })
+      db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(sha256B64u(C.token))
+      db.close()
+    }
+    hub.ping()
+    await presC2.until(() => presC2.closed, 3000)
+    await g8.until(() => g8.closed, 3000)
+    await h8.until(() => h8.closed, 3000)
+    check('a session deleted by another process closes its presence and its relays at the next ping round', [presC2.closed !== null, g8.closed?.reason ?? null, h8.closed !== null], [true, 'session ended', true])
+    check('while the other device’s own sockets stay', [presA.closed, presA.ws.readyState], [null, WebSocket.OPEN])
+    await login(C, OWNER_EMAIL, OWNER_PW)
   }
 
   /* ---------------------------------------------------- revocation */
@@ -1148,7 +1249,26 @@ let liveItemId = ''
     ok('the refusal says when to come back', r.body?.error === 'rate-limited' && r.body?.retryAfterMs > 0 && Number(r.headers.get('retry-after')) > 0)
     const other = await call('GET', '/v1/health', undefined, { base, ip: '203.0.113.2' })
     check('another address has its own bucket', other.status, 200)
+    const v6: number[] = []
+    for (let i = 0; i < 6; i++) v6.push((await call('GET', '/v1/health', undefined, { base, ip: `2001:db8:abcd:12::${i + 1}` })).status)
+    check('six addresses in one IPv6 /64 share one bucket', v6, [200, 200, 200, 200, 200, 429])
     await small.close()
+
+    const floodLog: string[] = []
+    const loud = await startHub(
+      { dataDir: join(TMP, 'loud'), mount: '/hub', edge: { host: '127.0.0.1', port: 0 }, lan: null, edgeSecret: SECRET, rate: { capacity: 100_000, refillPerSec: 1000 } },
+      { now, log: new HubLog((l) => floodLog.push(l), { now }), announce: () => {} }
+    )
+    const lbase = `http://127.0.0.1:${loud.edgePort}/hub`
+    const refusalsIn = (prefix: string): number => floodLog.filter((l) => l.includes('"msg":"request"') && l.includes(`"ip":"${prefix}`)).length
+    for (let i = 0; i < 40; i++) await call('GET', '/v1/nothing-here', undefined, { base: lbase, ip: `2001:db8:5:5::${(i + 1).toString(16)}` })
+    check('a stranger rotating addresses in one /64 gets the per-client log allowance once (20 a minute)', refusalsIn('2001:db8:5:5:'), 20)
+    for (let i = 0; i < 150; i++) await call('GET', '/v1/nothing-here', undefined, { base: lbase, ip: `2001:db8:6:${(i + 1).toString(16)}::1` })
+    check('and strangers on 150 /64s share one cap: 100 refusal lines a minute in all', refusalsIn('2001:db8:5:5:') + refusalsIn('2001:db8:6:'), 100)
+    clock += 60_000
+    await call('GET', '/v1/nothing-here', undefined, { base: lbase, ip: '2001:db8:7::1' })
+    ok('the next minute says how many were dropped', floodLog.some((l) => l.includes('"msg":"log lines suppressed"') && l.includes('refused:all')))
+    await loud.close()
   }
 
   /* ------------------------------------------------- the edge Worker */

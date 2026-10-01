@@ -451,7 +451,7 @@ export function mergeSetup(current: Settings, payload: SetupPayload, opts: { inc
           skipped.push({
             key: 'defaults.permissionMode',
             label: 'Default permission mode',
-            why: 'The file starts sessions with permissions bypassed. Choose that here, in Settings › Sessions, if you want it on this machine too.'
+            why: 'The file starts sessions with permissions bypassed. Choose that here, in Settings › Agents › Claude Code › Launch defaults, if you want it on this machine too.'
           })
         }
         next.defaults = d
@@ -526,7 +526,7 @@ const LABELS: Record<string, string> = {
   terminal: 'Terminal options',
   zoomTarget: 'What zoom moves',
   fullScreenReveal: 'Full-screen menu bar',
-  defaults: 'Session defaults',
+  defaults: 'Claude Code launch defaults',
   voice: 'Voice dictation',
   profiles: 'Profiles',
   hosts: 'SSH hosts',
@@ -541,7 +541,7 @@ const LABELS: Record<string, string> = {
   showBrand: 'Show the Stoke name',
   sshKeyEnroll: 'SSH key offer',
   notifications: 'Notifications',
-  providers: 'Providers',
+  providers: 'Provider & keys',
   agents: 'Agents',
   'wallpaper.blur': 'Wallpaper blur',
   'wallpaper.dim': 'Wallpaper dim',

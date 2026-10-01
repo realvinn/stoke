@@ -283,6 +283,7 @@ export function AgentManager(props: AgentPagesProps): React.JSX.Element {
               onShown={(on) => c.setShown(x.id, on)}
               color={agentSeed(x.id, agents.colors)}
               colorOverridden={agents.colors[x.id] !== undefined}
+              tagLabel={agents.tag.labels[x.id] ?? ''}
               onColor={(hex) => c.setColor(x.id, hex)}
               onPreviewColor={props.onPreviewColor ? (hex) => props.onPreviewColor?.(x.id, hex) : undefined}
               onOpen={() => onGo({ page: 'agent', agent: x.id })}
@@ -361,6 +362,7 @@ function AgentRosterRow({
   onShown,
   color,
   colorOverridden,
+  tagLabel,
   onColor,
   onPreviewColor,
   onOpen
@@ -373,6 +375,8 @@ function AgentRosterRow({
   onShown: (on: boolean) => void
   color: string
   colorOverridden: boolean
+  /** The agent's own tab tag, '' for none: the picker's sample shows what the tab draws. */
+  tagLabel: string
   onColor: (hex: string | null) => void
   onPreviewColor?: (hex: string | null) => void
   onOpen: () => void
@@ -419,7 +423,7 @@ function AgentRosterRow({
             commitOnUnmount
             presets={AGENT_PRESETS}
             defaultValue={AGENT_SEEDS[cli.id]}
-            ink={{ kind: 'agent', key: cli.id, tag: cli.bins.posix[0] }}
+            ink={{ kind: 'agent', key: cli.id, tag: tagLabel.trim() || cli.bins.posix[0] }}
             onPreview={onPreviewColor}
           />
           {colorOverridden && (

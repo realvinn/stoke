@@ -170,6 +170,8 @@ export interface RemoteItem {
   version: number
   editedAt: number
   author: string
+  /** Who wrote the value, when a re-seal put it under `author`'s name (`ItemPlaintext.by`). */
+  by?: string
   deleted: boolean
   value: unknown
   /** `valueDigest` of `{ deleted, value }`. */
@@ -304,7 +306,7 @@ const SETTING_LABELS: Record<string, string> = {
   terminal: 'Terminal',
   zoomTarget: 'What zoom scales',
   fullScreenReveal: 'Full-screen menu bar',
-  defaults: 'Session defaults',
+  defaults: 'Claude Code launch defaults',
   voice: 'Voice',
   profiles: 'Profiles',
   worklogGroups: 'Worklog folders',
@@ -318,7 +320,7 @@ const SETTING_LABELS: Record<string, string> = {
   showBrand: 'Brand mark',
   sshKeyEnroll: 'SSH key offers',
   notifications: 'Notifications',
-  providers: 'Providers',
+  providers: 'Provider & keys',
   agents: 'Agents',
   wallpaper: 'Wallpaper',
   browser: 'Browser home and bookmarks'
@@ -544,7 +546,10 @@ export interface HeldRecord {
   hash: string
   /** What it runs, spelled out. Never a secret value (a variable is named, not shown). */
   lines: string[]
+  /** The device that wrote it: the item's `by` when a re-seal carried it, else its author. */
   author: string
+  /** The device that re-sealed it under its own name, when that is not `author`. */
+  sealer?: string
   at: number
 }
 
@@ -764,6 +769,7 @@ export function hydrateHubState(raw: unknown, account: string): HubLocalState {
         hash: str(h.hash, 128),
         lines: h.lines.filter((l): l is string => typeof l === 'string').slice(0, 32).map((l) => l.slice(0, 1000)),
         author: isId('device', h.author) ? h.author : '',
+        ...(isId('device', h.sealer) && h.sealer !== h.author ? { sealer: h.sealer as string } : {}),
         at: num(h.at)
       }
     }

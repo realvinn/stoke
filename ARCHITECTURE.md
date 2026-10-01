@@ -713,9 +713,10 @@ Linux arm64 is deliberately not built (`NOT_BUILT` in `scripts/targets.mjs`).
 
 ## Testing
 
-Verification lives in `scripts/`, one `verify-*` suite per subject — fifty of them now.
-Forty-eight are in `npm run check`, between the typecheck and the full build; `check` is the
-gate, and it is what "done" means here. They are `.mts` run straight through node's
+Verification lives in `scripts/`, one `verify-*` suite per subject — fifty-eight of them now.
+Fifty-six are in `npm run check`, between the typecheck and the full build (the other two,
+extract and security, need a live instance); `check` is the gate, and it is what "done" means
+here. They are `.mts` run straight through node's
 type-stripping with no build step, except `verify:selection`, which opens a real Electron window
 and so needs a display. Each runs alone:
 
@@ -750,6 +751,9 @@ npm run verify:hub            # the Stoke Hub contract against its node:crypto r
                               # grants, signed requests, the hub URL
                               # and edge rules, synced-settings folding (gotcha 139), and pinned
                               # vectors that reproduce under Node/OpenSSL and Electron/BoringSSL
+npm run verify:providers      # where a local Claude session's auth comes from: each mode's env
+                              # (a leftover gateway URL cleared on the way back to a key), the
+                              # hydrate repairs, key-format hints, and every agent's bin names
 npm run verify:claude-config  # writing Claude Code's OWN config: the allowlist, the refusals,
                               # and the ~/.claude.json lock. Runs against real files in a temp
                               # CLAUDE_CONFIG_DIR, never the user's (gotchas 38, 39)
@@ -765,6 +769,9 @@ npm run verify:search         # sidebar + palette search: tiers, recency, highli
                               # accented text, the label in both surfaces; and the session
                               # index against real files in a temp dir - a 40 MB transcript
                               # costs two 256 KB reads, a second pass costs none
+npm run verify:activity       # the activity report: active time from gaps under the idle cap
+                              # (never first-to-last, which overstated a week sevenfold on a
+                              # real transcript) and lines written, on synthetic transcripts
 npm run verify:settings-search # the Settings index against the sheet: every `data-setting`
                               # mark in every .tsx is a row the index names and every row is
                               # marked, each in a component that draws its page; the menu tree
@@ -810,6 +817,9 @@ npm run verify:tabs           # which tab is selected after one is closed, where
                               # (the registry's id and version over the tab's, busy, fresh),
                               # Wait and the automatic relaunch, and what counts as a draft.
                               # And the agent tag: hidden, renamed, keyed on the default agent
+npm run verify:restore        # the tab-restore store: what survives a quit, the caps and age
+                              # limits, a corrupt file, and the update-restart marker consumed
+                              # once and only while fresh
 npm run verify:launcher       # the new-session page: each launch value resolved through
                               # tab, Stoke and Claude Code's files (the machine the QA ran
                               # on, modelSettings included, reads what the banner said),
@@ -907,6 +917,17 @@ npm run verify:color          # colour maths: contrast, APCA, oklch; every theme
 npm run verify:theme-gen      # the theme generator: that a five-field seed reproduces every
                               # built-in byte-for-byte, that no slider position can breach a
                               # contrast floor, and that a saved seed survives hydration
+npm run verify:targets        # what a release builds: every target on a NATIVE runner, the
+                              # workflow and every dist:* reading scripts/targets.mjs, and the
+                              # two verify jobs held step for step (gotchas 67, 113)
+npm run verify:manifests      # the update-manifest merger and the publish gate, against the
+                              # real v0.9.4 feeds, electron-builder's own writer and
+                              # electron-updater's own per-arch file pick (gotcha 68)
+npm run verify:portable       # a Windows copy not from the installer: which kind it is, the
+                              # zip each arch is offered, and the folder-swap helper's plan and
+                              # script, run under a real PowerShell where one exists (96, 101)
+npm run verify:winget         # the winget manifests: ProductCode from the appId, Publisher, the
+                              # installers per Windows arch, and one fixture's full text
 npm run verify:updates        # the updater: a failure and a success must not read the same,
                               # whether the channel the CLI follows is itself behind latest,
                               # and macOS must still build the zip it updates from (24, 25, 46)
@@ -1584,6 +1605,10 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     it is scrolled to the middle (its top if taller), flashed for 1.6 s, its
                     control focused with `preventScroll`; and `markSettingHits` for the page on
                     show while there is a query
+  src/lib/hubRemote.ts  `useHubRemote`: "Other machines" as main last pushed it (one writer,
+                    main; reading it never starts the hub client), shared by OtherMachines,
+                    RemoteHostStrip, RemoteTerminal, AccountSyncSettings and App; and
+                    `platformName` for their labels
   src/lib/paletteRows.ts  the Cmd+K palette's one list: projects and settings interleaved on
                     one tier scale (`paletteTier`), a tie to the project. verify:settings-search
   src/lib/projectSearch.ts  the one matcher the sidebar search and the Cmd+K palette share:
@@ -2029,7 +2054,8 @@ hub/              Stoke Hub, the server the owner runs on the NUC (spec:
   store.ts          the SQLite file: WAL, synchronous FULL, 0600; hashes of tokens and invites,
                     never the values; VACUUM INTO for backups
   sockets.ts        presence registry and the relay broker (in memory, frames forwarded verbatim)
-  limits.ts         the per-IP bucket, the scrypt semaphore, the one-sign-in-per-email claim
+  limits.ts         `clientKey` (an IPv6 sender is its /64), the per-client bucket, the scrypt
+                    semaphores (a proven device's apart), the one-sign-in-per-email claim
   log.ts            JSON-lines log that redacts by field name and by value shape
   config.ts         env and flags; the edge secret never from argv
   build.mjs         esbuild bundle -> hub/dist/stoke-hub.mjs (NOT out/: electron-builder ships out/**)

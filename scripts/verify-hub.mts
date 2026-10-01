@@ -86,7 +86,7 @@ import {
   stableJson,
   utf8
 } from '../src/shared/hub/codec.ts'
-import { edgeForwardHeaders, edgeTarget, edgeVerdict, hubEndpoint, hubSocketUrl, hubUrlVerdict, sameSecret } from '../src/shared/hub/edge.ts'
+import { edgeForwardHeaders, edgeTarget, edgeVerdict, hubEndpoint, hubSocketUrl, hubUrlVerdict, sameHubUrl, sameSecret } from '../src/shared/hub/edge.ts'
 import {
   decideConflict,
   envelopeProblem,
@@ -806,6 +806,12 @@ console.log('\nedge: the hub URL a Stoke accepts')
   check('nothing is refused', v('  '), 'refused')
   const http = hubUrlVerdict('http://nuc.local:8787')
   ok('plain http carries a warning to show', http.ok && typeof http.warning === 'string' && http.warning.length > 20)
+  // The Hub address box is "saved" when what is typed is the hub saved, read the way it was saved (review, 2026-10-02).
+  check(
+    'the address typed as the README says is the hub saved as …/hub; another one is not; nothing saved is never saved',
+    [sameHubUrl('http://127.0.0.1:18788', 'http://127.0.0.1:18788/hub'), sameHubUrl(' http://127.0.0.1:18788/hub/ ', 'http://127.0.0.1:18788/hub'), sameHubUrl('http://127.0.0.1:18789', 'http://127.0.0.1:18788/hub'), sameHubUrl('', ''), sameHubUrl('nonsense', 'http://127.0.0.1:18788/hub')],
+    [true, true, false, false, false]
+  )
   check('endpoints hang off the base', hubEndpoint('https://stoke.vinn.dev/hub', '/v1/items?since=2'), 'https://stoke.vinn.dev/hub/v1/items?since=2')
   check('sockets too', hubSocketUrl('https://stoke.vinn.dev/hub', '/v1/ws/presence'), 'wss://stoke.vinn.dev/hub/v1/ws/presence')
 }

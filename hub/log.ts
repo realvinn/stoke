@@ -12,8 +12,9 @@
  *
  * A request log names the route, never the raw path, so no query value ends up
  * in the journal either. Refusals from strangers (a scanner that found the
- * tunnel hostname) are rate-limited per minute, so a flood costs a summary
- * line, not a full disk.
+ * tunnel hostname) are rate-limited per minute — per client (`clientKey`: an
+ * IPv6 sender rotating addresses in its /64 is one client) AND in total, so a
+ * flood from any number of addresses costs a summary line, not a full disk.
  */
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error'

@@ -348,13 +348,16 @@ console.log('\nsearch: what ranks first, synonyms, spellings and highlights')
   check('"themes": the theme cards first', top('themes'), ['row:appearance.theme'])
   check('"wallpapers": Wallpaper first', top('wallpapers'), ['row:appearance.wallpaper'])
   check('"microphones": the microphone rows lead', top('microphones', 2).sort(), ['row:voice.mic-access', 'row:voice.microphone'])
-  // Two rows answer "ssh keys" now: setting up key login to a host, and the hub's
-  // sharing of your own keys between devices (Account & sync). Both lead, in either order.
+  // Two rows answer "ssh keys": the hub's sharing of your own keys between devices (Account & sync),
+  // whose label it is, and setting up key login to a host, which has it as a keyword. They are not
+  // tied (100 and 75), so the order is pinned, not sorted away: a change to it is a decision.
   check(
-    '"ssh keys": key login for SSH hosts and the hub\'s SSH keys lead',
-    top('ssh keys', 2).slice().sort(),
+    '"ssh keys": the hub\'s SSH keys (its label), then key login for SSH hosts',
+    top('ssh keys', 2),
     ['row:account.ssh-keys', 'row:hosts.key-enroll']
   )
+  // The agent pages' own button says "Add account"; "add" used to prefix-match the hub's "address".
+  check('"add account" and "new account": an agent\'s Accounts, not the hub address', [top('add account'), top('new account')], [['row:agent.accounts@claude'], ['row:agent.accounts@claude']])
   check(
     '"api keys": both Claude Code key rows ahead of Where your keys live',
     [top('api keys', 2).sort(), searchSettings(entries, 'api keys').findIndex((h) => h.entry.key === 'row:backup.storage') > 1],
@@ -586,6 +589,33 @@ console.log('\nthe jump: a row inside a disclosure it opens, and a row taller th
     /getBoundingClientRect\(\)\.height > pane\.clientHeight \? 'start' : 'center'/.test(jump),
     true
   )
+  const appSrc = read('App.tsx')
+  check(
+    'Cmd+K over Settings goes to the sheet’s own search box (the palette would open unseen UNDER it), and Escape that closes a palette leaves the sheet',
+    [
+      /case 'palette': \{[\s\S]{0,900}?if \(settingsOpenRef\.current\) \{\s+const box = document\.querySelector<HTMLInputElement>\('\.settings-search-input'\)/.test(appSrc),
+      /if \(paletteOpenRef\.current\) return/.test(appSrc),
+      read('components/SettingsSheet.tsx').includes('className="input settings-search-input"')
+    ],
+    [true, true, true]
+  )
+  const sheetSrc = read('components/SettingsSheet.tsx')
+  check(
+    'the menu row of the page on show is scrolled into sight on a page change and when the tree comes back from search',
+    /if \(searching\) return\s+treeRef\.current\?\.querySelector<HTMLElement>\('\[aria-current="page"\]'\)\?\.scrollIntoView\(\{ block: 'nearest' \}\)\s+\}, \[current, searching\]\)/.test(sheetSrc),
+    true
+  )
+  // Claude Code settings draws its dropdowns disabled until its file has loaded (review, 2026-10-02).
+  const cc = read('components/ClaudeCodeSettings.tsx')
+  check(
+    'a row whose control is still disabled keeps focus waiting on the pane, then moves it to the control once enabled',
+    [
+      /disabled=\{busy === spec\.key \|\| !state\}/.test(cc),
+      /if \(!control && el\.querySelector\(DISABLED_IN_ROW\)\) awaitControl\(el\)/.test(jump),
+      /if \(stopped \|\| document\.activeElement !== pane\) return/.test(jump)
+    ],
+    [true, true, true]
+  )
 }
 
 /* -------------------------------------- messages that name Provider & keys */
@@ -607,12 +637,14 @@ console.log('\nmessages that send you to Provider & keys name where it is now')
         else if (/\.tsx?$/.test(entry.name)) {
           // Strings only: a comment may still say where a thing used to be.
           for (const m of readFileSync(path, 'utf8').matchAll(/['`"][^'`"\n]*Settings › Providers[^'`"\n]*['`"]/g)) stale.push(`${relative(root, path)}: ${m[0]}`)
+          // The permission default moved too: it is Launch defaults, and Sessions only points there.
+          for (const m of readFileSync(path, 'utf8').matchAll(/['`"][^'`"\n]*permission[^'`"\n]*Settings › Sessions[^'`"\n]*['`"]/gi)) stale.push(`${relative(root, path)}: ${m[0]}`)
         }
       }
     }
     walk(join(root, dir))
   }
-  check('no string still says "Settings › Providers"', stale, [])
+  check('no string still says "Settings › Providers", or sends a permission default to "Settings › Sessions"', stale, [])
 }
 
 /* ------------------------------------------------------------ the paint */

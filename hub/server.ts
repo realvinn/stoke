@@ -210,7 +210,7 @@ async function resetPassword(args: string[], flags: Record<string, string | unde
     out(
       `Password reset for ${email}.` +
         (generated ? `\n  New password: ${password}` : '') +
-        (flags['sign-out'] ? `\n  Signed out ${ended} session(s); each device signs in again with the new password.` : '\n  Existing sessions were kept (--sign-out ends them).') +
+        (flags['sign-out'] ? `\n  Signed out ${ended} session(s); a running hub closes their connections within a minute, and each device signs in again with the new password.` : '\n  Existing sessions were kept (--sign-out ends them).') +
         '\n  Nothing anyone can decrypt changed: the password opens no key.'
     )
   } finally {

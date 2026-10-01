@@ -23,6 +23,12 @@ const SETTLE_FRAMES = 8
 
 const FOCUSABLE_IN_ROW =
   'input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), button:not([disabled]), summary, [tabindex]:not([tabindex="-1"])'
+/** A control drawn but not usable yet: a page that disables its controls until its own data has loaded. */
+const DISABLED_IN_ROW = 'input[disabled]:not([type="hidden"]), select[disabled], textarea[disabled], button[disabled]'
+
+function controlIn(el: HTMLElement): HTMLElement | null {
+  return el.matches(FOCUSABLE_IN_ROW) ? el : el.querySelector<HTMLElement>(FOCUSABLE_IN_ROW)
+}
 
 function rowIn(pane: HTMLElement, id: string): HTMLElement | null {
   return pane.querySelector<HTMLElement>(`[data-setting="${CSS.escape(id)}"]`)
@@ -68,6 +74,25 @@ export function flashSettingRow(
   const started = performance.now()
   let frame = 0
   let done = false
+  let stopped = false
+  /*
+   * Claude Code settings draws every dropdown disabled until its settings file
+   * has loaded, so the first jump there found the row, no ENABLED control, and
+   * left focus on the pane: arrow keys then did nothing to the setting just
+   * jumped to (found in review, 2026-10-02, on every first visit). Focus waits
+   * on the pane while the row's control is disabled, and moves to it once it
+   * is enabled — unless the keyboard has gone somewhere else meanwhile.
+   */
+  const awaitControl = (el: HTMLElement): void => {
+    const until = performance.now() + GIVE_UP_MS
+    const tick = (): void => {
+      if (stopped || document.activeElement !== pane) return
+      const control = controlIn(el)
+      if (control) control.focus({ preventScroll: true })
+      else if (performance.now() < until) frame = requestAnimationFrame(tick)
+    }
+    frame = requestAnimationFrame(tick)
+  }
   const show = (el: HTMLElement): void => {
     if (done) return
     done = true
@@ -80,9 +105,10 @@ export function flashSettingRow(
     el.scrollIntoView({ block, behavior: prefersReducedMotion() ? 'auto' : 'smooth' })
     flash(el)
     if (opts.focus) {
-      const control = el.matches(FOCUSABLE_IN_ROW) ? el : el.querySelector<HTMLElement>(FOCUSABLE_IN_ROW)
+      const control = controlIn(el)
       // preventScroll: the scroll above is smooth, and focus() would jump it.
       ;(control ?? pane).focus({ preventScroll: true })
+      if (!control && el.querySelector(DISABLED_IN_ROW)) awaitControl(el)
     }
   }
   const attempt = (): void => {
@@ -127,6 +153,7 @@ export function flashSettingRow(
   frame = requestAnimationFrame(attempt)
   return () => {
     done = true
+    stopped = true
     cancelAnimationFrame(frame)
   }
 }

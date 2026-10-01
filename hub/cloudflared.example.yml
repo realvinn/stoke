@@ -1,6 +1,10 @@
 # /etc/cloudflared/config.yml on the NUC — the tunnel the edge Worker forwards
-# into (hub/README.md, step 4). Replace <TUNNEL-ID> with what
-# `cloudflared tunnel create stoke-hub` printed.
+# into (hub/README.md, step 4). Replace BOTH <TUNNEL-ID>s with the UUID
+# `cloudflared tunnel create stoke-hub` printed. `tunnel:` takes the UUID, not
+# the name: a name has to be looked up with cert.pem, which the root service
+# does not have. The credentials file is the one `tunnel create` wrote to
+# ~/.cloudflared/<TUNNEL-ID>.json; the README copies it here before
+# `service install`, which does not.
 #
 # Point it at the EDGE listener (127.0.0.1:8787), never the LAN one: the edge
 # listener is the one that demands the Worker's secret. The hub refuses
@@ -10,7 +14,7 @@
 # Do not set `access: required: true` here until a request forwarded by the
 # Worker has been measured passing it (spec §2.3).
 
-tunnel: stoke-hub
+tunnel: <TUNNEL-ID>
 credentials-file: /etc/cloudflared/<TUNNEL-ID>.json
 
 ingress:
