@@ -80,6 +80,20 @@ export function hubUrlVerdict(text: unknown): HubUrlVerdict {
   }
 }
 
+/**
+ * Whether what is typed in the Hub address box is the hub already saved
+ * (`saved`, a base `hubUrlVerdict` made). Compared as `hubUrlVerdict` reads it:
+ * the address typed the way the README says, `http://nuc.local:8788`, is saved
+ * as `…/hub`, and a raw comparison never matched it, so the box never reached
+ * its saved state and its plain-http warning never stayed (found in review,
+ * 2026-10-02).
+ */
+export function sameHubUrl(typed: string, saved: string): boolean {
+  if (saved === '') return false
+  const v = hubUrlVerdict(typed)
+  return v.ok && v.base === saved
+}
+
 /** The full URL of `pathFromV1` (e.g. `/v1/items?since=3`) under a base from `hubUrlVerdict`. */
 export function hubEndpoint(base: string, pathFromV1: string): string {
   return `${base.replace(/\/+$/, '')}${pathFromV1.startsWith('/') ? '' : '/'}${pathFromV1}`

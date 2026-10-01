@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { DEFAULT_HUB_URL, emptyHubView, type HubLocalKeyView, type HubResult, type HubView } from '@shared/hub/client'
+import { sameHubUrl } from '@shared/hub/edge'
 import { FieldHint } from './FieldHint'
 import { useHubRemote } from '../lib/hubRemote'
 import { Spinner } from './Spinner'
@@ -234,7 +235,7 @@ function Overview({ view, now }: { view: HubView; now: number }): React.JSX.Elem
 function HubAddress({ view }: { view: HubView }): React.JSX.Element {
   const [url, setUrl] = useState(view.url || DEFAULT_HUB_URL)
   const { busy, note, run } = useRun()
-  const saved = view.url !== '' && url.trim() === view.url
+  const saved = sameHubUrl(url, view.url)
   return (
     <div className="field" data-hub="address" data-setting="account.address">
       <span className="field-label">Hub address</span>
