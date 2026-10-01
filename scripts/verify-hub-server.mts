@@ -615,19 +615,26 @@ async function main(): Promise<void> {
     const deviceBack = await login(A, OWNER_EMAIL, OWNER_PW, { prove: true })
     check('both unlock on their own time', [later.status, deviceBack.status], [200, 200])
 
-    // Strangers' sign-ins (an unknown email costs a scrypt) from many /64s fill the shared queue...
+    // Strangers' sign-ins (an unknown email costs a scrypt) from many /64s fill the shared queue:
+    // 2 run, 16 wait, and the rest come straight back "busy". The first of those says the queue is
+    // full NOW (a scrypt takes far longer than the round trip), so the proven sign-in and the next
+    // wave go then, not after a guessed delay: a fixed wait let the queue drain on a fast machine.
+    const busy = (r: Reply): boolean => r.status === 429 && /busy checking passwords/.test(r.body?.message ?? '')
     const flood = Array.from({ length: 24 }, (_, i) =>
       login(newDevice('x'), `flood-${i}@example.com`, `a stranger's guess ${i} ....`, { ip: `2001:db8:f${(i + 1).toString(16).padStart(3, '0')}::1` })
     )
-    await new Promise((r) => setTimeout(r, 150))
-    const provenDuring = login(A, OWNER_EMAIL, OWNER_PW, { prove: true })
+    const full = await Promise.race([
+      ...flood.map((p) => p.then((r) => (busy(r) ? true : new Promise<boolean>(() => {})))),
+      new Promise<boolean>((r) => setTimeout(() => r(false), 10_000))
+    ])
+    ok('strangers’ sign-ins filled the scrypt queue (the ones past it were refused "busy")', full)
     const busyFrom = '2001:db8:beef:1::'
-    const waves: Reply[] = []
-    for (let w = 0; w < 3; w++) waves.push(...(await Promise.all([0, 1, 2].map((i) => login(newDevice('x'), `busy-${w}-${i}@example.com`, 'whatever password 123', { ip: `${busyFrom}${w * 3 + i + 1}` })))))
-    const proven2 = await provenDuring
-    const floodDone = await Promise.all(flood)
-    const busy = (r: Reply): boolean => r.status === 429 && /busy checking passwords/.test(r.body?.message ?? '')
-    ok('strangers’ sign-ins filled the scrypt queue (some were refused "busy")', floodDone.some(busy), floodDone.map((r) => r.status).join(','))
+    const [proven2, ...waves] = await Promise.all([
+      login(A, OWNER_EMAIL, OWNER_PW, { prove: true }),
+      // Four at once: the in-flight cap per client (LOGIN_PER_IP).
+      ...[0, 1, 2, 3].map((i) => login(newDevice('x'), `busy-${i}@example.com`, 'whatever password 123', { ip: `${busyFrom}${i + 1}` }))
+    ])
+    await Promise.all(flood)
     check('and the device that proves itself still got in: it has a queue of its own', [proven2.status, proven2.body?.state, proven2.body?.message], [200, 'active', undefined])
     const charged = (() => {
       const db = new DatabaseSync(join(TMP, 'hub', 'hub.db'), { timeout: 5000 })
