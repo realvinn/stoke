@@ -599,6 +599,12 @@ console.log('\nthe jump: a row inside a disclosure it opens, and a row taller th
     ],
     [true, true, true]
   )
+  const sheetSrc = read('components/SettingsSheet.tsx')
+  check(
+    'the menu row of the page on show is scrolled into sight on a page change and when the tree comes back from search',
+    /if \(searching\) return\s+treeRef\.current\?\.querySelector<HTMLElement>\('\[aria-current="page"\]'\)\?\.scrollIntoView\(\{ block: 'nearest' \}\)\s+\}, \[current, searching\]\)/.test(sheetSrc),
+    true
+  )
   // Claude Code settings draws its dropdowns disabled until its file has loaded (review, 2026-10-02).
   const cc = read('components/ClaudeCodeSettings.tsx')
   check(
