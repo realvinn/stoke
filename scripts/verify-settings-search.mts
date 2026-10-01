@@ -610,12 +610,14 @@ console.log('\nmessages that send you to Provider & keys name where it is now')
         else if (/\.tsx?$/.test(entry.name)) {
           // Strings only: a comment may still say where a thing used to be.
           for (const m of readFileSync(path, 'utf8').matchAll(/['`"][^'`"\n]*Settings › Providers[^'`"\n]*['`"]/g)) stale.push(`${relative(root, path)}: ${m[0]}`)
+          // The permission default moved too: it is Launch defaults, and Sessions only points there.
+          for (const m of readFileSync(path, 'utf8').matchAll(/['`"][^'`"\n]*permission[^'`"\n]*Settings › Sessions[^'`"\n]*['`"]/gi)) stale.push(`${relative(root, path)}: ${m[0]}`)
         }
       }
     }
     walk(join(root, dir))
   }
-  check('no string still says "Settings › Providers"', stale, [])
+  check('no string still says "Settings › Providers", or sends a permission default to "Settings › Sessions"', stale, [])
 }
 
 /* ------------------------------------------------------------ the paint */

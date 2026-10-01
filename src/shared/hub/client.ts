@@ -306,7 +306,7 @@ const SETTING_LABELS: Record<string, string> = {
   terminal: 'Terminal',
   zoomTarget: 'What zoom scales',
   fullScreenReveal: 'Full-screen menu bar',
-  defaults: 'Session defaults',
+  defaults: 'Claude Code launch defaults',
   voice: 'Voice',
   profiles: 'Profiles',
   worklogGroups: 'Worklog folders',
@@ -320,7 +320,7 @@ const SETTING_LABELS: Record<string, string> = {
   showBrand: 'Brand mark',
   sshKeyEnroll: 'SSH key offers',
   notifications: 'Notifications',
-  providers: 'Providers',
+  providers: 'Provider & keys',
   agents: 'Agents',
   wallpaper: 'Wallpaper',
   browser: 'Browser home and bookmarks'
