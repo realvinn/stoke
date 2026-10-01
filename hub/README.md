@@ -275,5 +275,20 @@ Everything here ran on a Mac under Node 26, and under Electron's Node 24.18 (the
 version): the server, both listeners, the bundle, every subcommand, SIGTERM. **Not run:** on the
 NUC or any Linux; the Docker image (never built — no Docker daemon was running); the systemd
 units (never loaded); cloudflared; the edge Worker on Cloudflare (its HTTP half runs under node in
-the suites; its WebSocket bridge needs the Workers runtime and has never carried a frame); and
-Cloudflare's route-before-custom-domain precedence, which is cited from its docs, not measured.
+the suites; its WebSocket bridge, below); and Cloudflare's route-before-custom-domain precedence,
+which is cited from its docs, not measured.
+
+> **Measured on 2026-10-02**, `node scripts/hub-e2e.mts --url https://stoke.vinn.dev/hub --invite …`
+> from a Mac against the deployment above: the route reaches this Worker ahead of the installer's
+> custom domain, and sign-up, pairing (both screens), items, conflicts, revoke, account isolation,
+> forged and replayed requests and the email lockout all pass through it. Its WebSocket bridge
+> carried presence — text frames — from the first try, and turned every BINARY frame into the text
+> `[object Blob]`: since compatibility date 2026-03-17 (`websocket_standard_binary_type`) a Worker
+> receives binary frames as `Blob`s unless `binaryType` is set. So every "Other machines" relay died
+> at its first sealed frame (`1008 "a text frame arrived after the handshake"`), and a binary frame
+> sent on presence reached the hub as text (`1007 "not JSON"`, where binary gets `1003`). Fixed in
+> `worker/hub-edge.ts` (`bridgeSockets`); it reaches Cloudflare only with `npm run deploy:hub-edge`.
+> Under `wrangler dev` (workerd, same compatibility date) the old bridge fails the script the same
+> way and the fixed one passes all of it. Also seen there: the Worker reads both ends eagerly, so
+> the hub's relay flow control never sees a slow reader behind it — a 24 MB flood at a paused
+> reader was buffered in the Worker, not pushed back to the sender.
