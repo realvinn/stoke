@@ -152,11 +152,19 @@ that asks for no secret, and the hub refuses it.
 
 ```sh
 cloudflared tunnel login
-cloudflared tunnel create stoke-hub               # prints the tunnel id
+cloudflared tunnel create stoke-hub               # prints the tunnel id (a UUID)
 cloudflared tunnel route dns stoke-hub hub-origin.vinn.dev
-sudo cp cloudflared.example.yml /etc/cloudflared/config.yml   # edit <TUNNEL-ID>
+sudo mkdir -p /etc/cloudflared
+sudo install -m 0600 ~/.cloudflared/<TUNNEL-ID>.json /etc/cloudflared/   # the tunnel's credentials
+sudo cp cloudflared.example.yml /etc/cloudflared/config.yml   # put the UUID in both <TUNNEL-ID>s
 sudo cloudflared service install
 ```
+
+`tunnel create` writes the credentials to YOUR `~/.cloudflared`, and `service install` copies
+none of it, so the service (running as root, from `/etc/cloudflared`) cannot start without the
+`install` line. The config names the tunnel by its UUID for the same reason: by name it would
+also need `cert.pem`. (Not yet run as written: protech-nuc runs `cloudflared` as `vin` from
+`~/stoke-hub/cloudflared/`, above.)
 
 Point it at **127.0.0.1:8787**, the edge listener — never the LAN port. Then check it without
 the Worker:
