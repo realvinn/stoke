@@ -865,7 +865,10 @@ export class HubService {
 
   /**
    * Sign out: tell the hub (best effort), then forget everything hub on this
-   * computer — device keys, vault keys, session, records. Settings and keys
+   * computer — device keys, vault keys, session, records, and this machine's
+   * "Always" grants and "share my sessions" tick (kept, they came back on at
+   * the next sign-in, to any account: a grant is keyed by a device id, which a
+   * device picks for itself — found in review, 2026-10-02). Settings and keys
    * that already arrived stay: they are this computer's settings now.
    */
   signOut(): Promise<HubResult> {
@@ -897,7 +900,7 @@ export class HubService {
       this.failures = 0
       this.revokeReport = null
       this.vkCache.clear()
-      await this.commitHub({ email: '', deviceId: '', token: '' })
+      await this.commitHub({ email: '', deviceId: '', token: '', grants: {}, shareSessions: false })
       return { ok: true }
     })
   }

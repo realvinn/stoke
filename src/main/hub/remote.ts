@@ -126,6 +126,7 @@ export interface HubRemoteDeps extends RemoteMachineDeps {
 const NOT_A_DEVICE = 'That device is no longer one of this account’s devices.'
 /** Reconnect tries before a tab gives up and offers Try again. */
 const MAX_TRIES = 8
+const NOT_IN_VAULT = 'This computer is no longer in your hub’s vault.'
 /** How long a host waits for `attach` after the handshake. */
 const ATTACH_WAIT_MS = 15_000
 /** A connecting tab says "waiting for the other machine to allow it" after this. */
@@ -454,6 +455,12 @@ export class HubRemote {
   retry(tabId: string): void {
     const t = this.tabs.get(tabId)
     if (!t || t.closed || t.connecting || t.state === 'open' || t.state === 'connecting' || t.state === 'asking') return
+    // Nothing to try while THIS computer is out of the vault: the banner stays as final as it was.
+    if (!this.d.context()) {
+      this.endTab(t, 'lost', NOT_IN_VAULT)
+      this.emit()
+      return
+    }
     t.tries = 0
     t.state = 'connecting'
     t.message = null
@@ -485,7 +492,13 @@ export class HubRemote {
     const current = (): boolean => !t.closed && t.gen === gen
     try {
       const ctx = this.d.context()
-      if (!ctx) throw new Error('This computer is not in your hub’s vault any more.')
+      if (!ctx) {
+        // Final, not a lost link: `lost` would schedule eight more rounds (about three minutes)
+        // that can never succeed, showing "Reconnecting…" (found in review, 2026-10-02).
+        this.endTab(t, 'lost', NOT_IN_VAULT)
+        this.emit()
+        return
+      }
       if (!this.online.includes(t.device)) throw new Error(`${this.nameOf(t.device)} is not online.`)
       const { relay } = await this.d.createRelay(t.device)
       if (!current()) return
@@ -998,7 +1011,7 @@ export class HubRemote {
       if (resting && !t.channel && !t.timer && !t.connecting) continue
       moved = true
       // No context: it is THIS computer that left the vault (revoked, signed out), not the other one.
-      this.endTab(t, 'lost', ctx ? `${this.nameOf(t.device)} is no longer one of your devices.` : 'This computer is no longer in your hub’s vault.')
+      this.endTab(t, 'lost', ctx ? `${this.nameOf(t.device)} is no longer one of your devices.` : NOT_IN_VAULT)
     }
     const before = this.once.length
     this.once = this.once.filter((g) => this.holds(g.device, null))

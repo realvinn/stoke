@@ -1091,8 +1091,12 @@ try {
   ok('nor any item path (the hub sees opaque ids)', !bytes.includes(Buffer.from('providers.anthropicApiKey')) && !bytes.includes(Buffer.from('t4/ssh-key')))
 
   /* ------------------------------------------ sign out */
+  // This machine's "Always" answers and its sharing tick are hub state too (review, 2026-10-02): kept,
+  // they came back on at the next sign-in, to any account, for whichever device holds those ids there.
+  C.set({ hub: { ...C.settings().hub, shareSessions: true, grants: { [A.svc.view().device.id]: { mode: 'full', label: 'Mac', at: 1 } } } } as Partial<Settings>)
   check('C signs out', (await C.svc.signOut()).ok, true)
   check('and its hub files are gone; what it synced stays', [existsSync(join(C.userData, 'hub-device.json')), existsSync(join(C.userData, 'hub-state.json')), C.settings().providers.anthropicApiKey, C.svc.view().phase], [false, false, CANARY_KEY, 'signed-out'])
+  check('and so are its Always grants and its "share my sessions" tick', [C.settings().hub.grants, C.settings().hub.shareSessions], [{}, false])
   for (const d of [A, B, C, ...extras]) d.svc.stop()
 } finally {
   await hub.close()
