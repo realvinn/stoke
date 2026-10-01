@@ -669,11 +669,15 @@ export function App(): React.JSX.Element {
       if (section) expandSettingsNodes(ancestorsOf(resolveSettingsTarget(section)), true)
       setSettingsKey((k) => k + 1)
       setSettingsOpen(true)
+      // The two overlays share one z-index and the sheet mounts later: a palette left open would sit unseen under it.
+      setPaletteOpen(false)
     },
     [expandSettingsNodes]
   )
   const settingsOpenRef = useRef(false)
   settingsOpenRef.current = settingsOpen
+  const paletteOpenRef = useRef(false)
+  paletteOpenRef.current = paletteOpen
   const [maximized, setMaximized] = useState(false)
   /*
    * Tracked apart from `maximized`, because on macOS they are different states
@@ -4552,9 +4556,23 @@ export function App(): React.JSX.Element {
       }
       e.preventDefault()
       switch (action.type) {
-        case 'palette':
+        case 'palette': {
+          /*
+           * Over Settings, Cmd+K is the sheet's own search box: it searches the
+           * same rows. Opening the palette there put it UNDER the sheet (same
+           * z-index, mounted earlier), focus went into it unseen, typing vanished,
+           * Enter acted on a list nobody saw and Escape closed both (found in
+           * review, 2026-10-02).
+           */
+          if (settingsOpenRef.current) {
+            const box = document.querySelector<HTMLInputElement>('.settings-search-input')
+            box?.focus()
+            box?.select()
+            break
+          }
           setPaletteOpen((v) => !v)
           break
+        }
         case 'newTab':
           openNewTab()
           break
@@ -4675,6 +4693,8 @@ export function App(): React.JSX.Element {
       // The busy dialog can sit over the sheet ("Restart and install"), and
       // then Escape is its Cancel — not a second, unasked close of the sheet.
       if (busyPromptRef.current) return
+      // Nor does an Escape that closes the palette close the sheet behind it.
+      if (paletteOpenRef.current) return
       if (e.key === 'Escape') setSettingsOpen(false)
     }
     window.addEventListener('keydown', onKey)

@@ -589,6 +589,16 @@ console.log('\nthe jump: a row inside a disclosure it opens, and a row taller th
     /getBoundingClientRect\(\)\.height > pane\.clientHeight \? 'start' : 'center'/.test(jump),
     true
   )
+  const appSrc = read('App.tsx')
+  check(
+    'Cmd+K over Settings goes to the sheet’s own search box (the palette would open unseen UNDER it), and Escape that closes a palette leaves the sheet',
+    [
+      /case 'palette': \{[\s\S]{0,900}?if \(settingsOpenRef\.current\) \{\s+const box = document\.querySelector<HTMLInputElement>\('\.settings-search-input'\)/.test(appSrc),
+      /if \(paletteOpenRef\.current\) return/.test(appSrc),
+      read('components/SettingsSheet.tsx').includes('className="input settings-search-input"')
+    ],
+    [true, true, true]
+  )
 }
 
 /* -------------------------------------- messages that name Provider & keys */
