@@ -463,7 +463,8 @@ export const SETTING_ROWS: readonly SettingRow[] = [
   { id: 'agent.endpoint', page: 'agent', label: 'Where it sends requests', keywords: ['endpoint', 'openrouter', 'provider', 'base url'], agents: notClaude },
   { id: 'agent.custom-endpoint', page: 'agent', label: 'Custom endpoint', keywords: ['base url', 'api key', 'server', 'local model'], agents: hasCustomEndpoint, fallback: 'agent.endpoint' },
   { id: 'agent.model', page: 'agent', label: 'Default model', keywords: ['model'], agents: notClaude },
-  { id: 'agent.accounts', page: 'agent', label: 'Accounts', keywords: ['sign in', 'login', 'account', 'api key', 'work account', 'second account'] },
+  // "Add account" is the row's own button: without it, "add" prefix-matched Stoke Hub's "address" and won.
+  { id: 'agent.accounts', page: 'agent', label: 'Accounts', keywords: ['sign in', 'login', 'account', 'api key', 'work account', 'second account', 'add account', 'new account'] },
   { id: 'agent.tools', page: 'agent', label: 'Tools (MCP)', keywords: ['mcp', 'servers', 'tools', 'browser tools'] },
   // Drawn as "In the tab strip".
   { id: 'agent.look', page: 'agent', label: 'Colour and tab tag', keywords: ['colour', 'tab tag', 'tag', 'label', 'tab strip'] },

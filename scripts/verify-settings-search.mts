@@ -348,13 +348,16 @@ console.log('\nsearch: what ranks first, synonyms, spellings and highlights')
   check('"themes": the theme cards first', top('themes'), ['row:appearance.theme'])
   check('"wallpapers": Wallpaper first', top('wallpapers'), ['row:appearance.wallpaper'])
   check('"microphones": the microphone rows lead', top('microphones', 2).sort(), ['row:voice.mic-access', 'row:voice.microphone'])
-  // Two rows answer "ssh keys" now: setting up key login to a host, and the hub's
-  // sharing of your own keys between devices (Account & sync). Both lead, in either order.
+  // Two rows answer "ssh keys": the hub's sharing of your own keys between devices (Account & sync),
+  // whose label it is, and setting up key login to a host, which has it as a keyword. They are not
+  // tied (100 and 75), so the order is pinned, not sorted away: a change to it is a decision.
   check(
-    '"ssh keys": key login for SSH hosts and the hub\'s SSH keys lead',
-    top('ssh keys', 2).slice().sort(),
+    '"ssh keys": the hub\'s SSH keys (its label), then key login for SSH hosts',
+    top('ssh keys', 2),
     ['row:account.ssh-keys', 'row:hosts.key-enroll']
   )
+  // The agent pages' own button says "Add account"; "add" used to prefix-match the hub's "address".
+  check('"add account" and "new account": an agent\'s Accounts, not the hub address', [top('add account'), top('new account')], [['row:agent.accounts@claude'], ['row:agent.accounts@claude']])
   check(
     '"api keys": both Claude Code key rows ahead of Where your keys live',
     [top('api keys', 2).sort(), searchSettings(entries, 'api keys').findIndex((h) => h.entry.key === 'row:backup.storage') > 1],
