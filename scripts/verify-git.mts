@@ -342,8 +342,20 @@ try {
   check('and the main work tree is not tagged', (await read(clean)).worktree, null)
 
   console.log('\nnever a stale "clean"')
-  const slow = await readGitStatus(dirty, { ...deps, timeouts: { status: 1 } })
-  check('a status past its deadline: the branch from HEAD, changes UNKNOWN, and why', [slow.repo, slow.branch, slow.changes, slow.error], [true, 'main', null, 'git took too long to answer'])
+  /*
+   * A git that answers `status` only after 2 s, so the deadline fires every time. This used to be
+   * the real git under a 1 ms deadline, which is a race, not a test: on the v1.0.0-beta.1 release
+   * gate (2026-10-02) a fast Linux runner's git answered first and the gate went red. The stand-in
+   * is a POSIX script; the deadline itself is execFile's timeout, the same code on every platform.
+   */
+  if (process.platform !== 'win32') {
+    const slowGit = join(base, 'slow-git')
+    writeFileSync(slowGit, `#!/bin/sh\ncase "$*" in *status*) sleep 2 ;; esac\nexec ${JSON.stringify(gitBin)} "$@"\n`, { mode: 0o755 })
+    const slow = await readGitStatus(dirty, { ...deps, git: async () => slowGit, timeouts: { status: 300 } })
+    check('a status past its deadline: the branch from HEAD, changes UNKNOWN, and why', [slow.repo, slow.branch, slow.changes, slow.error], [true, 'main', null, 'git took too long to answer'])
+  } else {
+    console.log('  SKIP  a status past its deadline: the slow stand-in git is a POSIX script (the timeout is execFile\'s, the same on every platform)')
+  }
   const noGit = await readGitStatus(clean, { git: async () => null, env: async () => readerEnv })
   check('no git at all: the branch still, changes unknown', [noGit.branch, noGit.changes, noGit.error], ['main', null, 'git was not found'])
 
