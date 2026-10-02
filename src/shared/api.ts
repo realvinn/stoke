@@ -655,6 +655,11 @@ export interface StokeApi {
     start(opts: LaunchOptions): Promise<StartResult>
     write(ptyId: string, data: string): void
     resize(ptyId: string, cols: number, rows: number): void
+    /**
+     * Another machine's remote tab resized a pty (`remote`), or the last one
+     * left and the desktop's own size was put back (`restore`).
+     */
+    onSized(cb: (ptyId: string, cols: number, rows: number, reason: 'remote' | 'restore') => void): () => void
     kill(ptyId: string): void
     /**
      * Kill, then resolve once the process has actually exited — or after
@@ -918,6 +923,8 @@ export interface StokeApi {
       onFrame(cb: (tabId: string, frame: RemoteTabFrame) => void): () => void
       open(deviceId: string, ptyId: string): Promise<HubResult<{ tab: string }>>
       input(tabId: string, data: string): void
+      /** The remote tab is being used: size the host's pty to this grid (shared/sizeClaim.ts decides when). */
+      resize(tabId: string, cols: number, rows: number): void
       close(tabId: string): Promise<void>
       retry(tabId: string): Promise<void>
       answer(askId: string, answer: AttachAnswer): Promise<HubResult>

@@ -308,6 +308,15 @@ export interface RemoteDeps {
   createScratch: () => Promise<string>
 }
 
+/**
+ * What the relay instance tells main about a pty a relayed viewer resized:
+ * `remote` when a viewer claimed the grid, `restore` when the last viewer
+ * left and the desktop's own size was put back.
+ */
+export interface RelayHooks {
+  sized(ptyId: string, cols: number, rows: number, reason: 'remote' | 'restore'): void
+}
+
 /** One `/api/sessions` (and `/ws/events`) row. */
 export interface RemoteSessionRow {
   ptyId: string
@@ -553,6 +562,15 @@ export class RemoteServer {
   private readonly deps: RemoteDeps
   /** Told whenever a client attaches or leaves, so the desktop can say so. */
   private readonly onClientsChanged: () => void
+  /**
+   * Set by `serveRelay` on the relay instance only, so the phone's own server
+   * behaves exactly as before. A relayed viewer (a hub remote tab) resizes the
+   * pty whenever it is USED (last active wins, shared/sizeClaim.ts), so the
+   * desktop must hear of every such resize at once — its own tab then draws
+   * the new grid, and takes it back when someone uses it there — and the
+   * viewer must hear of the desktop's at once, not a registry pass later.
+   */
+  private relayHooks: RelayHooks | null = null
 
   constructor(deps: RemoteDeps, onClientsChanged: () => void = () => {}) {
     this.deps = deps
@@ -725,8 +743,22 @@ export class RemoteServer {
    */
 
   /** Serve relayed sockets: subscribe to the ptys with no listener. */
-  serveRelay(): void {
+  serveRelay(hooks?: RelayHooks): void {
+    if (hooks) this.relayHooks = hooks
     this.fanOut()
+  }
+
+  /**
+   * The desktop resized a pty itself (its own tab fitted its pane — which,
+   * while a remote viewer holds the grid, happens only when someone uses that
+   * tab). On the relay instance: the desktop's size is the live one again,
+   * so there is nothing to put back when the viewer leaves, and every
+   * relayed viewer is told the new grid now. A no-op on the phone's server.
+   */
+  desktopResized(ptyId: string): void {
+    if (!this.relayHooks) return
+    this.desktopSize.delete(ptyId)
+    this.pushSizes()
   }
 
   /** One relayed request, through `api` (`path` carries its query). */
@@ -2141,6 +2173,12 @@ export class RemoteServer {
           if (now) this.desktopSize.set(ptyId, { cols: now.cols, rows: now.rows })
         }
         manager.resize(ptyId, msg.cols, msg.rows)
+        if (this.relayHooks) {
+          // The grid the pty took (resize clamps), told to the desktop and every other viewer now.
+          const took = manager.list().find((s) => s.ptyId === ptyId)
+          if (took) this.relayHooks.sized(ptyId, took.cols, took.rows, 'remote')
+          this.pushSizes()
+        }
       }
     })
 
@@ -2166,6 +2204,8 @@ export class RemoteServer {
         if (saved) {
           this.desktopSize.delete(ptyId)
           this.deps.ptys()?.resize(ptyId, saved.cols, saved.rows)
+          // The last remote viewer left: the desktop's own tab fits its pane again.
+          this.relayHooks?.sized(ptyId, saved.cols, saved.rows, 'restore')
         }
       }
       this.onClientsChanged()

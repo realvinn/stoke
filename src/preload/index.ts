@@ -113,6 +113,7 @@ const api: StokeApi = {
     write: (ptyId: string, data: string) => ipcRenderer.send(CH.ptyWrite, ptyId, data),
     resize: (ptyId: string, cols: number, rows: number) =>
       ipcRenderer.send(CH.ptyResize, ptyId, cols, rows),
+    onSized: (cb) => on<Parameters<typeof cb>>(CH.ptySized, cb),
     kill: (ptyId: string) => ipcRenderer.send(CH.ptyKill, ptyId),
     stop: (ptyId: string, capMs?: number) => ipcRenderer.invoke(CH.ptyStop, ptyId, capMs),
     type: (ptyId: string, text: string, enter: boolean) => ipcRenderer.invoke(CH.ptyType, ptyId, text, enter),
@@ -266,6 +267,7 @@ const api: StokeApi = {
       onFrame: (cb) => on<Parameters<typeof cb>>(CH.hubRemoteFrame, cb),
       open: (deviceId, ptyId) => ipcRenderer.invoke(CH.hubRemoteOpen, deviceId, ptyId),
       input: (tabId, data) => ipcRenderer.send(CH.hubRemoteInput, tabId, data),
+      resize: (tabId, cols, rows) => ipcRenderer.send(CH.hubRemoteResize, tabId, cols, rows),
       close: (tabId) => ipcRenderer.invoke(CH.hubRemoteClose, tabId),
       retry: (tabId) => ipcRenderer.invoke(CH.hubRemoteRetry, tabId),
       answer: (askId, answer) => ipcRenderer.invoke(CH.hubRemoteAnswer, askId, answer),

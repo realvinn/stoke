@@ -216,6 +216,13 @@ interface Session {
   /** The coding CLI this session runs, e.g. `'claude'`, `'codex'`. */
   cli: string
   /**
+   * The model and effort it was LAUNCHED with ('' when none was chosen), for
+   * another machine's view of this session (`launchFacts`). The running model
+   * is the statusLine payload's; this is the last fallback, as in StatusBar.
+   */
+  launchModel: string
+  launchEffort: string
+  /**
    * DECSET 2004 (bracketed paste), tracked from the pty's own output stream.
    *
    * `submit()` uses this to decide whether a phone's text needs the paste
@@ -770,6 +777,8 @@ export class PtyManager {
       cols: Math.max(20, opts.cols || 120),
       rows: Math.max(5, opts.rows || 30),
       cli: cliId,
+      launchModel: typeof opts.model === 'string' ? opts.model : '',
+      launchEffort: typeof opts.effort === 'string' ? opts.effort : '',
       bracketedPaste: false,
       submits: new SubmitQueue({
         chunkGapMs: SUBMIT_CHUNK_GAP_MS,
@@ -1225,6 +1234,18 @@ export class PtyManager {
       accountLogin: s.accountLogin,
       accountId: s.accountId
     }))
+  }
+
+  /**
+   * What one session was launched as — its id, agent, account, host and the
+   * model and effort chosen — for "Other machines" to describe the session a
+   * guest is attached to (`RemoteSessionStatus`). Null for an unknown, private
+   * or ended pty, which no guest can be attached to.
+   */
+  launchFacts(ptyId: string): { sessionId: string; cli: string; accountId: string; hostId: string | null; model: string; effort: string } | null {
+    const s = this.sessions.get(ptyId)
+    if (!s || s.private || s.exited) return null
+    return { sessionId: s.sessionId, cli: s.cli, accountId: s.accountId, hostId: s.hostId, model: s.launchModel, effort: s.launchEffort }
   }
 
   /** Drop an exited session once it has sat in the ring past `ENDED_RETENTION_MS`. */

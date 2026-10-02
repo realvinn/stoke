@@ -43,6 +43,7 @@ import type {
   UsageBoard,
   UsageReadReason,
   UsageTarget,
+  UsageWindow,
   WorklogScanOutcome,
   WorklogScanReport,
   WorklogWatchState
@@ -111,7 +112,7 @@ import {
 } from '../shared/stokeArgs.ts'
 import { installCommand, readCommandState, removeCommand, type CommandEnv } from './stokeCommand.ts'
 import { keepUsage } from '../shared/statusLine.ts'
-import { emptyRemoteView } from '../shared/hub/remote.ts'
+import { emptyRemoteView, remoteSessionStatusFrom, type RemoteSessionStatus } from '../shared/hub/remote.ts'
 import {
   advertisedRemoteToken,
   livePushSubscriptions,
@@ -222,7 +223,7 @@ import {
   type UpdateInfo
 } from './updates.ts'
 import { planUsageSources, readUsageSource, toReading, USAGE_FLOORS, UsageScheduler, usagePlanInput } from './usageBoard.ts'
-import { CLAUDE_DEFAULT_KEY, usageKey, usageRouteFor } from '../shared/usageSources.ts'
+import { CLAUDE_DEFAULT_KEY, chipRows, claudeWindowsFor, usageKey, usageRouteFor } from '../shared/usageSources.ts'
 import { patchClaudeSetting, readClaudeSettings, readLaunchDefaults, untouchedKeys } from './claudeSettings.ts'
 import {
   readGlobalConfigKey,
@@ -346,9 +347,56 @@ let relayServer: RemoteServer | null = null
 function relayRemote(): RemoteServer {
   if (!relayServer) {
     relayServer = new RemoteServer(remoteDeps())
-    relayServer.serveRelay()
+    // A remote tab resizes the pty when it is used (last active wins,
+    // shared/sizeClaim.ts): the session's own tab here draws that grid until
+    // someone uses it, and refits when the last remote tab leaves.
+    relayServer.serveRelay({ sized: (ptyId, cols, rows, reason) => send(CH.ptySized, ptyId, cols, rows, reason) })
   }
   return relayServer
+}
+
+/**
+ * What this computer's own status bar and usage chip say about ONE session,
+ * for another machine attached to it ("Other machines", hub/remote.ts sends
+ * it only for that relay's own session). The same readings in the same order
+ * as StatusBar: the payload's model (it carries the tier), else the
+ * transcript's, else the launch flag; the launch effort; the context watcher's
+ * reading; and the chip's windows for the session's account — this account's
+ * payload merged with its account reading (`claudeWindowsFor`). An SSH
+ * session's usage is the far machine's sign-in, so it has none here, as on
+ * the chip.
+ */
+function remoteSessionStatusFor(ptyId: string): RemoteSessionStatus | null {
+  const facts = ptys?.launchFacts(ptyId)
+  if (!facts) return null
+  const ctx = watcher?.snapshot(facts.sessionId) ?? null
+  const line = facts.hostId ? null : readAccountStatusLine(payloadKeyFor(facts.sessionId))
+  let usage: UsageWindow[] = []
+  let usageAt: number | null = null
+  if (!facts.hostId && isCodingCliId(facts.cli)) {
+    const route = usageRouteFor({ cli: facts.cli, accountId: facts.accountId || DEFAULT_ACCOUNT_ID }, usagePlanInput(getSettings()))
+    if (route) {
+      const snap = usageScheduler.peek(usageKey(route.source, route.accountId))
+      const now = Date.now()
+      if (route.source === 'anthropic') {
+        const m = claudeWindowsFor(route.accountId, lastStatusLines.get(route.accountId) ?? line, snap, now)
+        usage = chipRows(m.windows)
+        const at = Math.max(m.payloadAt, m.accountAt)
+        usageAt = Number.isFinite(at) ? at : null
+      } else if (snap) {
+        usage = chipRows(snap.windows)
+        usageAt = snap.windows.length ? snap.fetchedAt : null
+      }
+    }
+  }
+  return remoteSessionStatusFrom({
+    model: line?.modelId ?? ctx?.model ?? (facts.model || null),
+    effort: facts.effort || null,
+    agent: facts.cli,
+    context: ctx?.ready && ctx.contextLimit > 0 ? { used: ctx.contextTokens, limit: ctx.contextLimit } : null,
+    usage,
+    usageAt
+  })
 }
 /**
  * Stoke Hub's client (hub/service.ts), made on first use — a hub panel opened,
@@ -3437,9 +3485,11 @@ function registerIpc(): void {
     if (Array.from(text).length > SHORTCUT_TEXT_MAX) return false
     return ptys?.submit(ptyId, text, { enter: enter === true }) ?? false
   })
-  ipcMain.on(CH.ptyResize, (_e, ptyId: string, cols: number, rows: number) =>
+  ipcMain.on(CH.ptyResize, (_e, ptyId: string, cols: number, rows: number) => {
     ptys?.resize(ptyId, cols, rows)
-  )
+    // The desktop's own tab fitted its pane: a remote tab holding the grid is told now (last active wins).
+    relayServer?.desktopResized(ptyId)
+  })
   ipcMain.on(CH.ptyKill, (_e, ptyId: string) => {
     const sessionId = ptys?.sessionIdFor(ptyId)
     ptys?.kill(ptyId)
@@ -4296,7 +4346,8 @@ function registerIpc(): void {
           request: (method, path, body) => relayRemote().relayRequest(method, path, body),
           socket: (path, sock) => relayRemote().relaySocket(path, sock),
           emit: (view) => send(CH.hubRemoteChanged, view),
-          frame: (tab, frame) => send(CH.hubRemoteFrame, tab, frame)
+          frame: (tab, frame) => send(CH.hubRemoteFrame, tab, frame),
+          sessionStatus: (ptyId) => remoteSessionStatusFor(ptyId)
         }
       })
       await svc.start()
@@ -4359,6 +4410,9 @@ function registerIpc(): void {
   ipcMain.handle(CH.hubRemoteView, () => hubClient?.remoteView() ?? emptyRemoteView())
   ipcMain.handle(CH.hubRemoteOpen, async (_e, device: unknown, ptyId: unknown) => (await hubService()).remoteOpen(str(device), str(ptyId)))
   ipcMain.on(CH.hubRemoteInput, (_e, tab: unknown, data: unknown) => hubClient?.remoteInput(str(tab), str(data)))
+  ipcMain.on(CH.hubRemoteResize, (_e, tab: unknown, cols: unknown, rows: unknown) => {
+    if (typeof cols === 'number' && typeof rows === 'number') hubClient?.remoteResize(str(tab), cols, rows)
+  })
   ipcMain.handle(CH.hubRemoteClose, (_e, tab: unknown) => hubClient?.remoteClose(str(tab)))
   ipcMain.handle(CH.hubRemoteRetry, async (_e, tab: unknown) => (await hubService()).remoteRetry(str(tab)))
   ipcMain.handle(CH.hubRemoteAnswer, async (_e, ask: unknown, answer: unknown) => (await hubService()).remoteAnswer(str(ask), answer))

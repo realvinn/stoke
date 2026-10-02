@@ -2789,6 +2789,10 @@ export class HubService {
     this.remote?.input(tab, data)
   }
 
+  remoteResize(tab: string, cols: number, rows: number): void {
+    this.remote?.resize(tab, cols, rows)
+  }
+
   remoteClose(tab: string): void {
     this.remote?.close(tab)
   }

@@ -157,11 +157,16 @@ export type RelayMode = 'view' | 'full'
  *   megabytes, which JSON inside JSON takes past the hub's 1 MiB frame cap;
  *   the receiver joins the pieces and parses the whole as one frame. A part
  *   never holds a part.
+ * - `status` (host, once serving): the attached session's model, effort,
+ *   context and usage, as the host's own status bar reads them
+ *   (`RemoteSessionStatus`, remote.ts). The guest parses it as text another
+ *   machine chose; a host never takes one from a guest.
  */
 export type RelayInnerFrame =
   | { t: 'attach'; ptyId: string }
   | { t: 'ready'; mode: RelayMode; host: { label: string; platform: string } }
   | { t: 'refused'; reason: string }
+  | { t: 'status'; status: unknown }
   | { t: 'req'; id: number; method: 'GET' | 'POST'; path: string; body?: unknown }
   | { t: 'res'; id: number; status: number; body: unknown }
   | { t: 'ws-open'; id: number; path: string }
@@ -214,6 +219,8 @@ export function parseRelayInner(text: string): RelayInnerFrame | null {
       return (v.mode === 'view' || v.mode === 'full') && isRecord(v.host) ? (v as unknown as RelayInnerFrame) : null
     case 'refused':
       return typeof v.reason === 'string' ? (v as unknown as RelayInnerFrame) : null
+    case 'status':
+      return isRecord(v.status) ? { t: 'status', status: v.status } : null
     case 'req':
       return id(v.id) && (v.method === 'GET' || v.method === 'POST') && typeof v.path === 'string'
         ? (v as unknown as RelayInnerFrame)

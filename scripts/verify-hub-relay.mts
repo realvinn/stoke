@@ -20,6 +20,11 @@
  *   its relay is open (either end), a quiet tab the hub would close as idle,
  *   a status replayed after a presence reconnect, a status too large for the
  *   hub, and what "Always" reaches.
+ * - Last active wins (shared/sizeClaim.ts, 2026-10-02): when a side's use
+ *   counts, the settle and echo rules on a fake clock with two sides on one
+ *   pty (no use, no resize — ever), a remote tab's resize reaching only its
+ *   own session's pty, and the host's status frame: the attached session's
+ *   model, effort, context and usage, and nothing about any other session.
  *
  * Every input is synthetic (gotcha 74): keys, ids, clocks, sessions. Nothing
  * reaches the network, no agent CLI runs, and nothing in ~ is read. Imports
@@ -52,13 +57,28 @@ import {
   relayScopeVerdict,
   releaseOnce,
   remoteStatusFrom,
+  parseRemoteSessionStatus,
+  remoteSessionStatusFrom,
   REMOTE_MAX_SESSIONS,
+  REMOTE_USAGE_MAX,
   type HubRemoteView,
   type RemoteRowLike,
+  type RemoteSessionStatus,
   type RemoteTabFrame
 } from '../src/shared/hub/remote.ts'
 import {
+  CLAIM_DEBOUNCE_MS,
+  CLAIM_SETTLE_MS,
+  claimCounts,
+  claimVerdict,
+  foreignSize,
+  SizeClaimer,
+  type ClaimTrigger,
+  type Grid
+} from '../src/shared/sizeClaim.ts'
+import {
   parseRelayInner,
+  relayFrameVerdict,
   RELAY_CHUNK_CHARS,
   RELAY_IDLE_MS,
   RELAY_MAX_FRAME_BYTES,
@@ -423,6 +443,11 @@ console.log('\nthe host’s rules: refuse, serve, or ask')
   check('not another’s', v({ t: 'req', id: 1, method: 'POST', path: '/api/sessions/pty-2/answer' }), 'no')
   check('the host’s name and theme', [v({ t: 'req', id: 1, method: 'GET', path: '/api/host' }), v({ t: 'req', id: 1, method: 'GET', path: '/api/theme' })], ['ok', 'ok'])
   check('not the session list (paths), transcripts, history, folders or a new session', ['/api/sessions', '/api/transcript?id=x', '/api/history?cwd=/', '/api/folders', '/api/projects'].map((p) => v({ t: 'req', id: 1, method: 'GET', path: p })).concat(v({ t: 'req', id: 1, method: 'POST', path: '/api/sessions' })), ['no', 'no', 'no', 'no', 'no', 'no'])
+  // A pty-socket frame is judged by the socket it rides: a resize reaches the grant's session only.
+  const resizeFrame: RelayInnerFrame = { t: 'ws-msg', id: 1, data: JSON.stringify({ type: 'resize', cols: 120, rows: 40, force: true }) }
+  const onSocket = (path?: string): string => (relayScopeVerdict(one, resizeFrame, path).ok ? 'ok' : 'no')
+  check('a resize on that session’s pty socket', onSocket('/ws?ptyId=pty-1'), 'ok')
+  check('not on another session’s, the events socket, or no known socket', [onSocket('/ws?ptyId=pty-2'), onSocket('/ws/events'), onSocket(undefined)], ['no', 'no', 'no'])
   // "Always" is the same scope (the relay's own session): held live below, against a rogue guest.
 }
 
@@ -517,12 +542,17 @@ interface Machine {
   sockets: VirtualSocket[]
   requests: string[]
   sessions: RemoteRowLike[]
+  /** Every resize frame the fake pty behind the phone socket got. */
+  resizes: { ptyId: string | null; cols: number; rows: number; force: boolean }[]
+  /** What this machine's status bar would say per session, and every session the relay asked about. */
+  status: Record<string, RemoteSessionStatus>
+  statusAsked: string[]
 }
 const machines = new Map<string, Machine>()
 const vkShared = randomU8(32)
 
 function machine(d: Dev, opts: { keepAlive?: { pingMs: number; pongWaitMs: number } } = {}): Machine {
-  const m = { dev: d, active: [...ACTIVE], out: false, sharing: false, grants: {}, views: [], frames: [], ptyInput: [], sockets: [], requests: [], sessions: [] } as unknown as Machine
+  const m = { dev: d, active: [...ACTIVE], out: false, sharing: false, grants: {}, views: [], frames: [], ptyInput: [], sockets: [], requests: [], sessions: [], resizes: [], status: {}, statusAsked: [] } as unknown as Machine
   const ctx = (): RemoteContext | null => m.out ? null : ({
     account: ACCOUNT,
     epoch: 1,
@@ -584,15 +614,20 @@ function machine(d: Dev, opts: { keepAlive?: { pingMs: number; pongWaitMs: numbe
       const ptyId = new URLSearchParams(path.split('?')[1] ?? '').get('ptyId')
       sock.send(JSON.stringify({ type: 'attached', ptyId, cols: 100, rows: 30, desktopCols: 100, desktopRows: 30, status: 'idle', history: 'stub$ ' }))
       sock.on('message', (raw) => {
-        const msg = JSON.parse(String(raw)) as { type: string; data?: string }
+        const msg = JSON.parse(String(raw)) as { type: string; data?: string; cols?: number; rows?: number; force?: boolean }
         if (msg.type === 'input' && msg.data) {
           m.ptyInput.push(msg.data)
           sock.send(JSON.stringify({ type: 'data', ptyId, data: msg.data.replace('\r', '\r\n') }))
         }
+        if (msg.type === 'resize') m.resizes.push({ ptyId, cols: msg.cols ?? 0, rows: msg.rows ?? 0, force: msg.force === true })
       })
     },
     emit: (view) => m.views.push(view),
-    frame: (tab, frame) => m.frames.push({ tab, frame })
+    frame: (tab, frame) => m.frames.push({ tab, frame }),
+    sessionStatus: (ptyId) => {
+      m.statusAsked.push(ptyId)
+      return m.status[ptyId] ?? null
+    }
   })
   machines.set(d.id, m)
   return m
@@ -1022,6 +1057,238 @@ console.log('\na status too large for the hub is cut to fit, not dropped by it')
   const n = opened?.sessions.length ?? 0
   ok(`it lists the first sessions that fit, in the phone’s order (${n} of ${REMOTE_MAX_SESSIONS})`, n > 0 && n < REMOTE_MAX_SESSIONS && (opened?.sessions ?? []).every((x, i) => x.ptyId === `pty-${i}`))
   bigM.remote.reset()
+}
+
+/* ============================================================ last active wins */
+
+console.log('\nwho sizes the pty: the side being used, last active wins (sizeClaim.ts)')
+{
+  const g = (cols: number, rows: number): Grid => ({ cols, rows })
+  const kinds: ClaimTrigger[] = ['focus', 'key', 'click', 'pane']
+  const all = { shown: true, focused: true, windowFocused: true, recentInput: true }
+  check('a focus, a key or a click on a terminal on show is use, wherever the keyboard is', (['focus', 'key', 'click'] as const).map((k) => claimCounts(k, { shown: true, focused: false, windowFocused: false, recentInput: false })), [true, true, true])
+  check('nothing counts while the terminal is not on show', kinds.map((k) => claimCounts(k, { ...all, shown: false })), [false, false, false, false])
+  check('a pane resize counts only while its terminal holds the keyboard in a focused window', [claimCounts('pane', all), claimCounts('pane', { ...all, focused: false }), claimCounts('pane', { ...all, windowFocused: false })], [true, false, false])
+  check('and only just after someone acted on that window: a strip appearing over a terminal nobody is at is not use', claimCounts('pane', { ...all, recentInput: false }), false)
+  check('a due claim with nothing to measure, or already the pty’s grid, sends nothing', [claimVerdict({ want: null, have: g(100, 30), now: 0, foreignAt: null }).t, claimVerdict({ want: g(100, 30), have: g(100, 30), now: 0, foreignAt: null }).t], ['none', 'none'])
+  check('the other side resized 300 ms ago: the claim waits out the rest of the settle', claimVerdict({ want: g(120, 40), have: g(100, 30), now: 1300, foreignAt: 1000 }), { t: 'wait', ms: CLAIM_SETTLE_MS - 300 })
+  check('settled, or never resized by the other side: this pane’s grid is sent', [claimVerdict({ want: g(120, 40), have: g(100, 30), now: 1000 + CLAIM_SETTLE_MS, foreignAt: 1000 }), claimVerdict({ want: g(120, 40), have: null, now: 5, foreignAt: null })], [{ t: 'send', grid: g(120, 40) }, { t: 'send', grid: g(120, 40) }])
+  check('this side’s own claim coming back is not the other side; anything else is', [foreignSize(g(120, 40), g(120, 40)), foreignSize(g(100, 30), g(120, 40)), foreignSize(g(100, 30), null)], [false, true, true])
+
+  /*
+   * Two sides on one pty, on a fake clock: a remote tab whose pane fits
+   * 120x40 and the session's own tab whose pane fits 100x30. A resize takes
+   * RELAY_MS to reach the pty, and both sides hear the new grid then.
+   */
+  const RELAY_MS = 40
+  let now = 0
+  let nextId = 1
+  const timers: { at: number; id: number; fn: () => void }[] = []
+  const setTimer = (fn: () => void, ms: number): number => {
+    const id = nextId++
+    timers.push({ at: now + ms, id, fn })
+    return id
+  }
+  const clearTimer = (id: unknown): void => {
+    const i = timers.findIndex((t) => t.id === id)
+    if (i >= 0) timers.splice(i, 1)
+  }
+  const advance = (ms: number): void => {
+    const end = now + ms
+    for (;;) {
+      timers.sort((a, b) => a.at - b.at || a.id - b.id)
+      const t = timers[0]
+      if (!t || t.at > end) break
+      timers.shift()
+      now = t.at
+      t.fn()
+    }
+    now = end
+  }
+  interface Side {
+    claimer: SizeClaimer
+    heard: Grid
+  }
+  let pty = g(100, 30)
+  const sent: { side: string; at: number; grid: Grid }[] = []
+  const sides: Side[] = []
+  const side = (name: string, pane: () => Grid | null): Side => {
+    const me = { heard: pty } as Side
+    me.claimer = new SizeClaimer({
+      now: () => now,
+      setTimer,
+      clearTimer,
+      want: pane,
+      have: () => me.heard,
+      send: (grid) => {
+        sent.push({ side: name, at: now, grid })
+        setTimer(() => {
+          pty = grid
+          for (const s of sides) {
+            s.heard = grid
+            s.claimer.sized(grid)
+          }
+        }, RELAY_MS)
+      }
+    })
+    sides.push(me)
+    return me
+  }
+  let guestPane: Grid | null = g(120, 40)
+  const guest = side('guest', () => guestPane)
+  const host = side('host', () => g(100, 30))
+  const use = (s: Side, kind: ClaimTrigger, f = all): boolean => s.claimer.trigger(kind, f)
+
+  for (let i = 0; i < 5; i++) {
+    use(guest, 'key')
+    advance(20)
+  }
+  advance(1000)
+  check('a burst of keys on the remote tab is ONE resize, to its pane’s grid, after the debounce', sent.map((x) => [x.side, x.at, x.grid]), [['guest', CLAIM_DEBOUNCE_MS, g(120, 40)]])
+  check('and the pty has it', pty, g(120, 40))
+  advance(10 * 60_000)
+  check('ten idle minutes later, neither side has resized it back: no use, no resize', sent.length, 1)
+  check('a terminal not on show, or a pane resize with the keyboard elsewhere, claims nothing', [use(host, 'focus', { ...all, shown: false }), use(host, 'pane', { ...all, focused: false })], [false, false])
+  advance(1000)
+  check('(nothing was sent)', sent.length, 1)
+
+  use(host, 'click')
+  advance(5000)
+  check('a click at the host takes the grid back to its own pane', sent.slice(1).map((x) => [x.side, x.grid]), [['host', g(100, 30)]])
+  check('and the remote tab now draws the host’s grid', guest.heard, g(100, 30))
+  advance(10 * 60_000)
+  check('ten more idle minutes: still two resizes, so the two sides never ping-pong', sent.length, 2)
+
+  // The host is used 100 ms after the guest's resize reached it: the claim waits out the settle, then wins.
+  use(guest, 'focus')
+  advance(CLAIM_DEBOUNCE_MS + RELAY_MS)
+  const reached = now
+  check('(the remote tab took it back on its next focus)', [sent.length, pty], [3, g(120, 40)])
+  advance(100)
+  use(host, 'key')
+  advance(5000)
+  const hostClaim = sent[sent.length - 1]
+  check('used inside the settle of the other side’s resize: the claim waits for it, then wins', [hostClaim.side, hostClaim.at - reached], ['host', CLAIM_SETTLE_MS])
+
+  // The remote tab's own resize echoing back is not "the other side": a key right after it does not wait.
+  guestPane = g(126, 42)
+  use(guest, 'click')
+  advance(CLAIM_DEBOUNCE_MS + RELAY_MS)
+  const echoAt = now
+  guestPane = g(130, 42)
+  use(guest, 'key')
+  advance(CLAIM_DEBOUNCE_MS)
+  const last1 = sent[sent.length - 1]
+  check('after its own resize echoes back, the remote tab’s next claim goes after the debounce alone', [last1.side, last1.grid, last1.at - echoAt], ['guest', g(130, 42), CLAIM_DEBOUNCE_MS])
+  guest.claimer.dispose()
+  host.claimer.dispose()
+}
+
+console.log('\na remote tab’s resize reaches its own session’s pty; the host’s status bar comes with it')
+{
+  const statusA1: RemoteSessionStatus = remoteSessionStatusFrom({
+    model: 'claude-opus-5[1m]-statuscanary',
+    effort: 'high',
+    agent: 'claude',
+    context: { used: 41_000.4, limit: 1_000_000 },
+    usage: [
+      { kind: 'session', label: '5 hours', percent: 23.4, severity: 'normal', resetsAt: clock + 3_600_000, elapsed: 0.40123, active: true },
+      { kind: 'weekly', label: 'Weekly', percent: 41, severity: 'normal', resetsAt: clock + 86_400_000, elapsed: 0.2, active: true }
+    ],
+    usageAt: clock
+  })
+  check('the host rounds what it sends, so a pace marker creeping on is not a change every pass', [statusA1.context, statusA1.usage[0].percent, statusA1.usage[0].elapsed], [{ used: 41000, limit: 1_000_000 }, 23, 0.4])
+  check('a default effort is no effort', remoteSessionStatusFrom({ model: null, effort: 'default', agent: 'claude', context: null, usage: [], usageAt: null }).effort, null)
+  const hostileRaw = {
+    model: `opus\u001b]0;pwn\u0007${'x'.repeat(200)}`,
+    effort: 'max\nhigh',
+    agent: 7,
+    context: { used: 5, limit: 0 },
+    usage: [
+      { kind: 'session', label: '5h\u0000', percent: 250, severity: 'x', resetsAt: -1, elapsed: 9, active: 'yes' },
+      { kind: 'bogus', label: 'nope', percent: 1 },
+      { kind: 'weekly', label: '', percent: 1 },
+      ...Array.from({ length: 6 }, () => ({ kind: 'other', label: 'more', percent: 1, severity: '', resetsAt: null, elapsed: null, active: true }))
+    ],
+    usageAt: 'soon'
+  }
+  const hostile = parseRemoteSessionStatus(hostileRaw)
+  check(
+    'another machine’s status is cut and bounded: control characters out, a window of nothing dropped, at most four read',
+    [
+      hostile?.model?.length,
+      /[\u0000-\u001f]/.test(hostile?.model ?? ''),
+      hostile?.effort,
+      hostile?.agent,
+      hostile?.context,
+      hostile?.usage.length,
+      hostile?.usage[0] && [hostile.usage[0].label, hostile.usage[0].percent, hostile.usage[0].resetsAt, hostile.usage[0].elapsed, hostile.usage[0].active],
+      hostile?.usageAt
+    ],
+    [80, false, 'max high', 'claude', null, 2, ['5h', 100, null, 1, false], null]
+  )
+  ok('(at most REMOTE_USAGE_MAX windows are even looked at)', REMOTE_USAGE_MAX === 4)
+  check('not a status at all: null', [parseRemoteSessionStatus(null), parseRemoteSessionStatus([1])], [null, null])
+  check('the frame parses only around a record', [parseRelayInner(JSON.stringify({ t: 'status', status: statusA1 }))?.t, parseRelayInner(JSON.stringify({ t: 'status', status: 'x' }))], ['status', null])
+  check('and a host takes none from a guest', relayFrameVerdict('full', { t: 'status', status: statusA1 }).ok, false)
+
+  const hostM = machine(A)
+  const guestM = machine(B)
+  hostM.sessions = [stubRow(), { ...stubRow(), ptyId: 'pty-a2', title: 'Other session' }]
+  hostM.sharing = true
+  hostM.status = { 'pty-a1': statusA1, 'pty-a2': { ...statusA1, model: 'opus-other-session-canary' } }
+  for (const m of [hostM, guestM]) m.remote.onOnline([A.id, B.id])
+  const tab = await served(hostM, guestM)
+  check('a remote tab in use asks for its pane’s grid', guestM.remote.resize(tab, 132, 41), true)
+  await until(() => hostM.resizes.length)
+  check('the host’s pty socket gets the phone’s own resize frame, forced, for that session', hostM.resizes, [{ ptyId: 'pty-a1', cols: 132, rows: 41, force: true }])
+  check('a grid out of bounds, or a tab that is not open, sends nothing', [guestM.remote.resize(tab, 0, 40), guestM.remote.resize(tab, 1001, 40), guestM.remote.resize(tab, 80.5, 40), guestM.remote.resize('rt-nope', 80, 24)], [false, false, false, false])
+
+  const got = await until(() => tabOf(guestM, tab)?.session)
+  check('on attach the host says the session’s model, effort, context and usage, as its own bar reads them', got, statusA1)
+  check('it was asked only about the session the relay attached to', [...new Set(hostM.statusAsked)], ['pty-a1'])
+  ok('and nothing about the other session reached the guest', !JSON.stringify(guestM.remote.view()).includes('opus-other-session-canary') && !JSON.stringify(guestM.views).includes('opus-other-session-canary'))
+  ok('the hub carried none of it in the clear', !hubBytes.some((b) => b.includes(Buffer.from('statuscanary'))))
+  hostM.status['pty-a1'] = { ...statusA1, context: { used: 90_000, limit: 1_000_000 } }
+  hostM.remote.sessionsChanged()
+  await until(() => tabOf(guestM, tab)?.session?.context?.used === 90_000)
+  check('a change on the host reaches the guest’s bar', tabOf(guestM, tab)?.session?.context, { used: 90_000, limit: 1_000_000 })
+  // A host that sends whatever it likes (its own code changed, or not Stoke's): the guest draws only the parsed status.
+  hostM.status['pty-a1'] = hostileRaw as unknown as RemoteSessionStatus
+  hostM.remote.sessionsChanged()
+  await until(() => tabOf(guestM, tab)?.session?.effort === 'max high')
+  check('a hostile status from the host is drawn only as parsed: cut, bounded, at most four windows', tabOf(guestM, tab)?.session, hostile)
+  hostM.status['pty-a1'] = { ...statusA1, context: { used: 90_000, limit: 1_000_000 } }
+  hostM.remote.sessionsChanged()
+  await until(() => tabOf(guestM, tab)?.session?.context?.used === 90_000)
+  const relayNow = lastRelay
+  const hostFramesBefore = forwarded.get(relayNow)?.host ?? 0
+  const viewsBefore = guestM.views.length
+  hostM.remote.sessionsChanged()
+  hostM.remote.sessionsChanged()
+  await tick(30)
+  check('an unchanged one is not sent again: no frame from the host, and the guest’s view does not move', [(forwarded.get(relayNow)?.host ?? 0) - hostFramesBefore, guestM.views.length - viewsBefore], [0, 0])
+
+  // A guest that sends a status of its own, or a resize on a socket it never opened: the host takes neither.
+  hostM.remote.dropGuests()
+  const rogue = await rogueChannel(hostM, B)
+  rogue.ch.send({ t: 'attach', ptyId: 'pty-a1' })
+  const askR = await until(() => last(hostM).asks[0])
+  await hostM.remote.answer(askR!.id, 'once')
+  await until(() => rogue.got.some((f) => f.t === 'ready'))
+  const resizesBefore = hostM.resizes.length
+  rogue.ch.send({ t: 'status', status: { model: 'forged' } })
+  rogue.ch.send({ t: 'ws-msg', id: 42, data: JSON.stringify({ type: 'resize', cols: 50, rows: 20, force: true }) })
+  rogue.ch.send({ t: 'ws-open', id: 43, path: '/ws?ptyId=pty-a2' })
+  rogue.ch.send({ t: 'ws-msg', id: 43, data: JSON.stringify({ type: 'resize', cols: 51, rows: 21, force: true }) })
+  rogue.ch.send({ t: 'req', id: 44, method: 'GET', path: '/api/host' })
+  await until(() => rogue.got.some((f) => f.t === 'res' && f.id === 44))
+  check('a resize on no socket, or on another session’s refused socket, reaches no pty', hostM.resizes.length - resizesBefore, 0)
+  check('and the status it sent changed nothing on the host', [rogue.closed(), last(hostM).guests.length], [null, 1])
+  rogue.ch.close('done')
+  guestM.remote.close(tab)
+  hostM.remote.reset()
+  guestM.remote.reset()
 }
 
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)

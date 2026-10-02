@@ -31,6 +31,7 @@
  * No TypeScript parameter properties (strip-only mode).
  */
 import { stableJson } from '../../shared/hub/codec.ts'
+import { isGrid } from '../../shared/sizeClaim.ts'
 import { reconnectDelayMs, sealedStatusProblem, type PresenceClientFrame, type SealedStatus } from '../../shared/hub/protocol.ts'
 import {
   attachDecision,
@@ -38,6 +39,7 @@ import {
   holdOnce,
   newerStatus,
   otherMachines,
+  parseRemoteSessionStatus,
   parseRemoteStatus,
   pruneOnce,
   relayScopeVerdict,
@@ -50,6 +52,7 @@ import {
   type OnceGrant,
   type RelayScope,
   type RemoteRowLike,
+  type RemoteSessionStatus,
   type RemoteStatus,
   type RemoteTabFrame,
   type RemoteTabState
@@ -100,6 +103,13 @@ export interface RemoteMachineDeps {
   emit(view: HubRemoteView): void
   /** One pty-socket frame for a remote tab on THIS machine. */
   frame(tabId: string, frame: RemoteTabFrame): void
+  /**
+   * What this machine's own status bar says about ONE session — model,
+   * effort, context, its account's usage — for a guest attached to it
+   * (`RemoteSessionStatus`). Asked only for a serving relay's own session.
+   * Absent: no status is sent.
+   */
+  sessionStatus?(ptyId: string): RemoteSessionStatus | null | Promise<RemoteSessionStatus | null>
 }
 
 export interface HubRemoteDeps extends RemoteMachineDeps {
@@ -139,6 +149,8 @@ const HOSTED_MAX = 8
 const STATUS_ACTIVITY_MS = 30_000
 /** The pty socket's id inside a guest's channel. */
 const PTY_SOCKET = 1
+/** How often a host re-reads a served session's status, sending it only when it changed. */
+const SESSION_STATUS_MS = 2000
 
 interface GuestTab {
   id: string
@@ -162,6 +174,8 @@ interface GuestTab {
   ping: ReturnType<typeof setInterval> | null
   pongWait: ReturnType<typeof setTimeout> | null
   closed: boolean
+  /** The host's last word on the session's model, context and usage, or null. */
+  session: RemoteSessionStatus | null
 }
 
 interface HostRelay {
@@ -179,6 +193,10 @@ interface HostRelay {
   sockets: Map<number, { path: string; sock: VirtualSocket }>
   since: number
   wait: ReturnType<typeof setTimeout> | null
+  /** The session status last sent, serialised, so an unchanged one is not sent again. */
+  statusSent: string | null
+  /** A status read is under way (claimed before its await, gotcha 20). */
+  statusBusy: boolean
 }
 
 interface PendingAsk {
@@ -204,6 +222,8 @@ export class HubRemote {
   /** The `at` of the last status sent: the next is later, whatever the clock says. */
   private lastAt: number
   private pollTimer: ReturnType<typeof setInterval> | null
+  /** Re-reads every served session's status while any relay is serving. */
+  private statusTimer: ReturnType<typeof setInterval> | null
   private readonly tabs: Map<string, GuestTab>
   private readonly hosted: Map<string, HostRelay>
   private readonly asks: Map<string, PendingAsk>
@@ -225,6 +245,7 @@ export class HubRemote {
     this.publishing = false
     this.lastAt = 0
     this.pollTimer = null
+    this.statusTimer = null
     this.tabs = new Map()
     this.hosted = new Map()
     this.asks = new Map()
@@ -250,7 +271,8 @@ export class HubRemote {
       title: t.title,
       project: t.project,
       state: t.state,
-      message: t.message
+      message: t.message,
+      session: t.session
     }))
     v.guests = [...this.hosted.values()]
       .filter((h) => h.phase === 'serving')
@@ -343,6 +365,7 @@ export class HubRemote {
   /** Something about this machine's sessions may have changed: publish now, within the rate. */
   sessionsChanged(): void {
     void this.publish()
+    this.pushStatuses()
   }
 
   /**
@@ -436,7 +459,8 @@ export class HubRemote {
       hint: null,
       ping: null,
       pongWait: null,
-      closed: false
+      closed: false,
+      session: null
     }
     this.tabs.set(tab.id, tab)
     void this.connect(tab)
@@ -449,6 +473,18 @@ export class HubRemote {
     const t = this.tabs.get(tabId)
     if (!t || t.state !== 'open' || typeof data !== 'string' || data.length === 0) return
     t.channel?.send({ t: 'ws-msg', id: PTY_SOCKET, data: JSON.stringify({ type: 'input', data }) })
+  }
+
+  /**
+   * The remote tab is being used here: ask the host to size the pty to this
+   * pane's grid (shared/sizeClaim.ts decides when). The phone's own resize
+   * frame, so the host's phone server applies it, remembers its own size, and
+   * puts it back when the last remote viewer leaves. False when nothing was sent.
+   */
+  resize(tabId: string, cols: number, rows: number): boolean {
+    const t = this.tabs.get(tabId)
+    if (!t || t.state !== 'open' || !t.channel || !isGrid({ cols, rows })) return false
+    return t.channel.send({ t: 'ws-msg', id: PTY_SOCKET, data: JSON.stringify({ type: 'resize', cols, rows, force: true }) })
   }
 
   /** Try again after a refusal or a lost link. */
@@ -563,6 +599,14 @@ export class HubRemote {
         channel.send({ t: 'ws-open', id: PTY_SOCKET, path: `/ws?ptyId=${encodeURIComponent(t.ptyId)}` })
         this.emit()
         return
+      case 'status': {
+        // Text another machine chose: parsed and cut, and drawn only for this tab.
+        const next = parseRemoteSessionStatus(f.status)
+        if (JSON.stringify(next) === JSON.stringify(t.session)) return
+        t.session = next
+        this.emit()
+        return
+      }
       case 'refused':
         if (t.hint) clearTimeout(t.hint)
         t.state = 'refused'
@@ -685,7 +729,9 @@ export class HubRemote {
       via: null,
       sockets: new Map(),
       since: this.d.now(),
-      wait: null
+      wait: null,
+      statusSent: null,
+      statusBusy: false
     }
     this.hosted.set(relay, h)
     let socket: RelaySocket
@@ -778,8 +824,9 @@ export class HubRemote {
       case 'ws-msg': {
         const s = h.sockets.get(f.id)
         if (!s) return
+        // The grant's mode, then its reach: keys and a resize go only to this relay's own session's pty.
         const verdict = relayFrameVerdict(h.mode, f, s.path)
-        if (!verdict.ok) return
+        if (!verdict.ok || !relayScopeVerdict(h.scope, f, s.path).ok) return
         s.sock.deliver(f.data)
         return
       }
@@ -917,7 +964,50 @@ export class HubRemote {
     if (via === 'once') this.once = holdOnce(this.once, h.guest, h.ptyId)
     h.phase = 'serving'
     channel.send({ t: 'ready', mode, host: { label: ctx.me.label, platform: ctx.me.platform } })
+    void this.pushStatus(h)
+    this.armStatus()
     this.emit()
+  }
+
+  /* ---------------------------------------------- the served session's status */
+
+  /** While any relay is serving, re-read each one's session status on a timer; none serving, no timer. */
+  private armStatus(): void {
+    const serving = [...this.hosted.values()].some((h) => h.phase === 'serving')
+    if (serving && !this.statusTimer && this.d.sessionStatus) {
+      this.statusTimer = setInterval(() => this.pushStatuses(), SESSION_STATUS_MS)
+      this.statusTimer.unref?.()
+    } else if (!serving && this.statusTimer) {
+      clearInterval(this.statusTimer)
+      this.statusTimer = null
+    }
+  }
+
+  private pushStatuses(): void {
+    for (const h of this.hosted.values()) if (h.phase === 'serving') void this.pushStatus(h)
+  }
+
+  /**
+   * The status of THIS relay's session (`h.ptyId`, the one its scope reaches)
+   * and no other, sent when it differs from the last one sent. One read at a
+   * time per relay (gotcha 20); a relay that stopped serving meanwhile gets
+   * nothing.
+   */
+  private async pushStatus(h: HostRelay): Promise<void> {
+    const read = this.d.sessionStatus
+    if (!read || h.statusBusy || h.phase !== 'serving' || !h.ptyId) return
+    h.statusBusy = true
+    try {
+      const status = await read(h.ptyId)
+      if (h.phase !== 'serving' || !status || !this.guestHolds(h)) return
+      const text = stableJson(status)
+      if (text === h.statusSent) return
+      if (h.channel?.send({ t: 'status', status })) h.statusSent = text
+    } catch (err) {
+      this.d.log('hub remote: could not read a served session’s status', err)
+    } finally {
+      h.statusBusy = false
+    }
   }
 
   private refuse(h: HostRelay, channel: RelayChannel, reason: string): void {
@@ -939,6 +1029,7 @@ export class HubRemote {
       this.asks.delete(id)
     }
     this.hosted.delete(h.relay)
+    this.armStatus()
     if (wasOnce && h.ptyId) {
       const still = [...this.hosted.values()].some((o) => o.guest === h.guest && o.ptyId === h.ptyId && o.via === 'once')
       if (!still) this.once = releaseOnce(this.once, h.guest, h.ptyId, this.d.now())
