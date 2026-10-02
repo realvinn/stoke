@@ -2,6 +2,10 @@
 paths:
   - "src/main/ssh.ts"
   - "src/main/sshSessions.ts"
+  - "src/main/sshUpload.ts"
+  - "src/main/sshImages.ts"
+  - "src/shared/imageUpload.ts"
+  - "src/renderer/src/components/ImageSendStrip.tsx"
   - "src/shared/sshPersist.ts"
   - "src/main/sshEnroll.ts"
   - "src/main/enrollRuns.ts"
@@ -388,4 +392,84 @@ holds the channel open therefore still keeps that path busy until the tab is clo
 the probe (the exit path, `signal` set), which then reports the truth. On Windows there is no
 `ssh-copy-id.exe`, so the fallback, and with it the line, is always the one used. None of this has
 run on Windows; the owner's machine is the first place it will.
+
+## 146. An image reaches a remote `claude` only as a path that exists THERE, and several paths only in the form its splitter reads
+
+**Built 2026-10-02 from the owner's "what can we do about images? for ssh sessions".** Three things
+were true of an SSH tab before, each read out of Claude Code 2.1.287's own bundle, not assumed:
+
+- **A local path names nothing on the far side.** A drop typed `'/Users/me/Shot.png'`; the remote
+  `claude` tests each pasted piece for an image extension and reads it from ITS disk, finds nothing,
+  and inserts the text. The model never sees a picture and nothing says why.
+- **The clipboard is this machine's.** Ctrl+V makes the far `claude` read the far clipboard
+  (`osascript`, `xclip`, `wl-paste`, PowerShell); over ssh it finds none and, when `SSH_CONNECTION`
+  is set, flashes "No image found in clipboard. You're SSH'd; try scp?" for a second.
+- **No byte of an image can ride the pty.** There is no image protocol in a terminal Claude reads;
+  OSC 52's read is refused on purpose (gotcha 29).
+
+So the bytes go over a **second** ssh, on stdin, and the far path is typed the way a drop types one
+(`buildUploadArgs`/`buildUploadBody`, `sendImage`, `useSshImages`). The rules that make it safe:
+
+- **The second connection's options are its own, before the destination, and never the tab's.**
+  `-T` (a user's `RequestTTY force` would put a tty between `cat` and the bytes: CR/LF rewritten,
+  ^D eaten), `RemoteCommand=none` (a config `RemoteCommand` refuses any command line),
+  `BatchMode=yes` (it can never prompt — a password is typed only in a terminal, gotcha 109),
+  `ControlMaster=no` and NO `ControlPath=none`: a master the user already runs may answer for a
+  password host, but Stoke never becomes one, so it never leaves a persisted master behind. The
+  tab's own argv, command and tmux session are untouched (gotchas 19, 126).
+- **Everything that reaches the far shell is main's**: the host by id from settings, the name
+  (`pasted-image-<stamp>-<hex>.png`, or a dropped stem cut to `[A-Za-z0-9._-]`), the extension from
+  the magic bytes (`imageKind`: png, jpg, gif, webp — never the file's name or MIME type), the size
+  from the bytes, a 25 MB cap. `isSafeUploadName` refuses rather than escapes, like `SAFE_ID`. The
+  renderer sends "the clipboard" (main reads it — `public.png` raw first, so a screenshot is not
+  decoded and re-encoded on the main thread) or a File's bytes, which also makes a path-less drag
+  (an image out of a browser) work.
+- **The far body cannot publish half a file.** `cat` into `NAME.part`, `wc -c` against the size,
+  `mv`, and `rm -f NAME.part` on every failure — the scout's measured run left `.part` behind until
+  that was added. A Cancel mid-send (the client killed) reached the far `cat` as EOF: exit 5, the
+  `.part` removed, nothing typed. The fallback folder in a shared `$TMPDIR` must be the user's own
+  and not a symlink (`-O`, `! -L`), or a planted `stoke-paste-<uid>` would receive the image.
+- **The far path is text another machine sent**: accepted only absolute, ending in exactly the name
+  Stoke chose, with no control character (a newline typed is Enter, gotcha 59), from the LAST
+  `STOKE_PATH` line (rc files print to stdout too).
+- **Listen for stdin's EPIPE** (`spawnWithInput`). ssh refusing a login exits before reading, and
+  an `EPIPE` on a stream with no error listener is an uncaught exception in main. Measured by
+  mutation: without the listener verify:ssh died with `Error: write EPIPE`.
+- **Failures keep ssh's own words.** Only ssh's `Permission denied (` is `needs-login` (BatchMode:
+  the answer is a key, so the strip offers the existing "Set up key login"), only its network lines
+  are `unreachable`, anything else shows its last stderr line. A failed image stays held in main
+  for Try again, so the clipboard is not read a second time.
+
+**Several paths: the backslash form, never single quotes.** Claude Code splits a paste only at a
+space followed by `/` or a drive letter (`/ (?=\/|[A-Za-z]:\\)/`), then strips one pair of matching
+quotes per piece and turns `\x` into `x`. `'/a/Shot 1.png' '/a/Shot 2.png'` therefore reached it as
+ONE piece, `/a/Shot 1.png' '/a/Shot 2.png`, which is no file — so a multi-file drop of macOS
+screenshots, the commonest drop there is, never attached anything, and verify:drop asserted that
+form as correct. `dropText` now types several POSIX paths with `escapePath`
+(`/a/Shot\ 1.png /a/Shot\ 2.png`), which a shell reads literally too; one path keeps its quotes.
+Two limits read from the same code: a path containing ` /` still splits there (rare, no form fixes
+it), and on native Windows the reader's unescape eats single backslashes (`C:\a.png` becomes
+`C:a.png` unless it is WSL), so Windows path attaching looks broken in the CLI itself — not
+measured on Windows, and not changed here. Also from the bundle: Claude Code's image paste is
+**Alt+V on Windows**, so `imagePasteKeys` sends ESC v there for a local Claude tab.
+
+**Proven on 2026-10-02 in the built app on macOS** (screenshots kept beside the workflow): a scratch
+non-root sshd on 127.0.0.1:2299 with throwaway keys and `SetEnv XDG_CACHE_HOME=<scratch>`, a second
+one on 2298 with only password auth. The sandbox app could not be pointed at a scratch ssh config
+any other way — `sshExecutable` pins `/usr/bin/ssh` ahead of PATH, macOS ssh reads the passwd home,
+and a worktree agent may not move `HOME` (gotcha 128) — so its main process was started with
+`NODE_OPTIONS=--require=<hook>`, a hook that prepends `-F <scratch config>` to every ssh argv
+(child_process and node-pty alike) and logs it; nothing in `~/.ssh` was read for config or written.
+A real PNG put on the system clipboard with `osascript` and Cmd+V in an SSH tab running a stub that
+logs its pty input: the far file's sha256 matched the source, 0600 in a 0700 folder, and the stub
+received ONE bracketed paste of its path. Through a throttling ProxyCommand the strip showed the
+thumbnail, the size and Cancel; Cancel published nothing and left no `.part`. A drop of two
+screenshots with spaces and a `.txt` sent both images (identical hashes) as one paste of two paths
+and named the `.txt` as left out. The right-click Paste image, the per-host opt-out (the far stub
+received `\x16`, nothing sent), a closed port ("could not be reached" + ssh's line, then Try again
+after fixing the alias sent the held image) and the password host ("Permission denied (password)."
+with Set up key login, nothing typed into its password prompt) were each driven. **Not proven:**
+Windows (`ssh.exe` stdin of binary bytes, Alt+V), a real `claude` attaching the typed path, riding a
+user's own ControlMaster, a remote tmux pane passing the bracketed paste, and fish or a Windows
+OpenSSH server on the far side.
 

@@ -59,3 +59,11 @@ half-written**. POSIX permits the name, so this is reachable rather than theoret
 
 > **Checked against the code on 2026-09-11** — after the tab strip moved to pointer events.
 > - The tab strip no longer drags as `text/plain`. `TitleBar.tsx` has no `draggable`, `setData` or `dataTransfer` left; a tab is dragged by `useTabDrag` (src/renderer/src/lib/useTabDrag.ts) with pointer events, pointer capture on `.tablist` and transforms, and emits no DragEvent at all — so it can no longer light the terminal's drop ring, and no tab id leaves the window as text. The `Files` guard in `TerminalView` still stands, for text dragged in from another app or out of the docked browser, which does arrive as `text/plain`.
+
+> **Checked against the code on 2026-10-02** — "each quoted on its own merits" was wrong for
+> SEVERAL paths. Claude Code splits a paste only at a space followed by `/` or a drive letter, so
+> two single-quoted screenshots reached it as one piece that is no file, and neither attached;
+> verify:drop asserted that form. Several POSIX paths are now backslash-escaped (`escapePath`),
+> which shells read literally too; one path keeps single quotes, Windows keeps double quotes. And
+> on an SSH tab a drop holding images no longer types local paths: the images are sent to the
+> machine and the FAR paths typed through this same `dropText` route. Gotcha 146 has both.
