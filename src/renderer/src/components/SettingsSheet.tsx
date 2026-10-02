@@ -1064,8 +1064,8 @@ export function SettingsSheet({
                           itself leaves out whenever any status line is set. Turn this off to
                           keep your own: it still runs and still shows exactly what it did
                           before. Your <span className="mono">~/.claude/settings.json</span> is
-                          never modified either way, and the change applies to sessions started
-                          after it. Plan limits additionally need a Claude.ai sign-in rather than
+                          never modified either way, and the change reaches running sessions within
+                          a second. Plan limits additionally need a Claude.ai sign-in rather than
                           an API key — under an API key the CLI sends none, so they stay blank
                           however this is set.
                         </>

@@ -175,6 +175,7 @@ import {
   type SetupPayload
 } from '@shared/setupFile'
 import {
+  applyPassthroughToLive,
   gitBashPath,
   readSessionEvents,
   readStatusLine,
@@ -4608,6 +4609,17 @@ if (!app.requestSingleInstanceLock(launchRequest ? { stokeCli: launchRequest } :
      */
     syncAccountIndex(getSettings().accounts)
     onSettingsChanged((next) => syncAccountIndex(next.accounts))
+    /*
+     * "Hide Claude's status line" on every running session at once, not only
+     * the next one (`applyPassthroughToLive`). Guarded on the value moving:
+     * every settings write fires this.
+     */
+    let hideSeen = getSettings().hideStatusLine
+    onSettingsChanged((next) => {
+      if (next.hideStatusLine === hideSeen) return
+      hideSeen = next.hideStatusLine
+      applyPassthroughToLive(next.hideStatusLine ? '' : userStatusLineCommand())
+    })
     protocol.handle(WALLPAPER_SCHEME, (request) => {
       const file = wallpaperFileFor(app.getPath('userData'), request.url)
       if (!file) return new Response('not found', { status: 404 })

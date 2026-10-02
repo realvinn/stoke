@@ -23,6 +23,7 @@ import {
 import { tmpdir } from 'node:os'
 import { delimiter, dirname, join } from 'node:path'
 import {
+  applyPassthroughToLive,
   claimSessionFiles,
   clearSessionFiles,
   EMPTY_STATUS_LINE,
@@ -2118,6 +2119,37 @@ check('out of range is clamped', [ringBeads(-1), ringBeads(2)], [[0, 1, 2, 3, 4,
     check('release clears a key no launch ever claimed', existsSync(settings), false)
   } finally {
     clearSessionFiles(KEY)
+  }
+}
+
+/*
+ * "Hide Claude's status line" reaching sessions already running (owner's
+ * report, 2026-10-02: turned on, and the session in front kept its line).
+ * The pass-through file is what a live wrapper re-reads, so the switch is
+ * writing or removing it — for the keys THIS process's launches claimed, and
+ * no other file in the shared directory (gotcha 74: a bystander must survive).
+ */
+{
+  const LIVE = 'verify-statusline-live-0000-0000-0000'
+  const BYSTANDER = 'verify-statusline-bystander-0000-0000'
+  const cmdOf = (k: string): string => join(statusLineDir(), `${k}.cmd`)
+  try {
+    claimSessionFiles(LIVE, 'pty-live')
+    writeSessionSettingsFile({ sessionId: LIVE, ultracode: false, hideStatusLine: false, passthroughCommand: 'echo mine' })
+    writeFileSync(cmdOf(BYSTANDER), 'echo another stoke\n')
+    check('live: a session started with the line shown has its pass-through', existsSync(cmdOf(LIVE)), true)
+    applyPassthroughToLive('')
+    check('live: hiding takes the running session\'s pass-through away at once', existsSync(cmdOf(LIVE)), false)
+    check('live: and leaves a file no launch here claimed (another Stoke\'s session) alone', readFileSync(cmdOf(BYSTANDER), 'utf8'), 'echo another stoke\n')
+    // A different line from the launch's, so a no-op cannot pass by leaving the old file in place.
+    applyPassthroughToLive('  echo edited since  ')
+    check('live: showing it again writes the user\'s own line back, as it is now, trimmed', existsSync(cmdOf(LIVE)) ? readFileSync(cmdOf(LIVE), 'utf8') : null, 'echo edited since')
+    releaseSessionFiles(LIVE, 'pty-live')
+    applyPassthroughToLive('echo mine')
+    check('live: a session that has exited is not written to again', existsSync(cmdOf(LIVE)), false)
+  } finally {
+    clearSessionFiles(LIVE)
+    rmSync(cmdOf(BYSTANDER), { force: true })
   }
 }
 

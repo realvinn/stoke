@@ -1090,6 +1090,35 @@ export function releaseSessionFiles(statusKey: string, owner: string): void {
 }
 
 /**
+ * "Hide Claude's status line in Stoke", applied to every session this Stoke is
+ * running now — `command` is the user's own line, or '' to hide it.
+ *
+ * The setting used to reach only sessions started after it: the pass-through
+ * file is written once at launch (`writeSessionSettingsFile`), and nothing
+ * touched it again. The owner turned it on and saw the session in front of
+ * them keep its line, and read that as the setting not working (2026-10-02).
+ * Nothing else needs to change for a live session: its wrapper re-reads this
+ * file about three times a second (WRAPPER_JS), so writing or removing it is
+ * the whole switch. Only keys a live launch here has claimed (`fileOwners`),
+ * never a scan of the shared directory, which every Stoke on the machine
+ * writes into (gotcha 74). Atomic, for the same reason as at launch.
+ */
+export function applyPassthroughToLive(command: string): number {
+  const text = command.trim()
+  let n = 0
+  for (const statusKey of fileOwners.keys()) {
+    try {
+      if (text) writeAtomic(passthroughFile(statusKey), text)
+      else rmSync(passthroughFile(statusKey), { force: true })
+      n++
+    } catch (err) {
+      console.error('[stoke] could not update a session\'s status line', err)
+    }
+  }
+  return n
+}
+
+/**
  * Remove everything written for one session, unconditionally.
  *
  * Prefer `releaseSessionFiles` from anything holding a PTY: this one does not

@@ -485,6 +485,16 @@ the same node wrapper, so the bytes are identical, but nothing was driven there)
 other than 2.1.285 — if a later one draws the reset as a row, the result is the old blank row,
 never visible text.
 
+> **Checked against the code on 2026-10-02.** The setting itself reached only sessions started after
+> it. The owner turned it on, the session in front of them kept their own line, and they asked
+> whether it was being done right. The pass-through `.cmd` was written once at launch and never
+> again, and the help text's "applies to sessions started after it" was folded away inside a
+> FieldHint. Now `applyPassthroughToLive` (called from index.ts when `hideStatusLine` moves) writes
+> or removes the `.cmd` of every key a live launch here has claimed (`fileOwners`, never a scan of
+> the shared directory). Each wrapper re-reads that file about three times a second, so a running
+> session follows within a second. verify:statusline holds it: a live key and a bystander's file,
+> and a re-show with a different line, so a no-op cannot pass. Mutated back, 2 checks go red.
+
 ## 123. On Windows the user's own status line was re-run in cmd.exe, which the CLI never uses, and a hung one outlived its kill
 
 **With "Hide Claude's status line" off, the wrapper re-runs the user's own `statusLine.command`,
