@@ -27,7 +27,7 @@ import type { RemoteSessionInfo, SshHost } from '@shared/types'
 // directly by `verify-ssh.mts` under `node --experimental-strip-types`, which
 // resolves no aliases. A type-only import would be erased and could use either.
 import { buildRemoteInstallCommand, isEnrollableAlias } from '../shared/sshAuth.ts'
-import { MAX_IMAGE_BYTES, isSafeUploadName } from '../shared/imageUpload.ts'
+import { MAX_FILE_BYTES, isSafeFarName } from '../shared/imageUpload.ts'
 import {
   MANAGED_TMUX_SOCKET,
   hostPersists,
@@ -631,12 +631,14 @@ function batchArgs(host: SshHost, body: string): string[] | null {
   ]
 }
 
-/* --------------------------------------------- an image sent to the machine */
+/* ------------------------------------ an image or a file sent to the machine */
 
 /**
- * The far side of an image upload: sh reads the bytes from stdin into a file
- * of Stoke's naming and says where it put it. Null when the name or size is
- * not provably safe to put in a command (refused, never escaped).
+ * The far side of an upload, an image's or any dropped file's (gotcha 152):
+ * sh reads the bytes from stdin into a file of Stoke's naming and says where
+ * it put it. Null when the name or size is not provably safe to put in a
+ * command (refused, never escaped). A size of 0 is a file too: `cat` makes it
+ * empty and `wc -c` agrees.
  *
  * Measured against a real sshd before it was written (the scout's run, on
  * loopback): a 4.2 MB file arrived byte-identical, the folder 0700 and the
@@ -662,8 +664,8 @@ function batchArgs(host: SshHost, body: string): string[] | null {
  * (`uploadExitMessage`); ssh's own failures are 255.
  */
 export function buildUploadBody(name: string, size: number): string | null {
-  if (!isSafeUploadName(name)) return null
-  if (!Number.isSafeInteger(size) || size <= 0 || size > MAX_IMAGE_BYTES) return null
+  if (!isSafeFarName(name)) return null
+  if (!Number.isSafeInteger(size) || size < 0 || size > MAX_FILE_BYTES) return null
   const usable = '[ -d "$d" ] && [ ! -L "$d" ] && [ -O "$d" ]'
   return [
     'umask 077;',
@@ -682,7 +684,7 @@ export function buildUploadBody(name: string, size: number): string | null {
 }
 
 /**
- * The argv that sends an image to `host` (bytes on stdin), or null.
+ * The argv that sends an image or a file to `host` (bytes on stdin), or null.
  *
  * `batchArgs`' shape, with these differences, each for this job:
  *

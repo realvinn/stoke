@@ -298,6 +298,18 @@ export function TerminalView({
   const imageNeedsHandingRef = useRef<() => boolean>(() => false)
   imageNeedsHandingRef.current = () =>
     images.on || imagePasteKeys(window.stoke.platform, tab.cliId, !!tab.hostId) !== '\x16'
+  /**
+   * Files a file manager copied, pasted on an SSH tab that sends uploads: they
+   * are sent to the machine and their far paths typed (gotcha 152), where
+   * typing what Finder also puts on as text — the bare names — named nothing
+   * there. False everywhere else, which leaves the paste exactly as it was.
+   */
+  const pasteFilesRef = useRef<(clip: ClipboardPeek) => boolean>(() => false)
+  pasteFilesRef.current = (clip) => {
+    if (!images.on || clip.files < 1) return false
+    images.pasteFiles()
+    return true
+  }
 
   // Build the terminal once per pty. Theme and font changes are applied in
   // separate effects rather than by rebuilding, so scrollback survives them.
@@ -643,6 +655,8 @@ export function TerminalView({
       if ((mod || (isMac && cmd)) && key === 'v') {
         e.preventDefault()
         const clip = window.stoke.clipboard.readSync()
+        // Copied files go to an SSH tab's machine, ahead of the names Finder also puts on as text.
+        if (pasteFilesRef.current(clip)) return false
         if (clip.text) term.paste(clip.text)
         /*
          * An image-only clipboard used to be swallowed here on macOS: the key
@@ -670,6 +684,10 @@ export function TerminalView({
        */
       if (bareCtrl && key === 'v') {
         const clip = window.stoke.clipboard.readSync()
+        if (clip.files > 0 && pasteFilesRef.current(clip)) {
+          e.preventDefault()
+          return false
+        }
         if (clip.text) {
           e.preventDefault()
           term.paste(clip.text)
@@ -1520,10 +1538,12 @@ export function TerminalView({
     const term = termRef.current
     if (!term) return
     /*
-     * An SSH tab sends dropped IMAGES to its machine and types their far paths
-     * (the local path names nothing there). Read from the File's own bytes, so
-     * a drag with no path — an image out of a browser — works too. A drop
-     * with no image in it falls through to the path, as before.
+     * An SSH tab that sends uploads sends EVERYTHING dropped on it to its
+     * machine and types the far paths (the local path names nothing there,
+     * gotchas 146, 152): an image from its own bytes, so a drag with no path —
+     * an image out of a browser — works too, and any other file by the path
+     * the preload reads off it, which main checks and reads. Local tabs, and
+     * hosts with uploads off, type the local path, as before.
      */
     if (images.on && images.dropFiles(Array.from(e.dataTransfer.files))) return
     const paths = Array.from(e.dataTransfer.files)
@@ -1630,11 +1650,25 @@ export function TerminalView({
             {
               // An image clipboard used to show a greyed-out Paste with no
               // explanation. The CLI reads the image itself on its paste key
-              // (`pasteImageRef`).
-              label: menu.clip.text ? 'Paste' : menu.clip.hasImage ? 'Paste image' : 'Paste',
+              // (`pasteImageRef`). Copied files on an SSH tab that sends
+              // uploads go to the machine, as Cmd/Ctrl+V sends them.
+              label:
+                images.on && menu.clip.files > 0
+                  ? menu.clip.files > 1
+                    ? `Paste ${menu.clip.files} files`
+                    : 'Paste file'
+                  : menu.clip.text
+                    ? 'Paste'
+                    : menu.clip.hasImage
+                      ? 'Paste image'
+                      : 'Paste',
               hint: IS_MAC ? '⌘V' : 'Ctrl+V',
-              disabled: !menu.clip.text && !menu.clip.hasImage,
+              disabled: !menu.clip.text && !menu.clip.hasImage && !(images.on && menu.clip.files > 0),
               onSelect: () => {
+                if (pasteFilesRef.current(menu.clip)) {
+                  termRef.current?.focus()
+                  return
+                }
                 if (menu.clip.text) termRef.current?.paste(menu.clip.text)
                 else if (menu.clip.hasImage) pasteImageRef.current()
                 termRef.current?.focus()

@@ -710,15 +710,17 @@ export interface SshHost {
    */
   keyEnrolled?: boolean
   /**
-   * Never send images to this machine.
+   * Never send images or files to this machine.
    *
-   * An image pasted or dropped on an SSH tab is copied to the machine over a
-   * second ssh connection (`~/.cache/stoke/paste`, kept a day) and its path is
-   * typed, so the `claude` there can attach it. Per host for the reason
-   * `keyEnrollRefused` is: a shared bastion or a client's box may not want
-   * files written. Off (images are sent) unless set; with it set the tab does
-   * what it did before — the local path or the terminal's own Ctrl+V. Synced
-   * with the host, like `keyEnrollRefused`.
+   * An image or any other file pasted or dropped on an SSH tab is copied to
+   * the machine over a second ssh connection (`~/.cache/stoke/paste`, kept a
+   * day) and its path is typed, so the `claude` there can read it. Per host
+   * for the reason `keyEnrollRefused` is: a shared bastion or a client's box
+   * may not want files written. Off (uploads are sent) unless set; with it set
+   * the tab does what it did before — the local path, or the terminal's own
+   * Ctrl+V. Synced with the host, like `keyEnrollRefused`: the field and its
+   * meaning ("write nothing here") are unchanged since files joined images, so
+   * a hub payload from an older Stoke means the same thing.
    */
   noUploads?: boolean
   /**
