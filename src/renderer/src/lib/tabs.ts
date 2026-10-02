@@ -147,6 +147,24 @@ export function moveTab<T extends { id: string }>(
 export const TAB_DRAG_SLOP_PX = 3
 
 /**
+ * The `data-*` attribute a dataset key names, the way the DOM maps them:
+ * `tabId` is `data-tab-id`, `tbItem` is `data-tb-item`.
+ *
+ * `useTabDrag` drags whatever sits directly in its list under one such
+ * attribute — the session strip's tabs (`tabId`, the default) and the title
+ * bar's own chips in edit mode (`tbItem`). Reading the id back through the
+ * same key is what keeps the two halves from disagreeing.
+ */
+export function dataAttrOf(key: string): string {
+  return `data-${key.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`
+}
+
+/** The items a drag moves: the list's direct children carrying `key`'s attribute. */
+export function dragItemSelector(key: string): string {
+  return `:scope > [${dataAttrOf(key)}]`
+}
+
+/**
  * Whether a press has travelled far enough to be a drag rather than a click.
  *
  * Any direction, not only along the strip, so a press that wanders down off the
@@ -201,6 +219,46 @@ export function previewShift(i: number, from: number, to: number): -1 | 0 | 1 {
 /** The slot tab `i` occupies in the preview. The dragged tab is shown at `to`. */
 export function previewSlot(i: number, from: number, to: number): number {
   return i === from ? to : i + previewShift(i, from, to)
+}
+
+/**
+ * Where each item's left edge sits in the preview, for items of ANY width:
+ * the order with `from` moved to `to` (`moveTab`'s), laid out from the first
+ * slot with each item's own width and the list's gap.
+ *
+ * Tabs are all one width, so for them this is exactly `lefts[previewSlot(…)]`
+ * (`verify:tabs` holds that for every move). The title bar's chips are not:
+ * sliding a 180px git chip into the 93px slot a shortcut left made the two
+ * overlap mid-drag (seen in the built app, 2026-10-02), which is why the hook
+ * places neighbours by this rather than by the old slot lefts.
+ */
+export function previewLefts(lefts: readonly number[], widths: readonly number[], from: number, to: number): number[] {
+  const n = lefts.length
+  if (n === 0) return []
+  const gap = n > 1 ? lefts[1] - (lefts[0] + widths[0]) : 0
+  const order = lefts.map((_, i) => i)
+  if (from >= 0 && from < n && to >= 0 && to < n && from !== to) {
+    const [moved] = order.splice(from, 1)
+    order.splice(to, 0, moved)
+  }
+  const out = new Array<number>(n)
+  let x = lefts[0]
+  for (const i of order) {
+    out[i] = x
+    x += widths[i] + gap
+  }
+  return out
+}
+
+/**
+ * The furthest left a dragged item may sit: its right edge on the last slot's
+ * right edge. The last slot's own left for items of one width, as `clampDrag`
+ * always took; for a wider item than the last, less, so it never runs past the
+ * end of the list.
+ */
+export function lastDragLeft(lefts: readonly number[], widths: readonly number[], width: number): number {
+  const n = lefts.length
+  return n === 0 ? 0 : lefts[n - 1] + widths[n - 1] - width
 }
 
 /** The part of an overflowing strip that is on screen, in the slots' own content coordinates. */

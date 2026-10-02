@@ -43,7 +43,11 @@ import {
   newTabToReuse,
   nextCustomTitle,
   tabLabel,
-  tabsToClose
+  tabsToClose,
+  dataAttrOf,
+  dragItemSelector,
+  lastDragLeft,
+  previewLefts
 } from '../src/renderer/src/lib/tabs.ts'
 
 let failures = 0
@@ -155,6 +159,54 @@ check(
   ids(moveTab([{ id: 'only' }], 'only', 'only')),
   ['only']
 )
+
+/*
+ * `useTabDrag` drags the title bar's chips too (edit mode), found by another
+ * attribute. The hook reads ids back through `dataAttrOf` and finds items
+ * through `dragItemSelector`, so the two must name the same attribute — and
+ * the strip's own default must still be exactly the `data-tab-id` the tabs carry.
+ */
+console.log('\nwhat a drag picks up')
+check('the strip’s items are data-tab-id', dataAttrOf('tabId'), 'data-tab-id')
+check('the title bar’s chips are data-tb-item', dataAttrOf('tbItem'), 'data-tb-item')
+check('only the list’s direct children are items', dragItemSelector('tabId'), ':scope > [data-tab-id]')
+check('a key with no capitals is its own attribute', dataAttrOf('item'), 'data-item')
+check('and a chip reorder is the same commit as a tab’s', ids(moveTab([{ id: 'folder' }, { id: 'git' }, { id: 'shortcut-x' }], 'shortcut-x', 'folder')), [
+  'shortcut-x',
+  'folder',
+  'git'
+])
+
+/*
+ * Neighbours slide by their OWN widths. Tabs are one width, so the preview must
+ * be exactly the old slot lefts for every move; chips are not, and a 180px chip
+ * sent to a 93px chip's old left overlapped its neighbour mid-drag.
+ */
+{
+  const lefts = [10, 214, 418, 622, 826] // 200 wide, 4 gap
+  const widths = [200, 200, 200, 200, 200]
+  let same = true
+  for (let from = 0; from < 5; from++) {
+    for (let to = 0; to < 5; to++) {
+      const at = previewLefts(lefts, widths, from, to)
+      for (let i = 0; i < 5; i++) if (i !== from && at[i] !== lefts[previewSlot(i, from, to)]) same = false
+    }
+  }
+  check('one width (tabs): every preview is exactly the old slot lefts, for every move', same, true)
+  check('one width: the far bound is the last slot’s left, as before', lastDragLeft(lefts, widths, 200), 826)
+  // folder 90, git 180, Tests 93, Compact 113; gap 4.
+  const cl = [0, 94, 278, 375]
+  const cw = [90, 180, 93, 113]
+  check('chips: Compact dragged to slot 1 pushes git and Tests along by Compact’s width', previewLefts(cl, cw, 3, 1), [0, 211, 395, 94])
+  check('and nothing overlaps in that preview', (() => {
+    const at = previewLefts(cl, cw, 3, 1)
+    const spans = at.map((l, i) => [l, l + cw[i]]).sort((a, b) => a[0] - b[0])
+    return spans.every((s, i) => i === 0 || s[0] >= spans[i - 1][1])
+  })(), true)
+  check('a wide chip cannot be dragged past the list’s end', lastDragLeft(cl, cw, 180), 375 + 113 - 180)
+  check('no move: the lefts as they are', previewLefts(cl, cw, 2, 2), cl)
+  check('no items: none', previewLefts([], [], 0, 0), [])
+}
 
 console.log('\na paused tab is an ordinary member of the list')
 check(
