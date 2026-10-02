@@ -67,3 +67,9 @@ half-written**. POSIX permits the name, so this is reachable rather than theoret
 > which shells read literally too; one path keeps single quotes, Windows keeps double quotes. And
 > on an SSH tab a drop holding images no longer types local paths: the images are sent to the
 > machine and the FAR paths typed through this same `dropText` route. Gotcha 146 has both.
+
+> **Checked against the code on 2026-10-02 (files into SSH tabs)** — on an SSH tab that sends
+> uploads, a drop no longer types a local path for ANY file: every regular file is sent to the
+> machine and its far path typed through `dropText(paths, 'linux')` (gotcha 152), and a folder is
+> refused with a sentence. The local path is typed only on a local tab and on a host with
+> `noUploads`. verify:drop holds the far-path form and reads the strip for the `'linux'` call.

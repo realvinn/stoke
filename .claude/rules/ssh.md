@@ -5,6 +5,7 @@ paths:
   - "src/main/sshUpload.ts"
   - "src/main/sshImages.ts"
   - "src/shared/imageUpload.ts"
+  - "src/shared/imageJobs.ts"
   - "src/renderer/src/components/ImageSendStrip.tsx"
   - "src/shared/sshPersist.ts"
   - "src/main/sshEnroll.ts"
@@ -512,3 +513,86 @@ OpenSSH server on the far side.
 >   (publickey)." while no master ran, and with a master open on its `ControlPath` the same argv
 >   exited 0 and the file arrived sha256-identical (the master was a plain `ssh -M -N`, not a tab;
 >   that a tab's own ssh becomes the master under `ControlMaster auto` is read from ssh, not driven).
+
+## 152. A dropped file reaches main as a path the renderer never wrote, and main checks it twice: once when it is dropped and once when it is opened
+
+**Built 2026-10-02 from the owner's "what about files? like if I want to drop a file through ssh?"**
+On an SSH tab that sends uploads (gotcha 146), EVERY dropped regular file now goes to the machine
+the way an image does — the same second BatchMode ssh with scp's options, the same `sh` body, the
+same `~/.cache/stoke/paste` and day-old sweep — and the far paths are typed in the form Claude
+Code's splitter reads. A file keeps its own name and extension through the image whitelist plus six
+hex digits (`droppedFileName`: `Q3 board report.pdf` → `Q3-board-report-b4fe11.pdf`, `.tar.gz` kept
+whole, `.env` → `env-<hex>`, an unsafe extension dropped, never cut). Images keep their own route
+(bytes read in the renderer, named by their magic, a thumbnail, 25 MB); an image past 25 MB, or a
+`.png` whose bytes are not one, goes as the file it is. Local tabs and hosts with `noUploads` type
+the local path, as before.
+
+**The path.** A File crosses to the preload, which reads its path with `webUtils.getPathForFile`
+(`ssh.prepareFile(hostId, file)`) and sends only that, so the page names a File, never a path; a
+File with no path behind it is answered without asking main. Files copied in Finder or Explorer are
+read off the clipboard by main itself (`clipboardFiles`), as a pasted image is.
+
+**Two checks, because a path is checked once and read later.** `inspectUploadFile` at the drop:
+`realpath` through every link, then only a regular file within `MAX_FILE_BYTES` (100 MB); a folder
+("…is a folder. Stoke sends files, not folders: drop the files inside it, or zip it first."), a
+device, a pipe, a socket and a link to nothing each get a sentence. Nothing is tarred or walked.
+Main holds the resolved PATH, not the bytes, so a queue of big files is never all in memory.
+`openUploadFile` when its turn comes: `O_NOFOLLOW` (a link swapped in since is refused, ELOOP) and
+`O_NONBLOCK`, then type and size from `fstat` of that descriptor, which is what is read.
+**Without `O_NONBLOCK`, opening a FIFO swapped in for a checked file blocks forever** — measured by
+mutation: verify:ssh hung until its 150 s timeout, and in main that open would sit on a libuv thread
+for good. A file that grows after it is opened is sent as it was then (its first `size` bytes — a
+live log), one that shrinks stops the send in a sentence and the far side keeps nothing (`.part`
+removed, gotcha 146). A file gone by its turn is `not-file`: said, and the rest of its drop still
+typed.
+
+**A 0-byte file is a file.** The image body refused `size <= 0`, which is right for an image and
+would have refused every empty file; it takes `0..MAX_FILE_BYTES` now, and `cat`/`wc -c` publish an
+empty file. And the shared stem cut let a leading `_` survive, so `_x.png` (and `__init__.py`) failed
+`isSafeUploadName` and was refused as "could not name that image safely"; it strips `[._-]` now.
+
+**The bytes stream, and that is what the progress counts.** `spawnWithInput` writes 256 KB chunks,
+each after the last was taken (`drained`), reading the file as it goes; `onProgress` is what ssh's
+stdin has TAKEN, which runs ahead of what has arrived by ssh's own buffers, so the strip can sit at
+100% for the last second or two of a slow link. A file gets 15 s + its bytes at 25 KB/s, at most 30
+minutes, and is given up after `UPLOAD_IDLE_MS` (60 s) of ssh taking nothing while bytes are left —
+never after the last byte, when a slow far side is not a stall. Images keep their two minutes.
+
+**Copied files, per platform** (`clipboardFiles`; the peek's `files` count sends Cmd/Ctrl+V and the
+menu's "Paste N files" to the machine ahead of the names Finder also puts on as text):
+- **macOS, measured** in Electron 43: with two file URLs on the pasteboard, `clipboard.read(
+  'public.file-url')` answered only the FIRST; `NSFilenamesPboardType`, which AppKit synthesises
+  from them, is a plist listing both (XML, so `parseFilenamesPlist` decodes its entities). In the
+  app, three URLs read back as three files. Chromium's own paste event also
+  carried both as Files with paths, but Stoke's key handler takes Cmd+V before the page pastes, and
+  main reading the clipboard keeps "the renderer names no path" for the menu's Paste too.
+- **Linux**: `text/uri-list`, else GNOME's `x-special/gnome-copied-files`. Not run on Linux.
+- **Windows**: `CF_HDROP` is a standard format Electron cannot name, so only `FileNameW` (the first
+  path) is readable; `Shell IDList Array`'s first UINT is the count, and several copied files are
+  refused with a sentence ("drop them instead") rather than one sent silently. Not run on Windows.
+
+verify:ssh holds every rule above with real files (a FIFO, a socket, `/dev/null`, links, a sparse
+file past the cap), the real body under `sh` for `sendFile`, and the queue with a fake main;
+verify:drop holds the typed far-path form and that the strip types it as POSIX. 23 mutations, each
+red (the `O_NONBLOCK` one as the hang above).
+
+**Proven 2026-10-02 in the built app on macOS**, against a throwaway non-root sshd on
+127.0.0.1:2301 (`SetEnv XDG_CACHE_HOME=<scratch>`, scratch keys and known_hosts, every ssh argv given
+`-F <scratch config>` by a `NODE_OPTIONS=--require` hook as in 146; `~/.ssh` unchanged), the far
+program a stub logging its pty input. One CDP `Input.dispatchDragEvent` of `server.log`,
+`Q3 board report.pdf` and a 0-byte `empty.txt`: three sha256-identical files (0600 in a 0700 folder)
+and ONE bracketed paste of three far paths. A folder drop: its sentence, nothing sent or typed. A
+30 MB log through a ProxyCommand held to 1 MB/s: "Sending big build.log (1 of 2) to B2 slow… 30.0 MB
+· 50%" and the bar, then identical; Cancel at 20% published nothing and left no `.part`. Three file
+URLs put on the pasteboard with NSPasteboard (the type Finder writes) and Cmd+V: three identical
+files, one paste; the menu said "Paste 3 files". A PNG and a text file named `.png` in one drop: the
+first as an image (thumbnail, identical), the second as a file (identical). `noUploads` on: the local
+path typed, nothing sent. A local tab: the local path typed. Two drops of `server.log` landed as two
+names. **Not proven:** Finder's own Cmd+C (it adds names as text and an icon, which the files branch
+goes ahead of), Linux and Windows clipboards, Windows `ssh.exe` streaming, a real `claude` reading a
+non-image path, a fish or Windows OpenSSH far side.
+
+Rig trap for whoever reruns it: count the pasteboard's items from a SECOND process before driving a
+paste. Two early JXA `writeObjects` of two URLs each reported success and a fresh process then
+listed one item (cause not found; later writes of three, through an `NSMutableArray`, all held).
+And save and restore the owner's pasteboard around it (every item, every type) — it is theirs.

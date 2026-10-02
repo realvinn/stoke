@@ -378,6 +378,8 @@ rule file named on the group line.
   result (`EnrollRuns`, `enrollInstallDone`), first of the two wins; the probe still alone decides.
 - **146.** Send an SSH tab's image as bytes over a second ssh with scp's options (`buildUploadArgs`: `-T`,
   `ClearAllForwardings`, `RemoteCommand=none`; main names it; EPIPE) and type several paths with `escapePath`.
+- **152.** Send any other dropped or copied file by a path only the preload or main read, checked at the drop
+  (`inspectUploadFile`) and again at the open (`O_NOFOLLOW|O_NONBLOCK`); 0 bytes is a file; macOS: `NSFilenamesPboardType`.
 
 **Phone access** — `.claude/rules/phone.md`
 - **53.** Draw no QR for `connectTarget`'s `loopback` reach, mint the key only in start paths
