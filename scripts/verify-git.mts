@@ -6,10 +6,14 @@
  * repository whose `core.fsmonitor` hook and `filter.<x>.clean` command must
  * NOT run (gotcha 147), each beside a control proving the trap is live.
  *
- * Hermetic: every repository is under one mkdtemp folder, git reads an empty
- * global config there (`GIT_CONFIG_GLOBAL`) and no system config, so neither
- * the owner's signing, hooks nor aliases reach a fixture, and the folder is
- * removed at the end.
+ * Hermetic: every repository is under one mkdtemp folder, and the folder is
+ * removed at the end. The fixtures are built by git with a scratch global
+ * config (`GIT_CONFIG_GLOBAL`) and no system config, so neither the owner's
+ * signing, hooks nor aliases reach them. The reader under test is handed a
+ * scratch HOME instead (`readerEnv`): `gitEnv` drops every `GIT_*` variable,
+ * so `GIT_CONFIG_GLOBAL` never reaches its git, which read the owner's own
+ * ~/.gitconfig until 2026-10-02 — a `status.showUntrackedFiles=no` there would
+ * have failed this suite on that one machine.
  *
  *   node scripts/verify-git.mts
  */
@@ -150,7 +154,13 @@ console.log('\nerrors read killed first (gotcha 25)')
 
 /* ------------------------------------------------------ real repositories */
 
-const base = realpathSync(mkdtempSync(join(tmpdir(), 'stoke-verify-git-')))
+/*
+ * `.native`: on a Windows runner TEMP is `C:\Users\RUNNER~1\…`, an 8.3 short
+ * name the JS realpath keeps and the reader's own (native) `realpath` expands,
+ * so every root compared below would have differed (verify:folders met the
+ * same: twenty-five checks red on the Windows leg).
+ */
+const base = realpathSync.native(mkdtempSync(join(tmpdir(), 'stoke-verify-git-')))
 const slash = (p: string): string => p.replace(/\\/g, '/')
 const globalConfig = join(base, 'gitconfig')
 writeFileSync(globalConfig, '')
@@ -172,8 +182,20 @@ const gitTolerant = (cwd: string, ...args: string[]): void => {
     /* a merge that stops on a conflict exits 1, which is the point */
   }
 }
-const gitBin = await findGit(env.PATH ?? '')
-const deps: GitDeps = { git: async () => gitBin, env: async () => env }
+/*
+ * The reader's environment. `readGitStatus` runs `gitEnv` over it, which drops
+ * GIT_CONFIG_GLOBAL and GIT_CONFIG_NOSYSTEM with every other `GIT_*`, so the
+ * scratch config above never reached its git: it read the owner's real
+ * ~/.gitconfig. A scratch HOME is the one route that survives `gitEnv`.
+ */
+const home = join(base, 'home')
+mkdirSync(join(home, '.config'), { recursive: true })
+writeFileSync(join(home, '.gitconfig'), '[stoke]\n\tverify = scratch\n')
+const readerEnv: NodeJS.ProcessEnv = { ...env, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, '.config') }
+// process.env, never `env`: on Windows the copied key is `Path`, so `env.PATH`
+// is undefined there and no git would be found.
+const gitBin = await findGit(process.env.PATH ?? '')
+const deps: GitDeps = { git: async () => gitBin, env: async () => readerEnv }
 const read = (p: string): Promise<GitStatus> => readGitStatus(p, deps)
 const repo = (name: string): string => {
   const dir = join(base, name)
@@ -202,13 +224,24 @@ const ZERO = { staged: 0, unstaged: 0, untracked: 0, conflicts: 0 }
 
 try {
   check('a git to run was found on PATH', gitBin !== null, true)
+  check(
+    'the reader’s git reads the scratch global config, never the machine owner’s',
+    await (async () => {
+      try {
+        return execFileSync(gitBin ?? 'git', ['config', '--global', '--get', 'stoke.verify'], { env: gitEnv(await deps.env()), encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+      } catch {
+        return null // exit 1: not set in whatever global config it read
+      }
+    })(),
+    'scratch'
+  )
 
   console.log('\nreal repositories')
 
   const plain = join(base, 'not-a-repo')
   mkdirSync(plain)
   let asked = 0
-  const counting: GitDeps = { git: async () => (asked++, gitBin), env: async () => env }
+  const counting: GitDeps = { git: async () => (asked++, gitBin), env: async () => readerEnv }
   const none = await readGitStatus(plain, counting)
   check('a folder in no repository: no repo, and git was never even looked for', [none.repo, none.root, asked], [false, null, 0])
 
@@ -311,7 +344,7 @@ try {
   console.log('\nnever a stale "clean"')
   const slow = await readGitStatus(dirty, { ...deps, timeouts: { status: 1 } })
   check('a status past its deadline: the branch from HEAD, changes UNKNOWN, and why', [slow.repo, slow.branch, slow.changes, slow.error], [true, 'main', null, 'git took too long to answer'])
-  const noGit = await readGitStatus(clean, { git: async () => null, env: async () => env })
+  const noGit = await readGitStatus(clean, { git: async () => null, env: async () => readerEnv })
   check('no git at all: the branch still, changes unknown', [noGit.branch, noGit.changes, noGit.error], ['main', null, 'git was not found'])
 
   console.log('\nrunning no repo code (gotcha 147)')
@@ -359,7 +392,7 @@ try {
   console.log('\none git per folder at a time (gotcha 20)')
   {
     let runs = 0
-    const reader = new GitStatusReader({ git: async () => (runs++, gitBin), env: async () => env }, 60_000)
+    const reader = new GitStatusReader({ git: async () => (runs++, gitBin), env: async () => readerEnv }, 60_000)
     const [a, b] = await Promise.all([reader.read(clean), reader.read(clean)])
     check('two asks at once share one run', [runs, a === b], [1, true])
     await reader.read(clean)
