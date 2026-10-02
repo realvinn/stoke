@@ -93,6 +93,12 @@ const api: StokeApi = {
     createScratch: () => ipcRenderer.invoke(CH.workspaceScratch)
   },
 
+  private: {
+    inspect: (ptyId: string) => ipcRenderer.invoke(CH.privateInspect, ptyId),
+    states: () => ipcRenderer.invoke(CH.privateStates),
+    onState: (cb) => on<[Parameters<typeof cb>[0]]>(CH.privateState, cb)
+  },
+
   pty: {
     start: (opts: LaunchOptions) => ipcRenderer.invoke(CH.ptyStart, opts),
     write: (ptyId: string, data: string) => ipcRenderer.send(CH.ptyWrite, ptyId, data),

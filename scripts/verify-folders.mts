@@ -41,6 +41,7 @@ import {
 import {
   createSessionListCache,
   encodePath,
+  hideProjectsUnder,
   listProjects,
   listSessions,
   migrateSymlinkedProjectKeys
@@ -529,6 +530,34 @@ try {
     [plainHit?.emoji, plainHit?.label, plainHit?.addedManually],
     [null, null, false]
   )
+
+  /*
+   * A private chat's folder (shared/privateChat.ts) is never a project, by
+   * whatever route it could arrive: a scan root that covers it, a folder added
+   * by hand, or — the realistic one — a `~/.claude.json` entry the CLI wrote
+   * for it, which this suite cannot plant (the real file is read here). The
+   * scan-root and added routes reach the same final filter the config route
+   * does; the history-folder route is `isPrivateProjectDir`, held by
+   * verify:private. A neighbour that only shares the root's prefix stays.
+   */
+  const privRoot = join(tmp, 'private')
+  const ghost = join(privRoot, '1b4e28ba-2fa1-4d3b-a3f5-ef19b5a7633b')
+  const neighbour = join(tmp, 'private-notes')
+  mkdirSync(ghost, { recursive: true })
+  mkdirSync(neighbour)
+  hideProjectsUnder(() => [privRoot])
+  try {
+    const listed = await listProjects(
+      listSettings({ projectRoots: [privRoot, tmp], projectMeta: { [ghost]: { addedManually: true } } })
+    )
+    check('a private chat folder is never listed, scanned or added by hand', listed.some((x) => x.path === ghost), false)
+    check('its root is not a project either', listed.some((x) => x.path === privRoot), false)
+    check('a neighbour sharing the prefix is', listed.some((x) => x.path === neighbour), true)
+  } finally {
+    hideProjectsUnder(() => [])
+  }
+  const unhidden = await listProjects(listSettings({ projectMeta: { [ghost]: { addedManually: true } } }))
+  check('with nothing hidden the same folder lists, so the filter is what hid it', unhidden.some((x) => x.path === ghost), true)
 
   /*
    * gotcha 91: a folder reached through a symlink used to become a second,

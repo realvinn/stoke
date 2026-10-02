@@ -135,6 +135,17 @@ export interface LaunchOptions {
    * and AcceptEnv on both ends — which is fine, because OSC 11 does.
    */
   appearance?: 'light' | 'dark'
+  /**
+   * A private chat (shared/privateChat.ts): Claude Code in a fresh folder main
+   * makes under `<userData>/private`, with transcript saving, file checkpoints,
+   * auto-memory and backgrounding off, kept out of every Stoke store, and
+   * deleted with every file it left once the process has exited. Only this
+   * flag crosses the boundary: main mints the id and makes the folder, and
+   * ignores `cwd`, `sessionId`, `resume`, `continueLast` and `cli` — a path
+   * main will later delete is never one the renderer named. Refused for SSH,
+   * installs, an enrollment, a sign-in and the phone.
+   */
+  private?: boolean
   /** `--name`, shown in Claude Code's own prompt box and /resume picker. */
   name?: string
   addDirs?: string[]

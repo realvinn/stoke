@@ -18,7 +18,7 @@ import {
 } from 'electron'
 import { createHash, randomUUID } from 'node:crypto'
 import { pathToFileURL } from 'node:url'
-import { homedir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { CH } from '@shared/ipc'
 import { activeThemeId, resolveTheme } from '@shared/themes'
@@ -81,6 +81,7 @@ import {
 import { ContextWatcher } from './context.ts'
 import {
   findSessionFile,
+  hideProjectsUnder,
   listProjects,
   listSessions,
   migrateSymlinkedProjectKeys,
@@ -118,6 +119,8 @@ import {
 import { parseSession, readTranscript } from './sessionFile.ts'
 import { fetchRemoteTranscript } from './sshTranscript.ts'
 import { PtyManager, type StartResult } from './pty.ts'
+import { PrivateChats } from './privateChat.ts'
+import { dropPrivateStoredTabs, privateLaunchProblem } from '../shared/privateChat.ts'
 import { checkMicrophone } from './audio/defaultDevice.ts'
 import { CODING_CLIS, capsFor, cliIdOf, isClaudeCode, isCodingCliId, type CodingCliId } from '../shared/codingClis.ts'
 import {
@@ -175,6 +178,7 @@ import {
   type SetupPayload
 } from '@shared/setupFile'
 import {
+  clearSessionFiles,
   gitBashPath,
   readSessionEvents,
   readStatusLine,
@@ -323,6 +327,69 @@ let hubClient: import('./hub/service.ts').HubService | null = null
  * here does more than post a message.
  */
 let chatIndex: ChatIndexHost | null = null
+
+/**
+ * Private chats (privateChat.ts, shared/privateChat.ts): their folders under
+ * `<userData>/private`, the marker naming what each may leave, the cleanup
+ * once a chat's `claude` has exited, and the watchdog. Made on first use and
+ * kept for the life of the process: a window closed on macOS does not end the
+ * cleanup of the chats it held, whose exits arrive after it has gone.
+ */
+let privateChats: PrivateChats | null = null
+
+function privateChatsFor(): PrivateChats {
+  privateChats ??= new PrivateChats({
+    root: join(app.getPath('userData'), 'private'),
+    tmpRoots: privateTmpRoots,
+    findTranscript: findTranscriptIn,
+    clearStatusFiles: (id) => clearSessionFiles(id),
+    onState: (st) => send(CH.privateState, st)
+  })
+  return privateChats
+}
+
+/**
+ * The private root as typed and through symlinks: what every list hides
+ * (projects.ts, the chat index, `tabs.json`). The raw path alone until the
+ * first chat or the boot sweep has resolved it.
+ */
+function privateRoots(): string[] {
+  return privateChats?.roots() ?? [join(app.getPath('userData'), 'private')]
+}
+hideProjectsUnder(privateRoots)
+
+/**
+ * The CLI's per-uid temp roots, `claude-<uid>` under its temp dir (read out of
+ * 2.1.287: `claude-${process.getuid?.()??0}`), where it keeps per-cwd scratch.
+ * Every candidate, since macOS's `os.tmpdir()` is not `/tmp`.
+ */
+function privateTmpRoots(): string[] {
+  const name = `claude-${process.getuid?.() ?? 0}`
+  const roots = [join(tmpdir(), name)]
+  if (process.platform !== 'win32') roots.push(join('/tmp', name))
+  if (process.env.CLAUDE_CODE_TMPDIR) roots.push(join(process.env.CLAUDE_CODE_TMPDIR, name))
+  return [...new Set(roots)]
+}
+
+/** Where a transcript for `id` is under any of these config dirs, or null. */
+async function findTranscriptIn(id: string, configDirs: readonly string[]): Promise<string | null> {
+  for (const dir of configDirs) {
+    const found = await findSessionFile(id, join(dir, 'projects')).catch(() => null)
+    if (found) return found
+  }
+  return null
+}
+
+/**
+ * The config dirs a private chat's `claude` can write to: the default (which
+ * follows an inherited `CLAUDE_CONFIG_DIR`), and a second Claude account's own.
+ */
+function privateConfigDirs(account: AgentAccount | null): string[] {
+  const dirs = [claudeConfigDir(process.env, homedir())]
+  const own = account?.kind === 'login' ? accountEnv(account).CLAUDE_CONFIG_DIR : undefined
+  if (own) dirs.push(own)
+  return [...new Set(dirs)]
+}
 /** First pass after boot: out of the way of everything boot does (gotcha 40). */
 const CHAT_BOOT_DELAY_MS = 30_000
 /** Then every fifteen minutes while the app is open, and on focus at most every five. */
@@ -358,7 +425,9 @@ function chatEnv(): SourceEnv {
       XDG_CONFIG_HOME: e.XDG_CONFIG_HOME,
       APPDATA: e.APPDATA,
       LOCALAPPDATA: e.LOCALAPPDATA
-    }
+    },
+    // A private chat's history folder, should the CLI ever write one, is never indexed.
+    privateRoots: privateRoots()
   }
 }
 
@@ -892,6 +961,36 @@ async function launchSession(
   origin: 'desktop' | 'remote' = 'desktop'
 ): Promise<StartResult> {
   if (!ptys) throw new Error('Window is not ready')
+  /*
+   * A private chat (shared/privateChat.ts). Only the flag is read: main mints
+   * the id and makes the folder below, so no path the renderer names is ever
+   * one this process later deletes. Claude Code on this computer only — the
+   * phone and SSH get none (an SSH host's `claude` would save on the far
+   * machine, and gotcha 19 forbids adding to its command).
+   */
+  if (requested.private) {
+    const problem = privateLaunchProblem({
+      origin,
+      host: !!requested.host,
+      install: !!requested.install?.length,
+      enroll: !!requested.enroll,
+      accountLogin: !!requested.accountLogin
+    })
+    if (problem) throw new Error(problem)
+    requested = {
+      cwd: '',
+      cli: 'claude',
+      private: true,
+      permissionMode: requested.permissionMode,
+      model: requested.model,
+      effort: requested.effort,
+      ultracode: requested.ultracode,
+      accountId: requested.accountId,
+      appearance: requested.appearance,
+      cols: requested.cols,
+      rows: requested.rows
+    }
+  }
   // Its own path, before anything else reads the request: an enrollment takes
   // the host id from it and nothing more (`planEnrollLaunch`).
   if (requested.enroll) return startEnrollSession(requested)
@@ -921,7 +1020,7 @@ async function launchSession(
    * conversation was never written all name an id with no transcript, and
    * `--resume` on one exits 1. See `resumeOrMint`.
    */
-  const opts =
+  let opts =
     !requested.host && isClaudeCode(cliIdOf(requested.cli)) && requested.sessionId && !requested.continueLast
       ? resumeOrMint(requested, await transcriptExists(requested.sessionId))
       : requested
@@ -970,6 +1069,14 @@ async function launchSession(
       }
     }
   }
+  /*
+   * The private chat's folder and id, made now that the account is known (its
+   * own `CLAUDE_CONFIG_DIR` is a second place the CLI writes). The marker
+   * naming both is on disk before the folder is, so from here on a crash
+   * leaves nothing the next boot's sweep cannot find.
+   */
+  const privateLaunch = opts.private ? await privateChatsFor().begin(privateConfigDirs(account)) : null
+  if (privateLaunch) opts = { ...opts, cwd: privateLaunch.folder, sessionId: privateLaunch.id }
   /**
    * MCP servers only for a LOCAL session: an SSH tab's agent is on another
    * machine and takes no flag from here (gotcha 19), and an install or an
@@ -1050,27 +1157,58 @@ async function launchSession(
     skillsProjector ??= new ClaudeSkillsProjector({ root: join(app.getPath('userData'), 'agents', 'claude-skills') })
     claudePluginDir = await skillsProjector.prepare(opts.cwd)
   }
-  const started = await ptys.start(
-    accountId ? { ...opts, accountId } : opts,
-    settings.claudePath,
-    claudeConfigs,
-    (statusKey) =>
-      writeSessionSettingsFile({
-        sessionId: statusKey,
-        hasGitBash,
-        ultracode: opts.ultracode === true,
-        hideStatusLine: settings.hideStatusLine,
-        // Read now rather than cached: it is the user's own settings.json and
-        // they can edit it between one session and the next.
-        passthroughCommand: settings.hideStatusLine ? '' : userStatusLineCommand()
-      }),
-    settings.providers,
-    agentPlan,
-    null,
-    claudePluginDir,
-    // A second Claude account's home, applied in place of the Providers keys.
-    isClaudeCode(cliId) && account ? accountEnv(account) : null
-  )
+  const launched = accountId ? { ...opts, accountId } : opts
+  let started: StartResult
+  try {
+    started = await ptys.start(
+      launched,
+      settings.claudePath,
+      claudeConfigs,
+      (statusKey) =>
+        writeSessionSettingsFile({
+          sessionId: statusKey,
+          hasGitBash,
+          ultracode: opts.ultracode === true,
+          hideStatusLine: settings.hideStatusLine,
+          // Read now rather than cached: it is the user's own settings.json and
+          // they can edit it between one session and the next.
+          passthroughCommand: settings.hideStatusLine ? '' : userStatusLineCommand(),
+          privateChat: opts.private === true
+        }),
+      settings.providers,
+      agentPlan,
+      null,
+      claudePluginDir,
+      // A second Claude account's home, applied in place of the Providers keys.
+      isClaudeCode(cliId) && account ? accountEnv(account) : null
+    )
+  } catch (err) {
+    // Nothing ran in the folder: it and its marker go now.
+    if (privateLaunch) await privateChats?.abandon(privateLaunch.id).catch(() => {})
+    throw err
+  }
+  /*
+   * A private chat stops here, before anything below can remember it: no
+   * context watcher (no transcript is written), no worklog address book, no
+   * phone or hub notice (`PtyManager.list` leaves it out), no remote tab. The
+   * renderer is handed the folder main made, which the tab shows.
+   */
+  if (privateLaunch) {
+    privateChatsFor().attach(privateLaunch.id, started.ptyId)
+    // A `claude` that died before this line ran fired its exit before the
+    // chat knew its pty: nothing would clean it until the next boot.
+    if (ptys.sessionIdFor(started.ptyId) === null) {
+      void privateChatsFor()
+        .finish(started.ptyId)
+        .catch((err) => console.error('[stoke] private chat cleanup', err))
+    }
+    return {
+      ...started,
+      ...(accountId ? { accountId } : {}),
+      private: true,
+      cwd: privateLaunch.folder
+    }
+  }
   /*
    * Another agent's tab carries the model its plan asked for (`launchModel`):
    * its endpoint's, or its Default model where the table has a flag for one,
@@ -1460,6 +1598,18 @@ function rebindSession(ptyId: string, sessionId: string, previous: string): void
   if (!ptys) return
   const was = ptys.rebind(ptyId, sessionId)
   if (was === null) return
+  /*
+   * A private chat follows its new id and nothing else: no watcher, no address
+   * book. A `/clear` successor joins what its close deletes; a conversation it
+   * `/resume`d INTO is never touched, and the tab is told it is no longer
+   * private (`privateRebindVerdict`).
+   */
+  if (privateChats?.isPrivatePty(ptyId)) {
+    void privateChats.rebind(ptyId, sessionId).catch((err) => console.error('[stoke] private chat rebind', err))
+    const msg: SessionRebind = { ptyId, sessionId, previous }
+    send(CH.sessionRebind, msg)
+    return
+  }
   if (previous) {
     watcher?.unwatch(previous)
     statusLineSeen.delete(previous)
@@ -2554,6 +2704,15 @@ function createWindow(): void {
     }
   )
   /*
+   * A private chat is cleaned up when its `claude` has REALLY exited — this
+   * fires from the pty's own exit, not from the kill that asked for it, so the
+   * CLI's exit-time writes have landed first.
+   */
+  ptys.subscribeExit((ptyId) => {
+    if (!privateChats?.isPrivatePty(ptyId)) return
+    void privateChats.finish(ptyId).catch((err) => console.error('[stoke] private chat cleanup', err))
+  })
+  /*
    * Claude Code's own session registry, read once a second for every live
    * local Claude pty — and not at all while there is none. Two facts nothing
    * else states: which session each process is on NOW (so a `/clear` or an
@@ -3131,6 +3290,10 @@ function registerIpc(): void {
    */
   ipcMain.handle(CH.workspaceDefault, () => realpathFolder(resolveDefaultCwd(getSettings().defaultCwd)))
   ipcMain.handle(CH.workspaceScratch, () => createScratchDir())
+  ipcMain.handle(CH.privateInspect, (_e, ptyId: unknown) =>
+    typeof ptyId === 'string' && privateChats ? privateChats.inspect(ptyId) : { files: null }
+  )
+  ipcMain.handle(CH.privateStates, () => privateChats?.states() ?? [])
 
   ipcMain.handle(CH.projectsHide, (_e, path: string, hidden: boolean) => {
     const s = getSettings()
@@ -4153,8 +4316,15 @@ function registerIpc(): void {
 
   /* ------------------------------------------------------------------ tabs */
   ipcMain.on(CH.tabsSave, (_e, state: StoredTabs) => {
-    lastTabState = state
-    writeTabState(tabStateFile(app.getPath('userData')), state)
+    /*
+     * The renderer never sends a private tab (`toStored`); this is main's own
+     * check, by the ids it minted and the folder every private chat runs in,
+     * so a private chat's screen cannot reach disk through a renderer that
+     * forgot (gotcha 35: this write is on every push).
+     */
+    const kept = dropPrivateStoredTabs(state, privateChats?.sessionIds() ?? new Set(), privateRoots(), process.platform)
+    lastTabState = kept
+    writeTabState(tabStateFile(app.getPath('userData')), kept)
   })
 
   /*
@@ -4165,7 +4335,7 @@ function registerIpc(): void {
    */
   ipcMain.handle(CH.tabsRestore, (): StoredTabs => {
     const userData = app.getPath('userData')
-    const state = readTabState(tabStateFile(userData))
+    const state = dropPrivateStoredTabs(readTabState(tabStateFile(userData)), new Set(), privateRoots(), process.platform)
     return consumeUpdateRestart(updateRestartFile(userData)) ? { ...state, afterUpdate: true } : state
   })
 
@@ -4675,6 +4845,18 @@ if (!app.requestSingleInstanceLock(launchRequest ? { stokeCli: launchRequest } :
      */
     sweepStaleSessionFiles()
     /*
+     * Private chats a crash, a force-kill or a quit left behind: each one's
+     * own marker lists what it may have written, and only that goes. Async and
+     * after the window, like the sweep above (gotcha 40); no chat can have
+     * started yet.
+     */
+    void privateChatsFor()
+      .sweepAtBoot()
+      .then((n) => {
+        if (n) console.log(`[stoke] cleaned up after ${n} private chat${n === 1 ? '' : 's'} from an earlier run`)
+      })
+      .catch((err) => console.error('[stoke] private chat sweep', err))
+    /*
      * One-time, off the main thread: rewrite any `projectMeta`/`projectRoots`/
      * `pinnedProjects`/`hiddenProjects` entry still stored under a symlinked
      * path from before gotcha 91's launch-time realpath shipped (or written
@@ -4714,6 +4896,9 @@ if (!app.requestSingleInstanceLock(launchRequest ? { stokeCli: launchRequest } :
      */
     releaseHeldLocks()
     ptys?.killAll()
+    // Their exits may never be delivered now: the folders go at once, the
+    // rest on the next boot's sweep (privateChat.ts `quitSync`).
+    privateChats?.quitSync()
     watcher?.disposeAll()
     // A pass stops where it is; the store is WAL, so an interrupted write is simply not there.
     void chatIndex?.stop()

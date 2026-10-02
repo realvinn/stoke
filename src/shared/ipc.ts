@@ -108,6 +108,17 @@ export const CH = {
   workspaceDefault: 'workspace:default',
   workspaceScratch: 'workspace:scratch',
 
+  /*
+   * Private chats (shared/privateChat.ts). A private chat is STARTED through
+   * `pty:start` with `private: true`; these only read and report on one.
+   * `inspect`: how many files its folder holds, for the close question.
+   * `state`: a push when the watchdog finds a transcript the CLI wrote anyway,
+   * or the tab `/resume`d into a saved conversation.
+   */
+  privateInspect: 'private:inspect',
+  privateState: 'private:state',
+  privateStates: 'private:states',
+
   // pty
   ptyStart: 'pty:start',
   ptyWrite: 'pty:write',

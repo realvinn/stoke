@@ -136,6 +136,15 @@ export type AccountCreateResult =
   | { ok: true; account: AgentAccount; created: boolean }
   | { ok: false; message: string }
 
+/** What main says about a live private tab beyond its being private (`private:state`). */
+export interface PrivateTabState {
+  ptyId: string
+  /** The CLI wrote a transcript for it anyway (the watchdog found one). */
+  leak: boolean
+  /** It `/resume`d into a conversation saved before: no longer private. */
+  foreign: boolean
+}
+
 export interface StartResult {
   ptyId: string
   sessionId: string
@@ -155,6 +164,12 @@ export interface StartResult {
    * an SSH tab and a key enrollment.
    */
   accountId?: string
+  /**
+   * A private chat (`LaunchOptions.private`): set, with the folder main made
+   * for it in `cwd`. The tab shows that folder and nothing else names it.
+   */
+  private?: true
+  cwd?: string
 }
 
 /**
@@ -576,6 +591,19 @@ export interface StokeApi {
     defaultCwd(): Promise<string>
     /** Create a fresh throwaway folder and return its path. */
     createScratch(): Promise<string>
+  }
+
+  /**
+   * Private chats (shared/privateChat.ts). One is started through `pty.start`
+   * with `private: true`; these read what main knows about one.
+   */
+  private: {
+    /** How many files the chat's folder holds; null when main could not count them in time. */
+    inspect(ptyId: string): Promise<{ files: number | null }>
+    /** Every live private tab's state, for a renderer that has just (re)loaded. */
+    states(): Promise<PrivateTabState[]>
+    /** A transcript appeared anyway, or the tab resumed into a saved conversation. */
+    onState(cb: (state: PrivateTabState) => void): () => void
   }
 
   pty: {
