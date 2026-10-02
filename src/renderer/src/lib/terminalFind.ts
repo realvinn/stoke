@@ -1,0 +1,125 @@
+/**
+ * The find bar's rules that are not drawing: which find a Cmd+F opens, what the
+ * count line says, how a hit is labelled. Pure, and imports only `src/shared`
+ * by relative `.ts` path (gotcha 78), so `verify:find` runs it as it ships.
+ */
+import type { FindRole, TranscriptFindResult } from '../../../shared/transcriptFind.ts'
+
+/* --------------------------------------------------------- who takes Cmd+F */
+
+/** Where a key event landed, read off the DOM by `findTargetOf`. */
+export interface FindTarget {
+  /** Inside the docked browser panel's own chrome (its address bar, its find box). */
+  inBrowser: boolean
+  /** Inside a terminal pane. */
+  inTerminal: boolean
+}
+
+/** Anything with `closest`, so the suite can hand in a fake element. */
+export function findTargetOf(target: unknown): FindTarget {
+  const el = target as { closest?: (sel: string) => unknown } | null
+  if (!el || typeof el.closest !== 'function') return { inBrowser: false, inTerminal: false }
+  return { inBrowser: !!el.closest('section.browser'), inTerminal: !!el.closest('.term-pane') }
+}
+
+export interface FindOwnerInput extends FindTarget {
+  /** The chord is the terminal's (`matchShortcut` says `find`). */
+  terminalChord: boolean
+  /** The chord is the docked browser's page find (primary + F, no Alt). */
+  pageChord: boolean
+  /** A terminal is in front with a find bar (`hasActiveFinder`). */
+  terminalShown: boolean
+  browserOpen: boolean
+}
+
+/**
+ * Which find a find chord opens. Focus decides: in the browser panel's chrome,
+ * the page's; anywhere else, the terminal's when one is in front; and the
+ * page's from elsewhere only when no terminal would take it. On macOS the two
+ * share Cmd+F, which is why this exists — the browser panel's window listener
+ * used to open the PAGE find bar from any focus, the terminal included. Off
+ * macOS they are different chords (Ctrl+F the page, Ctrl+Shift+F the
+ * terminal), and a bare Ctrl+F inside a terminal is the CLI's, never a find.
+ * App and the browser panel both ask this, so exactly one of them acts.
+ */
+export function findOwner(i: FindOwnerInput): 'terminal' | 'page' | null {
+  if (!i.terminalChord && !i.pageChord) return null
+  if (i.inBrowser) return i.browserOpen ? 'page' : null
+  if (i.terminalChord && i.terminalShown) return 'terminal'
+  if (i.inTerminal && i.terminalShown) return null
+  return i.pageChord && i.browserOpen ? 'page' : null
+}
+
+/* ----------------------------------------------------------- the count line */
+
+/**
+ * The screen half of the count: "2 of 7 on screen". "On screen" on the
+ * alternate buffer (a fullscreen TUI: what is visible is all xterm has), "in
+ * the terminal" on the normal one, which has scrollback too. `index` is -1
+ * when the addon is past its highlight limit and cannot say which one.
+ */
+export function screenCountLabel(count: number, index: number, buffer: 'normal' | 'alternate'): string {
+  const where = buffer === 'alternate' ? 'on screen' : 'in the terminal'
+  if (count === 0) return `None ${where}`
+  if (index < 0) return `${count}+ ${where}`
+  return `${index + 1} of ${count} ${where}`
+}
+
+/** The conversation half: "12 in the conversation", or why there is none. */
+export function conversationCountLabel(result: TranscriptFindResult | null, busy: boolean): string | null {
+  if (!result) return busy ? 'Searching the conversation…' : null
+  if (!result.ok) return null
+  if (result.total === 0) return 'None in the conversation'
+  return `${result.total} in the conversation`
+}
+
+/** How a hit's author is named on its card. */
+export function roleLabel(role: FindRole, tool: string | null, isError: boolean): string {
+  switch (role) {
+    case 'user':
+      return 'You'
+    case 'assistant':
+      return 'Claude'
+    case 'tool-call':
+      return tool ? `${tool} call` : 'Tool call'
+    case 'tool-output':
+      return `${tool ? `${tool} output` : 'Tool output'}${isError ? ' (error)' : ''}`
+  }
+}
+
+/* ------------------------------------------------------------ the palette */
+
+export const FIND_PALETTE_LABEL = 'Find in this conversation'
+const FIND_PALETTE_WORDS = ['find', 'search', 'conversation', 'scrollback', 'terminal', 'transcript', 'text']
+
+/**
+ * Whether the palette's query asks for the find row, and where to mark its
+ * label. Every word of the query must start a word of the label or one of its
+ * keywords; an empty query does not list it (the palette's empty list is
+ * projects).
+ */
+export function paletteFindMatch(query: string): [number, number][] | null {
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean)
+  if (words.length === 0) return null
+  const label = FIND_PALETTE_LABEL.toLowerCase()
+  const ranges: [number, number][] = []
+  for (const w of words) {
+    let at = -1
+    for (let i = label.indexOf(w); i >= 0; i = label.indexOf(w, i + 1)) {
+      if (i === 0 || label[i - 1] === ' ') {
+        at = i
+        break
+      }
+    }
+    if (at >= 0) ranges.push([at, at + w.length])
+    else if (!FIND_PALETTE_WORDS.some((k) => k.startsWith(w))) return null
+  }
+  // Sorted and merged: `Highlight` takes non-overlapping ranges ("find fin").
+  const merged: [number, number][] = []
+  for (const [s, e] of ranges.sort((a, b) => a[0] - b[0])) {
+    const last = merged[merged.length - 1]
+    if (last && s <= last[1]) last[1] = Math.max(last[1], e)
+    else merged.push([s, e])
+  }
+  return merged
+}

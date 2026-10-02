@@ -102,7 +102,8 @@ import { matchShortcut, typeThroughKey } from './lib/shortcuts'
 import { newTab } from './lib/newTab'
 import { profileIdForCwd } from './lib/projectProfile'
 import { fromStored, screensFrom, toStored } from './lib/restore'
-import { focusTerm, screenOf, termSizeHint } from './lib/termRegistry'
+import { focusTerm, hasActiveFinder, openActiveFinder, screenOf, termSizeHint } from './lib/termRegistry'
+import { findOwner, findTargetOf } from './lib/terminalFind'
 import {
   autoRelaunchKey,
   autoRelaunchStep,
@@ -558,6 +559,9 @@ export function App(): React.JSX.Element {
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [sidebarWidth, setSidebarWidth] = useState(260)
   const [browserOpen, setBrowserOpen] = useState(false)
+  /** For the keydown listener's find chord, which must not rebuild on every toggle. */
+  const browserOpenRef = useRef(false)
+  browserOpenRef.current = browserOpen
   const [browserWidth, setBrowserWidth] = useState(460)
   const [browserState, setBrowserState] = useState<BrowserState>(EMPTY_BROWSER)
 
@@ -4583,6 +4587,24 @@ export function App(): React.JSX.Element {
         case 'toggleBrowser':
           setBrowserOpen((v) => !v)
           break
+        case 'find': {
+          /*
+           * The terminal's find bar, unless focus says the docked browser's
+           * page find (the browser panel asks `findOwner` the same question,
+           * so exactly one of the two opens). Over an overlay the chord does
+           * nothing: the palette and Settings have their own fields.
+           */
+          if (overlayRef.current) break
+          const owner = findOwner({
+            ...findTargetOf(e.target),
+            terminalChord: true,
+            pageChord: !e.altKey && e.key.toLowerCase() === 'f',
+            terminalShown: hasActiveFinder(),
+            browserOpen: browserOpenRef.current
+          })
+          if (owner === 'terminal') openActiveFinder()
+          break
+        }
         case 'settings':
           // A plain open, like the gear's: Appearance, with the search box focused.
           if (settingsOpenRef.current) setSettingsOpen(false)
@@ -5932,6 +5954,20 @@ export function App(): React.JSX.Element {
             setPaletteOpen(false)
             openSettings(hit.entry.loc, hit.entry.row ? { id: hit.entry.row, fallback: hit.entry.fallback } : null)
           }}
+          onFind={
+            hasActiveFinder()
+              ? () => {
+                  setPaletteOpen(false)
+                  /*
+                   * After the palette's close has committed: until then the shell
+                   * is `inert` (gotcha 88) and a focus() into the bar does
+                   * nothing, and the overlay-closed effect hands the keyboard
+                   * back to the terminal. Both run before a timer does.
+                   */
+                  window.setTimeout(() => openActiveFinder(), 0)
+                }
+              : undefined
+          }
           onClose={() => setPaletteOpen(false)}
         />
       )}

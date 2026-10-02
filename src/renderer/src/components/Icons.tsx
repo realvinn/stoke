@@ -106,6 +106,18 @@ export const IconArrowRight = (p: SVGProps<SVGSVGElement>): React.JSX.Element =>
   </Base>
 )
 
+export const IconArrowUp = (p: SVGProps<SVGSVGElement>): React.JSX.Element => (
+  <Base {...p}>
+    <path d="M8 12.5v-9M3.5 7L8 2.5 12.5 7" />
+  </Base>
+)
+
+export const IconArrowDown = (p: SVGProps<SVGSVGElement>): React.JSX.Element => (
+  <Base {...p}>
+    <path d="M8 3.5v9M3.5 9L8 13.5 12.5 9" />
+  </Base>
+)
+
 export const IconRefresh = (p: SVGProps<SVGSVGElement>): React.JSX.Element => (
   <Base {...p}>
     <path d="M13.2 6.8A5.4 5.4 0 1 0 13 10" />

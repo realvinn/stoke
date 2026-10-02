@@ -2264,8 +2264,226 @@ mark.hit {
 
 /* The floating strips sit inside the card rather than on its rim. */
 :root[data-term-frame='true'] .voice-strip,
-:root[data-term-frame='true'] .term-exit {
+:root[data-term-frame='true'] .term-exit,
+:root[data-term-frame='true'] .term-find {
   --strip-inset: calc(var(--space-12) + var(--space-8));
+}
+
+/*
+ * Find in a conversation (TerminalFind). Top right, floating over the canvas
+ * like the dictation strip and for its reason: a row would shrink the host,
+ * FitAddon would resize the pty and Claude Code would repaint mid-session.
+ * It sits inside the pane, never over the docked browser (gotcha 14), so it is
+ * not a floating layer the browser has to hide for. Opaque, one surface: under
+ * a wallpaper the card's own tint is the one `--panel-alpha` layer (gotcha 54).
+ */
+.term-find {
+  position: absolute;
+  top: var(--strip-inset, var(--space-12));
+  right: var(--strip-inset, var(--space-12));
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  width: min(36rem, calc(100% - 2 * var(--strip-inset, var(--space-12))));
+  max-height: calc(100% - 2 * var(--strip-inset, var(--space-12)));
+  padding: var(--space-8);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-md);
+  font-size: var(--fs-sm);
+  z-index: var(--z-sticky);
+  /* `pop` rests at the element's own style: under reduced motion the 1ms run
+     leaves the bar exactly where it is, fully shown (gotcha 72). */
+  animation: pop var(--dur) var(--ease);
+}
+
+.term-find-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+.term-find-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.term-find .icon-btn {
+  --icon-size: var(--icon-md);
+  flex: 0 0 auto;
+}
+
+/* Aa / W / .* — declared box and fill, or Chromium's buttonface shows (gotcha 47). */
+.term-find-toggle,
+.term-find-scope {
+  flex: 0 0 auto;
+  height: var(--control-h);
+  padding: 0 var(--space-8);
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  cursor: default;
+}
+
+.term-find-scope {
+  height: auto;
+  padding: calc(var(--space-4) / 2) var(--space-8);
+  font-family: inherit;
+  border-color: var(--border-subtle);
+}
+
+.term-find-toggle:hover:not(:disabled),
+.term-find-scope:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+/* Pressed: accent TEXT and border in the ink, the fill in the soft accent (gotcha 44). */
+.term-find-toggle[aria-pressed='true'],
+.term-find-scope[aria-pressed='true'] {
+  background: var(--accent-soft);
+  border-color: var(--accent-ink);
+  color: var(--accent-ink);
+}
+
+.term-find-scope:disabled {
+  opacity: 0.45;
+}
+
+.term-find-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  min-height: 1.5rem;
+}
+
+.term-find-count {
+  flex: 1 1 0%;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.term-find-scopes {
+  display: flex;
+  flex: 0 0 auto;
+  gap: var(--space-4);
+}
+
+.term-find-results {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-height: 0;
+  max-height: 60vh;
+  overflow: auto;
+  border-top: 1px solid var(--border-subtle);
+  padding-top: var(--space-4);
+}
+
+.term-find-source {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+}
+
+.term-find-source .truncate {
+  flex: 1 1 0%;
+  min-width: 0;
+}
+
+.term-find-why {
+  margin: 0;
+  color: var(--text-muted);
+}
+
+.term-find-ask {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  padding: var(--space-4) 0;
+}
+
+.term-find-ask p {
+  margin: 0;
+}
+
+.term-find-ask-actions,
+.term-find-hit-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+}
+
+.term-find .btn {
+  height: auto;
+  padding: calc(var(--space-4) / 2) var(--space-8);
+  font-size: var(--fs-xs);
+}
+
+.term-find-hits {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.term-find-hit {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-8);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+
+.term-find-hit[data-selected] {
+  border-color: var(--accent-ink);
+}
+
+.term-find-hit-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-8);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+}
+
+.term-find-hit-who {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.term-find-hit[data-role='tool-call'] .term-find-hit-who,
+.term-find-hit[data-role='tool-output'] .term-find-hit-who {
+  font-family: var(--mono);
+  font-weight: 500;
+}
+
+.term-find-hit-more {
+  margin-left: auto;
+}
+
+.term-find-hit-text {
+  max-height: 7.5em;
+  overflow: hidden;
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-snug);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 /*

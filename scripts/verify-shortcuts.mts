@@ -224,6 +224,19 @@ check('bare Ctrl+] still reaches the terminal', onWin(key('BracketRight', { ctrl
 check('and bare Ctrl+[', onWin(key('BracketLeft', { ctrl: true })), null)
 check('bare Cmd+] is unbound on macOS too', onMac(key('BracketRight', { meta: true })), null)
 
+console.log('\nfind in the terminal, and the bare chord it leaves alone')
+/*
+ * Bare Ctrl+F is readline's forward-char at Claude Code's prompt and a page down
+ * in its transcript mode, and xterm sends it as ^F. Binding it would take both
+ * from the CLI, so off macOS find is the Shift form, like every letter chord.
+ */
+check('Cmd+F finds on macOS', onMac(key('KeyF', { meta: true })), { type: 'find' })
+check('Ctrl+Shift+F finds off macOS', onWin(key('KeyF', { ctrl: true, shift: true })), { type: 'find' })
+check('bare Ctrl+F still reaches the terminal off macOS', onWin(key('KeyF', { ctrl: true })), null)
+check('Cmd+Shift+F is not find on macOS', onMac(key('KeyF', { meta: true, shift: true })), null)
+check('nor is Ctrl+F on macOS, where Ctrl is the terminal\'s', onMac(key('KeyF', { ctrl: true })), null)
+check('Alt+Cmd+F is not find', onMac(key('KeyF', { meta: true, alt: true })), null)
+
 console.log('\nthe label says what this platform actually needs')
 /*
  * The title bar used to print "Ctrl/Cmd+T" everywhere, which is a lie off
@@ -235,6 +248,8 @@ check('off macOS it does', chordLabel('newTab', false), 'Ctrl+Shift+T')
 check('the cycle chord carries Shift on macOS as well', chordLabel('nextTab', true), '\u21e7\u2318]')
 check('and off it', chordLabel('prevTab', false), 'Ctrl+Shift+[')
 check('settings is a comma, not a letter', chordLabel('settings', true), '\u2318,')
+check('find is \u2318F on macOS', chordLabel('find', true), '\u2318F')
+check('and Ctrl+Shift+F off it', chordLabel('find', false), 'Ctrl+Shift+F')
 
 console.log('\nkeystrokes nobody claimed go to the terminal')
 /*

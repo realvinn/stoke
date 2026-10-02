@@ -7,6 +7,7 @@ export type ShortcutAction =
   | { type: 'tab'; index: number }
   | { type: 'cycleTab'; delta: -1 | 1 }
   | { type: 'zoom'; direction: -1 | 0 | 1 }
+  | { type: 'find' }
 
 /**
  * App-level shortcuts, chosen so they never collide with what the terminal
@@ -112,6 +113,16 @@ export function matchShortcut(
       return { type: 'toggleBrowser' }
     case 'Comma':
       return { type: 'settings' }
+    /*
+     * Find in the terminal: Cmd+F on macOS, Ctrl+Shift+F elsewhere — the gate
+     * above gives exactly that. Bare Ctrl+F stays the CLI's: it is readline's
+     * forward-char at Claude Code's prompt and a page down in its transcript
+     * mode, and xterm sends it as ^F (gotcha 56). The docked browser's own
+     * Ctrl+F is a different chord off macOS; on macOS the two share Cmd+F and
+     * focus decides which find opens (`findOwner`, lib/terminalFind.ts).
+     */
+    case 'KeyF':
+      return { type: 'find' }
     default:
       return null
   }
@@ -126,6 +137,7 @@ export type ChordName =
   | 'settings'
   | 'nextTab'
   | 'prevTab'
+  | 'find'
 
 const CHORD_KEY: Record<ChordName, string> = {
   palette: 'K',
@@ -134,7 +146,8 @@ const CHORD_KEY: Record<ChordName, string> = {
   toggleBrowser: 'B',
   settings: ',',
   nextTab: ']',
-  prevTab: '['
+  prevTab: '[',
+  find: 'F'
 }
 
 /**

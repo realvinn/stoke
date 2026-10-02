@@ -58,6 +58,36 @@ export function focusTerm(ptyId: string): void {
   terms.get(ptyId)?.focus()
 }
 
+/*
+ * The find bar of the terminal in front, for whatever opens it from outside its
+ * TerminalView: App's Cmd+F / Ctrl+Shift+F, the command palette's row, and the
+ * docked browser's own Cmd+F listener asking whether a terminal would take the
+ * chord (`findOwner`). A pane registers only while it is the one shown, so
+ * "the find bar" never means a background tab's.
+ */
+const finders = new Map<string, () => void>()
+
+/** Register `open` as the find bar of the pane in front; returns the unregister. */
+export function registerFinder(ptyId: string, open: () => void): () => void {
+  finders.set(ptyId, open)
+  return () => {
+    if (finders.get(ptyId) === open) finders.delete(ptyId)
+  }
+}
+
+/** Whether a terminal is in front with a find bar to open. */
+export function hasActiveFinder(): boolean {
+  return finders.size > 0
+}
+
+/** Open (or re-focus) the find bar of the terminal in front; false when there is none. */
+export function openActiveFinder(): boolean {
+  const open = [...finders.values()].pop()
+  if (!open) return false
+  open()
+  return true
+}
+
 /**
  * The visible viewport as plain text, trailing blank lines dropped.
  *

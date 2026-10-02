@@ -4,9 +4,11 @@ import type { CodingCliId } from '@shared/codingClis'
 import { searchSettings, settingsEntries, type SettingsHit } from '@shared/settingsIndex'
 import { relativeTime } from '../lib/format'
 import { rankForPalette } from '../lib/projectSearch'
-import { paletteRows, SETTINGS_IN_PALETTE } from '../lib/paletteRows'
+import { paletteRows, SETTINGS_IN_PALETTE, type PaletteRow } from '../lib/paletteRows'
+import { FIND_PALETTE_LABEL, paletteFindMatch } from '../lib/terminalFind'
+import { chordLabel } from '../lib/shortcuts'
 import { Highlight } from './Highlight'
-import { IconGear } from './Icons'
+import { IconGear, IconSearch } from './Icons'
 
 interface Props {
   projects: Project[]
@@ -15,8 +17,18 @@ interface Props {
   onPick: (p: Project) => void
   /** Open Settings at a page, and at the row when the hit is one. */
   onPickSetting: (hit: SettingsHit) => void
+  /**
+   * Open the find bar of the terminal in front. Absent when there is none, and
+   * then "find" lists no such row.
+   */
+  onFind?: () => void
   onClose: () => void
 }
+
+/** The palette's one action row, first when the query asks for it. */
+type Row = PaletteRow | { kind: 'find'; ranges: [number, number][] }
+
+const IS_MAC = window.stoke.platform === 'darwin'
 
 /*
  * Matching and ranking live in `projectSearch.ts`, shared with the sidebar. The
@@ -33,7 +45,7 @@ interface Props {
  * the query stays above a setting that only mentions it, and a setting whose
  * name starts with it stays above a folder that only matched letter by letter.
  */
-export function CommandPalette({ projects, settingsAgents, onPick, onPickSetting, onClose }: Props): React.JSX.Element {
+export function CommandPalette({ projects, settingsAgents, onPick, onPickSetting, onFind, onClose }: Props): React.JSX.Element {
   const [query, setQuery] = useState('')
   const [index, setIndex] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -45,10 +57,12 @@ export function CommandPalette({ projects, settingsAgents, onPick, onPickSetting
 
   const agentsKey = settingsAgents.join(',')
   const entries = useMemo(() => settingsEntries({ agents: settingsAgents, platform: window.stoke.platform }), [agentsKey])
-  const rows = useMemo(
-    () => paletteRows(rankForPalette(projects, query), searchSettings(entries, query).slice(0, SETTINGS_IN_PALETTE)),
-    [projects, entries, query]
-  )
+  const hasFind = !!onFind
+  const rows = useMemo((): Row[] => {
+    const listed = paletteRows(rankForPalette(projects, query), searchSettings(entries, query).slice(0, SETTINGS_IN_PALETTE))
+    const find = hasFind ? paletteFindMatch(query) : null
+    return find ? [{ kind: 'find', ranges: find }, ...listed] : listed
+  }, [projects, entries, query, hasFind])
 
   useEffect(() => {
     setIndex(0)
@@ -63,7 +77,8 @@ export function CommandPalette({ projects, settingsAgents, onPick, onPickSetting
   const commit = (i: number): void => {
     const row = rows[i]
     if (!row) return
-    if (row.kind === 'project') onPick(row.hit.project)
+    if (row.kind === 'find') onFind?.()
+    else if (row.kind === 'project') onPick(row.hit.project)
     else onPickSetting(row.hit)
   }
 
@@ -101,7 +116,26 @@ export function CommandPalette({ projects, settingsAgents, onPick, onPickSetting
             </div>
           )}
           {rows.map((row, i) =>
-            row.kind === 'project' ? (
+            row.kind === 'find' ? (
+              <button
+                key="find"
+                className="palette-item"
+                data-kind="action"
+                data-active={i === index}
+                onMouseEnter={() => setIndex(i)}
+                onClick={() => commit(i)}
+              >
+                <span className="palette-item-name truncate">
+                  <Highlight text={FIND_PALETTE_LABEL} ranges={row.ranges} />
+                </span>
+                <span className="palette-item-path truncate">
+                  The screen and the transcript · {chordLabel('find', IS_MAC)}
+                </span>
+                <span className="palette-item-time palette-item-kind" aria-hidden="true">
+                  <IconSearch />
+                </span>
+              </button>
+            ) : row.kind === 'project' ? (
               <button
                 key={`p:${row.hit.project.path}`}
                 className="palette-item"
