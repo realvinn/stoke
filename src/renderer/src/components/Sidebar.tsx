@@ -5,7 +5,8 @@ import { ContextBar } from './ContextMeter'
 import type { ResolvedProfile } from '@shared/profiles'
 import { foldGroup } from '@shared/profiles'
 import { Highlight } from './Highlight'
-import { IconChevron, IconFolder, IconPin, IconPlus, IconSearch } from './Icons'
+import { IconChevron, IconFolder, IconGhost, IconPin, IconPlus, IconSearch } from './Icons'
+import { PRIVATE_BUTTON_TITLE } from '@shared/privateChat'
 import { ProjectMetaPicker } from './ProjectMetaPicker'
 import { baseName, relativeTime } from '../lib/format'
 import {
@@ -78,6 +79,12 @@ interface Props {
   onOpenFolder: () => void
   onStartScratch: () => void
   /**
+   * A private chat (shared/privateChat.ts): the ghost right of Scratch. Absent
+   * hides it; `privateBlocked` says why it cannot run (Claude Code is not).
+   */
+  onStartPrivate?: () => void
+  privateBlocked?: string | null
+  /**
    * Profiles this machine actually has. Resolved once in App and passed down, so
    * the chip row and the accent can never resolve against different lists.
    */
@@ -128,6 +135,8 @@ export function Sidebar({
   onAddRoot,
   onOpenFolder,
   onStartScratch,
+  onStartPrivate,
+  privateBlocked = null,
   profiles,
   activeProfile,
   onSelectProfile,
@@ -626,6 +635,23 @@ export function Sidebar({
             <IconPlus />
             Scratch
           </button>
+          {/*
+            A private chat: icon-only, so the row keeps its two labelled routes
+            and this reads as Scratch's quieter sibling. Always Claude Code on
+            this computer, whatever the default agent is.
+          */}
+          {onStartPrivate && (
+            <button
+              className="btn sidebar-private"
+              onClick={onStartPrivate}
+              disabled={!!privateBlocked}
+              title={privateBlocked ?? PRIVATE_BUTTON_TITLE}
+              aria-label="Start a private chat"
+              data-private-start
+            >
+              <IconGhost />
+            </button>
+          )}
         </div>
       </div>
 

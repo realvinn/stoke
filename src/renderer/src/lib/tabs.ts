@@ -397,6 +397,11 @@ export type RestartPlan =
   | { kind: 'install'; ids: CodingCliId[] }
   /** An "Add key to …" tab sets up key login again, never opens a session on the host. */
   | { kind: 'enroll'; hostId: string }
+  /**
+   * A private chat starts a NEW private chat: nothing of the old one was kept,
+   * so there is nothing to start again — and its folder is already gone.
+   */
+  | { kind: 'private' }
   | { kind: 'impossible'; reason: string }
 
 export function restartPlan(
@@ -409,9 +414,16 @@ export function restartPlan(
     remoteSession?: string
     accountId?: string
     accountLogin?: string
+    private?: boolean
   },
   hostIds: string[]
 ): RestartPlan {
+  /*
+   * First of all: a private chat's folder was deleted with it, so a "local"
+   * plan would start Claude in a folder that is not there — or, were it ever
+   * remade, resume nothing under an id that must not be reused.
+   */
+  if (tab.private) return { kind: 'private' }
   /*
    * First, because an install tab also carries a `cliId` (its first agent) and
    * a local cwd: read as a session it would "start again" by launching an agent
@@ -671,6 +683,7 @@ export function relaunchPlan(input: {
     sessionId: string
     hostId: string | null
     cliId?: CodingCliId
+    private?: boolean
   } | null
   /**
    * This session's own reading, or null if none has arrived. A bare
@@ -720,6 +733,16 @@ export function relaunchPlan(input: {
    */
   if (tab.status !== 'running') {
     return { kind: 'none', reason: 'Starting this tab again already uses the installed version.' }
+  }
+
+  /*
+   * A relaunch is `claude --resume <id>`, and a private chat saved nothing to
+   * resume: offered, it would kill the chat and bring back an empty session
+   * under the same id (`resumeOrMint` mints one for an id with no transcript).
+   * The automatic relaunch reads this plan too, so it never touches one.
+   */
+  if (tab.private) {
+    return { kind: 'none', reason: 'A private chat keeps nothing to relaunch: closing it is the only way out.' }
   }
 
   /*

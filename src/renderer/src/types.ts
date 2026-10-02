@@ -69,6 +69,13 @@ export interface Tab {
    * restore — a restart must not reopen a login nobody is there to answer.
    */
   accountLogin?: string
+  /**
+   * A private chat (shared/privateChat.ts): Claude Code in a folder main made,
+   * saving nothing, deleted with everything it left when the tab closes. Never
+   * saved for restore (`toStored`), never relaunched or resumed (`relaunchPlan`,
+   * `restartPlan`), and its OS notifications never carry its text.
+   */
+  private?: true
   /** Empty string on a `new` tab, which has no process. */
   ptyId: string
   /** Claude Code session id — the key the context meter watches. Empty on `new`. */

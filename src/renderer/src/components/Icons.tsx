@@ -38,6 +38,18 @@ export const IconPlus = (p: SVGProps<SVGSVGElement>): React.JSX.Element => (
   </Base>
 )
 
+/**
+ * A ghost, for a private chat (shared/privateChat.ts): the sidebar's button
+ * beside Scratch, the launcher row and the tab's badge. A dome with a wavy
+ * hem and two eyes, on the same 16px grid and stroke as everything here.
+ */
+export const IconGhost = (p: SVGProps<SVGSVGElement>): React.JSX.Element => (
+  <Base {...p}>
+    <path d="M3 13.25V7a5 5 0 0 1 10 0v6.25l-1.67-1.25-1.66 1.25L8 12l-1.67 1.25L4.67 12z" />
+    <path d="M6.25 7.25h.01M9.75 7.25h.01" />
+  </Base>
+)
+
 /** A phone, for the title bar's "open on phone" and the attached-phone marks. */
 export const IconPhone = (p: SVGProps<SVGSVGElement>): React.JSX.Element => (
   <Base {...p}>

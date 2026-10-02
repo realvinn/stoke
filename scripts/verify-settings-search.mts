@@ -51,7 +51,7 @@ import { CODING_CLIS, type CodingCliId } from '../src/shared/codingClis.ts'
 import { CLAUDE_SETTINGS } from '../src/shared/claudeConfig.ts'
 import { endpointProblem } from '../src/shared/agents.ts'
 import { openRouterResponse } from '../src/shared/openRouterUsage.ts'
-import { paletteRows } from '../src/renderer/src/lib/paletteRows.ts'
+import { paletteRows, searchPaletteActions } from '../src/renderer/src/lib/paletteRows.ts'
 import type { ProjectHit } from '../src/renderer/src/lib/projectSearch.ts'
 
 let failures = 0
@@ -430,6 +430,20 @@ console.log('\nthe palette interleaves settings with projects by how good a matc
   check('no project matching: settings alone, in their own order', paletteRows([], font.slice(0, 2)).map(label), ['setting:row:terminal.font', 'setting:row:terminal.font-size'])
   const tiers = [100, 90, 80, 75, 70, 60, 50, 48, 46, 44, 42].map(paletteTier)
   check('paletteTier never ranks a weaker score above a stronger one', tiers.every((t, i) => i === 0 || t <= tiers[i - 1]), true)
+
+  /*
+   * Actions (a new private chat, shared/privateChat.ts): found by their label
+   * or the words people use for them, never by an empty query, and last on a
+   * tie — a folder or a setting named for the query is what was asked for.
+   */
+  const act = (q: string): string[] => searchPaletteActions(q).map((h) => `${h.action.id}:${h.score}`)
+  check('the empty palette lists no action', act(''), [])
+  check('its label from the start, a word in it, or another word for it', [act('new pri'), act('private'), act('incog'), act('temporary')], [['private:6'], ['private:5'], ['private:4'], ['private:4']])
+  check('anything else finds nothing', [act('zzz'), act('rivate')], [[], []])
+  const priv = searchPaletteActions('private')
+  const mixed = paletteRows([project('private-notes', 6), project('p-r-i-v', 1)], [], priv)
+  const which = (r: (typeof mixed)[number]): string => (r.kind === 'project' ? `project:${r.hit.project.name}` : r.kind === 'action' ? `action:${r.hit.action.id}` : 'setting')
+  check('a folder named for the query stays first, the action follows, a letter-by-letter folder last', mixed.map(which), ['project:private-notes', 'action:private', 'project:p-r-i-v'])
 }
 
 /* ---------------------------------------- what the sheet labels, findable */

@@ -4,9 +4,9 @@ import type { CodingCliId } from '@shared/codingClis'
 import { searchSettings, settingsEntries, type SettingsHit } from '@shared/settingsIndex'
 import { relativeTime } from '../lib/format'
 import { rankForPalette } from '../lib/projectSearch'
-import { paletteRows, SETTINGS_IN_PALETTE } from '../lib/paletteRows'
+import { paletteRows, searchPaletteActions, SETTINGS_IN_PALETTE, type PaletteAction } from '../lib/paletteRows'
 import { Highlight } from './Highlight'
-import { IconGear } from './Icons'
+import { IconGear, IconGhost } from './Icons'
 
 interface Props {
   projects: Project[]
@@ -15,6 +15,10 @@ interface Props {
   onPick: (p: Project) => void
   /** Open Settings at a page, and at the row when the hit is one. */
   onPickSetting: (hit: SettingsHit) => void
+  /** Run an action row (a new private chat). Absent lists no actions. */
+  onPickAction?: (action: PaletteAction) => void
+  /** Why an action cannot run now (Claude Code is not), shown on its row; the row is then inert. */
+  actionBlocked?: string | null
   onClose: () => void
 }
 
@@ -33,7 +37,15 @@ interface Props {
  * the query stays above a setting that only mentions it, and a setting whose
  * name starts with it stays above a folder that only matched letter by letter.
  */
-export function CommandPalette({ projects, settingsAgents, onPick, onPickSetting, onClose }: Props): React.JSX.Element {
+export function CommandPalette({
+  projects,
+  settingsAgents,
+  onPick,
+  onPickSetting,
+  onPickAction,
+  actionBlocked = null,
+  onClose
+}: Props): React.JSX.Element {
   const [query, setQuery] = useState('')
   const [index, setIndex] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -46,8 +58,13 @@ export function CommandPalette({ projects, settingsAgents, onPick, onPickSetting
   const agentsKey = settingsAgents.join(',')
   const entries = useMemo(() => settingsEntries({ agents: settingsAgents, platform: window.stoke.platform }), [agentsKey])
   const rows = useMemo(
-    () => paletteRows(rankForPalette(projects, query), searchSettings(entries, query).slice(0, SETTINGS_IN_PALETTE)),
-    [projects, entries, query]
+    () =>
+      paletteRows(
+        rankForPalette(projects, query),
+        searchSettings(entries, query).slice(0, SETTINGS_IN_PALETTE),
+        onPickAction ? searchPaletteActions(query) : []
+      ),
+    [projects, entries, query, !!onPickAction]
   )
 
   useEffect(() => {
@@ -64,7 +81,8 @@ export function CommandPalette({ projects, settingsAgents, onPick, onPickSetting
     const row = rows[i]
     if (!row) return
     if (row.kind === 'project') onPick(row.hit.project)
-    else onPickSetting(row.hit)
+    else if (row.kind === 'setting') onPickSetting(row.hit)
+    else if (!actionBlocked) onPickAction?.(row.hit.action)
   }
 
   return (
@@ -101,7 +119,25 @@ export function CommandPalette({ projects, settingsAgents, onPick, onPickSetting
             </div>
           )}
           {rows.map((row, i) =>
-            row.kind === 'project' ? (
+            row.kind === 'action' ? (
+              <button
+                key={`a:${row.hit.action.id}`}
+                className="palette-item"
+                data-kind="action"
+                data-active={i === index}
+                aria-disabled={actionBlocked ? true : undefined}
+                onMouseEnter={() => setIndex(i)}
+                onClick={() => commit(i)}
+              >
+                <span className="palette-item-name truncate">
+                  <Highlight text={row.hit.action.label} ranges={row.hit.ranges} />
+                </span>
+                <span className="palette-item-path truncate">{actionBlocked ?? row.hit.action.hint}</span>
+                <span className="palette-item-time palette-item-kind" aria-hidden="true">
+                  <IconGhost />
+                </span>
+              </button>
+            ) : row.kind === 'project' ? (
               <button
                 key={`p:${row.hit.project.path}`}
                 className="palette-item"

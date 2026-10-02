@@ -276,6 +276,37 @@ check(
 )
 
 /*
+ * A private chat (shared/privateChat.ts): its folder was deleted with it, so
+ * "Start again" starts a NEW private chat, and nothing ever resumes or
+ * relaunches one — `claude --resume` on its id would bring back an empty
+ * session under an id that must not be reused (`resumeOrMint`).
+ */
+console.log('\na private chat is never started again, resumed or relaunched')
+check(
+  'Start again on a private chat is a new private chat, never its old folder',
+  restartPlan({ cwd: '/ud/private/1b4e28ba-2fa1-4d3b-a3f5-ef19b5a7633b', hostId: null, cliId: 'claude', private: true }, []),
+  { kind: 'private' }
+)
+check(
+  'the relaunch pill (and the automatic relaunch) refuse it',
+  relaunchPlan({
+    tab: { kind: 'session', status: 'running', sessionId: '1b4e28ba-2fa1-4d3b-a3f5-ef19b5a7633b', hostId: null, cliId: 'claude', private: true },
+    running: '2.1.200',
+    installed: '2.1.287 (Claude Code)'
+  }).kind,
+  'none'
+)
+check(
+  'while the same tab not private is offered one',
+  relaunchPlan({
+    tab: { kind: 'session', status: 'running', sessionId: '1b4e28ba-2fa1-4d3b-a3f5-ef19b5a7633b', hostId: null, cliId: 'claude' },
+    running: '2.1.200',
+    installed: '2.1.287 (Claude Code)'
+  }).kind,
+  'offer'
+)
+
+/*
  * Gotcha 126: a kept SSH tab's Start again, Resume and restore must REATTACH
  * to the shell still running on the machine — the tab's own session name —
  * never mint a second one beside it. The plan carries the name.

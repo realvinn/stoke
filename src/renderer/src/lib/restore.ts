@@ -27,8 +27,11 @@ export function toStored(
   // An account's sign-in tab neither: a login reopened at the next start
   // would ask nobody for a sign-in.
   // Nor another machine's session: a relay does not survive a restart, and that machine asks again.
+  // Nor a private chat, above all: its whole promise is that nothing of it is
+  // kept, and `screen` is its raw terminal text (main drops one too).
   const kept = tabs.filter(
-    (t): t is Tab & { kind: 'session' | 'new' } => t.kind !== 'remote' && !t.installing?.length && !t.enrollHostId && !t.accountLogin
+    (t): t is Tab & { kind: 'session' | 'new' } =>
+      t.kind !== 'remote' && !t.installing?.length && !t.enrollHostId && !t.accountLogin && !t.private
   )
   const stored: StoredTab[] = kept.map((t) => {
     const snap = t.sessionId ? contexts[t.sessionId] : undefined

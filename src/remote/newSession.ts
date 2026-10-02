@@ -164,6 +164,11 @@ export function openNewSession(start?: { cwd: string; name: string }): void {
         // is here so a list that does carry one draws it inert, not blank.
         case 'remote-session':
           return pickRow({ icon: 'terminal', name: c.label, meta: 'Reattach it from the desktop', disabled: true }, () => {})
+        // Never in the phone's list either (`folderChoices` offers it only when
+        // asked, and the phone never asks): a private chat starts on the
+        // computer, and main refuses one from the phone outright.
+        case 'private':
+          return pickRow({ icon: 'plus', name: c.label, meta: 'Start it on the computer', disabled: true }, () => {})
       }
     }
 

@@ -224,6 +224,20 @@ check('bare Ctrl+] still reaches the terminal', onWin(key('BracketRight', { ctrl
 check('and bare Ctrl+[', onWin(key('BracketLeft', { ctrl: true })), null)
 check('bare Cmd+] is unbound on macOS too', onMac(key('BracketRight', { meta: true })), null)
 
+/*
+ * A new private chat (shared/privateChat.ts): ⇧⌘N, the private-window chord,
+ * taken before the gate that refuses Shift on macOS; Ctrl+Shift+N off it. Bare
+ * Ctrl+N is readline's next-history and must stay with the terminal, and bare
+ * Cmd+N stays unbound.
+ */
+const PRIVATE = { type: 'newPrivate' }
+check('Cmd+Shift+N is a new private chat', onMac(key('KeyN', { meta: true, shift: true })), PRIVATE)
+check('Ctrl+Shift+N off macOS', onWin(key('KeyN', { ctrl: true, shift: true })), PRIVATE)
+check('bare Ctrl+N still reaches the terminal (next-history)', onWin(key('KeyN', { ctrl: true })), null)
+check('bare Cmd+N is unbound', onMac(key('KeyN', { meta: true })), null)
+check('Ctrl+Shift+N on macOS is not it: Ctrl is not the primary there', onMac(key('KeyN', { ctrl: true, shift: true })), null)
+check('nor with Alt', onMac(key('KeyN', { meta: true, shift: true, alt: true })), null)
+
 console.log('\nthe label says what this platform actually needs')
 /*
  * The title bar used to print "Ctrl/Cmd+T" everywhere, which is a lie off
@@ -235,6 +249,8 @@ check('off macOS it does', chordLabel('newTab', false), 'Ctrl+Shift+T')
 check('the cycle chord carries Shift on macOS as well', chordLabel('nextTab', true), '\u21e7\u2318]')
 check('and off it', chordLabel('prevTab', false), 'Ctrl+Shift+[')
 check('settings is a comma, not a letter', chordLabel('settings', true), '\u2318,')
+check('the private chat carries Shift on macOS too', chordLabel('newPrivate', true), '\u21e7\u2318N')
+check('and off it', chordLabel('newPrivate', false), 'Ctrl+Shift+N')
 
 console.log('\nkeystrokes nobody claimed go to the terminal')
 /*

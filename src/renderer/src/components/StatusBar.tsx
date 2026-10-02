@@ -413,6 +413,13 @@ export function StatusBar({
             <ContextBar used={context.contextTokens} limit={context.contextLimit} paused={paused} />
           </span>
         </>
+      ) : tab.private ? (
+        /*
+         * A private chat writes no transcript, so the context watcher has
+         * nothing to read and "waiting for first turn…" would be a promise
+         * that never resolves (shared/privateChat.ts).
+         */
+        <span className="status-item">Private chat · nothing saved, so no context reading</span>
       ) : claudeTab ? (
         <span className="status-item">waiting for first turn…</span>
       ) : (
