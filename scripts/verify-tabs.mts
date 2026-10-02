@@ -1437,6 +1437,17 @@ console.log('\nfolderMenuEntry: the tab menu\u2019s folder item, hidden or disab
     folderMenuEntry({ kind: 'session', cwd: 'vps', hostId: 'host-1' }, null),
     { reason: 'This session runs on vps; its folder is on that machine.' }
   )
+  // Settings keeps a host's name as typed; every other reader trims it.
+  check(
+    'a name of only spaces is no name: the alias stands in',
+    folderMenuEntry({ kind: 'session', cwd: 'vps', hostId: 'host-1' }, '   '),
+    { reason: 'This session runs on vps; its folder is on that machine.' }
+  )
+  check(
+    'and a name with spaces round it is trimmed',
+    folderMenuEntry({ kind: 'session', cwd: 'vps', hostId: 'host-1' }, ' My VPS '),
+    { reason: 'This session runs on My VPS; its folder is on that machine.' }
+  )
   check(
     'an Add-key tab gets the same disabled item',
     folderMenuEntry({ kind: 'session', cwd: 'vps', hostId: 'host-1', enrollHostId: 'host-1' }, ''),

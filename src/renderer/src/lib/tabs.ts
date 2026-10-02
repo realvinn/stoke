@@ -1185,7 +1185,9 @@ export function openableFolder(tab: FolderTab): string | null {
  * the item could never mean anything. Shown DISABLED on an SSH or Add-key tab,
  * because those do have a folder — on the far machine — and an item that
  * silently vanishes reads as a menu that forgot it. `hostLabel` is the host's
- * name in Settings; the alias in `cwd` stands in when there is none.
+ * name in Settings; the alias in `cwd` stands in when there is none — or when
+ * it is only spaces, which Settings stores as typed (every other reader of
+ * `SshHost.label` trims it, `startSshEnroll` included).
  */
 export function folderMenuEntry(
   tab: FolderTab,
@@ -1195,7 +1197,7 @@ export function folderMenuEntry(
   const path = openableFolder(tab)
   if (path) return { path }
   if (tab.hostId || tab.enrollHostId) {
-    return { reason: `This session runs on ${hostLabel || tab.cwd}; its folder is on that machine.` }
+    return { reason: `This session runs on ${hostLabel?.trim() || tab.cwd.trim()}; its folder is on that machine.` }
   }
   return { reason: 'This tab has no folder on this computer.' }
 }
