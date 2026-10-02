@@ -27,6 +27,7 @@ import type { RemoteSessionInfo, SshHost } from '@shared/types'
 // directly by `verify-ssh.mts` under `node --experimental-strip-types`, which
 // resolves no aliases. A type-only import would be erased and could use either.
 import { buildRemoteInstallCommand, isEnrollableAlias } from '../shared/sshAuth.ts'
+import { MAX_IMAGE_BYTES, isSafeUploadName } from '../shared/imageUpload.ts'
 import {
   MANAGED_TMUX_SOCKET,
   hostPersists,
@@ -623,6 +624,96 @@ function batchArgs(host: SshHost, body: string): string[] | null {
     'ConnectTimeout=10',
     '-o',
     'ControlPath=none',
+    '-e',
+    'none',
+    alias,
+    `sh -c '${body}'`
+  ]
+}
+
+/* --------------------------------------------- an image sent to the machine */
+
+/**
+ * The far side of an image upload: sh reads the bytes from stdin into a file
+ * of Stoke's naming and says where it put it. Null when the name or size is
+ * not provably safe to put in a command (refused, never escaped).
+ *
+ * Measured against a real sshd before it was written (the scout's run, on
+ * loopback): a 4.2 MB file arrived byte-identical, the folder 0700 and the
+ * file 0600, and a cut-off stream did not publish the file. Each piece:
+ *
+ * - **`umask 077`**: the folder and the file are the user's alone.
+ * - **`${XDG_CACHE_HOME:-$HOME/.cache}/stoke/paste`**, else
+ *   **`${TMPDIR:-/tmp}/stoke-paste-<uid>`**. Never the project folder: the
+ *   remote cwd is unknowable from here (gotcha 18). The folder must be a real
+ *   directory owned by this user and not a symlink (`-O`, `! -L`), so a
+ *   `stoke-paste-1000` planted in a shared /tmp is refused, not written into.
+ * - **The sweep**: files there older than a day are removed. Safe, because
+ *   Claude Code copies the image into its transcript the moment it is
+ *   attached; the file is only the hand-over.
+ * - **`cat > NAME.part`, then a `wc -c` check against SIZE, then `mv`**: a
+ *   stream cut short (a dropped link, Cancel) never becomes the file Claude
+ *   would read, and `.part` is removed on every failure — the measured run
+ *   left it behind until `rm -f` was added.
+ * - **`printf "STOKE_PATH %s\n"`**: the absolute path, on a line of its own,
+ *   since rc files may print too (`parseUploadPath` takes the last one).
+ *
+ * Exit codes: 3 no folder, 4 write failed, 5 wrong size, 6 mv failed
+ * (`uploadExitMessage`); ssh's own failures are 255.
+ */
+export function buildUploadBody(name: string, size: number): string | null {
+  if (!isSafeUploadName(name)) return null
+  if (!Number.isSafeInteger(size) || size <= 0 || size > MAX_IMAGE_BYTES) return null
+  const usable = '[ -d "$d" ] && [ ! -L "$d" ] && [ -O "$d" ]'
+  return [
+    'umask 077;',
+    'd="${XDG_CACHE_HOME:-$HOME/.cache}/stoke/paste";',
+    `mkdir -p "$d" 2>/dev/null && ${usable} ||`,
+    `{ d="\${TMPDIR:-/tmp}/stoke-paste-$(id -u)"; mkdir -p "$d" 2>/dev/null && ${usable}; } || exit 3;`,
+    'chmod 700 "$d" 2>/dev/null;',
+    'find "$d" -type f -mtime +0 -exec rm -f {} + 2>/dev/null;',
+    `f="$d/${name}";`,
+    'cat > "$f.part" || { rm -f "$f.part"; exit 4; };',
+    'n=$(wc -c < "$f.part");',
+    `[ $n -eq ${size} ] 2>/dev/null || { rm -f "$f.part"; exit 5; };`,
+    'mv -f "$f.part" "$f" || { rm -f "$f.part"; exit 6; };',
+    'printf "STOKE_PATH %s\\n" "$f"'
+  ].join(' ')
+}
+
+/**
+ * The argv that sends an image to `host` (bytes on stdin), or null.
+ *
+ * `batchArgs`' shape, with four differences, each for this job:
+ *
+ * - **`-T`**: never a pty. A user's `RequestTTY force` would otherwise give
+ *   the far `cat` a terminal, which rewrites CR/LF and eats ^D in the bytes.
+ * - **`RemoteCommand=none`**: a `RemoteCommand` in the user's config refuses
+ *   any command on the line ("Cannot execute command-line and remote command").
+ * - **`ControlMaster=no` and NO `ControlPath=none`**: a multiplexed master the
+ *   user already runs to this host may answer — which is how a password host
+ *   with `ControlMaster auto` in its config gets its images with no key — but
+ *   this connection never becomes a master itself, so no persisted master is
+ *   ever left behind by Stoke.
+ * - It is not a probe: nothing here decides `keyEnrolled` (gotcha 75), and the
+ *   tab's own connection and command are untouched (gotcha 19, 126).
+ */
+export function buildUploadArgs(host: SshHost, name: string, size: number): string[] | null {
+  const body = buildUploadBody(name, size)
+  if (!body) return null
+  const alias = host.alias.trim()
+  if (!alias || alias.startsWith('-')) return null
+  if (body.includes("'")) return null
+  return [
+    '-T',
+    '-o',
+    'BatchMode=yes',
+    '-o',
+    'ConnectTimeout=10',
+    '-o',
+    'ControlMaster=no',
+    '-o',
+    'RemoteCommand=none',
     '-e',
     'none',
     alias,

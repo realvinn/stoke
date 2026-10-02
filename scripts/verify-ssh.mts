@@ -46,6 +46,18 @@ import {
   sshHostArgs
 } from '../src/main/ssh.ts'
 import { endRemoteSession, listRemoteSessions, type RunResult } from '../src/main/sshSessions.ts'
+import { buildUploadArgs, buildUploadBody } from '../src/main/ssh.ts'
+import { sendImage, spawnWithInput, type InputRunResult } from '../src/main/sshUpload.ts'
+import {
+  MAX_IMAGE_BYTES,
+  clipboardImageName,
+  droppedImageName,
+  imageKind,
+  isSafeUploadName,
+  parseUploadPath,
+  uploadFailureKind,
+  uploadTimeoutMs
+} from '../src/shared/imageUpload.ts'
 import {
   isPersistableCommand,
   isSafeRemoteSessionName,
@@ -1198,6 +1210,272 @@ console.log('\nthe managed session: listing and ending them')
   })
   same('ending a session that is already gone is done', await endRemoteSession(kept({}), 'stoke-00000001', fake({ code: 1, stderr: "can't find session: =stoke-00000001" })), { ok: true, message: '' })
   same('ending with a bad name never runs ssh', (await endRemoteSession(kept({}), 'x;y', async () => { throw new Error('ran') })).ok, false)
+}
+
+/* ------------------------------------------------- an image sent to the machine */
+
+console.log('\nan image sent to the machine: the argv')
+
+{
+  const args = buildUploadArgs(host({}), 'pasted-image-20261002-143005-a1b2c3.png', 1234) ?? []
+  const at = args.indexOf('vps')
+  for (const opt of ['-T', 'BatchMode=yes', 'ConnectTimeout=10', 'ControlMaster=no', 'RemoteCommand=none']) {
+    check(`the upload: ${opt} before the destination`, args.indexOf(opt) > -1 && args.indexOf(opt) < at, args.join(' '))
+  }
+  check('-e none before the destination (gotcha 29)', args.indexOf('-e') > -1 && args[args.indexOf('-e') + 1] === 'none' && args.indexOf('-e') < at, args.join(' '))
+  // A user's own master may answer for a password host; Stoke never becomes one.
+  check('no ControlPath=none: a master the user runs may answer', !args.includes('ControlPath=none'), args.join(' '))
+  check('never a pty, which would rewrite the bytes', !args.includes('-t'), args.join(' '))
+  check('the destination is followed by exactly one command', at === args.length - 2, args.join(' '))
+  const cmd = args[args.length - 1] ?? ''
+  check('the command is one sh -c with no quote inside', cmd.startsWith("sh -c '") && cmd.endsWith("'") && !cmd.slice(7, -1).includes("'"), cmd.slice(0, 40))
+  check('the size is in the body', cmd.includes('[ $n -eq 1234 ]'), '')
+  same('a leading-dash alias sends nothing', buildUploadArgs(host({ alias: '-oProxyCommand=x' }), 'a.png', 3), null)
+  same('an empty alias sends nothing', buildUploadArgs(host({ alias: ' ' }), 'a.png', 3), null)
+}
+
+console.log('\nan image sent to the machine: what may be named, and how big')
+
+{
+  for (const bad of [
+    '../x.png',
+    'a/b.png',
+    'a b.png',
+    "a'b.png",
+    'a"b.png',
+    '$(id).png',
+    '`id`.png',
+    'a\\b.png',
+    '-x.png',
+    '.x.png',
+    'a\nb.png',
+    'x.txt',
+    'x.png.sh',
+    'x',
+    '',
+    `${'a'.repeat(77)}.png`
+  ]) {
+    same(`refused as a name: ${JSON.stringify(bad)}`, [isSafeUploadName(bad), buildUploadBody(bad, 10), buildUploadArgs(host({}), bad, 10)], [false, null, null])
+  }
+  same('a name at the cap is fine', isSafeUploadName(`${'a'.repeat(76)}.png`), true)
+  for (const size of [0, -1, 1.5, Number.NaN, MAX_IMAGE_BYTES + 1]) {
+    same(`refused as a size: ${size}`, buildUploadBody('a.png', size), null)
+  }
+  same('the cap itself is allowed', typeof buildUploadBody('a.png', MAX_IMAGE_BYTES), 'string')
+
+  const at = new Date(2026, 9, 2, 14, 30, 5)
+  same('a clipboard image is named by local time and six hex digits', clipboardImageName(at, 'a1b2c3ff'), 'pasted-image-20261002-143005-a1b2c3.png')
+  const dropped = [
+    ['Screenshot 2026-10-02 at 2.30.05 pm.png', 'png', 'Screenshot-2026-10-02-at-2.30.05-pm-a1b2c3.png'],
+    ['../../etc/passwd.png', 'png', 'passwd-a1b2c3.png'],
+    ["it's $(rm -rf ~) `x`.jpeg", 'jpg', 'it-s-rm-rf-x-a1b2c3.jpg'],
+    ['.hidden.gif', 'gif', 'hidden-a1b2c3.gif'],
+    ['---.webp', 'webp', 'image-a1b2c3.webp'],
+    ['日本語.png', 'png', 'image-a1b2c3.png'],
+    [`${'long'.repeat(30)}.png`, 'png', `${'long'.repeat(12)}-a1b2c3.png`],
+    ['photo.txt', 'png', 'photo-a1b2c3.png']
+  ] as const
+  for (const [file, kind, want] of dropped) {
+    const got = droppedImageName(file, 'a1b2c3', kind)
+    same(`a dropped ${JSON.stringify(file)} keeps a safe, recognisable name`, [got, isSafeUploadName(got)], [want, true])
+  }
+
+  const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0])
+  same('PNG by its magic', imageKind(png), 'png')
+  same('JPEG', imageKind(new Uint8Array([0xff, 0xd8, 0xff, 0xe0])), 'jpg')
+  same('GIF89a and GIF87a', [imageKind(new TextEncoder().encode('GIF89a..')), imageKind(new TextEncoder().encode('GIF87a..'))], ['gif', 'gif'])
+  same('WebP', imageKind(new TextEncoder().encode('RIFF\u0000\u0000\u0000\u0000WEBPVP8 ')), 'webp')
+  same('text named .png is not an image', imageKind(new TextEncoder().encode('#!/bin/sh\nrm -rf ~\n')), null)
+  same('a cut-off PNG header is not one', imageKind(png.slice(0, 5)), null)
+  same('nor a RIFF that is not WebP (a WAV)', imageKind(new TextEncoder().encode('RIFF\u0000\u0000\u0000\u0000WAVEfmt ')), null)
+
+  same('the path is the LAST STOKE_PATH line (rc files print too)', parseUploadPath('hello from .bashrc\nSTOKE_PATH /x/old.png\nSTOKE_PATH /home/v/.cache/stoke/paste/a.png\n', 'a.png'), '/home/v/.cache/stoke/paste/a.png')
+  same('a relative path is refused', parseUploadPath('STOKE_PATH home/a.png\n', 'a.png'), null)
+  same('a path to another name is refused', parseUploadPath('STOKE_PATH /home/v/b.png\n', 'a.png'), null)
+  same('a name that only ends the same is refused', parseUploadPath('STOKE_PATH /home/v/xa.png\n', 'a.png'), null)
+  same('a control character is refused (it would press keys)', parseUploadPath('STOKE_PATH /home/v\u001b[2J/a.png\n', 'a.png'), null)
+  same('no line at all is null', parseUploadPath('', 'a.png'), null)
+  same('a home with a space is kept whole', parseUploadPath('STOKE_PATH /home/my user/.cache/stoke/paste/a.png\r\n', 'a.png'), '/home/my user/.cache/stoke/paste/a.png')
+
+  // ssh's own lines, as the scout measured them against a real sshd.
+  same('Permission denied is a key to set up', uploadFailureKind(255, 'thevinh@127.0.0.1: Permission denied (publickey).\n'), 'needs-login')
+  same('so is a password host under BatchMode', uploadFailureKind(255, 'v@h: Permission denied (publickey,password,keyboard-interactive).'), 'needs-login')
+  same('a refused port is unreachable', uploadFailureKind(255, 'ssh: connect to host 127.0.0.1 port 2298: Connection refused'), 'unreachable')
+  same('an unknown name too', uploadFailureKind(255, 'ssh: Could not resolve hostname nope: nodename nor servname provided, or not known'), 'unreachable')
+  same('a changed host key is neither: ssh’s line is shown', uploadFailureKind(255, 'Host key verification failed.'), 'failed')
+  same('a far-side exit is never "needs login", whatever it printed', uploadFailureKind(5, 'Permission denied (publickey)'), 'failed')
+  same('the timeout grows with the size and stops at two minutes', [uploadTimeoutMs(0), uploadTimeoutMs(1500 * 1024), uploadTimeoutMs(MAX_IMAGE_BYTES)], [15_000, 25_000, 120_000])
+}
+
+console.log('\nan image sent to the machine: the body, run by real login shells')
+
+{
+  /*
+   * The far machine runs `$SHELL -c '<the last argv element>'`. Run here by
+   * every login shell present, with a scratch HOME and TMPDIR, the bytes on
+   * stdin exactly as ssh delivers them. Nothing outside the scratch folder is
+   * read for writing.
+   */
+  const root = await mkdtemp(join(tmpdir(), 'stoke-upload-'))
+  const posix = existsSync('/bin/sh') && process.platform !== 'win32'
+  if (!posix) {
+    console.log('  SKIP  no /bin/sh here (Windows), so the upload body was not run')
+  } else {
+    const { createHash, randomBytes } = await import('node:crypto')
+    const { readdir, stat, utimes } = await import('node:fs/promises')
+    const sha = (b: Uint8Array): string => createHash('sha256').update(b).digest('hex')
+    const uid = process.getuid?.() ?? 0
+    // Every byte value, then random: anything a pty or a text decode would mangle.
+    const bytes = new Uint8Array(Buffer.concat([Buffer.from(Array.from({ length: 256 }, (_, i) => i)), randomBytes(300_000)]))
+    const name = 'pasted-image-20261002-143005-a1b2c3.png'
+    const remote = (n: string, size: number): string => {
+      const a = buildUploadArgs(host({}), n, size) ?? []
+      return a[a.length - 1] ?? ''
+    }
+    // spawnWithInput passes no env, as ssh's own child has none of ours; the
+    // login shell is started through `env -i` so HOME and TMPDIR are scratch.
+    const run = (login: string, command: string, input: Uint8Array, env: Record<string, string>): Promise<InputRunResult> =>
+      spawnWithInput(
+        '/usr/bin/env',
+        ['-i', ...Object.entries({ PATH: '/usr/bin:/bin:/usr/sbin:/sbin', ...env }).map(([k, v]) => `${k}=${v}`), login, '-c', command],
+        input,
+        { timeoutMs: 20_000 }
+      )
+    const logins = ['/bin/sh', '/bin/bash', '/bin/dash', '/bin/zsh', '/bin/tcsh']
+    let ran = 0
+    for (const login of logins) {
+      if (!existsSync(login)) {
+        console.log(`  SKIP  no ${login} on this machine`)
+        continue
+      }
+      ran++
+      const home = join(root, `home-${ran}`)
+      const tmp = join(root, `tmp-${ran}`)
+      await mkdir(home)
+      await mkdir(tmp)
+      const dir = join(home, '.cache', 'stoke', 'paste')
+
+      const a = await run(login, remote(name, bytes.length), bytes, { HOME: home, TMPDIR: tmp })
+      const file = join(dir, name)
+      same(`${login}: exits 0 and says where`, [a.code, parseUploadPath(a.stdout, name)], [0, file])
+      const got = existsSync(file) ? new Uint8Array(await readFile(file)) : new Uint8Array()
+      same(`${login}: the bytes arrive identical (sha256)`, sha(got), sha(bytes))
+      same(`${login}: the folder is 0700 and the file 0600`, [(await stat(dir)).mode & 0o777, existsSync(file) ? (await stat(file)).mode & 0o777 : -1], [0o700, 0o600])
+      same(`${login}: no .part is left`, (await readdir(dir)).filter((f) => f.endsWith('.part')), [])
+
+      // A stream cut short, and one too long: never published, nothing left behind.
+      const short = 'cut-short-a1b2c3.png'
+      const b = await run(login, remote(short, bytes.length), bytes.slice(0, 1000), { HOME: home, TMPDIR: tmp })
+      same(`${login}: a cut-off stream exits 5 and leaves no file and no .part`, [b.code, existsSync(join(dir, short)), existsSync(join(dir, `${short}.part`))], [5, false, false])
+      const long = 'too-long-a1b2c3.png'
+      const c = await run(login, remote(long, 10), bytes.slice(0, 20), { HOME: home, TMPDIR: tmp })
+      same(`${login}: more bytes than said is refused the same way`, [c.code, existsSync(join(dir, long)), existsSync(join(dir, `${long}.part`))], [5, false, false])
+
+      // The sweep: a file from two days ago goes; a fresh one (a bystander) stays.
+      const old = join(dir, 'old-a1b2c3.png')
+      const fresh = join(dir, 'fresh-a1b2c3.png')
+      await writeFile(old, 'old')
+      await writeFile(fresh, 'fresh')
+      const twoDays = (Date.now() - 2 * 86_400_000) / 1000
+      await utimes(old, twoDays, twoDays)
+      await run(login, remote('third-a1b2c3.png', 3), new Uint8Array([1, 2, 3]), { HOME: home, TMPDIR: tmp })
+      same(`${login}: the sweep removes a day-old file and keeps a fresh one`, [existsSync(old), existsSync(fresh), existsSync(join(dir, 'third-a1b2c3.png'))], [false, true, true])
+
+      // XDG_CACHE_HOME wins when set.
+      const xdg = join(root, `xdg-${ran}`)
+      const x = await run(login, remote('xdg-a1b2c3.png', 3), new Uint8Array([1, 2, 3]), { HOME: home, TMPDIR: tmp, XDG_CACHE_HOME: xdg })
+      same(`${login}: XDG_CACHE_HOME is honoured`, parseUploadPath(x.stdout, 'xdg-a1b2c3.png'), join(xdg, 'stoke', 'paste', 'xdg-a1b2c3.png'))
+
+      // A home that cannot be written: the temp folder, per user.
+      const ro = join(root, `ro-${ran}`)
+      await mkdir(ro, { mode: 0o500 })
+      const d = await run(login, remote('fallback-a1b2c3.png', 3), new Uint8Array([1, 2, 3]), { HOME: ro, TMPDIR: tmp })
+      same(
+        `${login}: a home it cannot write falls back to TMPDIR/stoke-paste-<uid>`,
+        uid === 0 ? 'root writes anywhere; not tested as root' : parseUploadPath(d.stdout, 'fallback-a1b2c3.png'),
+        uid === 0 ? 'root writes anywhere; not tested as root' : join(tmp, `stoke-paste-${uid}`, 'fallback-a1b2c3.png')
+      )
+
+      // A planted symlink in a shared temp folder is never written through.
+      if (uid !== 0) {
+        const shared = join(root, `shared-${ran}`)
+        const target = join(root, `target-${ran}`)
+        await mkdir(shared)
+        await mkdir(target)
+        await symlink(target, join(shared, `stoke-paste-${uid}`))
+        const e = await run(login, remote('planted-a1b2c3.png', 3), new Uint8Array([1, 2, 3]), { HOME: ro, TMPDIR: shared })
+        same(`${login}: a symlinked fallback folder is refused (exit 3), nothing written through it`, [e.code, (await readdir(target)).length], [3, 0])
+      }
+    }
+    check('at least sh and bash ran the upload body', ran >= 2, `${ran} shells`)
+  }
+  await rm(root, { recursive: true, force: true })
+}
+
+console.log('\nan image sent to the machine: the stdin runner and the result')
+
+{
+  if (!existsSync('/bin/sh') || process.platform === 'win32') {
+    console.log('  SKIP  no /bin/sh here (Windows), so the runner was not run')
+  } else {
+    // A child that stops reading at once while 8 MB are still to write: an EPIPE
+    // on stdin must not throw in main, and the exit code is what comes back.
+    const big = new Uint8Array(8 * 1024 * 1024)
+    const early = await spawnWithInput('/bin/sh', ['-c', 'echo bye >&2; exit 7'], big, { timeoutMs: 10_000 })
+    same('a child that exits before reading: its code, its stderr, no throw', [early.code, early.stderr.trim(), early.cancelled], [7, 'bye', false])
+    const slow = await spawnWithInput('/bin/sh', ['-c', 'sleep 5'], new Uint8Array(1), { timeoutMs: 300 })
+    same('a timeout is a sentence and no code (gotcha 25)', [slow.code, slow.error, slow.cancelled], [null, 'No answer within 0 s.', false])
+    const ac = new AbortController()
+    const t0 = Date.now()
+    setTimeout(() => ac.abort(), 150)
+    const cut = await spawnWithInput('/bin/sh', ['-c', 'sleep 5'], new Uint8Array(1), { timeoutMs: 10_000, signal: ac.signal })
+    same('Cancel ends it at once', [cut.cancelled, cut.code, Date.now() - t0 < 3000], [true, null, true])
+    const missing = await spawnWithInput('/nonexistent/ssh-xyz', [], new Uint8Array(1), { timeoutMs: 1000 })
+    same('an ssh that is not there is a result, not a throw', [missing.code, missing.error.length > 0], [null, true])
+  }
+
+  const seen: string[][] = []
+  const fake =
+    (r: Partial<InputRunResult>) =>
+    async (args: string[]): Promise<InputRunResult> => {
+      seen.push(args)
+      return { stdout: '', stderr: '', code: 0, error: '', cancelled: false, ...r }
+    }
+  const bytes = new Uint8Array([1, 2, 3])
+  same(
+    'a sent image comes back with its far path',
+    await sendImage(host({}), 'a1-a1b2c3.png', bytes, { run: fake({ stdout: 'motd\nSTOKE_PATH /home/v/.cache/stoke/paste/a1-a1b2c3.png\n' }) }),
+    { ok: true, path: '/home/v/.cache/stoke/paste/a1-a1b2c3.png' }
+  )
+  same('it ran the upload argv, sized by the bytes', seen[0]?.[seen[0].length - 1]?.includes('[ $n -eq 3 ]'), true)
+  same(
+    'Permission denied: needs a key, with ssh’s own line',
+    await sendImage(host({}), 'a1-a1b2c3.png', bytes, { run: fake({ code: 255, stderr: 'v@h: Permission denied (publickey,password).\n' }) }),
+    { ok: false, reason: 'needs-login', message: 'Stoke sends images over a second connection, which cannot type a password.', detail: 'v@h: Permission denied (publickey,password).' }
+  )
+  same(
+    'a cut-off stream says so, as a failure',
+    await sendImage(host({}), 'a1-a1b2c3.png', bytes, { run: fake({ code: 5 }) }),
+    { ok: false, reason: 'failed', message: 'The image arrived incomplete, so it was not kept.', detail: 'ssh exited with 5.' }
+  )
+  same(
+    'an unreachable host says ssh’s line',
+    await sendImage(host({}), 'a1-a1b2c3.png', bytes, { run: fake({ code: 255, stderr: 'ssh: connect to host 127.0.0.1 port 2298: Connection refused\n' }) }),
+    { ok: false, reason: 'unreachable', message: 'The machine could not be reached.', detail: 'ssh: connect to host 127.0.0.1 port 2298: Connection refused' }
+  )
+  same(
+    'exit 0 with no path is a failure, not a path typed',
+    await sendImage(host({}), 'a1-a1b2c3.png', bytes, { run: fake({ stdout: 'STOKE_PATH /etc/passwd\n' }) }),
+    { ok: false, reason: 'failed', message: 'The machine did not say where it saved the image.', detail: '' }
+  )
+  same(
+    'a cancel is a cancel',
+    await sendImage(host({}), 'a1-a1b2c3.png', bytes, { run: fake({ code: null, cancelled: true }) }),
+    { ok: false, reason: 'cancelled', message: 'Cancelled.', detail: '' }
+  )
+  const before = seen.length
+  same('a bad name never runs ssh', (await sendImage(host({}), '../x.png', bytes, { run: fake({}) })).ok, false)
+  same('…and nothing was run', seen.length, before)
 }
 
 /* ------------------------------------------------------------------------ */
