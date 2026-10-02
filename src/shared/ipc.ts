@@ -148,6 +148,13 @@ export const CH = {
    * only when asked. The title bar's text shortcuts.
    */
   ptyType: 'pty:type',
+  /**
+   * main -> renderer: another machine's remote tab resized a pty (ptyId, cols,
+   * rows, reason) — `remote` when it claimed the grid by being used, `restore`
+   * when the last one left and the desktop's size was put back. The session's
+   * own tab draws that grid until it is used here (shared/sizeClaim.ts).
+   */
+  ptySized: 'pty:sized',
   ptyData: 'pty:data',
   ptyExit: 'pty:exit',
 
@@ -340,6 +347,8 @@ export const CH = {
   hubRemoteOpen: 'hub:remote-open',
   /** renderer -> main, fire and forget: keystrokes typed into a remote tab. */
   hubRemoteInput: 'hub:remote-input',
+  /** renderer -> main, fire and forget: a remote tab is being used, so size the host's pty to its pane (tabId, cols, rows). */
+  hubRemoteResize: 'hub:remote-resize',
   hubRemoteClose: 'hub:remote-close',
   hubRemoteRetry: 'hub:remote-retry',
   /** On the host: the owner's answer to "Let <device> open <session>?". */

@@ -5,7 +5,7 @@ import type { WorklogButtonState } from '@shared/worklog'
 import { UsageChip } from './UsageMeter'
 import { PhonePopover } from './PhonePopover'
 import { ContextMenu, type MenuItem } from './ContextMenu'
-import { TabIndicator } from './TabIndicator'
+import { RemoteArrows, TabIndicator } from './TabIndicator'
 import {
   BrandMark,
   IconClose,
@@ -112,6 +112,12 @@ interface Props {
    * off the bar is exactly what it was.
    */
   toolbar?: React.ReactNode
+  /**
+   * On the host: the devices attached to each local session from another
+   * machine, by ptyId. Such a tab carries the remote tab's two arrows too, so
+   * the session being watched or typed into from elsewhere is marked here.
+   */
+  hostedBy?: Record<string, string[]>
 }
 
 export function TitleBar({
@@ -147,7 +153,8 @@ export function TitleBar({
   agentTagsShown = true,
   onToggleAgentTags,
   settingsOpen,
-  toolbar
+  toolbar,
+  hostedBy = {}
 }: Props): React.JSX.Element {
   const isMac = platform === 'darwin'
   const listRef = useRef<HTMLDivElement>(null)
@@ -396,6 +403,17 @@ export function TitleBar({
                   }
                   watched={watchedSessions.has(tab.sessionId)}
                 />
+                {tab.kind === 'session' && hostedBy[tab.ptyId]?.length ? (
+                  <span
+                    className="tab-indicator tab-hosted"
+                    data-kind="remote"
+                    data-hosted="true"
+                    title={`Open on ${hostedBy[tab.ptyId].join(', ')}, from another machine`}
+                  >
+                    <RemoteArrows />
+                    <span className="sr-only">Open on {hostedBy[tab.ptyId].join(', ')}, from another machine. </span>
+                  </span>
+                ) : null}
                 {editingId === tab.id ? (
                   <input
                     ref={renameRef}

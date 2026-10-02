@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { DEFAULT_HUB_URL, emptyHubView, type HubLocalKeyView, type HubResult, type HubView } from '@shared/hub/client'
 import { sameHubUrl } from '@shared/hub/edge'
+import type { RemoteBarMode } from '@shared/ui'
 import { FieldHint } from './FieldHint'
 import { useHubRemote } from '../lib/hubRemote'
 import { Spinner } from './Spinner'
@@ -93,7 +94,13 @@ function Status({ note }: { note: Note }): React.JSX.Element | null {
   )
 }
 
-export function AccountSyncSettings(): React.JSX.Element {
+interface AccountSyncProps {
+  /** How a live remote link is drawn on THIS screen (`remoteBar`, a top-level setting, not the hub's). */
+  remoteBar: RemoteBarMode
+  onRemoteBar: (mode: RemoteBarMode) => void
+}
+
+export function AccountSyncSettings({ remoteBar, onRemoteBar }: AccountSyncProps): React.JSX.Element {
   const [view, setView] = useState<HubView>(emptyHubView())
   const [loaded, setLoaded] = useState(false)
   const [now, setNow] = useState(Date.now())
@@ -145,7 +152,7 @@ export function AccountSyncSettings(): React.JSX.Element {
           {view.notes.length > 0 && <Conflicts view={view} />}
           <SshKeys view={view} />
           <Devices view={view} />
-          <OtherMachinesSettings />
+          <OtherMachinesSettings remoteBar={remoteBar} onRemoteBar={onRemoteBar} />
           <RecoveryKit view={view} />
         </>
       )}
@@ -893,7 +900,12 @@ function Syncing({ view, now }: { view: HubView; now: number }): React.JSX.Eleme
  * written by main alone (gotcha 57); grants are this computer's own and never
  * sync, so neither the hub nor another device can give itself one.
  */
-function OtherMachinesSettings(): React.JSX.Element {
+const REMOTE_BAR_CHOICES: { id: RemoteBarMode; label: string; hint: string }[] = [
+  { id: 'fab', label: 'Floating button', hint: 'A small “Remote” button in the corner that opens on hover or focus' },
+  { id: 'bar', label: 'Full bar', hint: 'A strip above the terminal, always open' }
+]
+
+function OtherMachinesSettings({ remoteBar, onRemoteBar }: AccountSyncProps): React.JSX.Element {
   const remote = useHubRemote()
   const { busy, note, run } = useRun()
   return (
@@ -932,6 +944,21 @@ function OtherMachinesSettings(): React.JSX.Element {
           ))}
         </>
       )}
+      <div className="field" data-setting="account.remote-bar">
+        <span className="field-label">Show a live remote link as</span>
+        <div className="segmented" role="group" aria-label="Show a live remote link as" style={{ alignSelf: 'flex-start' }}>
+          {REMOTE_BAR_CHOICES.map((c) => (
+            <button key={c.id} aria-pressed={remoteBar === c.id} title={c.hint} data-remote-bar={c.id} onClick={() => onRemoteBar(c.id)}>
+              {c.label}
+            </button>
+          ))}
+        </div>
+        <span className="field-hint">
+          Who is attached to a session here, and which machine a remote tab is on. The floating button sits in a corner — a
+          green dot and “Remote” — and opens on hover or keyboard focus for the details, Disconnect and Close; the full bar is
+          always open above the terminal. A machine asking to open a session always asks in a bar, whichever you choose.
+        </span>
+      </div>
       {remote.guests.length > 0 && (
         <div className="btn-row">
           <span className="field-hint" style={{ flex: 1 }}>

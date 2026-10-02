@@ -227,6 +227,24 @@ height change.
 > focus, four lines, the key row toggled, blur — no resize frame at either size, and at rest
 > `.term-wrap` scrollHeight === clientHeight (731 = 731, 288 = 288). `verify:phone-ui` holds it.
 
+> **Checked against the code on 2026-10-02 (Other machines: last active wins).** "A laptop browser
+> (`native`) never resizes the pty at all" was also the rule for a hub remote tab — another of the
+> owner's desktops drawing a session through the relay (RemoteTerminal) — and it left that tab
+> drawing the host's grid with empty space round it, or scrolling, however it was used. The owner
+> asked for the opposite: "whichever is active we force it to that screen ratio". For THAT path the
+> rule is now last active wins (shared/sizeClaim.ts, gotcha 151): a remote tab that is USED — a
+> focus, a key, a click, or its pane changing size just after a person acted on its window — sends
+> the phone's own `{type:'resize', force:true}` for its pane; the session's own tab on the host draws
+> that grid (`pty:sized`) and takes it back the same way, when someone uses it there. Nothing claims
+> on being shown, on a timer, or on the other side's resize, so the two never fight over it (20 idle
+> seconds after each claim, both sides unchanged in the built app). The relay's scope holds a resize
+> to the session its grant reaches (`relayScopeVerdict` judges a `ws-msg` by the socket it rides).
+> **The phone is unchanged**: its own UI still resizes only in Fit to phone, on a width change, and
+> its server still tells the desktop nothing; only the relay's instance of that server
+> (`serveRelay` hooks) reports a resize to the desktop, pushes the new grid to every relayed viewer
+> at once rather than a registry pass later, and puts the desktop's size back when the last remote
+> tab leaves.
+
 ## 111. The phone server's config is a snapshot taken at start; a setting it does not bind must be a per-call dep
 
 **Found 2026-09-30, moving the speech server from Phone access to Settings → Voice.** `RemoteServer`

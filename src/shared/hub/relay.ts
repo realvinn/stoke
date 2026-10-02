@@ -151,17 +151,26 @@ export type RelayMode = 'view' | 'full'
  *   for. The host's question — "Let <device> open <session>?" — names it, and
  *   an "Allow once" answer is scoped to it (`relayScopeVerdict`, remote.ts).
  * - `ready`/`refused` (host): the answer. Nothing else is served before `ready`.
+ *   `sizes: true` says the host's own tab for the session follows a guest's
+ *   resize (last active wins, shared/sizeClaim.ts). A host from before that
+ *   sends no `sizes`, and its own tab keeps its old grid while the pty takes
+ *   the guest's, so a guest sends such a host no resize (`HubRemote.resize`).
  * - `part`: a piece of the JSON text of the NEXT frame, every piece but the
  *   last carrying `more: true` (`relayFrameParts`). A pty's `attached` frame
  *   replays up to 512 K characters of scrollback and a transcript can be
  *   megabytes, which JSON inside JSON takes past the hub's 1 MiB frame cap;
  *   the receiver joins the pieces and parses the whole as one frame. A part
  *   never holds a part.
+ * - `status` (host, once serving): the attached session's model, effort,
+ *   context and usage, as the host's own status bar reads them
+ *   (`RemoteSessionStatus`, remote.ts). The guest parses it as text another
+ *   machine chose; a host never takes one from a guest.
  */
 export type RelayInnerFrame =
   | { t: 'attach'; ptyId: string }
-  | { t: 'ready'; mode: RelayMode; host: { label: string; platform: string } }
+  | { t: 'ready'; mode: RelayMode; host: { label: string; platform: string }; sizes?: boolean }
   | { t: 'refused'; reason: string }
+  | { t: 'status'; status: unknown }
   | { t: 'req'; id: number; method: 'GET' | 'POST'; path: string; body?: unknown }
   | { t: 'res'; id: number; status: number; body: unknown }
   | { t: 'ws-open'; id: number; path: string }
@@ -214,6 +223,8 @@ export function parseRelayInner(text: string): RelayInnerFrame | null {
       return (v.mode === 'view' || v.mode === 'full') && isRecord(v.host) ? (v as unknown as RelayInnerFrame) : null
     case 'refused':
       return typeof v.reason === 'string' ? (v as unknown as RelayInnerFrame) : null
+    case 'status':
+      return isRecord(v.status) ? { t: 'status', status: v.status } : null
     case 'req':
       return id(v.id) && (v.method === 'GET' || v.method === 'POST') && typeof v.path === 'string'
         ? (v as unknown as RelayInnerFrame)

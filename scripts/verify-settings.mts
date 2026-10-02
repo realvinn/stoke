@@ -129,6 +129,14 @@ check('a real choice is kept', hydrateSettings({ fullScreenReveal: 'reserve' }).
 check('junk falls back to follow', hydrateSettings({ fullScreenReveal: 'hide' }).fullScreenReveal, 'follow')
 
 /*
+ * remoteBar: a live "Other machines" link as a floating button (default) or
+ * the full strip. An older file has none and gets the button; junk the same.
+ */
+check('remoteBar defaults to the floating button', hydrateSettings({}).remoteBar, 'fab')
+check('the full bar is kept', hydrateSettings({ remoteBar: 'bar' }).remoteBar, 'bar')
+check('junk falls back to the floating button', [hydrateSettings({ remoteBar: 'hidden' }).remoteBar, hydrateSettings({ remoteBar: 1 }).remoteBar], ['fab', 'fab'])
+
+/*
  * Browser profiles (browserProfiles.ts). An older file has none: it must come
  * back with Default alone and Default active, which is the partition every
  * login made before profiles already lives in.

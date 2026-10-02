@@ -48,6 +48,16 @@ interface Props {
  * cell agree in layout and disagree by half a pixel once painted; one circle
  * sharing the ring's coordinate system cannot. See WATCH_R in ContextMeter.tsx.
  */
+/** The two arrows in the ring: a session another machine is on, from either end of the link. */
+export function RemoteArrows(): React.JSX.Element {
+  return (
+    <svg className="ring" viewBox="0 0 16 16" data-level="empty" aria-hidden="true">
+      <circle className="ring-track" cx="8" cy="8" r={RING_R} />
+      <path className="ring-remote" d="M5.2 6.2h5.6M8.8 4.4l2 1.8-2 1.8M10.8 9.8H5.2M7.2 8l-2 1.8 2 1.8" />
+    </svg>
+  )
+}
+
 export function TabIndicator({
   kind,
   context,
@@ -84,10 +94,7 @@ export function TabIndicator({
     // Another machine's session: no context reading here, and a mark that says whose it is not.
     return (
       <span className="tab-indicator" data-kind="remote" data-status={status}>
-        <svg className="ring" viewBox="0 0 16 16" data-level="empty" aria-hidden="true">
-          <circle className="ring-track" cx="8" cy="8" r={RING_R} />
-          <path className="ring-remote" d="M5.2 6.2h5.6M8.8 4.4l2 1.8-2 1.8M10.8 9.8H5.2M7.2 8l-2 1.8 2 1.8" />
-        </svg>
+        <RemoteArrows />
         <span className="sr-only">Another machine’s session</span>
       </span>
     )

@@ -4546,6 +4546,270 @@ mark.hit {
   }
 }
 
+/*
+ * A live remote link as a floating button (RemoteFab.tsx, `remoteBar: 'fab'`):
+ * a dot and a word or two, opening on hover, keyboard focus or a click into
+ * the whole sentence and its buttons. On a remote tab it floats over the
+ * pane's top-right corner; on the host, over the main column's bottom-right
+ * (`data-placement='main'`), opening upwards. Both are inside `.main-col`,
+ * never over the docked browser (gotcha 14). The panel is display-toggled,
+ * never `visibility` (gotcha 137), and its appear animation rests fully shown,
+ * so under reduced motion it simply appears and the live dot rests solid
+ * (gotcha 72).
+ */
+.remote-fab {
+  position: absolute;
+  z-index: var(--z-sticky);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-4);
+  max-width: min(26rem, calc(100% - var(--space-24)));
+  pointer-events: none;
+}
+
+.remote-fab > * {
+  pointer-events: auto;
+}
+
+.remote-fab[data-placement='pane'] {
+  top: calc(var(--space-8) + var(--space-4));
+  right: calc(var(--space-8) + var(--space-8));
+}
+
+/*
+ * One step UNDER the pane's own bottom strips (`.image-strip`, `.voice-strip`,
+ * also `--z-sticky`, earlier in the DOM): the image strip sits in the same
+ * bottom-right corner with its Cancel and Dismiss at the right end, and at an
+ * equal z-index this later sibling painted over them. The strip is transient;
+ * the button is back the moment it goes.
+ */
+.remote-fab[data-placement='main'] {
+  right: var(--space-16);
+  bottom: var(--space-12);
+  z-index: calc(var(--z-sticky) - 1);
+  flex-direction: column-reverse;
+}
+
+.remote-fab-face {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-4);
+  max-width: 100%;
+  height: 1.625rem;
+  padding: 0 var(--space-8) 0 var(--space-8);
+  border: 1px solid var(--border);
+  border-radius: var(--r-full);
+  background: var(--bg-elevated);
+  color: var(--text);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  box-shadow: var(--shadow-md);
+  cursor: pointer;
+  opacity: 0.88;
+  transition:
+    opacity var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease);
+}
+
+.remote-fab[data-open] .remote-fab-face,
+.remote-fab-face:focus-visible {
+  opacity: 1;
+  border-color: var(--border-strong);
+}
+
+.remote-fab-face:focus-visible {
+  outline: 2px solid var(--accent-ink);
+  outline-offset: 2px;
+}
+
+.remote-fab-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--success);
+}
+
+.remote-fab[data-tone='live'] .remote-fab-dot {
+  animation: remote-live 1.6s ease-out infinite;
+}
+
+.remote-fab[data-tone='pending'] .remote-fab-dot {
+  background: var(--warning);
+}
+
+.remote-fab[data-tone='down'] .remote-fab-dot {
+  background: var(--danger);
+}
+
+.remote-fab-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.remote-fab-state {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.remote-fab-state[data-state='refused'],
+.remote-fab-state[data-state='lost'] {
+  color: var(--danger);
+}
+
+.remote-fab-state[data-state='asking'],
+.remote-fab-state[data-state='reconnecting'] {
+  color: var(--warning);
+}
+
+.remote-fab-panel {
+  display: none;
+  flex-direction: column;
+  gap: var(--space-8);
+  width: max-content;
+  max-width: 100%;
+  padding: var(--space-8) var(--space-12);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-md);
+  font-size: var(--fs-sm);
+  animation: remote-fab-in var(--dur-fast) var(--ease);
+  position: relative;
+}
+
+/*
+ * The gap between the face and the panel, made part of the panel. `.remote-fab`
+ * itself takes no pointer (it must not block the terminal round it), so the
+ * 4px between them hit-tested to the terminal underneath: a pointer moving from
+ * the face to Disconnect or Close crossed it, the root got `mouseleave`, and
+ * the panel closed under it. Measured in the built app on 2026-10-02 — a
+ * 40-step path from "Remote" to Disconnect ended with the panel shut and the
+ * pointer over `.xterm`. A pseudo-element is hit-tested as its element, and it
+ * exists only while the panel is shown.
+ */
+.remote-fab-panel::before {
+  content: '';
+  position: absolute;
+  inset-inline: -1px;
+  bottom: 100%;
+  height: calc(var(--space-4) + 2px);
+}
+
+.remote-fab[data-placement='main'] .remote-fab-panel::before {
+  top: 100%;
+  bottom: auto;
+}
+
+.remote-fab[data-open] .remote-fab-panel {
+  display: flex;
+}
+
+/* Rests fully shown: with the animation reduced to 1ms, this is what paints. */
+@keyframes remote-fab-in {
+  from {
+    opacity: 0;
+    translate: 0 -0.25rem;
+  }
+}
+
+.remote-fab[data-placement='main'] .remote-fab-panel {
+  animation-name: remote-fab-up;
+}
+
+@keyframes remote-fab-up {
+  from {
+    opacity: 0;
+    translate: 0 0.25rem;
+  }
+}
+
+.remote-fab-text {
+  margin: 0;
+  color: var(--text-muted);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.remote-fab-text strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.remote-fab-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  color: var(--text-muted);
+}
+
+.remote-fab-list strong {
+  color: var(--text);
+}
+
+.remote-fab-meta {
+  color: var(--text-faint);
+}
+
+.remote-fab-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-8);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .remote-fab[data-tone='live'] .remote-fab-dot,
+  .remote-fab-panel {
+    animation: none;
+  }
+}
+
+/*
+ * The session's own tab while another machine's remote tab holds the grid
+ * (TerminalView `elsewhere`, last active wins): the terminal draws THAT grid,
+ * so a larger one scrolls here rather than clip. The pane's size is watched by
+ * its border box, which these scrollbars do not change (gotcha 151).
+ */
+.term-host[data-sized-elsewhere] {
+  overflow: auto;
+}
+
+/* A remote tab's status bar: the other machine's plan limits, in a row. */
+.status-usage {
+  gap: var(--space-12);
+}
+
+.status-usage-row {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-4);
+  font-variant-numeric: tabular-nums;
+}
+
+.status-usage-row .usage-mini-track {
+  width: 2.25rem;
+}
+
+.status-usage-row[data-tone='warning'] {
+  color: var(--warning);
+}
+
+.status-usage-row[data-tone='critical'] {
+  color: var(--danger);
+}
+
+/* On the host: a local tab another machine is attached to carries the remote tab's two arrows. */
+.tab-hosted {
+  flex-shrink: 0;
+}
+
 /* --------------------------------------------------------------- resizer */
 
 .resizer {

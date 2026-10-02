@@ -21,6 +21,7 @@
  *
  * Pure (gotcha 27); imports only src/shared by relative `.ts` path (gotcha 78).
  */
+import type { UsageWindow } from '../types.ts'
 import { isId, isRecord } from './codec.ts'
 import { isPtyId, relayRouteFor, type HubGrant, type RelayInnerFrame, type RelayMode } from './relay.ts'
 
@@ -236,17 +237,26 @@ export type RelayScope = { kind: 'session'; ptyId: string }
  * nothing else: no other pty, not even the session list (its rows carry every
  * session's folder path, which the presence summary leaves out on purpose),
  * no transcripts or history, no folders, no new sessions.
+ *
+ * A pty-socket frame (`ws-msg`: keys, a submit, a resize) is judged by the
+ * socket it rides, `socketPath`: only one opened on THIS session's pty. The
+ * resize a remote tab sends when it is used (shared/sizeClaim.ts) therefore
+ * reaches the session the grant reaches and no other pty; a frame on no known
+ * socket is outside.
  */
-export function relayScopeVerdict(scope: RelayScope, frame: RelayInnerFrame): { ok: true } | { ok: false; reason: string } {
+export function relayScopeVerdict(scope: RelayScope, frame: RelayInnerFrame, socketPath?: string): { ok: true } | { ok: false; reason: string } {
   const outside = { ok: false as const, reason: 'This connection reaches only the session it opened.' }
+  const ownPty = (path: string): boolean => {
+    const r = relayRouteFor('WS', path)
+    if (!r || r.path !== '/ws') return false
+    const q = path.indexOf('?')
+    return new URLSearchParams(q < 0 ? '' : path.slice(q + 1)).get('ptyId') === scope.ptyId
+  }
   switch (frame.t) {
-    case 'ws-open': {
-      const r = relayRouteFor('WS', frame.path)
-      if (!r || r.path !== '/ws') return outside
-      const q = frame.path.indexOf('?')
-      const ptyId = new URLSearchParams(q < 0 ? '' : frame.path.slice(q + 1)).get('ptyId')
-      return ptyId === scope.ptyId ? { ok: true } : outside
-    }
+    case 'ws-open':
+      return ownPty(frame.path) ? { ok: true } : outside
+    case 'ws-msg':
+      return socketPath !== undefined && ownPty(socketPath) ? { ok: true } : outside
     case 'req': {
       const r = relayRouteFor(frame.method, frame.path)
       if (!r) return outside
@@ -316,6 +326,120 @@ export function newerStatus(have: RemoteStatus | undefined, got: RemoteStatus): 
   return !have || got.at > have.at
 }
 
+/* --------------------------------------------- the attached session's status */
+
+/**
+ * What the HOST's own status bar and usage chip say about the one session a
+ * relay attached to — its model and effort, its context, and its account's
+ * plan-limit windows — so the guest's status bar can say it too. Sent inside
+ * the encrypted channel (`{ t: 'status' }`, relay.ts) on attach and when it
+ * changes, and only for the relay's own session (`HubRemote.pushStatus`):
+ * nothing about any other session on the host ever rides it.
+ */
+export interface RemoteSessionStatus {
+  /** The model id as the host's bar reads it (payload first, then transcript, then launch flag), or null. */
+  model: string | null
+  /** The launch effort when one was chosen, or null for the default. */
+  effort: string | null
+  /** The agent's id (`claude`, `codex`, …), for its label and whether `model` is a Claude id. */
+  agent: string
+  /** Context used and the window, once the host has a reading. */
+  context: { used: number; limit: number } | null
+  /** The chip's windows for the session's account (`chipRows`), newest reading; empty for none. */
+  usage: UsageWindow[]
+  /** When those figures were read on the host, ms, or null. */
+  usageAt: number | null
+}
+
+/** Windows one status carries at most. The chip draws two. */
+export const REMOTE_USAGE_MAX = 4
+
+const USAGE_KINDS: readonly UsageWindow['kind'][] = ['session', 'weekly', 'weekly_scoped', 'other']
+
+function finite(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) ? v : null
+}
+
+/** A usage window another machine sent, or null: every field checked and cut, like a status. */
+function parseUsageWindow(v: unknown): UsageWindow | null {
+  if (!isRecord(v) || !(USAGE_KINDS as readonly unknown[]).includes(v.kind)) return null
+  const percent = finite(v.percent)
+  if (percent === null) return null
+  const elapsed = finite(v.elapsed)
+  const resetsAt = finite(v.resetsAt)
+  const label = clip(v.label, 40)
+  if (!label) return null
+  const short = clip(v.short, 12)
+  const note = clip(v.resetNote, 60)
+  return {
+    kind: v.kind as UsageWindow['kind'],
+    label,
+    ...(short ? { short } : {}),
+    ...(note ? { resetNote: note } : {}),
+    percent: Math.min(100, Math.max(0, percent)),
+    severity: clip(v.severity, 16),
+    resetsAt: resetsAt !== null && resetsAt > 0 ? resetsAt : null,
+    elapsed: elapsed === null ? null : Math.min(1, Math.max(0, elapsed)),
+    active: v.active === true
+  }
+}
+
+/**
+ * The host's side: the status of the relay's own session, rounded so a
+ * window's pace marker creeping on does not count as a change every pass.
+ */
+export function remoteSessionStatusFrom(f: {
+  model: string | null
+  effort: string | null
+  agent: string
+  context: { used: number; limit: number } | null
+  usage: readonly UsageWindow[]
+  usageAt: number | null
+}): RemoteSessionStatus {
+  return {
+    model: f.model ? clip(f.model, 80) || null : null,
+    effort: f.effort && f.effort !== 'default' ? clip(f.effort, 16) || null : null,
+    agent: clip(f.agent, 24) || 'claude',
+    context:
+      f.context && f.context.limit > 0
+        ? { used: Math.max(0, Math.round(f.context.used)), limit: Math.round(f.context.limit) }
+        : null,
+    usage: f.usage.slice(0, REMOTE_USAGE_MAX).map((w) => ({
+      ...w,
+      percent: Math.round(w.percent),
+      elapsed: w.elapsed === null ? null : Math.round(w.elapsed * 100) / 100
+    })),
+    usageAt: f.usageAt !== null && Number.isFinite(f.usageAt) ? Math.floor(f.usageAt) : null
+  }
+}
+
+/**
+ * The guest's side: a status the host sent, as this machine will draw it, or
+ * null for anything that is not one. Text another machine chose, so every
+ * string is cut and stripped of control characters and every number bounded.
+ */
+export function parseRemoteSessionStatus(v: unknown): RemoteSessionStatus | null {
+  if (!isRecord(v)) return null
+  const ctx = isRecord(v.context) ? v.context : null
+  const used = ctx ? count(ctx.used) : null
+  const limit = ctx ? count(ctx.limit) : null
+  const usage: UsageWindow[] = []
+  if (Array.isArray(v.usage)) {
+    for (const w of v.usage.slice(0, REMOTE_USAGE_MAX)) {
+      const parsed = parseUsageWindow(w)
+      if (parsed) usage.push(parsed)
+    }
+  }
+  return {
+    model: typeof v.model === 'string' ? clip(v.model, 80) || null : null,
+    effort: typeof v.effort === 'string' ? clip(v.effort, 16) || null : null,
+    agent: clip(v.agent, 24) || 'claude',
+    context: used !== null && limit !== null && limit > 0 ? { used, limit } : null,
+    usage,
+    usageAt: count(v.usageAt)
+  }
+}
+
 export type RemoteTabState = 'connecting' | 'asking' | 'open' | 'reconnecting' | 'refused' | 'ended' | 'lost'
 
 /** A remote tab on THIS machine (the guest), as the renderer draws its banner. */
@@ -330,6 +454,8 @@ export interface RemoteTabView {
   state: RemoteTabState
   /** One sentence for the banner, or null. */
   message: string | null
+  /** The session's model, context and usage as the host last said (`RemoteSessionStatus`), or null. */
+  session: RemoteSessionStatus | null
 }
 
 /** Another device attached to a session HERE (this machine is the host), for the indicator. */

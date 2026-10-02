@@ -372,7 +372,12 @@ live Allow once serves; anything else asks the owner in a strip — Allow once /
 refused after 60 s. Either answer reaches only the session the relay attached to
 (`relayScopeVerdict`: not even the session list, whose rows carry paths, nor new sessions, folders,
 history or transcripts) — Always only stops the question — and an Allow once outlives a dropped
-relay by two minutes. Every relayed request and socket runs the phone server's own handlers (`api`,
+relay by two minutes. The grid is the pty's and LAST ACTIVE WINS (shared/sizeClaim.ts): a remote
+tab that is used sends the phone's own `resize` for its pane, the session's tab on the host draws
+that grid (`pty:sized`) until someone uses it there, and the relay instance of the phone server puts
+the host's size back when the last remote tab leaves. The host also sends the served session's
+model, effort, context and plan-limit windows (`RemoteSessionStatus`), which the guest's status bar
+draws as its own. Every relayed request and socket runs the phone server's own handlers (`api`,
 `relaySocket`) in a second `RemoteServer` that is never started — so it binds nothing and works
 with Phone access off — after the grant's mode (`relayFrameVerdict`) and the answer's reach, and
 only while the host's verified chain still holds the guest by the key its handshake pinned: when
@@ -1087,7 +1092,15 @@ npm run verify:hub-relay      # "Other machines": two RelayChannels through an i
                               # relay ends though the hub keeps it open; a waiting question and
                               # a grant go), a quiet tab past the hub's idle close on a fake
                               # clock (and its unpinged control), a missing pong, a status
-                              # replayed after a presence reconnect, and one too large to send
+                              # replayed after a presence reconnect, and one too large to send.
+                              # Last active wins (sizeClaim.ts) with two sides on one pty on a
+                              # fake clock: a burst is one resize, no use is no resize for ten
+                              # idle minutes, a claim inside the other side's settle waits, its
+                              # own echo does not; a remote tab's resize reaching only its own
+                              # session's pty, and never a host whose `ready` lacks `sizes` (an
+                              # older Stoke, whose tab would not follow); the host's status frame
+                              # for that session only, parsed and cut on the guest, never resent
+                              # unchanged
 npm run verify:install        # the one-line installer and the endpoint that serves it: the whole
                               # User-Agent matrix through the Worker's routing rule (PowerShell
                               # before anything browser-shaped, and HTML as the fallback), the
@@ -1381,10 +1394,12 @@ src/main/         Electron main process
                     holds, per-direction AES-GCM with counters, `part` frames. Transport
                     agnostic, no electron import. verify:hub-relay
   hub/remote.ts     "Other machines" (HubRemote): the sealed presence status, remote tabs (the
-                    guest, with its keepalive), and relays asked of this machine (the host: the
-                    owner's question, grants, the scope, relayed requests and sockets through the
-                    phone server's handlers); `chainChanged` ends what the chain stopped
-                    vouching for. No electron import. verify:hub-relay
+                    guest, with its keepalive and `resize` when used), and relays asked of this
+                    machine (the host: the owner's question, grants, the scope, relayed requests
+                    and sockets through the phone server's handlers, and the served session's
+                    model, effort, context and usage as `{t:'status'}` — that session's only);
+                    `chainChanged` ends what the chain stopped vouching for. No electron
+                    import. verify:hub-relay
   accounts.ts       an agent account's folder, `~/.stoke/accounts/<cli>-<slug>` (not userData:
                     dev and packaged differ, and the `stoke` command reads it with no app),
                     realpath'd once — Claude's Keychain item is named after that exact string
@@ -1612,14 +1627,25 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     signed-in desktops online now and, where their owner shares them, their
                     sessions; a click opens one as a remote tab. A group, never an overlay
   src/components/RemoteTerminal.tsx  a remote tab: the other machine's pty through the relay,
-                    held at that pty's grid (decideResize `native`, gotcha 87), never typing
-                    xterm's own reports, under a banner saying whose it is and the link's state
+                    drawn at that pty's grid, which it claims for its own pane whenever it is
+                    USED — focus, a key, a click, its pane resized just after a person acted —
+                    last active wins (`SizeClaimer`, gotchas 87 and 151); never typing xterm's
+                    own reports; whose it is and the link's state as a `RemoteFab` (default) or
+                    the full banner (`remoteBar`)
+  src/components/RemoteFab.tsx  a live remote link as a small floating button: a state dot and
+                    a word or two, opening on hover, keyboard focus or a click into the whole
+                    sentence and its buttons; every plain key stops at it (`typeThroughKey`).
+                    The guest's over its pane's top-right, the host's over `.main-col`'s
+                    bottom-right; never over the docked browser (gotcha 14)
   src/components/PrivateChatStrip.tsx  above a private chat's terminal, a `.main-col` strip:
                     nothing saved here, closing deletes it, Anthropic still receives it — or
                     the warning when main says a transcript was written anyway or the tab
                     resumed into a saved conversation
   src/components/RemoteHostStrip.tsx  on the host, `.main-col` strips: "Let <device> open
-                    <session>?" Allow once / Always / Deny, and who is attached, Disconnect
+                    <session>?" Allow once / Always / Deny (always a strip: it has a timer), and
+                    who is attached, Disconnect — as the strip under `remoteBar: 'bar'`, else
+                    `RemoteHostFab`; a tab another machine is attached to carries the remote
+                    tab's two arrows (TitleBar `hostedBy`)
   src/components/HubJoinPrompt.tsx  on a device in the vault, a `.main-col` strip: "<device>
                     asks to join your vault". Review opens Account & sync, where the codes are
                     compared; nothing is approved from the strip
@@ -1738,6 +1764,9 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     pointed at that key's tokens, inline, so a new agent or account needs
                     no stylesheet line. `paneAgent`: an install or key-enrolment tab is no
                     agent's
+  src/lib/lastInput.ts  when someone last acted on this window (a trusted key, press or wheel,
+                    or the window resized): a terminal pane changing size counts as use for a
+                    shared pty's grid only just after one (`recentlyUsed`, gotcha 151)
   src/lib/pressBurst.ts  the window's one record of the Enter/Space burst in progress,
                     registered first from main.tsx; the agent picker and a launcher armed by
                     the splash or picker closing ask it `activationAllowed`. Gotcha 88
@@ -1828,6 +1857,11 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
   phoneUi.ts        the phone UI's decisions: sections, answer-option parsing, the resize
                     policy, the queued-send state, connect input, transcript folding.
                     verify:phone-ui
+  sizeClaim.ts      who sizes a pty two machines show: the side being used, last active wins.
+                    `claimCounts` (focus, key, click; a pane change only right after a person
+                    acted), `claimVerdict` (debounced, held while the other side's resize
+                    settles, never against its own echo), `SizeClaimer` on injected timers.
+                    RemoteTerminal and TerminalView. verify:hub-relay. Gotcha 151
   paths.ts          cwd -> project group. Pure, platform passed in, no node imports,
                     so the renderer runs the identical rule for the profile chip
   ladder.ts         the 12-step ladder every built-in theme is generated from. Fixed

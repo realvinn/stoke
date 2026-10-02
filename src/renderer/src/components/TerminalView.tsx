@@ -12,6 +12,7 @@ import { PRIVATE_ENDED_TEXT } from '@shared/privateChat'
 import { noSignalLine } from '@shared/micDevice'
 import { createRecorder, voiceSupported, type Recorder } from '@shared/voice'
 import { createSignalWatch } from '@shared/voiceLevel'
+import { SizeClaimer, isGrid, sameGrid, type ClaimTrigger, type Grid } from '@shared/sizeClaim'
 import {
   CLI_OWNS_SPACE,
   microphoneError,
@@ -24,6 +25,7 @@ import {
   type SpaceHoldStep
 } from '@shared/voiceRoute'
 import { attachSink, noteInput } from '../lib/ptyBus'
+import { recentlyUsed } from '../lib/lastInput'
 import { isButtonlessMotionReport } from '../lib/mouseReport'
 import { chordLabel, matchShortcut } from '../lib/shortcuts'
 import { registerFinder, registerTerm, screenOf, unregisterTerm } from '../lib/termRegistry'
@@ -170,6 +172,9 @@ export function TerminalView({
 }: Props): React.JSX.Element {
   const hostRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
+  /** Read by the size claim (another machine's remote tab), which is bound once per pty. */
+  const activeRef = useRef(active)
+  activeRef.current = active
   /*
    * Images into an SSH tab: a pasted or dropped image is copied to the machine
    * and its far path typed (ImageSendStrip.tsx). `images.on` is false for every
@@ -186,7 +191,7 @@ export function TerminalView({
    * chord refitted every background pane to a dozen columns. Assigned inside
    * the PTY effect once `applyFit` exists; a no-op before mount.
    */
-  const fitNowRef = useRef<() => void>(() => {})
+  const fitNowRef = useRef<(why?: 'pane' | 'shown') => void>(() => {})
   /*
    * The drawing options as of the last render, for the constructor. The
    * terminal is built once per PTY (the effect below depends on `tab.ptyId`
@@ -961,7 +966,79 @@ export function TerminalView({
     host.addEventListener('mouseup', onMouseDown, true)
     host.addEventListener('contextmenu', onContextMenu, true)
 
-    const applyFit = (): void => {
+    /*
+     * Last active wins (shared/sizeClaim.ts). While another machine's remote
+     * tab holds this pty's grid (`elsewhere`, told by main as `pty:sized`),
+     * this pane draws THAT grid — empty space round it, or a scroll — and
+     * fits itself again only when someone uses it here: a focus, a key, a
+     * click, or the pane changing size while it holds the keyboard. The other
+     * machine's resize never counts, so the two never fight over it. With no
+     * remote tab attached `elsewhere` is null and every fit is exactly as it
+     * was. A phone resizes the pty through the phone server, which tells the
+     * renderer nothing, so a phone's Fit to phone is unchanged too (gotcha 87).
+     */
+    let elsewhere: Grid | null = null
+    const proposed = (): Grid | null => {
+      if (host.clientWidth === 0 || host.clientHeight === 0) return null
+      const p = fit.proposeDimensions()
+      return p && isGrid(p) ? { cols: p.cols, rows: p.rows } : null
+    }
+    const setElsewhere = (g: Grid | null): void => {
+      elsewhere = g
+      if (g) host.dataset.sizedElsewhere = `${g.cols}x${g.rows}`
+      else delete host.dataset.sizedElsewhere
+    }
+    const fitHere = (): void => {
+      try {
+        fit.fit()
+        window.stoke.pty.resize(tab.ptyId, term.cols, term.rows)
+      } catch {
+        /* host detached mid-measure */
+      }
+    }
+    const claimer = new SizeClaimer({
+      now: () => Date.now(),
+      setTimer: (fn, ms) => window.setTimeout(fn, ms),
+      clearTimer: (h) => window.clearTimeout(h as number),
+      want: proposed,
+      have: () => elsewhere ?? { cols: term.cols, rows: term.rows },
+      send: () => {
+        setElsewhere(null)
+        fitHere()
+      }
+    })
+    const use = (kind: ClaimTrigger): void => {
+      if (!elsewhere) return
+      claimer.trigger(kind, {
+        shown: activeRef.current && host.clientWidth > 0,
+        focused: host.contains(document.activeElement),
+        windowFocused: document.hasFocus(),
+        recentInput: recentlyUsed()
+      })
+    }
+    const onUseFocus = (): void => use('focus')
+    const onUseKey = (): void => use('key')
+    const onUsePress = (): void => use('click')
+    host.addEventListener('focusin', onUseFocus)
+    host.addEventListener('keydown', onUseKey, true)
+    host.addEventListener('mousedown', onUsePress, true)
+    const offSized = window.stoke.pty.onSized((id, cols, rows, reason) => {
+      if (id !== tab.ptyId) return
+      const g = { cols, rows }
+      claimer.sized(g)
+      if (reason === 'restore') {
+        // The last remote tab left and main put this desktop's size back: fit the pane, nobody else holds it.
+        claimer.dispose()
+        setElsewhere(null)
+        applyFit()
+        return
+      }
+      const mine = proposed()
+      setElsewhere(mine && sameGrid(mine, g) ? null : g)
+      if (term.cols !== cols || term.rows !== rows) term.resize(cols, rows)
+    })
+
+    const applyFit = (why: 'pane' | 'shown' = 'pane'): void => {
       /*
        * A hidden pane has no size, and measuring one is how a backgrounded
        * session gets permanently mangled.
@@ -983,12 +1060,12 @@ export function TerminalView({
       if (host.clientWidth === 0 || host.clientHeight === 0) return
       // Shown again: a context lost while hidden is got back now.
       attachWebgl()
-      try {
-        fit.fit()
-        window.stoke.pty.resize(tab.ptyId, term.cols, term.rows)
-      } catch {
-        /* host detached mid-measure */
+      // Another machine holds the grid: only use here takes it back (a reveal is a tab switched to).
+      if (elsewhere) {
+        use(why === 'shown' ? 'focus' : 'pane')
+        return
       }
+      fitHere()
     }
 
     // Observe the host rather than the window: the sidebar and browser panel
@@ -1027,8 +1104,13 @@ export function TerminalView({
       }
     }
 
+    /*
+     * The BORDER box (gotcha 151): `.term-host` has no padding or border, so it
+     * is the content box until a remote tab's larger grid scrolls here — and
+     * then the scrollbars would read as a resize and take the grid straight back.
+     */
     const ro = new ResizeObserver(() => applyFit())
-    ro.observe(host)
+    ro.observe(host, { box: 'border-box' })
     applyFit()
     fitNowRef.current = applyFit
 
@@ -1036,6 +1118,11 @@ export function TerminalView({
       clearTimeout(webglTimer)
       fitNowRef.current = () => {}
       ro.disconnect()
+      claimer.dispose()
+      offSized()
+      host.removeEventListener('focusin', onUseFocus)
+      host.removeEventListener('keydown', onUseKey, true)
+      host.removeEventListener('mousedown', onUsePress, true)
       host.removeEventListener('mousedown', onDownPoint, true)
       host.removeEventListener('mousedown', onShiftDrag, true)
       host.removeEventListener('mousedown', onMouseDown, true)
@@ -1481,7 +1568,7 @@ export function TerminalView({
   useEffect(() => {
     if (!active) return
     const id = window.setTimeout(() => {
-      fitNowRef.current()
+      fitNowRef.current('shown')
       termRef.current?.focus()
     }, 0)
     return () => window.clearTimeout(id)

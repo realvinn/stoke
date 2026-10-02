@@ -1,5 +1,7 @@
 import { capsFor, cliFor, cliIdOf, isClaudeCode } from '@shared/codingClis'
 import type { CliInfo, ContextSnapshot } from '@shared/types'
+import type { RemoteSessionStatus } from '@shared/hub/remote'
+import { clock, countdown, remainingLabel, shortLabel, tone } from '@shared/usageView'
 import { ContextBar } from './ContextMeter'
 import { modelLabel, shortPath } from '../lib/format'
 import { PERMISSION_LABELS } from '../lib/permissions'
@@ -74,6 +76,62 @@ interface Props {
    * no file sets one; undefined while that folder's answer has not arrived.
    */
   claudeDefaultMode?: string | null
+  /**
+   * A remote tab's session as its own machine's status bar reads it — model,
+   * effort, context and its account's plan-limit windows — sent over the
+   * relay for that session only (`RemoteSessionStatus`). Null until the
+   * other machine has said, or for a host that sends none.
+   */
+  remoteSession?: RemoteSessionStatus | null
+}
+
+/**
+ * Another machine's session, said the way a local tab's is: its model and
+ * effort, its context bar, and the plan limits of the account it runs on
+ * there — the other machine's figures, which is why the first item names it.
+ */
+function RemoteSessionItems({ status, device, now }: { status: RemoteSessionStatus; device: string; now: number }): React.JSX.Element {
+  const claude = isClaudeCode(cliIdOf(status.agent))
+  const asOf = status.usageAt !== null ? clock(status.usageAt) : null
+  return (
+    <>
+      {status.model && (
+        <span className="status-item" title={`${status.model}, on ${device}`} data-remote-item="model" {...agentMark(cliIdOf(status.agent))}>
+          <span className="agent-dot" aria-hidden="true" />
+          {claude ? modelLabel(status.model) : status.model}
+        </span>
+      )}
+      {status.effort && (
+        <span className="status-item" data-remote-item="effort">
+          effort: {status.effort}
+        </span>
+      )}
+      <span className="status-spacer" />
+      {status.usage.length > 0 && (
+        <span
+          className="status-item status-usage"
+          data-remote-item="usage"
+          title={`Plan limits of the account this session runs on, on ${device}${asOf ? `, as of ${asOf}` : ''}`}
+        >
+          {status.usage.map((w) => (
+            <span className="status-usage-row" data-tone={tone(w)} key={`${w.kind}-${w.label}`}>
+              <span className="usage-mini-label">{shortLabel(w)}</span>
+              <span className="usage-track usage-mini-track" data-tone={tone(w)} style={{ '--usage-fill': w.percent / 100 } as React.CSSProperties}>
+                <span className="usage-fill" />
+              </span>
+              <span>{remainingLabel(w)}</span>
+              {w.kind === 'session' && <span className="usage-mini-reset">{countdown(w.resetsAt, w.percent, now)}</span>}
+            </span>
+          ))}
+        </span>
+      )}
+      {status.context && (
+        <span className="status-item" title={`Context window in use, on ${device}`} data-remote-item="context">
+          <ContextBar used={status.context.used} limit={status.context.limit} />
+        </span>
+      )}
+    </>
+  )
 }
 
 export function StatusBar({
@@ -94,7 +152,8 @@ export function StatusBar({
   profileLabel,
   onRevealProject,
   onOpenSettings,
-  claudeDefaultMode
+  claudeDefaultMode,
+  remoteSession = null
 }: Props): React.JSX.Element {
   /*
    * Named for what it does to the conversation, not to the process. "Restart"
@@ -243,14 +302,35 @@ export function StatusBar({
   // A New tab has no session behind it, so it gets the same footer as no tab
   // at all — "waiting for first turn…" on a launcher was a promise about a
   // turn that could not come.
-  if (!tab || tab.kind === 'new' || tab.kind === 'remote') {
+  if (tab?.kind === 'remote') {
+    const device = tab.remote?.deviceLabel ?? 'another machine'
+    return (
+      <footer className="statusbar" data-remote-status={remoteSession ? 'on' : 'off'}>
+        {/* Another machine's session: what its own status bar says, named as
+            that machine's — nothing here is claimed for this one. */}
+        <span className="status-item" title="Another machine’s session, through your hub">
+          On {device}
+        </span>
+        {profilePill}
+        {remoteSession ? (
+          <RemoteSessionItems status={remoteSession} device={device} now={Date.now()} />
+        ) : (
+          <>
+            <span className="status-item">another machine’s session</span>
+            <span className="status-spacer" />
+          </>
+        )}
+        {relaunchPill}
+        {selfRestartPill}
+        {updatePill}
+      </footer>
+    )
+  }
+
+  if (!tab || tab.kind === 'new') {
     return (
       <footer className="statusbar">
-        {/* Another machine's session: its mode, context and version are that
-            machine's, not this one's, so none of them is claimed here. */}
-        <span className="status-item">
-          {tab?.kind === 'remote' ? `On ${tab.remote?.deviceLabel ?? 'another machine'}: another machine’s session` : 'No active session'}
-        </span>
+        <span className="status-item">No active session</span>
         {profilePill}
         <span className="status-spacer" />
         {/* Carried here too: a relaunch kills its session before the
