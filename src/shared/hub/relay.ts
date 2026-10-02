@@ -151,6 +151,10 @@ export type RelayMode = 'view' | 'full'
  *   for. The host's question — "Let <device> open <session>?" — names it, and
  *   an "Allow once" answer is scoped to it (`relayScopeVerdict`, remote.ts).
  * - `ready`/`refused` (host): the answer. Nothing else is served before `ready`.
+ *   `sizes: true` says the host's own tab for the session follows a guest's
+ *   resize (last active wins, shared/sizeClaim.ts). A host from before that
+ *   sends no `sizes`, and its own tab keeps its old grid while the pty takes
+ *   the guest's, so a guest sends such a host no resize (`HubRemote.resize`).
  * - `part`: a piece of the JSON text of the NEXT frame, every piece but the
  *   last carrying `more: true` (`relayFrameParts`). A pty's `attached` frame
  *   replays up to 512 K characters of scrollback and a transcript can be
@@ -164,7 +168,7 @@ export type RelayMode = 'view' | 'full'
  */
 export type RelayInnerFrame =
   | { t: 'attach'; ptyId: string }
-  | { t: 'ready'; mode: RelayMode; host: { label: string; platform: string } }
+  | { t: 'ready'; mode: RelayMode; host: { label: string; platform: string }; sizes?: boolean }
   | { t: 'refused'; reason: string }
   | { t: 'status'; status: unknown }
   | { t: 'req'; id: number; method: 'GET' | 'POST'; path: string; body?: unknown }

@@ -1089,8 +1089,10 @@ npm run verify:hub-relay      # "Other machines": two RelayChannels through an i
                               # fake clock: a burst is one resize, no use is no resize for ten
                               # idle minutes, a claim inside the other side's settle waits, its
                               # own echo does not; a remote tab's resize reaching only its own
-                              # session's pty; the host's status frame for that session only,
-                              # parsed and cut on the guest, never resent unchanged
+                              # session's pty, and never a host whose `ready` lacks `sizes` (an
+                              # older Stoke, whose tab would not follow); the host's status frame
+                              # for that session only, parsed and cut on the guest, never resent
+                              # unchanged
 npm run verify:install        # the one-line installer and the endpoint that serves it: the whole
                               # User-Agent matrix through the Worker's routing rule (PowerShell
                               # before anything browser-shaped, and HTML as the fallback), the

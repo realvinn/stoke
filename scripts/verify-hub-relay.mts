@@ -551,7 +551,7 @@ interface Machine {
 const machines = new Map<string, Machine>()
 const vkShared = randomU8(32)
 
-function machine(d: Dev, opts: { keepAlive?: { pingMs: number; pongWaitMs: number } } = {}): Machine {
+function machine(d: Dev, opts: { keepAlive?: { pingMs: number; pongWaitMs: number }; olderHost?: boolean } = {}): Machine {
   const m = { dev: d, active: [...ACTIVE], out: false, sharing: false, grants: {}, views: [], frames: [], ptyInput: [], sockets: [], requests: [], sessions: [], resizes: [], status: {}, statusAsked: [] } as unknown as Machine
   const ctx = (): RemoteContext | null => m.out ? null : ({
     account: ACCOUNT,
@@ -627,7 +627,9 @@ function machine(d: Dev, opts: { keepAlive?: { pingMs: number; pongWaitMs: numbe
     sessionStatus: (ptyId) => {
       m.statusAsked.push(ptyId)
       return m.status[ptyId] ?? null
-    }
+    },
+    // A host from before last active wins says nothing about sizes in its `ready`.
+    followsResize: !opts.olderHost
   })
   machines.set(d.id, m)
   return m
@@ -1286,6 +1288,25 @@ console.log('\na remote tab’s resize reaches its own session’s pty; the host
   check('a resize on no socket, or on another session’s refused socket, reaches no pty', hostM.resizes.length - resizesBefore, 0)
   check('and the status it sent changed nothing on the host', [rogue.closed(), last(hostM).guests.length], [null, 1])
   rogue.ch.close('done')
+  guestM.remote.close(tab)
+  hostM.remote.reset()
+  guestM.remote.reset()
+}
+
+console.log('\na host from before last active wins is never resized: its own tab would not follow')
+{
+  // Its `ready` carries no `sizes`. Such a host would apply the phone's resize to the pty while the
+  // tab at its desk kept its old grid, drawing every redraw wrong for whoever sits there.
+  const hostM = machine(A, { olderHost: true })
+  const guestM = machine(B)
+  hostM.sessions = [stubRow()]
+  hostM.sharing = true
+  for (const m of [hostM, guestM]) m.remote.onOnline([A.id, B.id])
+  const tab = await served(hostM, guestM)
+  check('a used remote tab asks nothing of it', guestM.remote.resize(tab, 132, 41), false)
+  guestM.remote.input(tab, 'still-typing\r')
+  await until(() => hostM.ptyInput.includes('still-typing\r'))
+  check('and its pty gets no resize, while keys still reach it', [hostM.resizes.length, hostM.ptyInput.includes('still-typing\r')], [0, true])
   guestM.remote.close(tab)
   hostM.remote.reset()
   guestM.remote.reset()

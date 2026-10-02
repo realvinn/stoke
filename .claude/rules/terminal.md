@@ -406,3 +406,16 @@ only in Fit to phone (gotcha 87). The relay's own instance of that server (`serv
 what tells the desktop (`pty:sized`), pushes each grid to every relayed viewer at once, forgets the
 desktop's saved size when the desktop resizes (`desktopResized`), and puts it back — with the
 desktop's tab refitting — when the last remote tab leaves.
+
+> **Checked against the code on 2026-10-02 (a review of last active wins).** A guest resized ANY
+> host that takes the phone's `resize` frame, which every host built before this change does, but
+> only a host carrying it has a tab that follows (`pty:sized`). Against an older host the pty took
+> the guest's grid while the tab at its desk kept drawing its own over output laid out for the other,
+> a wrong screen for whoever sat there, again on every use, for as long as two machines ran different
+> versions (an update lands on one before the other) — read from d8afc42's `server.ts` and
+> `TerminalView`, not driven against an old build. The host's `ready` now says `sizes: true` when
+> its tab follows (`RemoteMachineDeps.followsResize`, set in index.ts beside the relay server's
+> hook), and `HubRemote.resize` sends nothing to a host that did not say so; such a tab draws the
+> host's grid as before. `verify:hub-relay` holds both sides (a host without the flag gets no resize
+> while keys still reach it), and dropping the gate, the flag, or the guest's reading of it each
+> turned it red.

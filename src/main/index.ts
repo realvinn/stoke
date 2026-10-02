@@ -4347,7 +4347,9 @@ function registerIpc(): void {
           socket: (path, sock) => relayRemote().relaySocket(path, sock),
           emit: (view) => send(CH.hubRemoteChanged, view),
           frame: (tab, frame) => send(CH.hubRemoteFrame, tab, frame),
-          sessionStatus: (ptyId) => remoteSessionStatusFor(ptyId)
+          sessionStatus: (ptyId) => remoteSessionStatusFor(ptyId),
+          // The relay server's `sized` hook (relayRemote) makes this machine's tab follow a guest's resize.
+          followsResize: true
         }
       })
       await svc.start()

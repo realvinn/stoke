@@ -110,6 +110,13 @@ export interface RemoteMachineDeps {
    * Absent: no status is sent.
    */
   sessionStatus?(ptyId: string): RemoteSessionStatus | null | Promise<RemoteSessionStatus | null>
+  /**
+   * This machine's own tab for a session draws a guest's resize and takes the
+   * grid back when used here (main wires the relay server's `sized` hook), so
+   * `ready` may say `sizes: true`. Absent: a guest sends this host no resize,
+   * as it sends none to a host from before last active wins.
+   */
+  followsResize?: boolean
 }
 
 export interface HubRemoteDeps extends RemoteMachineDeps {
@@ -176,6 +183,13 @@ interface GuestTab {
   closed: boolean
   /** The host's last word on the session's model, context and usage, or null. */
   session: RemoteSessionStatus | null
+  /**
+   * The host's `ready` said `sizes: true` under a full grant: its own tab
+   * follows this tab's resize. False until then, and for a host from before
+   * last active wins, whose tab would keep its old grid while the pty took
+   * this one's — the session drawn wrong at the desk (`resize`).
+   */
+  sizes: boolean
 }
 
 interface HostRelay {
@@ -460,7 +474,8 @@ export class HubRemote {
       ping: null,
       pongWait: null,
       closed: false,
-      session: null
+      session: null,
+      sizes: false
     }
     this.tabs.set(tab.id, tab)
     void this.connect(tab)
@@ -479,11 +494,14 @@ export class HubRemote {
    * The remote tab is being used here: ask the host to size the pty to this
    * pane's grid (shared/sizeClaim.ts decides when). The phone's own resize
    * frame, so the host's phone server applies it, remembers its own size, and
-   * puts it back when the last remote viewer leaves. False when nothing was sent.
+   * puts it back when the last remote viewer leaves. Never to a host whose
+   * `ready` did not say `sizes` (an older Stoke: its own tab would go on
+   * drawing its old grid over output laid out for this one). False when
+   * nothing was sent.
    */
   resize(tabId: string, cols: number, rows: number): boolean {
     const t = this.tabs.get(tabId)
-    if (!t || t.state !== 'open' || !t.channel || !isGrid({ cols, rows })) return false
+    if (!t || t.state !== 'open' || !t.sizes || !t.channel || !isGrid({ cols, rows })) return false
     return t.channel.send({ t: 'ws-msg', id: PTY_SOCKET, data: JSON.stringify({ type: 'resize', cols, rows, force: true }) })
   }
 
@@ -596,6 +614,8 @@ export class HubRemote {
         t.state = 'open'
         t.message = null
         t.tries = 0
+        // Only a host that says its own tab follows takes a resize from here (relay.ts `ready`).
+        t.sizes = f.mode === 'full' && f.sizes === true
         channel.send({ t: 'ws-open', id: PTY_SOCKET, path: `/ws?ptyId=${encodeURIComponent(t.ptyId)}` })
         this.emit()
         return
@@ -963,7 +983,12 @@ export class HubRemote {
     h.scope = { kind: 'session', ptyId: h.ptyId }
     if (via === 'once') this.once = holdOnce(this.once, h.guest, h.ptyId)
     h.phase = 'serving'
-    channel.send({ t: 'ready', mode, host: { label: ctx.me.label, platform: ctx.me.platform } })
+    channel.send({
+      t: 'ready',
+      mode,
+      host: { label: ctx.me.label, platform: ctx.me.platform },
+      ...(this.d.followsResize ? { sizes: true } : {})
+    })
     void this.pushStatus(h)
     this.armStatus()
     this.emit()
