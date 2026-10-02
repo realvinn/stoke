@@ -72,6 +72,12 @@ export const CH = {
   projectsPin: 'projects:pin',
   projectsReveal: 'projects:reveal',
   projectsMeta: 'projects:meta',
+  /**
+   * A folder's git state for the title bar's git chip (`main/gitStatus.ts`):
+   * branch, changes, ahead/behind as of the last fetch, linked worktree. Runs
+   * no repo code and never fetches (gotcha 147).
+   */
+  gitStatus: 'git:status',
   sessionsList: 'sessions:list',
   /**
    * Every listed project's sessions, as title + first prompt only, for the
@@ -118,6 +124,12 @@ export const CH = {
    * after this resolves, so two `claude` processes never write one transcript.
    */
   ptyStop: 'pty:stop',
+  /**
+   * Type text into a session as Claude Code takes it (`PtyManager.submit`:
+   * typed chunks, ESC CR newlines — gotchas 85, 86), pressing Enter after it
+   * only when asked. The title bar's text shortcuts.
+   */
+  ptyType: 'pty:type',
   ptyData: 'pty:data',
   ptyExit: 'pty:exit',
 

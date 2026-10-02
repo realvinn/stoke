@@ -19,6 +19,7 @@ import { clampVoice, VOICE_DEFAULTS } from '../shared/voiceSettings.ts'
 import { clampAccessAud, clampAccessTeamDomain } from '../shared/cfAccess.ts'
 import { hydrateRemotePush } from '../shared/remotePhone.ts'
 import { HUB_SETTINGS_DEFAULTS, hydrateHubSettings } from '../shared/hub/settings.ts'
+import { clampTopBar } from '../shared/topBar.ts'
 import { isId } from '../shared/hub/codec.ts'
 import {
   clampCurrentProfile,
@@ -137,6 +138,8 @@ export const DEFAULT_SETTINGS: Settings = {
   // already draws.
   hideStatusLine: true,
   showBrand: true,
+  // On, with the folder and its git state (shared/topBar.ts).
+  topBar: clampTopBar(null),
   /*
    * 'ask', not 'auto', and not 'off'.
    *
@@ -440,6 +443,9 @@ export function hydrateSettings(raw: unknown): Settings {
     // must read as on, which is what an untouched machine gets.
     hideStatusLine: r.hideStatusLine !== false,
     showBrand: r.showBrand !== false,
+    // Rebuilt from named keys (shared/topBar.ts): unknown kinds, bad ids and
+    // over-long text go; a file from before the key reads as the default.
+    topBar: clampTopBar(r.topBar),
     // A whitelist, not a typeof: the top-level `...r` spread keeps unknown junk
     // verbatim, so anything that is not one of the three literals must be
     // replaced rather than merely type-checked.

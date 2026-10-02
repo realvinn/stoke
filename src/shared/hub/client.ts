@@ -318,6 +318,7 @@ const SETTING_LABELS: Record<string, string> = {
   worklogBoards: 'Worklog boards',
   hideStatusLine: 'Status line',
   showBrand: 'Brand mark',
+  topBar: 'Title bar and text shortcuts',
   sshKeyEnroll: 'SSH key offers',
   notifications: 'Notifications',
   providers: 'Provider & keys',

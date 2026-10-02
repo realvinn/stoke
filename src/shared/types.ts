@@ -11,6 +11,7 @@ import type { BrowserProfile, ImportOffer } from './browserProfiles.ts'
 import type { ChatIndexMode, ChatIndexOptions } from './chatIndex.ts'
 import type { SttProviderId } from './speechProviders.ts'
 import type { HubSettings } from './hub/settings.ts'
+import type { TopBarSettings } from './topBar.ts'
 
 /* ------------------------------------------------------------------ launch */
 
@@ -1351,6 +1352,13 @@ export interface Settings {
    * another is the kind of difference nobody can search for.
    */
   showBrand: boolean
+  /**
+   * The title bar's own items between the tabs and the actions: the folder,
+   * its git state, text shortcuts, spaces. On by default with folder + git.
+   * Repaired by `clampTopBar` (shared/topBar.ts); travels with the setup file
+   * and hub sync, since a shortcut means the same on any machine.
+   */
+  topBar: TopBarSettings
   /** What to do when a remote asks for a password. See SshKeyEnroll. */
   sshKeyEnroll: SshKeyEnroll
   /** OS notifications when Claude finishes or needs you. See NotificationMode. */

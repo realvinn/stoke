@@ -363,10 +363,19 @@ console.log('\nsearch: what ranks first, synonyms, spellings and highlights')
     [top('api keys', 2).sort(), searchSettings(entries, 'api keys').findIndex((h) => h.entry.key === 'row:backup.storage') > 1],
     [['row:providers.anthropic-key', 'row:providers.openrouter-key'], true]
   )
-  check('"shortcuts" and "keyboard shortcuts": the zoom keys and dictation, and nothing that merely says keys', [top('shortcuts', 3).sort(), top('keyboard shortcuts', 3).sort()], [
-    ['row:appearance.zoom-keys', 'row:voice.dictation'],
-    ['row:appearance.zoom-keys', 'row:voice.dictation']
+  /*
+   * The title bar's TEXT shortcuts (2026-10-02) are shortcuts too, so a bare
+   * "shortcuts" lists that row beside the two keyboard ones; "keyboard
+   * shortcuts" still puts the keyboard ones first. Still nothing that merely
+   * says keys.
+   */
+  check('"shortcuts": the zoom keys, dictation and the title bar’s text shortcuts, and nothing that merely says keys', top('shortcuts', 3).sort(), [
+    'row:appearance.title-bar',
+    'row:appearance.zoom-keys',
+    'row:voice.dictation'
   ])
+  check('"keyboard shortcuts": the zoom keys and dictation lead', top('keyboard shortcuts', 2).sort(), ['row:appearance.zoom-keys', 'row:voice.dictation'])
+  check('"text shortcuts" and "snippets": the title bar first', [top('text shortcuts'), top('snippets')], [['row:appearance.title-bar'], ['row:appearance.title-bar']])
   check('"colors" (US and plural) finds what "colour" finds first', top('colors'), top('colour'))
   check('"notifications" finds the notification row', has('notifications', 'row:sessions.notifications', 2), true)
   check('"keys" lists a label that says keys before one only its singular found', searchSettings(entries, 'keys').findIndex((h) => h.entry.key === 'row:appearance.zoom-keys') < searchSettings(entries, 'keys').findIndex((h) => h.entry.key === 'row:providers.anthropic-key'), true)

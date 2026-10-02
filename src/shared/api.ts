@@ -26,6 +26,7 @@ export interface ImportResult {
   needsChromeClose?: boolean
 }
 import type { SkillDirScan } from './skills'
+import type { GitStatus } from './gitStatus'
 import type { AccountMcpSummary, McpCatalog } from './mcpServers'
 import type { MicAccess } from './voiceRoute'
 import type { SttConfig } from './speechProviders'
@@ -545,6 +546,12 @@ export interface StokeApi {
     reveal(path: string): Promise<string>
   }
 
+  /** A folder's git state, for the title bar (`main/gitStatus.ts`). Never fetches, runs no repo code. */
+  git: {
+    /** `fresh` skips main's short shared cache: a click on the chip. */
+    status(path: string, fresh?: boolean): Promise<GitStatus>
+  }
+
   /** Chat history: the searchable copy of every AI chat's text (shared/chatIndex.ts). */
   chats: {
     /** Names and sizes only — safe before the user has said yes. */
@@ -588,6 +595,12 @@ export interface StokeApi {
      * `capMs` (at most 10s), whichever is first. True when it exited in time.
      */
     stop(ptyId: string, capMs?: number): Promise<boolean>
+    /**
+     * Type `text` as Claude Code takes it — typed chunks, ESC CR newlines,
+     * never a paste (gotchas 85, 86) — then press Enter only if `enter`.
+     * False when the session is gone or the text was refused.
+     */
+    type(ptyId: string, text: string, enter: boolean): Promise<boolean>
     onData(cb: (ptyId: string, data: string) => void): () => void
     /**
      * `loggedIn`: for a remote session, whether it got past authentication

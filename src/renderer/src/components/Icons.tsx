@@ -126,6 +126,55 @@ export const IconFolder = (p: SVGProps<SVGSVGElement>): React.JSX.Element => (
   </Base>
 )
 
+/* The title bar's own items (TopBar.tsx). */
+
+/** A branch: two commits and the line that forks between them. */
+export const IconBranch = (p: SVGProps<SVGSVGElement>): React.JSX.Element => (
+  <Base {...p}>
+    <circle cx="5" cy="3.6" r="1.4" />
+    <circle cx="5" cy="12.4" r="1.4" />
+    <circle cx="11" cy="5.2" r="1.4" />
+    <path d="M5 5v6M11 6.6c0 2.6-2.4 3.2-6 4.4" />
+  </Base>
+)
+
+export const IconPencil = (p: SVGProps<SVGSVGElement>): React.JSX.Element => (
+  <Base {...p}>
+    <path d="M10.6 2.9l2.5 2.5L6 12.5l-3.2.7.7-3.2z" />
+    <path d="M9.3 4.2l2.5 2.5" />
+  </Base>
+)
+
+/** Six dots: something that can be picked up and moved. */
+export const IconGrip = (p: SVGProps<SVGSVGElement>): React.JSX.Element => (
+  <Base {...p} strokeWidth="2.2">
+    <path d="M6 4h.01M10 4h.01M6 8h.01M10 8h.01M6 12h.01M10 12h.01" />
+  </Base>
+)
+
+/** A machine elsewhere: an SSH host. */
+export const IconServer = (p: SVGProps<SVGSVGElement>): React.JSX.Element => (
+  <Base {...p}>
+    <rect x="2.5" y="3" width="11" height="4.2" rx="1" />
+    <rect x="2.5" y="8.8" width="11" height="4.2" rx="1" />
+    <path d="M5 5.1h.01M5 10.9h.01" />
+  </Base>
+)
+
+/** "»": more of the same, in a menu. */
+export const IconChevronsRight = (p: SVGProps<SVGSVGElement>): React.JSX.Element => (
+  <Base {...p}>
+    <path d="M4 4.5L7.5 8 4 11.5M8.5 4.5L12 8l-3.5 3.5" />
+  </Base>
+)
+
+/** Return: this shortcut presses Enter after typing. */
+export const IconEnter = (p: SVGProps<SVGSVGElement>): React.JSX.Element => (
+  <Base {...p}>
+    <path d="M12.5 3.5v4.2a1.6 1.6 0 0 1-1.6 1.6H4M6.6 6.7L4 9.3l2.6 2.6" />
+  </Base>
+)
+
 export const IconPin = (p: SVGProps<SVGSVGElement>): React.JSX.Element => (
   <Base {...p}>
     <path d="M6 2.2h4l-.6 3.4 2.1 2.1H4.5l2.1-2.1z" />
