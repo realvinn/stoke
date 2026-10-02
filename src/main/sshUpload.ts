@@ -9,8 +9,8 @@ import {
   MAX_FILE_BYTES,
   UPLOAD_IDLE_MS,
   fileUploadTimeoutMs,
-  formatBytes,
   parseUploadPath,
+  tooLargeSentence,
   uploadExitMessage,
   uploadFailureKind,
   uploadTimeoutMs,
@@ -334,7 +334,7 @@ function readFailure(label: string, e: unknown): string {
 }
 
 const tooLarge = (label: string, size: number): string =>
-  `${label} is ${formatBytes(size)}; Stoke sends files up to ${formatBytes(MAX_FILE_BYTES)}. Copy it with scp instead.`
+  `${tooLargeSentence(label, size, MAX_FILE_BYTES, 'file')} Copy it with scp instead.`
 
 /**
  * Whether `path` may be sent, and what it really is: the path every link

@@ -78,6 +78,7 @@ import {
   parseFilenamesPlist,
   parseUploadPath,
   parseUriList,
+  tooLargeSentence,
   uploadFailureKind,
   uploadTimeoutMs
 } from '../src/shared/imageUpload.ts'
@@ -1388,6 +1389,12 @@ console.log('\nan image sent to the machine: what may be named, and how big')
     same(`a dropped file ${JSON.stringify(file)} keeps its own name, made safe`, [got, isSafeFarName(got)], [want, true])
   }
   same('two drops of one name never meet: the suffix is main’s random hex', droppedFileName('notes.txt', '000001') === droppedFileName('notes.txt', '000002'), false)
+  // A size just past a cap rounds to the cap's own figure; the sentence must not read "is 100.0 MB; … up to 100.0 MB".
+  same(
+    'too large: a size just past the cap says "over", one well past says its size',
+    [tooLargeSentence('a.bin', MAX_FILE_BYTES + 1, MAX_FILE_BYTES, 'file'), tooLargeSentence('b.bin', 150 * 1024 * 1024, MAX_FILE_BYTES, 'file'), tooLargeSentence('c.png', MAX_IMAGE_BYTES + 1, MAX_IMAGE_BYTES, 'image')],
+    ['a.bin is over 100.0 MB; Stoke sends files up to 100.0 MB.', 'b.bin is 150.0 MB; Stoke sends files up to 100.0 MB.', 'c.png is over 25.0 MB; Stoke sends images up to 25.0 MB.']
+  )
   {
     // Whatever the name, the result is one Stoke may write (fuzzed over awkward characters).
     const alphabet = ['a', 'Z', '9', '.', '-', '_', ' ', "'", '"', '$', '`', '\\', '/', '\n', 'é', '日', '🎉', '(', ';', '&']
@@ -1719,7 +1726,7 @@ if (process.platform === 'win32') {
       ['a pipe', fifo, 'a-pipe is a pipe, not a file.'],
       ['a socket', sock, 's.sock is a socket, not a file.'],
       ['a device', '/dev/null', 'null is a device, not a file.'],
-      ['past the cap', huge, `huge.bin is ${formatBytes(MAX_FILE_BYTES + 1)}; Stoke sends files up to ${formatBytes(MAX_FILE_BYTES)}. Copy it with scp instead.`],
+      ['past the cap', huge, 'huge.bin is over 100.0 MB; Stoke sends files up to 100.0 MB. Copy it with scp instead.'],
       ['a missing file', join(root, 'nope.txt'), 'nope.txt is no longer there.'],
       ['a relative path', 'notes.txt', 'notes.txt is not a file on this computer.'],
       ['not a string', 42, 'that is not a file on this computer.'],
@@ -2104,7 +2111,7 @@ console.log('\nan image sent to the machine: the queue a tab’s pastes and drop
     same(
       'what could not be sent is said, never typed',
       t.said[0],
-      [`huge.png is ${formatBytes(MAX_IMAGE_BYTES + 1)}; Stoke sends images up to ${formatBytes(MAX_IMAGE_BYTES)}.`, 'notes.txt is not a file on this computer, so it cannot be sent.']
+      ['huge.png is over 25.0 MB; Stoke sends images up to 25.0 MB.', 'notes.txt is not a file on this computer, so it cannot be sent.']
     )
   }
 
@@ -2157,7 +2164,7 @@ console.log('\nan image sent to the machine: the queue a tab’s pastes and drop
     same(
       '…it is said, and the rest still goes',
       [t.typed, t.said[0]],
-      [[['/far/ok.txt']], [`disk.img is ${formatBytes(MAX_FILE_BYTES + 1)}; Stoke sends files up to ${formatBytes(MAX_FILE_BYTES)}. Copy it with scp instead.`]]
+      [[['/far/ok.txt']], ['disk.img is over 100.0 MB; Stoke sends files up to 100.0 MB. Copy it with scp instead.']]
     )
   }
 

@@ -172,6 +172,18 @@ export function formatBytes(n: number): string {
 }
 
 /**
+ * Why `label` is not sent: its size and the cap, in a sentence. A size just
+ * past a cap rounds to the cap's own figure, and "huge.bin is 100.0 MB; Stoke
+ * sends files up to 100.0 MB" (what a 100 MB + 1 byte drop said in the app)
+ * reads as a contradiction, so that size is said as "over" the cap.
+ */
+export function tooLargeSentence(label: string, size: number, cap: number, noun: UploadNoun): string {
+  const was = formatBytes(size)
+  const most = formatBytes(cap)
+  return `${label} is ${was === most ? `over ${most}` : was}; Stoke sends ${noun}s up to ${most}.`
+}
+
+/**
  * How long one send may take before it is given up: 15 s to connect and
  * settle, plus the bytes at 150 KB/s (a poor uplink), at most two minutes.
  */

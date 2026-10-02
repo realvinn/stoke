@@ -32,7 +32,7 @@
  * jobs were made: jobs run one at a time, chained in `enqueue` before any await.
  */
 import type { ImagePrepared, ImageSent, ImageSource } from './api.ts'
-import { MAX_FILE_BYTES, MAX_IMAGE_BYTES, formatBytes, looksLikeImageFile } from './imageUpload.ts'
+import { MAX_FILE_BYTES, MAX_IMAGE_BYTES, looksLikeImageFile, tooLargeSentence } from './imageUpload.ts'
 
 export type ImagePhase =
   | { kind: 'idle' }
@@ -162,7 +162,7 @@ export class ImageJobs {
       const image = looksLikeImageFile(f.name, f.type)
       if (image && f.size <= MAX_IMAGE_BYTES) job.items.push({ get: () => this.asImage(job, f) })
       // Too big to send as an image, and no file behind it to send instead.
-      else if (image && !f.viaPath) job.items.push({ get: async () => `${f.name} is ${formatBytes(f.size)}; Stoke sends images up to ${formatBytes(MAX_IMAGE_BYTES)}.` })
+      else if (image && !f.viaPath) job.items.push({ get: async () => tooLargeSentence(f.name, f.size, MAX_IMAGE_BYTES, 'image') })
       else job.items.push({ name: f.name, get: () => this.asFile(job, f) })
     }
     this.enqueue(job)
@@ -192,7 +192,7 @@ export class ImageJobs {
   /** A dropped file of any kind, by the path behind it, which main reads. */
   private asFile(job: Job, f: DroppedFile): Promise<Got> {
     // Refused before main is asked, so a 2 GB file is never opened.
-    if (f.size > MAX_FILE_BYTES) return Promise.resolve(`${f.name} is ${formatBytes(f.size)}; Stoke sends files up to ${formatBytes(MAX_FILE_BYTES)}. Copy it with scp instead.`)
+    if (f.size > MAX_FILE_BYTES) return Promise.resolve(`${tooLargeSentence(f.name, f.size, MAX_FILE_BYTES, 'file')} Copy it with scp instead.`)
     if (!f.viaPath) return Promise.resolve(`${f.name} is not a file on this computer, so it cannot be sent.`)
     return this.hold(job, f.viaPath())
   }

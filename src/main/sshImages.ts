@@ -12,12 +12,12 @@ import {
   droppedImageName,
   fileNameW,
   fileUrlPath,
-  formatBytes,
   imageKind,
   isSafeFarName,
   isSafeUploadName,
   parseFilenamesPlist,
-  parseUriList
+  parseUriList,
+  tooLargeSentence
 } from '@shared/imageUpload'
 import { UploadHolds, inspectUploadFile, sendFile, sendImage } from './sshUpload.ts'
 
@@ -180,7 +180,7 @@ export function registerSshImageHandlers(deps: {
       bytes = clipboardImage()
       if (!bytes) return { ok: false, reason: 'no-image', message: 'There is no image on the clipboard.' }
       if (bytes.byteLength > MAX_IMAGE_BYTES) {
-        return { ok: false, reason: 'too-large', message: `That image is ${formatBytes(bytes.byteLength)}; Stoke sends images up to ${formatBytes(MAX_IMAGE_BYTES)}.` }
+        return { ok: false, reason: 'too-large', message: tooLargeSentence('That image', bytes.byteLength, MAX_IMAGE_BYTES, 'image') }
       }
       name = clipboardImageName(new Date(), hex, imageKind(bytes) ?? 'png')
     } else if (src.kind === 'bytes') {
@@ -188,7 +188,7 @@ export function registerSshImageHandlers(deps: {
       const label = typeof src.name === 'string' && src.name ? src.name : 'That file'
       if (!bytes) return { ok: false, reason: 'not-image', message: `${label} could not be read.` }
       if (bytes.byteLength > MAX_IMAGE_BYTES) {
-        return { ok: false, reason: 'too-large', message: `${label} is ${formatBytes(bytes.byteLength)}; Stoke sends images up to ${formatBytes(MAX_IMAGE_BYTES)}.` }
+        return { ok: false, reason: 'too-large', message: tooLargeSentence(label, bytes.byteLength, MAX_IMAGE_BYTES, 'image') }
       }
       const kind = imageKind(bytes)
       if (!kind) return { ok: false, reason: 'not-image', message: `${label} is not a PNG, JPEG, GIF or WebP image.` }
