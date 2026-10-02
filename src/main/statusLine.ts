@@ -21,6 +21,7 @@ import type {
   StatusLineSnapshot,
   StatusLineWindowReading
 } from '@shared/types'
+import { PRIVATE_SETTINGS } from '../shared/privateChat.ts'
 
 /**
  * Stoke's own `statusLine` command, and the payload it captures.
@@ -165,7 +166,22 @@ if (mode === 'event') {
       try {
         size = statSync(target).size
       } catch {}
-      const line = raw.trim().replace(/\\r?\\n/g, ' ') + '\\n'
+      // A private chat's hook (a fourth word, 'private') keeps only what the
+      // tab's dot reads: never the reply, the notification text or the
+      // transcript path, and only the opening of a prompt. The same rule as
+      // reducePrivateHookEvent in shared/privateChat.ts; verify:private runs
+      // this file and compares the two. A line that does not parse is dropped.
+      let body = raw.trim()
+      if (process.argv[4] === 'private') {
+        const o = JSON.parse(body)
+        const kept = {}
+        for (const k of ['hook_event_name', 'session_id', 'notification_type', 'cwd', 'source', 'background_tasks']) {
+          if (k in o) kept[k] = o[k]
+        }
+        if (typeof o.prompt === 'string') kept.prompt = o.prompt.slice(0, 48)
+        body = JSON.stringify(kept)
+      }
+      const line = body.replace(/\\r?\\n/g, ' ') + '\\n'
       // A long session emits thousands of these. Past the cap the file is
       // restarted with this one line rather than trimmed, because the reader
       // tracks an offset and a trim would move every offset under it.
@@ -514,9 +530,17 @@ export function statusLineCommand(
 export function hookCommand(
   sessionId: string,
   platform: NodeJS.Platform = process.platform,
-  hasGitBash: boolean = platform === 'win32' && gitBashPath() !== null
+  hasGitBash: boolean = platform === 'win32' && gitBashPath() !== null,
+  /**
+   * A private chat's hook: a fourth word that makes the wrapper keep only what
+   * the tab's dot reads (`reducePrivateHookEvent`). An older wrapper — another
+   * Stoke rewriting the shared `wrapper.mjs` — ignores the word and appends the
+   * whole event, which is what every other session's hook does; the file still
+   * goes with the session.
+   */
+  privateChat = false
 ): string {
-  return shimCommand(sessionId, 'event', platform, hasGitBash)
+  return shimCommand(sessionId, 'event', platform, hasGitBash, privateChat ? ['private'] : [])
 }
 
 /**
@@ -563,10 +587,13 @@ function shimCommand(
   sessionId: string,
   mode: string,
   platform: NodeJS.Platform,
-  hasGitBash: boolean
+  hasGitBash: boolean,
+  extra: readonly string[] = []
 ): string {
   const line =
-    `"${join(statusLineDir(), shimName(platform))}" "${key(sessionId)}"` + (mode ? ` "${mode}"` : '')
+    `"${join(statusLineDir(), shimName(platform))}" "${key(sessionId)}"` +
+    (mode ? ` "${mode}"` : '') +
+    extra.map((w) => ` "${w}"`).join('')
   /*
    * On Windows the syntax depends on which shell the CLI will use, and it uses
    * whichever one it can find.
@@ -953,6 +980,12 @@ export interface SessionSettingsInput {
    * Omitted, it falls back to Stoke's own PATH, as before.
    */
   hasGitBash?: boolean
+  /**
+   * A private chat (shared/privateChat.ts): `PRIVATE_SETTINGS` join this one
+   * file — never a second `--settings` (gotcha 2) — and the hooks write the
+   * reduced event.
+   */
+  privateChat?: boolean
 }
 
 /**
@@ -973,6 +1006,7 @@ export interface SessionSettingsInput {
 export function sessionSettingsJson(input: SessionSettingsInput): Record<string, unknown> {
   const out: Record<string, unknown> = {}
   if (input.ultracode) out.ultracode = true
+  if (input.privateChat) Object.assign(out, PRIVATE_SETTINGS)
   if (input.sessionId) {
     out.statusLine = {
       type: 'command',
@@ -989,7 +1023,10 @@ export function sessionSettingsJson(input: SessionSettingsInput): Record<string,
      * into the model's context. `timeout` is seconds; the wrapper takes
      * milliseconds, so 10 is a ceiling nothing should reach.
      */
-    const hookLine = input.hasGitBash === undefined ? hookCommand(input.sessionId) : hookCommand(input.sessionId, process.platform, input.hasGitBash)
+    const hookLine =
+      input.hasGitBash === undefined
+        ? hookCommand(input.sessionId, process.platform, undefined, input.privateChat === true)
+        : hookCommand(input.sessionId, process.platform, input.hasGitBash, input.privateChat === true)
     const hook = [{ hooks: [{ type: 'command', command: hookLine, timeout: 10 }] }]
     out.hooks = { Stop: hook, Notification: hook, UserPromptSubmit: hook }
   }
