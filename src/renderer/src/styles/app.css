@@ -4559,9 +4559,17 @@ mark.hit {
   right: calc(var(--space-8) + var(--space-8));
 }
 
+/*
+ * One step UNDER the pane's own bottom strips (`.image-strip`, `.voice-strip`,
+ * also `--z-sticky`, earlier in the DOM): the image strip sits in the same
+ * bottom-right corner with its Cancel and Dismiss at the right end, and at an
+ * equal z-index this later sibling painted over them. The strip is transient;
+ * the button is back the moment it goes.
+ */
 .remote-fab[data-placement='main'] {
   right: var(--space-16);
   bottom: var(--space-12);
+  z-index: calc(var(--z-sticky) - 1);
   flex-direction: column-reverse;
 }
 
@@ -4653,6 +4661,30 @@ mark.hit {
   box-shadow: var(--shadow-md);
   font-size: var(--fs-sm);
   animation: remote-fab-in var(--dur-fast) var(--ease);
+  position: relative;
+}
+
+/*
+ * The gap between the face and the panel, made part of the panel. `.remote-fab`
+ * itself takes no pointer (it must not block the terminal round it), so the
+ * 4px between them hit-tested to the terminal underneath: a pointer moving from
+ * the face to Disconnect or Close crossed it, the root got `mouseleave`, and
+ * the panel closed under it. Measured in the built app on 2026-10-02 — a
+ * 40-step path from "Remote" to Disconnect ended with the panel shut and the
+ * pointer over `.xterm`. A pseudo-element is hit-tested as its element, and it
+ * exists only while the panel is shown.
+ */
+.remote-fab-panel::before {
+  content: '';
+  position: absolute;
+  inset-inline: -1px;
+  bottom: 100%;
+  height: calc(var(--space-4) + 2px);
+}
+
+.remote-fab[data-placement='main'] .remote-fab-panel::before {
+  top: 100%;
+  bottom: auto;
 }
 
 .remote-fab[data-open] .remote-fab-panel {
