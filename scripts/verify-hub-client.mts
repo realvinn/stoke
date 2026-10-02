@@ -543,6 +543,7 @@ function device(name: string, initial: Partial<Settings>): Box {
     exec: fakeSshG(),
     presence: null,
     pairPollMs: 40,
+    waitPollMs: 40,
     fetch: (async (input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(String(input))
       box.seen.push(`${init?.method ?? 'GET'} ${v1(url)}${url.search}`)
@@ -635,6 +636,32 @@ try {
   check('the first account is made with the invite and signed in', [up.ok, A.svc.view().phase, A.svc.view().role], [true, 'new-account', 'owner'])
   ok('the session is sealed in hub-device.json, never in Settings', A.settings().hub.token === '' && !readFileSync(join(A.userData, 'hub-device.json'), 'utf8').includes('sht_'))
   if (!WIN) check('hub-device.json is owner-only', statSync(join(A.userData, 'hub-device.json')).mode & 0o777, 0o600)
+
+  /* ------------------------------------------ a second computer, signed in before there is a vault */
+  // The owner's report (2026-10-02): signed in on the Mac, made the vault on the other
+  // computer, and the Mac showed nothing — a device outside the vault looked for one
+  // once, at sign-in, and never again.
+  const W = device('early', {} as Partial<Settings>)
+  extras.push(W)
+  await W.svc.start()
+  await W.svc.setUrl(URL_)
+  check('a second computer signs in while the account has no vault yet', [(await W.svc.signIn({ email: EMAIL, password: PASSWORD, label: 'Early laptop' })).ok, W.svc.view().phase], [true, 'new-account'])
+  const wKit = await W.svc.createVault()
+  if (wKit.ok) secretsSeen.push(wKit.kit)
+  check('and starts a vault of its own: its Kit is shown, nothing posted yet', [wKit.ok, W.svc.view().kitPending], [true, true])
+  const wLooks = (): number => W.seen.filter((r) => r === 'GET /v1/chain').length
+  // Waited for, not sampled over a fixed window: one look is a whole signed request, and on a
+  // loaded machine three of them did not fit in 400 ms (found in review: 5 of 11 runs failed).
+  const looks0 = wLooks()
+  const lookUntil = Date.now() + 8000
+  let sawSyncing = false
+  while (wLooks() - looks0 < 3 && Date.now() < lookUntil) {
+    sawSyncing ||= W.svc.view().busy === 'Syncing…'
+    await sleep(10)
+  }
+  ok(`while it waits it keeps looking for a vault (${wLooks() - looks0} more looks)`, wLooks() - looks0 >= 3)
+  check('quietly: no “Syncing…” on a computer with nothing to sync, through those looks', sawSyncing, false)
+
   const twice = await Promise.all([A.svc.createVault(), A.svc.createVault()])
   check('a double press makes one Kit, not two (gotcha 20)', twice.map((r) => r.ok).sort(), [false, true])
   const made = twice.find((r) => r.ok) as { ok: true; kit: string; group: number }
@@ -645,6 +672,16 @@ try {
   check('the right group (typed any old way) makes the vault', (await A.svc.confirmKit(kitGroup(made).toLowerCase())).ok, true)
   await until('A syncs after genesis', () => A.svc.view().lastSyncAt !== null)
   check('A is in the vault, alone', [A.svc.view().phase, A.svc.view().devices.length, A.svc.view().devices[0]?.me], ['active', 1, true])
+  await until('the early computer sees the vault appear and asks to join it, unasked', () => W.svc.view().phase === 'locked' && W.svc.view().join?.state === 'waiting')
+  check('the Kit it showed, for a vault that can no longer be made, is gone', W.svc.view().kitPending, false)
+  await A.svc.syncNow()
+  check('A lists its request', A.svc.view().pairs.map((p) => [p.device.label, p.state]), [['Early laptop', 'waiting']])
+  const looks1 = wLooks()
+  await sleep(300)
+  check('and it stops looking for a vault once there is one', wLooks() - looks1, 0)
+  check('it withdraws the request', (await W.svc.joinCancel()).ok, true)
+  await A.svc.syncNow()
+  check('and A no longer lists it', A.svc.view().pairs.length, 0)
   const account = JSON.parse(readFileSync(join(A.userData, 'hub-state.json'), 'utf8')).account as string
   ok('A’s host got a sync id when it first synced (gotcha 139)', /^h[0-9a-z]{16}$/.test((A.settings().hosts[0] as { syncId?: string }).syncId ?? ''))
   check('A synced its settings and host; keys wait for the account switch', [A.svc.view().counts.settings > 10, A.svc.view().counts.hosts, A.svc.view().counts.keys], [true, 1, 0])
@@ -658,11 +695,13 @@ try {
 
   /* ------------------------------------------ B joins by approval, confirmed on BOTH screens */
   check('B signs in to the same account', (await B.svc.setUrl(URL_)).ok && (await B.svc.signIn({ email: EMAIL, password: PASSWORD, label: 'Windows PC' })).ok, true)
-  check('and is locked: signed in, not in the vault', B.svc.view().phase, 'locked')
-  check('B asks to join', (await B.svc.joinStart()).ok, true)
+  check('and is locked: signed in, not in the vault — and has asked to join by itself', [B.svc.view().phase, B.svc.view().join?.state], ['locked', 'waiting'])
+  // The pair id, not a count on A: the hub expires a device's older request itself, so A would list one either way.
+  const bPair = B.svc.view().join?.pair
+  check('a press of “Approve from another device” on top of that opens no second request', [(await B.svc.joinStart()).ok, B.svc.view().join?.pair === bPair && !!bPair], [true, true])
   await A.svc.syncNow()
   const req = A.svc.view().pairs[0]
-  check('A lists the request, naming the device', [req?.device.label, req?.state], ['Windows PC', 'waiting'])
+  check('A lists one request, naming the device', A.svc.view().pairs.map((p) => [p.device.label, p.state]), [['Windows PC', 'waiting']])
   check('A answers it', (await A.svc.approveStart(req.pair)).ok, true)
   await until('both screens show a code', () => !!B.svc.view().join?.code && !!A.svc.view().pairs[0]?.code)
   const codeA = A.svc.view().pairs[0]?.code
@@ -966,6 +1005,11 @@ try {
   await kitCheck.svc.setUrl(URL_)
   await kitCheck.svc.signIn({ email: EMAIL, password: PASSWORD, label: 'Kit check' })
   check('the Kit that was typed on C opens nothing now', (await kitCheck.svc.recover(made.kit)).ok, false)
+  await A.svc.syncNow()
+  check('its sign-in asked to join by itself, so A lists it', A.svc.view().pairs.some((p) => p.device.label === 'Kit check'), true)
+  check('signing out there', (await kitCheck.svc.signOut()).ok, true)
+  await A.svc.syncNow()
+  check('withdraws that request: A no longer lists a card nobody will answer', A.svc.view().pairs.some((p) => p.device.label === 'Kit check'), false)
 
   /* ------------------------------------------ rename, revoke */
   const cId = C.svc.view().device!.id
@@ -1090,6 +1134,7 @@ try {
   )
   await A.svc.syncNow()
   check('re-sealed by D, the key A shared is still listed once on A, as A’s own', A.svc.view().sshKeys.filter((k) => k.name === 'nuc_ed25519').map((k) => k.mine), [true])
+  check('the join request D opened by itself at sign-in went when its Kit let it in: A lists none from D', A.svc.view().pairs.some((p) => p.device.label === 'Spare'), false)
   const aState = JSON.parse(readFileSync(join(A.userData, 'hub-state.json'), 'utf8')) as { shared: Record<string, unknown>; offered: Record<string, unknown> }
   check('and is never recorded as offered to A itself', Object.keys(aState.offered).filter((k) => k in aState.shared), [])
   check('and D names the device that shared it, not the one that re-sealed it', D.svc.view().sshKeys.map((k) => [k.name, k.from]), [['nuc_ed25519', 'Mac']])

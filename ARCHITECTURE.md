@@ -330,7 +330,11 @@ time Settings › Account & sync asks, or 4 s after a boot with a hub configured
 order things happen in: sign-in (an active device proves its sign-in by signature, spec §3.3), the
 vault's genesis only after the Recovery Kit is typed back, joining by the six digits (confirmed on
 BOTH screens: the joining device takes nothing until the owner presses "The codes match" there) or
-by the Kit (which is replaced in the same append, `postRecovery`), a sync pass (verify and pin the
+by the Kit (which is replaced in the same append, `postRecovery`). A signed-in device outside the
+vault asks to join by itself, once per sign-in (`autoJoin`), and one signed in before any vault
+existed looks for one every 5 s, then every 30 s, until it appears (`waitDelay`) — it has no
+presence socket, so without that it waited for a restart; devices in the vault see a request as a
+strip (`HubJoinPrompt`). Then a sync pass (verify and pin the
 chain, count this device in only where the chain holds its own ANCHOR — the entry it joined
 through — take any new vault key only as the chain's `vk` commitment vouches for it, read the change
 feed and apply only what is sealed under the current epoch (a re-seal that did not finish is owed
@@ -1001,8 +1005,9 @@ npm run verify:hub-client     # the hub CLIENT: what each tier offers and what n
                               # file's repair, no vault key under basic_text, SSH keys listed by
                               # .pub and received with no overwrite (-stoke-2, a lone .pub counts,
                               # 0600, IdentityFile appended with a backup), then three devices
-                              # against a real hub on 127.0.0.1: genesis after the Kit, join by
-                              # the six digits (confirmed on both screens) and by the Kit (a new
+                              # against a real hub on 127.0.0.1: genesis after the Kit, a device
+                              # signed in before it finding the vault and asking to join unasked,
+                              # join by the six digits (confirmed on both screens) and by the Kit (a new
                               # Kit in the same append), an API key and an SSH key arriving, a
                               # conflict, rename, revoke with re-seal, a held MCP program and host
                               # command, and hub.db holding no secret — and a hub that lies,
@@ -1509,6 +1514,9 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     xterm's own reports, under a banner saying whose it is and the link's state
   src/components/RemoteHostStrip.tsx  on the host, `.main-col` strips: "Let <device> open
                     <session>?" Allow once / Always / Deny, and who is attached, Disconnect
+  src/components/HubJoinPrompt.tsx  on a device in the vault, a `.main-col` strip: "<device>
+                    asks to join your vault". Review opens Account & sync, where the codes are
+                    compared; nothing is approved from the strip
   src/components/SshKeyPrompt.tsx  "E2E box asked for a password. Set up key login?" — a
                     `.main-col` row, never an overlay (gotcha 14). Add a key opens the
                     "Add key to …" tab (App's `startSshEnroll`); the strip then reports

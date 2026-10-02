@@ -548,3 +548,50 @@ active (gotcha 140).
 >   here without asking", in a question about one session. Both answers now reach only the session
 >   the relay attached to (`RelayScope` has no `any`); Always only stops the question. The guest
 >   never used anything wider, so nothing a remote tab does changed.
+
+## 143. A device outside the vault has no presence socket and no sync timer, so it must poll for the one thing it waits for
+
+**Found by the owner on 2026-10-02, the first day the hub was live.** They signed in on the Mac,
+made the vault on their other computer, and the Mac showed nothing. Its `hub-state.json` held the
+account with an empty `chain` and no `anchor`. It had looked for a vault once, at sign-in, before
+there was one, and never looked again. Only a device in the vault gets the presence socket
+(`startPresence` returns unless `isActiveIn`), and `pass` re-armed its timer only for an active
+device. So a device in `new-account` or `locked` heard of nothing until Stoke restarted, and it went
+on offering "Make the vault". A press there would have made a Kit for a genesis the hub refuses.
+
+The rule: **every waiting state needs its own way of learning what it is waiting for.** While the
+phase is `new-account`, `pass` re-arms itself after `waitDelay`: every 5 s for 60 looks, then every
+30 s, with failures backing off as sync does. Each look is one `GET /v1/chain`, quiet (no
+"Syncing…"). When a vault appears (`vaultAppeared`), a genesis Kit still on screen is dropped and
+the device asks to join by itself (`autoJoin`). It also asks at sign-in to an account whose vault
+does not hold it. It asks once per sign-in and never at app start, so a device left unjoined does
+not put a card in front of the owner on every launch. A Kit join withdraws that request
+(`withdrawJoin`), and so does sign-out, or every device in the vault would show it for its ten
+minutes. Sign-out gives the next sign-in a new device id, so the hub does not expire the old request
+for it. `joinStart` on top of a live request opens no second one. While no device has answered yet,
+the waiting card still offers the Recovery Kit, because an owner who lost every device sees that
+card first. A sign-in resets `failures`, so the first look is not minutes away behind an old backoff.
+The `new-account` panel shows the alarm too, since a forged list met while waiting both raises it
+and stops the looking. Auto-joining takes nothing on its own: the codes are still
+confirmed on both screens, and while the request is live the unanchored-list alarm is withheld
+exactly as it is for a manual join. The active devices learn of the request over presence (`pair`),
+and `HubJoinPrompt` says so above the terminal. Before this, it was only listed inside Account &
+sync.
+
+`verify:hub-client` holds it with a device that signs in and starts its own Kit before A makes the
+vault. It must look again (waited for, not counted in a fixed window), quietly, then go `locked` with
+a live request and no Kit, appear on A, stop looking, and withdraw cleanly. Further checks: D's Kit
+join and kitCheck's sign-out each leave no request behind, and a press on top of a live request
+keeps the same pair id. The pair id is what matters, because the hub expires a device's older
+requests itself, so a count on A could not fail.
+
+Each was mutated back to red:
+- dropping the re-arm turned 4 checks red;
+- dropping each withdrawal turned 1 red;
+- dropping the guard turned 1 red;
+- labelling waiting passes "Syncing…" turned 1 red.
+
+The first version of the looking check counted looks over 400 ms, and it failed 5 runs in 11 on a
+loaded Mac. A whole signed request does not fit in a fixed slice: a review found the time is spent
+inside fetch's keep-alive reuse, not in the hub.
+

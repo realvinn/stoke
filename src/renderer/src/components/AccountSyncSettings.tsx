@@ -132,8 +132,9 @@ export function AccountSyncSettings(): React.JSX.Element {
       {(view.phase === 'off' || view.phase === 'signed-out') && <HubAddress view={view} />}
       {view.phase === 'signed-out' && <SignIn view={view} />}
       {view.kitPending && <KitPanel />}
-      {view.phase === 'new-account' && !view.kitPending && <CreateVault view={view} />}
-      {view.phase === 'locked' && view.alarm && <Alarm view={view} />}
+      {/* A device waiting for a vault can meet the alarm too (a list built around its keys), and then stops looking. */}
+      {(view.phase === 'new-account' || view.phase === 'locked') && view.alarm && <Alarm view={view} />}
+      {view.phase === 'new-account' && !view.kitPending && !view.alarm && <CreateVault view={view} />}
       {view.phase === 'locked' && !view.kitPending && <Join view={view} />}
       {view.phase === 'active' && (
         <>
@@ -592,6 +593,18 @@ function Join({ view }: { view: HubView }): React.JSX.Element {
             <button className="btn" disabled={busy !== null} onClick={() => run('cancel', () => window.stoke.hub.joinCancel())}>
               Cancel request
             </button>
+            {/*
+              The request opens by itself at sign-in now, so this card is the
+              first thing a computer outside the vault shows — including to an
+              owner who has lost every other device and came with the Kit. Until
+              another device has answered, the Kit stays on offer; using it
+              withdraws the request.
+            */}
+            {!j.code && (
+              <button className="btn" data-variant="ghost" disabled={busy !== null} data-hub="join-use-kit" onClick={() => setUseKit((v) => !v)}>
+                Use my Recovery Kit instead
+              </button>
+            )}
           </div>
         </div>
       ) : (
@@ -618,7 +631,7 @@ function Join({ view }: { view: HubView }): React.JSX.Element {
           </div>
         </>
       )}
-      {useKit && !waiting && (
+      {useKit && !j?.code && (
         <>
           <input
             className="input mono"

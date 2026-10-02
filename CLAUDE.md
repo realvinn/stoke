@@ -184,6 +184,8 @@ rule file named on the group line.
   target has had it (`kitHandlers`); a Kit join replaces the Kit in the same append (`postRecovery`).
 - **142.** Send every hub relay frame through `relayFrameParts` (a 512 K pty replay is 1.23 MB as JSON in JSON, over the
   1 MiB cap), stamp a status `max(now, lastAt + 1)`, serve a frame only past BOTH verdicts and a live chain (`chainChanged`).
+- **143.** Give every hub waiting state its own poll: a device outside the vault has no presence and no
+  sync timer (`waitDelay`, `vaultAppeared`); it asks to join once per sign-in (`autoJoin`), never at start.
 
 **Terminal** — `.claude/rules/terminal.md`
 - **5.** Never read the terminal from the DOM: WebGL paints a canvas, so `.xterm-rows` is empty.

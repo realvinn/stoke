@@ -173,6 +173,8 @@ export interface HubServiceDeps {
   printKit?(text: string): Promise<void>
   /** Poll interval for a pairing in progress. */
   pairPollMs?: number
+  /** Poll interval while signed in to an account that has no vault yet (`WAIT_POLL_MS`). */
+  waitPollMs?: number
   log?(message: string, err?: unknown): void
   /**
    * "Other machines" (src/main/hub/remote.ts): this computer's sessions and
@@ -239,6 +241,19 @@ function writerOf(item: RemoteItem, v: ChainOk): string {
 }
 
 const PAIR_POLL_MS = 1500
+/**
+ * How often a device signed in to an account with no vault looks for one.
+ *
+ * Such a device has no presence socket (that is for devices in the vault) and
+ * no sync pass to ride on, so it used to look once — at sign-in and at app
+ * start — and never again. Sign in on two computers, make the vault on one, and
+ * the other went on offering "Make the vault" until Stoke was restarted (found
+ * by the owner, 2026-10-02). One `GET /v1/chain` per look; after
+ * `WAIT_FAST_POLLS` looks with nothing new it slows to `WAIT_POLL_SLOW_MS`.
+ */
+const WAIT_POLL_MS = 5000
+const WAIT_POLL_SLOW_MS = 30_000
+const WAIT_FAST_POLLS = 60
 const REVOKED_SENTENCE =
   'This device was removed from your hub account. What it synced stays on this computer; sign out to forget its hub keys, then sign in again to join as a new device.'
 const UNANCHORED_SENTENCE =
@@ -308,6 +323,14 @@ export class HubService {
   private started: boolean
   private readonly remote: HubRemote | null
   private presenceKeys: Map<number, Uint8Array>
+  /** Looks for a vault since this device was last signed in or started (`WAIT_POLL_MS`). */
+  private waitPolls: number
+  /**
+   * This sign-in has already asked the vault's devices to let this one in by
+   * itself (`autoJoin`). Once per sign-in: a request refused, expired or
+   * cancelled is the owner's to repeat, never Stoke's.
+   */
+  private autoJoined: boolean
 
   constructor(deps: HubServiceDeps) {
     this.deps = deps
@@ -348,6 +371,8 @@ export class HubService {
     this.offSettings = null
     this.started = false
     this.presenceKeys = new Map()
+    this.waitPolls = 0
+    this.autoJoined = false
     this.remote = deps.remote
       ? new HubRemote({
           ...deps.remote,
@@ -861,7 +886,13 @@ export class HubService {
           this.lastError = { message: messageOf(err), at: this.now(), retryAt: null }
         }
       }
+      this.waitPolls = 0
+      this.autoJoined = false
+      // A fresh sign-in starts the looking over: an old backoff would put the first look minutes away.
+      this.failures = 0
       if (this.isActiveIn(this.verdict)) this.syncSoon(50)
+      else if (this.phase() === 'new-account') this.syncSoon(this.waitDelay())
+      else await this.autoJoin()
       return { ok: true, state: this.phase() }
     })
   }
@@ -878,7 +909,13 @@ export class HubService {
     return this.action('Signing out…', async () => {
       if (this.dev?.token) {
         try {
-          await Promise.race([this.req('POST', '/v1/auth/logout', {}), new Promise((r) => setTimeout(r, LOGOUT_TIMEOUT_MS))])
+          // A join request this device opened (by itself, at sign-in) is withdrawn first, while the
+          // session can still do it: left, it stayed on every device in the vault beside the next one.
+          const leave = async (): Promise<void> => {
+            await this.withdrawJoin()
+            await this.req('POST', '/v1/auth/logout', {})
+          }
+          await Promise.race([leave(), new Promise((r) => setTimeout(r, LOGOUT_TIMEOUT_MS))])
         } catch {
           /* the session dies with the device file either way */
         }
@@ -1172,34 +1209,89 @@ export class HubService {
   joinStart(): Promise<HubResult> {
     return this.action('Asking your other devices…', async () => {
       if (this.phase() !== 'locked') return { ok: false, message: 'This device is not waiting to join a vault.' }
-      const p = this.files.keyStore()
-      if (!p.protected) return { ok: false, message: `${p.why} Stoke will not keep a vault key where it would be readable, so this computer cannot join the vault.` }
-      const account = this.account()
-      const record = this.record()
-      const nonce = randomB64u(32)
-      const commit = pairCommit({ account, device: record, nonce })
-      const res = await this.req('POST', '/v1/pair', { commit, device: { id: record.id, label: record.label, platform: record.platform } })
-      const pair = typeof res.pair === 'string' ? res.pair : ''
-      if (!isId('pair', pair)) return { ok: false, message: 'The hub did not open a request.' }
-      this.joining = { pair, nonce, record, state: 'waiting', code: null, confirmed: false, approver: null, expiresAt: Number(res.expiresAt) || this.now() + 10 * 60_000, message: null }
-      this.pollPairs()
-      return { ok: true }
+      // Already asked (by itself at sign-in, or a second press): one request, not two.
+      if (this.joinLive()) return { ok: true }
+      return this.askToJoin()
     })
+  }
+
+  /** Open this device's join request. Inside the queue. */
+  private async askToJoin(): Promise<HubResult> {
+    const p = this.files.keyStore()
+    if (!p.protected) return { ok: false, message: `${p.why} Stoke will not keep a vault key where it would be readable, so this computer cannot join the vault.` }
+    const account = this.account()
+    const record = this.record()
+    const nonce = randomB64u(32)
+    const commit = pairCommit({ account, device: record, nonce })
+    const res = await this.req('POST', '/v1/pair', { commit, device: { id: record.id, label: record.label, platform: record.platform } })
+    const pair = typeof res.pair === 'string' ? res.pair : ''
+    if (!isId('pair', pair)) return { ok: false, message: 'The hub did not open a request.' }
+    this.joining = { pair, nonce, record, state: 'waiting', code: null, confirmed: false, approver: null, expiresAt: Number(res.expiresAt) || this.now() + 10 * 60_000, message: null }
+    this.pollPairs()
+    return { ok: true }
+  }
+
+  /**
+   * Ask to join without a press, once per sign-in: at sign-in to an account
+   * whose vault does not hold this device, or when a vault made on another
+   * device appears while this one waited (`pass`). The owner had to find
+   * "Approve from another device" first, on a computer that had just shown them
+   * nothing; the request alone takes nothing — the codes are still confirmed on
+   * both screens — so opening it unasked costs only a card on their devices.
+   * Not at app start: a device left signed in and unjoined would put a request
+   * in front of the owner on every launch. Inside the queue.
+   */
+  private async autoJoin(): Promise<void> {
+    if (this.autoJoined || this.joinLive() || this.revoked || this.state?.alarm || this.phase() !== 'locked') return
+    this.autoJoined = true
+    try {
+      const res = await this.askToJoin()
+      if (!res.ok) this.log(`hub: did not ask to join: ${res.message}`)
+    } catch (err) {
+      this.log('hub: could not ask to join', err)
+    }
+  }
+
+  /**
+   * A vault made on another device appeared while this one had none: this one
+   * now joins it. A Kit shown here for a vault of its own can no longer be used
+   * (the account has its genesis), so it goes. Inside the queue.
+   */
+  private async vaultAppeared(): Promise<void> {
+    if (this.pendingKit?.purpose === 'genesis') this.pendingKit = null
+    this.loginState = 'pending'
+    await this.autoJoin()
+  }
+
+  /** The next look for a vault: quick at first, then every half minute; failures back off as sync does. */
+  private waitDelay(): number {
+    if (this.failures) return nextSyncDelay(this.failures)
+    const fast = this.deps.waitPollMs ?? WAIT_POLL_MS
+    return this.waitPolls++ < WAIT_FAST_POLLS ? fast : Math.max(fast, WAIT_POLL_SLOW_MS)
   }
 
   joinCancel(): Promise<HubResult> {
     return this.action('Cancelling…', async () => {
-      const j = this.joining
-      this.joining = null
-      if (j && (j.state === 'waiting' || j.state === 'nonce' || j.state === 'revealed')) {
-        try {
-          await this.req('POST', `/v1/pair/${j.pair}/refuse`, {})
-        } catch {
-          /* it expires on its own */
-        }
-      }
+      await this.withdrawJoin()
       return { ok: true }
     })
+  }
+
+  /**
+   * End this device's own join request, if one is still open: cancelled, or
+   * no longer needed because the Kit let this device in — a request left open
+   * stays on every device in the vault for its ten minutes. Inside the queue.
+   */
+  private async withdrawJoin(): Promise<void> {
+    const j = this.joining
+    this.joining = null
+    if (j && (j.state === 'waiting' || j.state === 'nonce' || j.state === 'revealed')) {
+      try {
+        await this.req('POST', `/v1/pair/${j.pair}/refuse`, {})
+      } catch {
+        /* it expires on its own */
+      }
+    }
   }
 
   /** A join of this device's own still under way (a refused or expired one is over). */
@@ -1375,6 +1467,8 @@ export class HubService {
     st.recoveryWraps[String(epoch)] = recovery
     this.loginState = 'active'
     this.saveState()
+    // The request this device opened at sign-in (`autoJoin`) is not needed now.
+    await this.withdrawJoin()
     await this.resealOrOwe(now, itemKeys(vkOld, account, v.epoch))
     this.syncSoon(50)
   }
@@ -2057,7 +2151,9 @@ export class HubService {
   private async pass(depth = 0): Promise<void> {
     if (!this.signedIn() || !this.state) return
     const label = this.busyLabel
-    if (!label) {
+    // A device outside the vault only looks at the list: no "Syncing…" every few seconds while it waits.
+    const waiting = this.phase() === 'new-account'
+    if (!label && this.isActiveIn(this.verdict)) {
       this.busyLabel = 'Syncing…'
       this.emit()
     }
@@ -2066,13 +2162,15 @@ export class HubService {
       const v = await this.refreshChain()
       if (!v) {
         this.loginState = 'new-account'
+        this.failures = 0
         return
       }
       if (!this.isActiveIn(v)) {
+        this.failures = 0
         if (this.dev && v.revoked.includes(this.dev.id)) {
           this.revoked = REVOKED_SENTENCE
           this.stopPresence()
-        }
+        } else if (waiting) await this.vaultAppeared()
         return
       }
       this.loginState = 'active'
@@ -2144,7 +2242,10 @@ export class HubService {
       this.saveState()
       if (!label) this.busyLabel = null
       if (depth === 0) {
-        if (this.signedIn() && !this.revoked && this.isActiveIn(this.verdict)) this.syncSoon(nextSyncDelay(this.failures))
+        if (this.signedIn() && !this.revoked) {
+          if (this.isActiveIn(this.verdict)) this.syncSoon(nextSyncDelay(this.failures))
+          else if (this.phase() === 'new-account' && !this.state?.alarm) this.syncSoon(this.waitDelay())
+        }
         this.emit()
       }
     }

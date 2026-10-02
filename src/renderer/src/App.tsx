@@ -81,6 +81,7 @@ import { ActivityPanel } from './components/ActivityPanel'
 import { SshKeyPrompt } from './components/SshKeyPrompt'
 import { OtherMachines } from './components/OtherMachines'
 import { RemoteHostStrip } from './components/RemoteHostStrip'
+import { HubJoinPrompt } from './components/HubJoinPrompt'
 import { RemoteTerminal } from './components/RemoteTerminal'
 import { useHubRemote } from './lib/hubRemote'
 import type { OtherMachineView, RemoteSessionSummary } from '@shared/hub/remote'
@@ -5621,6 +5622,7 @@ export function App(): React.JSX.Element {
             key offer above (gotcha 14).
           */}
           <RemoteHostStrip view={hubRemote} />
+          <HubJoinPrompt onReview={() => openSettings('account')} />
 
           <WorklogPrompt
             proposals={promptQueue}
