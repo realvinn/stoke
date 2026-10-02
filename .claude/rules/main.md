@@ -18,6 +18,8 @@ paths:
   - "scripts/verify-hub-server.mts"
   - "scripts/verify-hub-client.mts"
   - "src/renderer/src/components/AccountSyncSettings.tsx"
+  - "src/shared/privateChat.ts"
+  - "scripts/verify-private.mts"
 ---
 
 # Anywhere in the main process
@@ -595,3 +597,52 @@ The first version of the looking check counted looks over 400 ms, and it failed 
 loaded Mac. A whole signed request does not fit in a fixed slice: a review found the time is spent
 inside fetch's keep-alive reuse, not in the hub.
 
+## 148. A private chat is one env var away from saving everything, and its cleanup is one `includes` away from deleting someone else's files
+
+**Built 2026-10-02 (the ghost button: a local Claude Code tab whose conversation is not kept and is
+deleted when the tab closes).** Two things decide whether that promise holds, and neither is visible
+from the tab.
+
+**What turns saving off.** Read out of the installed 2.1.287 binary, never run: the documented
+`--no-session-persistence` is refused outside `-p` ("can only be used with --print mode"), and
+`cleanupPeriodDays: 0` is refused too. The interactive switch is the ENV VAR
+`CLAUDE_CODE_SKIP_PROMPT_HISTORY`: the persistence predicate `eln()` returns `skip_prompt_history`
+for it (after the print flag, before the gotcha 1 nested marker), every transcript writer starts
+with `shouldSkipPersistence(){return Ha()||…}`, and the prompt-history writer returns early on it.
+The TUI pins its own line, "Transcript saving is off — CLAUDE_CODE_SKIP_PROMPT_HISTORY is set".
+It is NOT documented as a privacy switch, so `PRIVATE_ENV` (shared/privateChat.ts) also sets
+`CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING`, `CLAUDE_CODE_DISABLE_AUTO_MEMORY` and
+`CLAUDE_CODE_DISABLE_AGENT_VIEW` — the last because the daemon hand-off scrubs the skip variable
+from the env it passes on, so a chat sent to `/background` would start saving again — and pty.ts
+applies them LAST, after the provider or account env. The settings half (`PRIVATE_SETTINGS`: plans
+inside the folder, auto-memory and remote control off) joins Stoke's one `--settings` file (gotcha
+2). If a release ever stops honouring the variable, the transcript appears under the chat's own
+`projects/<slug>`, and the watchdog (`PrivateChats.scan`, every 5 s) turns the strip into a warning;
+the close deletes it with the rest.
+
+**What is deleted.** Only paths `privateCleanupTargets` builds by exact join from a uuid-validated
+id, the chat's own slug and a config dir main named at launch (the default and an account's), each
+removed only after its parent's REALPATH resolves inside an allowed base (`cleanupAllowed`) — never
+"whatever is in the folder". The marker naming them is written before the folder exists and removed
+last, so a crash leaves nothing the boot sweep cannot find, and a folder under the root with no
+marker is never touched. A `/clear` successor joins the delete set (the marker is rewritten); an id
+the chat `/resume`d INTO whose transcript lives under another folder is `foreign` and never joins —
+its file-history and session-env are a real conversation's. Files named for a session
+(`telemetry/1p_failed_events.<session>.<event uuid>.json`, `todos/<session>-agent-<agent>.json`)
+belong to the FIRST uuid in the name: verify:private's own fixture caught the first cut matching
+`name.includes(id)`, which deleted another session's telemetry file because its random event uuid was
+one of the chat's ids. Cleanup runs from the pty's own exit (`subscribeExit`), never from the kill
+that asked for it; a quit removes only the folders (`quitSync`) and leaves the markers to the sweep.
+
+Proven in the built app on 2026-10-02 against a stub `claude` that mirrors the predicate and writes
+where the real CLI does under the `CLAUDE_CONFIG_DIR` it was given (`/tmp/f-private/stub.mjs`): the
+four variables and seven settings keys arrived; a private chat wrote no transcript and no
+`history.jsonl` line while a Scratch tab beside it wrote both; its hook events carried no reply or
+transcript path; `tabs.json`, the sidebar, the launcher, the phone's `/api/sessions` and its
+`/ws` attach never saw it; its OS notification was titled "Private chat" with the body "Finished."; Cmd+W on an idle empty
+chat closed at once, a chat with a file or a running turn asked "Delete this private chat?"; a
+`/clear` then a forced leak were both deleted at `/exit`; a resume into a saved chat left that chat
+whole; a quit left markers only, and the next boot swept them. Every check in verify:private was
+mutated back to red. **Not proven:** the real CLI honouring the variable (only its binary was read),
+subagents, `/compact`, plan mode and a pasted image with saving off, the trust prompt on a machine
+whose home is not trusted, and Windows.
