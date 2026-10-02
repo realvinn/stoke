@@ -101,3 +101,17 @@ bar. Two more the same drive found, both now in `verify:find`:
   "Invoice", so the first card's Copy token offered `invite`, and one message showed as two
   cards with the same lines. Hits are grouped per window now, every match marked in it, and a
   hit's own match is the one spelled exactly as typed (`searchBlocks`' `prefer`).
+
+> **Checked against the code on 2026-10-02 (a review of Find, driven in the built app)** — the
+> other window listener a bar has to reckon with is App's own unclaimed-key route. `typeThroughKey`
+> types any plain key on a focused BUTTON through to the terminal in front (that is what it is for:
+> a click on a chrome button leaves focus there), so inside the find bar its own controls were a
+> path to the pty. Measured against a stub `claude` that logs every byte: click Aa and keep typing,
+> and the letters reached Claude's prompt; Tab to a hit's Copy message and press Enter, and `\r`
+> was written to the pty — the prompt was SUBMITTED — while the button never ran. The bar's root
+> now decides every key first (`barKey`): Escape closes, a chord goes on to App, a character on a
+> control edits the query (`typedInto`), and any other plain key stops at the bar so Enter and
+> Space press the focused button. Any future in-pane surface with buttons (a strip, a card) has
+> the same exposure. In the same review the screen half was found stepping from row 0 —
+> `findNext` with no selection starts at the OLDEST line — so typing a query threw the viewport to
+> the top of the scrollback; it steps with `findPrevious` now (`screenCall`), newest first.
