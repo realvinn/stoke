@@ -1287,7 +1287,9 @@ export function SettingsSheet({
             {loc.page === 'remote' && <RemoteSettings settings={settings} onPatch={onPatch} />}
 
             {loc.page === 'voice' && <VoiceSettings settings={settings} onPatch={onPatch} />}
-            {loc.page === 'account' && <AccountSyncSettings />}
+            {loc.page === 'account' && (
+              <AccountSyncSettings remoteBar={settings.remoteBar} onRemoteBar={(remoteBar) => onPatch({ remoteBar })} />
+            )}
 
             {loc.page === 'backup' && <BackupSettings />}
           </div>

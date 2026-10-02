@@ -317,7 +317,9 @@ export const LOCAL_KEYS = [
   'chatIndex',
   'chatIndexOptions',
   'accounts',
-  'hub'
+  'hub',
+  // How THIS screen shows a live remote link (ui.ts `RemoteBarMode`).
+  'remoteBar'
 ] as const satisfies readonly (keyof Settings)[]
 
 function cloneJson<T>(v: T): T {

@@ -31,6 +31,7 @@ import {
 import {
   clampFontSize,
   clampFullScreenReveal,
+  clampRemoteBar,
   clampPort,
   clampRemoteReach,
   clampTerminal,
@@ -138,6 +139,7 @@ export const DEFAULT_SETTINGS: Settings = {
   // already draws.
   hideStatusLine: true,
   showBrand: true,
+  remoteBar: 'fab',
   // On, with the folder and its git state (shared/topBar.ts).
   topBar: clampTopBar(null),
   /*
@@ -474,6 +476,7 @@ export function hydrateSettings(raw: unknown): Settings {
     wallpaper: clampWallpaper(r.wallpaper),
     zoomTarget: clampZoomTarget(r.zoomTarget),
     fullScreenReveal: clampFullScreenReveal(r.fullScreenReveal),
+    remoteBar: clampRemoteBar(r.remoteBar),
     providers: hydrateProviders(r.providers),
     agents: hydrateAgents(r.agents),
     // A whitelist: anything but the two literals is "never asked", which shows

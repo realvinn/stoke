@@ -210,6 +210,22 @@ export function clampFullScreenReveal(value: unknown): FullScreenReveal {
   return FULL_SCREEN_REVEALS.includes(value as FullScreenReveal) ? (value as FullScreenReveal) : 'follow'
 }
 
+/**
+ * How "Other machines" shows a live remote link: `fab`, a small floating
+ * button (a live dot and "Remote") that opens on hover or keyboard focus to
+ * say who is attached and offer Disconnect or Close; `bar`, the full strip
+ * above the terminal. Either way the host's QUESTION ("Let X open …?") stays
+ * a strip: it has a timer and must be seen.
+ */
+export type RemoteBarMode = 'fab' | 'bar'
+
+export const REMOTE_BAR_MODES: readonly RemoteBarMode[] = ['fab', 'bar']
+
+/** Anything unrecognised is the floating button, which is also what an older file has. */
+export function clampRemoteBar(value: unknown): RemoteBarMode {
+  return REMOTE_BAR_MODES.includes(value as RemoteBarMode) ? (value as RemoteBarMode) : 'fab'
+}
+
 /** The pair of size settings zoom operates on. */
 export interface ZoomState {
   uiScale: number

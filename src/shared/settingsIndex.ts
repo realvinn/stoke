@@ -587,6 +587,7 @@ export const SETTING_ROWS: readonly SettingRow[] = [
   { id: 'account.ssh-keys', page: 'account', label: 'SSH keys', keywords: ['share ssh key', 'private key', 'transfer ssh', 'id_ed25519'], fallback: 'account.overview' },
   { id: 'account.devices', page: 'account', label: 'Your devices', keywords: ['remove device', 'revoke', 'rename device', 'computers'], fallback: 'account.overview' },
   { id: 'account.other-machines', page: 'account', label: 'Other machines', keywords: ['remote sessions', 'open sessions elsewhere', 'share sessions', 'relay', 'let my other devices see and open my sessions'], fallback: 'account.overview' },
+  { id: 'account.remote-bar', page: 'account', label: 'Show a live remote link as', keywords: ['remote bar', 'floating button', 'fab', 'full bar', 'hide remote bar', 'disconnect button', 'remote banner', 'attached from another machine'], fallback: 'account.overview' },
   { id: 'account.recovery', page: 'account', label: 'Recovery Kit', keywords: ['recovery code', 'lost device', 'new kit'], fallback: 'account.overview' },
   { id: 'account.sign-out', page: 'account', label: 'Sign out of Stoke Hub', keywords: ['log out', 'logout', 'disconnect hub'], fallback: 'account.overview' },
   { id: 'backup.storage', page: 'backup', label: 'Where your keys live', keywords: ['keychain', 'secrets', 'encryption', 'api keys', 'safe storage'] },

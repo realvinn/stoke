@@ -6,7 +6,7 @@ import type { CodingCliId } from './codingClis.ts'
 import type { ProviderSettings } from './providers.ts'
 import type { AgentSettings } from './agents.ts'
 import type { AgentAccount } from './accounts.ts'
-import type { FullScreenReveal, RemoteReachPreference, ZoomTarget } from './ui.ts'
+import type { FullScreenReveal, RemoteBarMode, RemoteReachPreference, ZoomTarget } from './ui.ts'
 import type { BrowserProfile, ImportOffer } from './browserProfiles.ts'
 import type { ChatIndexMode, ChatIndexOptions } from './chatIndex.ts'
 import type { SttProviderId } from './speechProviders.ts'
@@ -1384,6 +1384,12 @@ export interface Settings {
    * another is the kind of difference nobody can search for.
    */
   showBrand: boolean
+  /**
+   * A live remote link ("Other machines") as a floating button that opens on
+   * hover or focus (`fab`, the default) or the full strip (`bar`). Machine
+   * local: it is about this screen. Repaired by `clampRemoteBar` (ui.ts).
+   */
+  remoteBar: RemoteBarMode
   /**
    * The title bar's own items between the tabs and the actions: the folder,
    * its git state, text shortcuts, spaces. On by default with folder + git.
