@@ -301,7 +301,8 @@ export class ImageJobs {
     const notes: string[] = []
     try {
       if (job.expand) {
-        this.deps.phase({ kind: 'reading', index: 0, count: 1 })
+        // Main is reading what a file manager copied: say files, not "image".
+        this.deps.phase({ kind: 'reading', index: 0, count: 1, name: 'copied files' })
         const more = await Promise.race([job.expand, job.ended])
         if (!live() || more === null) return
         job.items.push(...more)

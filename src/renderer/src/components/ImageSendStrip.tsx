@@ -76,6 +76,9 @@ export function useSshImages({
   const show = useCallback((p: ImagePhase): void => {
     clearNote()
     sendingIdRef.current = p.kind === 'sending' ? p.uploadId : null
+    // A send starts from nothing: Try again keeps the upload's id, and the failed
+    // try's last figure would otherwise show until the new ssh had taken a chunk.
+    if (p.kind === 'sending') setProgress(null)
     setPhase(p)
     if (p.kind !== 'note') return
     noteTimer.current = window.setTimeout(() => {

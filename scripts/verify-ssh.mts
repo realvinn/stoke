@@ -2200,6 +2200,16 @@ console.log('\nan image sent to the machine: the queue a tab’s pastes and drop
     await tick()
     same('files held after the pane went are let go, not left in main', t.released.map((id) => id.split('#')[0]).sort(), ['x.txt', 'y.txt'])
   }
+
+  {
+    // While main reads what was copied, the strip says files: "Reading image…" named the wrong thing.
+    const t = rig()
+    t.clip.files = ['a.txt']
+    t.jobs.pasteFiles()
+    await tick()
+    const reading = t.phases.find((p) => p.kind === 'reading')
+    same('a file paste reads as "copied files" while main looks, never as an image', reading?.kind === 'reading' ? reading.name : 'none', 'copied files')
+  }
 }
 
 console.log('\nwhat main holds to send: let go unasked only while nothing is sending')
