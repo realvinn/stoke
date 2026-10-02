@@ -26,10 +26,13 @@ import { promisify } from 'node:util'
 import {
   SSH_AUTH_SCAN_LIMIT,
   SSH_AUTH_TAIL_BYTES,
+  ENROLL_TAIL_CHARS,
   awaitingSshPassword,
   buildRemoteInstallCommand,
   conptyScrub,
   detectSshPasswordPrompt,
+  enrollInstallDone,
+  enrollTail,
   isEnrollableAlias,
   isSafePublicKeyLine,
   newSshAuthScan,
@@ -54,6 +57,7 @@ import {
   sshCopyIdExecutable,
   sshExecutable
 } from '../src/main/ssh.ts'
+import { EnrollRuns } from '../src/main/enrollRuns.ts'
 import {
   appendToSshConfig,
   finishEnroll,
@@ -800,7 +804,7 @@ async function runInstall(
   cmd: string,
   seed?: { content: string; mode: number },
   shell = 'sh'
-): Promise<{ text: string; dirMode: number; fileMode: number }> {
+): Promise<{ text: string; dirMode: number; fileMode: number; out: string }> {
   const home = await mkdtemp(join(tmpdir(), 'stoke-enroll-'))
   try {
     if (seed) {
@@ -812,11 +816,11 @@ async function runInstall(
       await chmod(join(home, '.ssh', 'authorized_keys'), seed.mode)
     }
     // Run by `shell -c`, the way sshd hands a command to the login shell.
-    await execFileAsync(shell, ['-c', cmd], { env: { ...process.env, HOME: home }, cwd: home })
+    const { stdout } = await execFileAsync(shell, ['-c', cmd], { env: { ...process.env, HOME: home }, cwd: home })
     const text = await readFile(join(home, '.ssh', 'authorized_keys'), 'utf8')
     const dirMode = (await stat(join(home, '.ssh'))).mode & 0o777
     const fileMode = (await stat(join(home, '.ssh', 'authorized_keys'))).mode & 0o777
-    return { text, dirMode, fileMode }
+    return { text, dirMode, fileMode, out: String(stdout) }
   } finally {
     await rm(home, { recursive: true, force: true })
   }
@@ -825,6 +829,9 @@ async function runInstall(
 if (installCmd && process.platform !== 'win32') {
   const fresh = await runInstall(installCmd)
   check('on a machine with no .ssh at all, the file is exactly the key', fresh.text, `${KEY_WITH_COMMENT}\n`)
+  // The line the "Add key" tab is watched for (enrollInstallDone), once every step has worked.
+  check('and it says so, in one line, last', fresh.out, 'Stoke: key installed.\n')
+  ok('a line enrollInstallDone takes', enrollInstallDone(fresh.out))
   check('.ssh is 700', fresh.dirMode.toString(8), '700')
   check('authorized_keys is 600', fresh.fileMode.toString(8), '600')
 
@@ -881,9 +888,63 @@ if (installCmd && process.platform !== 'win32') {
     }
     const r = await runInstall(installCmd, { content: OLD, mode: 0o644 }, shell)
     check(`as the login shell, ${shell} installs it as a whole line`, r.text, `${OLD}\n${KEY_WITH_COMMENT}\n`)
+    check(`  and prints the line the tab is watched for`, r.out, 'Stoke: key installed.\n')
   }
 } else {
   console.log('  SKIP  running the command needs a POSIX sh')
+}
+
+/* ------------------------------------------ the install ran to its end: the tab's own words */
+
+/*
+ * The enrollment used to finish only when the "Add key" tab's process exited.
+ * On the owner's other computer (2026-10-02) the key went on and the process
+ * stayed, so the strip sat on "Adding…" and the asking tab was never
+ * reconnected. Main now also reads the tab's output for these lines and runs
+ * the probe at once (`enrollOutput`). A hint only — the probe decides — but a
+ * hint must not fire early: before the password, or on the command's own text.
+ */
+console.log('\nthe install ran to its end, read from the tab')
+
+ok('ssh-copy-id’s own report of a key added', enrollInstallDone('\nNumber of key(s) added: 1\n\nNow try logging into the machine, with: "ssh \'web\'"\n'))
+ok('and of every key already being there', enrollInstallDone('/usr/bin/ssh-copy-id: WARNING: All keys were skipped because they already exist on the remote system.\n'))
+ok('the fallback’s own line', enrollInstallDone('Stoke: key installed.\r\n'))
+ok(
+  'through ConPTY’s repaint: cursor and mode sequences between and around the words',
+  enrollInstallDone('\u001b[?25l\u001b[2;1HStoke: key \u001b[mi\u001b[?25hnstalled.\u001b]0;ssh\u0007\r\n')
+)
+{
+  let tail = ''
+  for (const chunk of ['Stoke: key ins', 'talled', '.\r\n']) tail = enrollTail(tail, chunk)
+  ok('a line cut across chunks reads whole', enrollInstallDone(tail))
+  tail = ''
+  for (const chunk of ['Stoke: key \u001b[', '?25linstalled.\r\n']) tail = enrollTail(tail, chunk)
+  ok('and so does an escape cut across chunks', enrollInstallDone(tail))
+}
+check('the tail stays bounded', enrollTail('x'.repeat(ENROLL_TAIL_CHARS), 'y'.repeat(10_000)).length, ENROLL_TAIL_CHARS)
+ok('…keeping its newest end', enrollInstallDone(enrollTail('x'.repeat(50_000), 'Stoke: key installed.\n')))
+for (const [label, text] of [
+  ['ssh-copy-id before the password', '/usr/bin/ssh-copy-id: INFO: attempting to log in with the new key(s), to filter out any that are already installed\n/usr/bin/ssh-copy-id: INFO: 1 key(s) remain to be installed -- if you are prompted now it is to install the new keys\nv@web\'s password: '],
+  ['a wrong password', 'v@web\'s password: \r\nPermission denied, please try again.\r\n'],
+  ['the install command itself, echoed', installCmd ?? ''],
+  ['a set -x trace of it on the far side', '+ printf \'Stoke: key %s.\\n\' installed\n'],
+  ['a count of no keys', 'Number of key(s) added: \n']
+] as const) {
+  ok(`not before it has: ${label}`, !enrollInstallDone(text), JSON.stringify(text))
+}
+{
+  // index.ts proves a run on whichever comes first; this is what makes "first" exactly once.
+  const runs = new EnrollRuns()
+  const host = { id: 'host-9', label: 'Web', alias: 'web', command: '', persist: 'off' }
+  runs.add('pty-1', { host, keyPath: '/k1', fallback: true })
+  check('output before the install is done takes nothing', runs.output('pty-1', "v@web's password: "), null)
+  check('another pty’s output is never this run’s', runs.output('pty-2', 'Stoke: key installed.\r\n'), null)
+  check('the line takes the run', runs.output('pty-1', '\r\nStoke: key ins')?.keyPath ?? runs.output('pty-1', 'talled.\r\n')?.keyPath, '/k1')
+  check('then the tab’s exit proves nothing a second time', runs.exit('pty-1'), null)
+  check('nor does more of its output', runs.output('pty-1', 'Stoke: key installed.\r\n'), null)
+  runs.add('pty-3', { host, keyPath: '/k3', fallback: false })
+  check('a tab that exits without the line is taken by its exit, as before', runs.exit('pty-3')?.keyPath, '/k3')
+  check('once', runs.exit('pty-3'), null)
 }
 
 /* ------------------------------------------- the key, saved in the config */

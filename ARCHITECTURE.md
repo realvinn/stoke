@@ -561,7 +561,9 @@ a key, and "Set up key login" in Settings > SSH hosts does the same without wait
 (`sshEnroll.ts`) picks or makes the key and, when plain `ssh <alias>` would not offer it, appends
 one `IdentityFile` block to `~/.ssh/config`; then `ssh-copy-id` runs in a visible "Add key to …"
 tab, because ssh reads a password from its own terminal and nowhere else (gotcha 109). When that
-tab exits, a `BatchMode` login probe with the tab's own identities decides `keyEnrolled`, and a
+tab prints that the install ran to its end (ssh-copy-id's count, or the fallback's own "Stoke: key
+installed.") or exits — an ssh that lingers after the remote command left the strip on "Adding…"
+for good — a `BatchMode` login probe with the tab's own identities decides `keyEnrolled`, and a
 tab still sitting at ssh's own `password:` is reconnected — never one whose user already got in.
 "Never got in" is a one-way watch over the session's whole life (`SshLoginWatch`), not the end of
 its output: a logged-in shell that runs `su` or `ssh other` ends in the very same prompt shape.
@@ -1389,9 +1391,12 @@ src/main/         Electron main process
                     block to ~/.ssh/config if plain ssh would not offer it (bytes kept,
                     config.stoke.bak, tmp+rename, re-checked with ssh -G) and builds the
                     install argv; the install runs in a VISIBLE "Add key to …" tab where
-                    the user types the password; `finishEnroll` runs after that tab exits
-                    and alone may set keyEnrolled. Every path and program injectable.
-                    Gotchas 75, 109
+                    the user types the password; `finishEnroll` runs once that tab says the
+                    install ran to its end or exits, and alone may set keyEnrolled. Every
+                    path and program injectable. Gotchas 75, 109
+  enrollRuns.ts     which enrollment tab a pty is, each proven once: on the tab printing that
+                    the install ran to its end (`enrollInstallDone`) or on its exit, first
+                    wins. Its own module so index.ts imports it statically, sshEnroll lazily
   sshTranscript.ts  pulls a remote session's JSONL back, so SSH sessions can be read
   agent.ts          headless `claude -p` runner (prompt on stdin, json out)
   skillsScan.ts     lists the skills in every folder an agent reads, with each one's real

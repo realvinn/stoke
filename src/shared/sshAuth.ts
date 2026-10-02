@@ -593,10 +593,49 @@ export function buildRemoteInstallCommand(pubkeyLine: string): string | null {
     '{ [ -z "$(tail -1c .ssh/authorized_keys 2>/dev/null)" ] || echo >> .ssh/authorized_keys; }',
     `printf "%s\\n" "${key}" >> .ssh/authorized_keys`,
     'chmod 700 .ssh',
-    'chmod 600 .ssh/authorized_keys'
+    'chmod 600 .ssh/authorized_keys',
+    // The line `enrollInstallDone` waits for, printed only once every step
+    // above has worked — and never spelled out here, so an echo of this command
+    // (a `set -x` in a remote rc file) is not mistaken for it.
+    'printf "Stoke: key %s.\\n" installed'
   ].join(' && ')
   // Belt and braces: the whitelist already guarantees this, and a body that
   // could close the outer quote must never be sent.
   if (body.includes("'")) return null
   return `sh -c '${body}'`
+}
+
+/**
+ * What the "Add key" tab prints once the install has run to its end:
+ * `ssh-copy-id`'s own report (a key added, or every key already there), or the
+ * line `buildRemoteInstallCommand` ends with.
+ *
+ * Why the tab's output and not only its exit: the enrollment used to finish
+ * when that tab's process exited, and nothing else. On the owner's other
+ * computer (2026-10-02) the key went on and the process never exited, so the
+ * strip sat on "Adding…" with only Not now to press, the tab stayed open and
+ * the tab that had asked for the password was never reconnected. This line is
+ * a hint to look, never proof — it is text, and the far end can print anything
+ * — so all it starts is `finishEnroll`'s probe, which alone decides.
+ */
+const INSTALL_DONE_RE = /Number of key\(s\) added:\s*\d|All keys were skipped because they already exist|Stoke: key installed\./
+
+/** How much of the install tab's output `enrollTail` keeps: the last lines, escapes and all. */
+export const ENROLL_TAIL_CHARS = 4096
+
+/** The install tab's output so far, as much of it as `enrollInstallDone` needs. */
+export function enrollTail(tail: string, chunk: string): string {
+  const text = tail + chunk
+  return text.length > ENROLL_TAIL_CHARS ? text.slice(-ENROLL_TAIL_CHARS) : text
+}
+
+/**
+ * Whether the install tab has printed that the install ran to its end. Read
+ * with every escape sequence taken out (ConPTY repaints as VT from its first
+ * frame), over a raw tail rather than chunk by chunk, so a sequence or a line
+ * cut across two chunks still reads whole.
+ */
+export function enrollInstallDone(tail: string): boolean {
+  const text = tail.replace(OSC_RE, '').replace(CSI_RE, '').replace(ESC_OTHER_RE, '')
+  return INSTALL_DONE_RE.test(text)
 }

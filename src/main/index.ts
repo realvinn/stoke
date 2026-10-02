@@ -136,6 +136,7 @@ import { readSshConfigHosts } from './ssh.ts'
 import { endRemoteSession, listRemoteSessions } from './sshSessions.ts'
 import { hostPersists, isSafeRemoteSessionName, mintRemoteSessionName } from '../shared/sshPersist.ts'
 import { shouldOfferKey } from '../shared/sshAuth.ts'
+import { EnrollRuns } from './enrollRuns.ts'
 import {
   consumeUpdateRestart,
   readTabState,
@@ -657,10 +658,27 @@ const sessionHosts = new Map<string, SshHost>()
 const enrolling = new Set<string>()
 
 /**
- * The enrollment tab behind each pty, so its exit can be proven. Keyed by
- * ptyId; the entry is taken (deleted) by the exit that finishes it.
+ * The enrollment tab behind each pty, each proven once: when it prints that the
+ * install ran to its end, or when its process exits (`EnrollRuns`, enrollRuns.ts).
  */
-const enrollRuns = new Map<string, { host: SshHost; keyPath: string; fallback: boolean }>()
+const enrollRuns = new EnrollRuns()
+
+/** How long an install tab's process may linger once its result is proven, before it is stopped. */
+const ENROLL_LINGER_MS = 1500
+
+/**
+ * An install tab printed that the install ran to its end: prove it now rather
+ * than waiting for an exit that may never come (2026-10-02, the owner's other
+ * computer). A process still there once the result is out is stopped — what it
+ * was for is done, and the tab keeps its words either way.
+ */
+function enrollOutput(ptyId: string, data: string): void {
+  const run = enrollRuns.output(ptyId, data)
+  if (!run) return
+  void finishEnrollRun(run, 0, undefined).then(() => {
+    setTimeout(() => void ptys?.stop(ptyId, 3000), ENROLL_LINGER_MS)
+  })
+}
 
 /**
  * When each entry in `sessionCwds`/`sessionHosts` was last genuinely written —
@@ -1154,7 +1172,7 @@ async function startEnrollSession(requested: LaunchOptions): Promise<StartResult
     const prep = await prepareEnroll(plan.host, { emit })
     if (!prep.ok) throw new Error(prep.message)
     const result = await ptys.start(plan.opts, null, null, () => null, getSettings().providers, null, prep.command)
-    enrollRuns.set(result.ptyId, { host: plan.host, keyPath: prep.keyPath, fallback: prep.fallback })
+    enrollRuns.add(result.ptyId, { host: plan.host, keyPath: prep.keyPath, fallback: prep.fallback })
     started = true
     return result
   } finally {
@@ -2473,7 +2491,10 @@ function createWindow(): void {
     .catch((err) => console.error('[stoke] browser MCP server failed to start', err))
 
   ptys = new PtyManager(
-    (ptyId, data) => send(CH.ptyData, ptyId, data),
+    (ptyId, data) => {
+      send(CH.ptyData, ptyId, data)
+      enrollOutput(ptyId, data)
+    },
     (ptyId, code, signal, sessionId, loggedIn) => {
       // `loggedIn`: whether a remote session got past authentication, which
       // the renderer's kept-tab reconnect needs and cannot see (gotcha 126).
@@ -2488,11 +2509,8 @@ function createWindow(): void {
       if (sessionId) statusLineSeen.delete(sessionId)
       // An enrollment tab: ssh-copy-id has finished, been closed, or failed.
       // Whichever — only the probe knows whether it worked.
-      const run = enrollRuns.get(ptyId)
-      if (run) {
-        enrollRuns.delete(ptyId)
-        void finishEnrollRun(run, code, signal)
-      }
+      const run = enrollRuns.exit(ptyId)
+      if (run) void finishEnrollRun(run, code, signal)
       // An account's sign-in tab: see who it signed in as, and release it.
       const login = accountLoginRuns.get(ptyId)
       if (login) {

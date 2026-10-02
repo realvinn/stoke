@@ -368,6 +368,8 @@ rule file named on the group line.
   enrollment is an "Add key" tab (`LaunchOptions.enroll`) — and prove it against a real prompt.
 - **126.** Keep a kept session's `indn@`, `-u`, `prefix None` (never `unbind -a`: the next attach aborts) and
   `capture-pane` seam (`buildPersistentCommand`); reset reconnect tries on a login, never uptime. No Copy mode.
+- **144.** Never let a process exit be the only sign an "Add key" tab is done: watch its output for the
+  result (`EnrollRuns`, `enrollInstallDone`), first of the two wins; the probe still alone decides.
 
 **Phone access** — `.claude/rules/phone.md`
 - **53.** Draw no QR for `connectTarget`'s `loopback` reach, mint the key only in start paths

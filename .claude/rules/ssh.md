@@ -4,6 +4,7 @@ paths:
   - "src/main/sshSessions.ts"
   - "src/shared/sshPersist.ts"
   - "src/main/sshEnroll.ts"
+  - "src/main/enrollRuns.ts"
   - "src/shared/sshAuth.ts"
   - "scripts/verify-ssh-enroll.mts"
   - "src/renderer/src/components/SshKeyPrompt.tsx"
@@ -355,3 +356,36 @@ with a scratch `UserKnownHostsFile` and a `ProxyCommand` script whose own comman
 scratch dir, so a link drop is `kill -TERM` of your own process (it takes its relay child down;
 ssh exits 255). Nothing in the real `~/.ssh` is written (it is still READ: the config, and any key a
 `Host *` block names); hash it before and after anyway.
+
+## 144. A process's exit must not be the only sign that its job is done: an "Add key" tab can finish its work and never exit
+
+**Found by the owner on 2026-10-02, on a computer this session could not reach.** They pressed Add
+a key on an SSH host, typed the password in the "Add key to …" tab, and the key went on, but nothing
+followed. The strip sat on "Adding…" with only Not now to press, the tab stayed open, and the tab that
+had asked for the password was never reconnected. Every path through `finishEnroll` reports to the
+strip, and its probes give up within 25 s. So the strip can only stay busy like that if the
+enrollment never reached `finishEnroll`, and the only way in was the tab's process EXITING
+(`proc.onExit` → `finishEnrollRun`). Why that process stayed was not measured, because the machine
+was not here. Two candidates fit: Windows' ssh under ConPTY with `-t` (the fallback's argv), and a
+far side whose rc file leaves a background job holding the channel open. The fix does not depend on
+which.
+
+The rule: **watch for the result, and treat the exit as one of two ways in.** The install command
+now ends with `printf "Stoke: key %s.\n" installed`. It is never spelled out in the command, so an
+echo or a `set -x` trace of the command cannot match. `ssh-copy-id` already prints `Number of key(s)
+added:` or `All keys were skipped…`. `EnrollRuns` (enrollRuns.ts) hands a run out exactly once,
+either on `enrollInstallDone` over the tab's raw output tail (escapes stripped, so ConPTY's repaint
+and a line cut across chunks still read whole) or on the exit, whichever comes first. A process
+still running 1.5 s after the result is stopped. The line is only a hint. It is text, and the far
+end can print anything, so all it starts is the same probe an exit with code 0 would, and the probe
+alone sets `keyEnrolled`. `verify:ssh-enroll` holds the line under every shell installed here, the
+matcher (ConPTY-shaped and split input, and never the command itself, its trace or ssh-copy-id's
+pre-password INFO lines) and the exactly-once hand-out. Each was mutated back to red: dropping the
+printf turned 6 checks red, dropping the escape strip 2.
+
+**Not covered:** `ssh-copy-id` prints its count only after its own ssh returns. A far side that
+holds the channel open therefore still keeps that path busy until the tab is closed. Closing it runs
+the probe (the exit path, `signal` set), which then reports the truth. On Windows there is no
+`ssh-copy-id.exe`, so the fallback, and with it the line, is always the one used. None of this has
+run on Windows; the owner's machine is the first place it will.
+
