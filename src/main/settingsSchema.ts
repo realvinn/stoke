@@ -415,6 +415,9 @@ export function hydrateSettings(raw: unknown): Settings {
               transcriptFind: h.transcriptFind === true,
               keyEnrollRefused: h.keyEnrollRefused === true,
               keyEnrolled: h.keyEnrolled === true,
+              // A refusal, so only the literal turns it on: a truthy leftover
+              // must not silently stop images reaching a machine.
+              noUploads: h.noUploads === true,
               persist: h.persist === 'tmux' ? ('tmux' as const) : ('off' as const)
             }
           })

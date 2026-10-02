@@ -137,6 +137,7 @@ import { sttConfigFrom, sttConfigOf, sttReadiness } from '../shared/speechProvid
 import { createProfile, planProfile } from './profiles.ts'
 import { readSshConfigHosts } from './ssh.ts'
 import { endRemoteSession, listRemoteSessions } from './sshSessions.ts'
+import { registerSshImageHandlers } from './sshImages.ts'
 import { hostPersists, isSafeRemoteSessionName, mintRemoteSessionName } from '../shared/sshPersist.ts'
 import { shouldOfferKey } from '../shared/sshAuth.ts'
 import { EnrollRuns } from './enrollRuns.ts'
@@ -4213,6 +4214,8 @@ function registerIpc(): void {
     if (!isSafeRemoteSessionName(name)) return { ok: false, message: 'That is not a session Stoke started.' }
     return endRemoteSession(host, name)
   })
+  // Images pasted or dropped on an SSH tab, copied to the machine (sshImages.ts).
+  registerSshImageHandlers({ getSettings, isAppWindow: (sender) => !!win && sender === win.webContents })
 
   /* ------------------------------------------------------------------ tabs */
   ipcMain.on(CH.tabsSave, (_e, state: StoredTabs) => {

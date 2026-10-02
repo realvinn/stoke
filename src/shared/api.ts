@@ -123,6 +123,33 @@ export interface ClipboardPeek {
   hasImage: boolean
 }
 
+/**
+ * An image for an SSH host: the clipboard, which main reads itself (no bytes
+ * cross IPC), or a dropped file's bytes. `name` only seeds the far file's stem;
+ * main cuts it to its own alphabet and takes the extension from the bytes.
+ */
+export type ImageSource = { kind: 'clipboard' } | { kind: 'bytes'; name: string; data: ArrayBuffer }
+
+/** Main has the image, checked and named, waiting to be sent by `uploadId`. */
+export type ImagePrepared =
+  | { ok: true; uploadId: string; name: string; bytes: number; thumb: string | null }
+  | { ok: false; reason: 'no-image' | 'not-image' | 'too-large' | 'not-allowed'; message: string }
+
+/**
+ * Where a sent image landed on the machine, or why it did not. `detail` is
+ * ssh's own last line of complaint when there is one, never Stoke's guess;
+ * `needs-login` is ssh's "Permission denied", which a key fixes. A failed
+ * image stays prepared, so it can be sent again.
+ */
+export type ImageSent =
+  | { ok: true; path: string }
+  | {
+      ok: false
+      reason: 'needs-login' | 'unreachable' | 'failed' | 'cancelled' | 'not-allowed'
+      message: string
+      detail: string
+    }
+
 /** What Settings › Agents › Add account sends: an agent and a name, never a path. */
 export interface AccountCreateInput {
   cli: CodingCliId
@@ -927,6 +954,15 @@ export interface StokeApi {
      * reason when it could not be reached; never throws.
      */
     endRemoteSession(hostId: string, name: string): Promise<{ ok: boolean; message: string }>
+    /**
+     * Images into an SSH tab: check and hold one for `hostId` (main reads the
+     * clipboard itself, or takes a dropped file's bytes), then send it over a
+     * second BatchMode connection and get back the far path to type. Neither
+     * throws; `cancelImage` stops a send in flight or drops a held image.
+     */
+    prepareImage(hostId: string, source: ImageSource): Promise<ImagePrepared>
+    sendImage(uploadId: string): Promise<ImageSent>
+    cancelImage(uploadId: string): Promise<void>
   }
 
   /**

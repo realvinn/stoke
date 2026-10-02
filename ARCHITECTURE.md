@@ -852,8 +852,10 @@ npm run verify:find           # Find in a conversation: what a transcript gives 
                               # reader and its cache, a runaway regex ended by the worker's budget
                               # (a real Worker), SSH consent and the one-fetch claim with fakes,
                               # who takes Cmd+F with the browser docked, and the wires
-npm run verify:drop           # what a dropped file types: quoting per platform, and the
-                              # names that cannot be typed at all
+npm run verify:drop           # what a dropped file types: quoting per platform, the
+                              # names that cannot be typed at all, several paths read back
+                              # by Claude Code's own splitter and by real shells, and the
+                              # image-paste key per platform (Alt+V for Claude on Windows)
 npm run verify:fullscreen     # the macOS full-screen menu bar: how far it reaches (notch,
                               # never-hide, failed reads) and when the shell moves under it
                               # and back, replayed from measured pointer events (gotcha 105)
@@ -957,7 +959,12 @@ npm run verify:worklog-autoscan # when a session is scanned without being asked
 npm run verify:ssh            # ssh argv, ~/.ssh/config parsing, the remote transcript fetch,
                               # the login probe and IdentityFile block against real `ssh -G`,
                               # the kept-session names/commands (refused, never escaped) and
-                              # the command run by every local login shell against a fake tmux
+                              # the command run by every local login shell against a fake tmux;
+                              # the image upload's argv, name whitelist and magic bytes, its
+                              # body run by every login shell (bytes identical, a cut stream
+                              # leaves nothing), the stdin runner's EPIPE/timeout/cancel, and
+                              # the paste queue (clipboard read when pressed, a failure holding
+                              # the queue, Cancel ending only its own job) over a fake main
 npm run verify:ssh-enroll     # the password-prompt detector (POSIX and ConPTY-shaped streams),
                               # the login watch that gates a reconnect (a `su` or nested ssh
                               # after login is never "at the prompt"), the offer table,
@@ -1397,6 +1404,16 @@ src/main/         Electron main process
   sshSessions.ts    runs those BatchMode list and kill calls (execFile, never a shell;
                     never throws) for the launcher's "Running on <host>" and a tab's
                     "End session". No electron import; the runner is injectable
+  sshUpload.ts      sends an image's bytes to a host on stdin over a second BatchMode ssh
+                    (`buildUploadArgs`/`buildUploadBody` in ssh.ts: -T, RemoteCommand=none,
+                    ControlMaster=no and scp's own ClearAllForwardings/PermitLocalCommand=no/
+                    ForwardAgent=no/-x, a `sh -c` that writes ~/.cache/stoke/paste/NAME via
+                    .part + size check) and reads back the far path. `spawnWithInput`
+                    listens for stdin's EPIPE. No electron import. Gotcha 146
+  sshImages.ts      the IPC half: prepare (main reads the clipboard itself, or takes a
+                    dropped file's bytes; checks magic bytes and 25 MB, names the file,
+                    makes a thumbnail, holds it by id), send, cancel. A failed image stays
+                    held for Try again. Only the app's own window may call it
   sshEnroll.ts      setting up key login for a host that asks for a password.
                     `planEnrollLaunch` takes only the host id and size from a
                     `pty:start` with `opts.enroll`; `prepareEnroll` picks the key ssh -G
@@ -1549,6 +1566,11 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
   src/components/HubJoinPrompt.tsx  on a device in the vault, a `.main-col` strip: "<device>
                     asks to join your vault". Review opens Account & sync, where the codes are
                     compared; nothing is approved from the strip
+  src/components/ImageSendStrip.tsx  `useSshImages`: an image pasted (Cmd/Ctrl+V, the
+                    menu's Paste image) or dropped on an SSH tab is prepared and sent by
+                    main, then its far path typed like a drop. The queue is `ImageJobs`
+                    (shared/imageJobs.ts); the strip inside `.term-pane` shows a thumbnail and
+                    Cancel, and a failure ssh's own line with Try again / Set up key login
   src/components/SshKeyPrompt.tsx  "E2E box asked for a password. Set up key login?" — a
                     `.main-col` row, never an overlay (gotcha 14). Add a key opens the
                     "Add key to …" tab (App's `startSshEnroll`); the strip then reports
@@ -1836,8 +1858,18 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     `remote.sttUrl` as a write-only mirror for one release, for older builds.
                     A new voice field needs its default AND a clampVoice line in one change
   drop.ts           what a file dropped on the terminal types: the per-platform quoting,
-                    and the refusal for a name that cannot be typed. Pure, platform passed
-                    in, so verify:drop runs it for every OS. Gotcha 59
+                    the backslash form for several POSIX paths (`escapePath`, the one
+                    Claude Code's splitter reads), the refusal for a name that cannot be
+                    typed, and the image-paste key per platform (`imagePasteKeys`). Pure,
+                    platform passed in, so verify:drop runs it for every OS. Gotchas 59, 146
+  imageJobs.ts      `ImageJobs`, one SSH tab's queue of pastes and drops: the clipboard read
+                    when pressed, one send at a time in press order, a failure holding the
+                    queue until Try again or Dismiss, every image main holds let go when its
+                    job ends. Pure, so verify:ssh drives it with a fake main. Gotcha 146
+  imageUpload.ts    images into an SSH tab, the rules both processes share: the 25 MB cap,
+                    `imageKind` from magic bytes, the far file-name whitelist and the two
+                    namers, the far path check (`parseUploadPath`) and the failure sort by
+                    ssh's own words (`uploadFailureKind`). Gotcha 146
   browserProfiles.ts  the docked browser's profiles: each its own persistent partition
                     (`partitionFor`; Default keeps `persist:stoke-browser`), the hydrate that
                     repairs a settings file's list, and id/label minting. verify:browser-profiles

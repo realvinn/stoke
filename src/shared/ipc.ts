@@ -364,6 +364,16 @@ export const CH = {
    * kept tab is closed). By host id and a whitelisted name; main builds the argv.
    */
   sshEndRemoteSession: 'ssh:end-remote-session',
+  /**
+   * renderer -> main: an image for an SSH host — "the clipboard" (main reads it)
+   * or a dropped file's bytes. Main checks, names and holds it, and answers with
+   * an id, its size and a thumbnail. No path or name from the renderer is used.
+   */
+  sshImagePrepare: 'ssh:image-prepare',
+  /** renderer -> main: send a prepared image (by id) over a second BatchMode ssh. */
+  sshImageSend: 'ssh:image-send',
+  /** renderer -> main: stop a send in flight, or drop a prepared image. */
+  sshImageCancel: 'ssh:image-cancel',
 
   // tab restore
   tabsSave: 'tabs:save',

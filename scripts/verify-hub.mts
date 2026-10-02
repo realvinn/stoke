@@ -138,6 +138,7 @@ import {
   sshKeyTarget,
   t1ValuesFrom,
   t2ValuesFrom,
+  type HostPayload,
   type SyncableHost
 } from '../src/shared/hub/settings.ts'
 import { LOCAL_KEYS, PARTIAL_KEYS, PORTABLE_KEYS } from '../src/shared/setupFile.ts'
@@ -916,7 +917,18 @@ console.log('\nsettings: applying what arrives')
   check('a T3 tombstone removes the host', (cleared.hosts as SyncableHost[]).map((h) => h.label), ['Home NUC'])
   const renamed = hydrateSettings(applySyncedSettings(cleared, { hosts: { [nucSync]: hostPayloadFor({ id: 'host-9', label: 'NUC (basement)', alias: 'nuc', command: '' }) } }).raw)
   check('an update by sync id keeps the local settings id', renamed.hosts.map((h) => [h.id, h.label]), [['host-1', 'NUC (basement)']])
-  ok('a host payload never carries the settings id or keyEnrolled', !('id' in hostPayloadFor({ id: 'host-1', label: 'x', alias: 'x', command: '', keyEnrolled: true } as SyncableHost).host) && !('keyEnrolled' in hostPayloadFor({ id: 'host-1', label: 'x', alias: 'x', command: '', keyEnrolled: true }).host))
+  /*
+   * `noUploads` ("never send images to this machine") is a choice about the
+   * machine, like `keyEnrollRefused`, so it travels with the host: set on one
+   * computer, the others stop writing files there too. Only a literal true
+   * survives hydrate on the way in.
+   */
+  check('noUploads rides in the host payload', hostPayloadFor({ id: 'host-1', label: 'B', alias: 'bastion', command: '', noUploads: true }).host.noUploads, true)
+  const refusing = hydrateSettings(applySyncedSettings(renamed, { hosts: { [nucSync]: hostPayloadFor({ id: 'host-9', label: 'NUC (basement)', alias: 'nuc', command: '', noUploads: true }) } }).raw)
+  check('and lands on the local host, by sync id', refusing.hosts.map((h) => [h.id, h.noUploads]), [['host-1', true]])
+  const junk = hydrateSettings(applySyncedSettings(renamed, { hosts: { [nucSync]: { host: { label: 'NUC', alias: 'nuc', command: '', noUploads: 'yes' }, keyRefs: [] } as unknown as HostPayload } }).raw)
+  check('a truthy leftover from another machine does not turn uploads off', junk.hosts.map((h) => h.noUploads), [false])
+  ok('a host payload never carries the settings id or keyEnrolled',!('id' in hostPayloadFor({ id: 'host-1', label: 'x', alias: 'x', command: '', keyEnrolled: true } as SyncableHost).host) && !('keyEnrolled' in hostPayloadFor({ id: 'host-1', label: 'x', alias: 'x', command: '', keyEnrolled: true }).host))
 }
 
 console.log('\nsettings: SSH key files')

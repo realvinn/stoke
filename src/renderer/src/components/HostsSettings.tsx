@@ -264,6 +264,7 @@ export function HostsSettings({
         transcriptFind: false,
         keyEnrollRefused: false,
         keyEnrolled: false,
+        noUploads: false,
         // A NEW machine keeps its tabs' shells running between connections;
         // one saved before this existed hydrates as 'off', unchanged.
         persist: 'tmux'
@@ -332,6 +333,14 @@ export function HostsSettings({
               transcript back over the same connection, which is also what makes the context meter
               work — it cannot read a file that only exists on the far machine. While it is off,
               nothing is copied off that machine at all.
+            </p>
+            <p>
+              <b>Images.</b> An image pasted or dropped on a machine&rsquo;s tab is copied there over a
+              second <span className="mono">ssh</span> connection, into{' '}
+              <span className="mono">~/.cache/stoke/paste</span> (kept for a day), and its path is
+              typed, so Claude Code there attaches it. That connection cannot type a password: a
+              machine that asks for one needs key login (or a{' '}
+              <span className="mono">ControlMaster</span> of your own already open to it).
             </p>
             <p>
               Stoke&rsquo;s own conversation resume does not reach a remote session: it replays the
@@ -632,6 +641,29 @@ export function HostsSettings({
                         Turned off by &ldquo;Never for this host&rdquo;. Ticking it is the way back.
                       </span>
                     )
+                  )}
+                </span>
+              </label>
+
+              {/*
+                Images pasted or dropped on this machine's tabs are copied there
+                (sshUpload.ts). Per host, like the key offer: a shared bastion or
+                a client's box may not want files written. Its own search row
+                (`hosts.images`), landing on the list when no machine is drawn.
+              */}
+              <label className="check-row" data-setting="hosts.images">
+                <input
+                  type="checkbox"
+                  checked={host.noUploads !== true}
+                  onChange={(e) => update(host.id, { noUploads: !e.target.checked })}
+                />
+                <span>
+                  <span className="field-label">Send pasted and dropped images to this machine</span>
+                  {host.noUploads === true && (
+                    <span className="field-hint">
+                      Off: a pasted image is left to the terminal, and a dropped one types its path on
+                      this computer.
+                    </span>
                   )}
                 </span>
               </label>

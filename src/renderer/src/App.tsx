@@ -5780,6 +5780,8 @@ export function App(): React.JSX.Element {
                   onClose={requestCloseTab}
                   onReconnectNow={reconnectTabNow}
                   onStopReconnect={stopReconnect}
+                  host={tab.hostId ? (settings?.hosts.find((h) => h.id === tab.hostId) ?? null) : null}
+                  onSetUpKey={(hostId) => void startSshEnroll(hostId, tab.id)}
                 />
               )
             )}

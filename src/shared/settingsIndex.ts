@@ -538,6 +538,8 @@ export const SETTING_ROWS: readonly SettingRow[] = [
     keywords: ['find', 'search', 'cmd+f', 'ctrl+shift+f', 'conversation', 'transcript', 'copy conversation'],
     fallback: 'hosts.list'
   },
+  // Inside each machine's row, so drawn only once a machine exists.
+  { id: 'hosts.images', page: 'hosts', label: 'Send pasted and dropped images to this machine', keywords: ['image', 'screenshot', 'paste image', 'upload', 'picture', 'scp', 'drop file'], fallback: 'hosts.list' },
 
   // Browser
   { id: 'browser.profiles', page: 'browser', label: 'Browser profiles', keywords: ['logins', 'cookies', 'site data', 'profile'] },

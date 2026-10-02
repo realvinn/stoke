@@ -372,6 +372,8 @@ rule file named on the group line.
   `capture-pane` seam (`buildPersistentCommand`); reset reconnect tries on a login, never uptime. No Copy mode.
 - **144.** Never let a process exit be the only sign an "Add key" tab is done: watch its output for the
   result (`EnrollRuns`, `enrollInstallDone`), first of the two wins; the probe still alone decides.
+- **146.** Send an SSH tab's image as bytes over a second ssh with scp's options (`buildUploadArgs`: `-T`,
+  `ClearAllForwardings`, `RemoteCommand=none`; main names it; EPIPE) and type several paths with `escapePath`.
 
 **Phone access** — `.claude/rules/phone.md`
 - **53.** Draw no QR for `connectTarget`'s `loopback` reach, mint the key only in start paths
