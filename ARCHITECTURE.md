@@ -1905,7 +1905,8 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
   topBar.ts         the title bar's own items (`Settings.topBar`): folder, git, text
                     shortcuts, flexible spaces. TOP_BAR_DEFAULTS (on, folder + git) and
                     `clampTopBar` (rebuilt from named keys; one folder, one git, ids never
-                    minted by a read, gotcha 116; shortcut text held to one hub item's size),
+                    minted by a read, gotcha 116; shortcut text held to one hub item's size,
+                    counted JSON-escaped by `shortcutCost`, as the item carries it),
                     the editor's moves, `shortcutVerdict` (what a shortcut may type into, and
                     why not), `folderChip` (an SSH tab's alias is never opened, gotcha 18) and
                     `fitTopBar` (how the bar gives way on a narrow window), and `tabsFloorPx`

@@ -88,10 +88,11 @@ export const TOP_BAR_MAX_ITEMS = 24
 export const SHORTCUT_LABEL_MAX = 24
 export const SHORTCUT_TEXT_MAX = 2000
 /**
- * Every shortcut's text together, in UTF-8 bytes. The block travels as ONE hub
- * item (T1, `t1/settings/topBar`), and an item is at most 128 KiB of plaintext
+ * Every shortcut's text together, in bytes AS THE HUB CARRIES IT
+ * (`shortcutCost`). The block travels as ONE hub item (T1,
+ * `t1/settings/topBar`), and an item is at most 128 KiB of plaintext
  * (`MAX_ITEM_PLAINTEXT_BYTES`): 24 shortcuts of 2000 CJK characters would be
- * 144 KB before JSON escaping. 48 KiB leaves room for the escapes and the rest.
+ * 144 KB. 48 KiB leaves room for the labels and the rest.
  */
 export const SHORTCUT_TEXT_BUDGET = 48 * 1024
 /** The least the tab strip keeps when the bar needs room (rem, so it follows Interface scale). */
@@ -100,6 +101,20 @@ export const TABS_FLOOR_REM = 16
 const ID_RE = /^[A-Za-z0-9_-]{1,40}$/
 
 const utf8 = (s: string): number => new TextEncoder().encode(s).length
+
+/**
+ * What one shortcut's text costs of `SHORTCUT_TEXT_BUDGET`: its UTF-8 bytes
+ * once JSON-escaped, which is how the hub item holds it. Raw UTF-8 undercounts
+ * by up to six times — a control character is one byte and `\u0001` in the
+ * item — so 24 shortcuts of pasted control characters measured 288 KB as an
+ * item, and `sealItem`'s "item too large to sync" throws inside the upload's
+ * batch, failing the WHOLE pass, every other setting with it (found in review,
+ * 2026-10-02). The form and the repair both count with this, so the form never
+ * accepts a draft the repair would then drop.
+ */
+export function shortcutCost(text: string): number {
+  return utf8(JSON.stringify(text))
+}
 
 /** Cut to at most `max` code points, never inside a surrogate pair. */
 function cutPoints(s: string, max: number): string {
@@ -168,7 +183,7 @@ export function clampTopBar(raw: unknown): TopBarSettings {
     } else if (it.kind === 'shortcut') {
       const text = typeof it.text === 'string' ? cutPoints(it.text, SHORTCUT_TEXT_MAX) : ''
       if (!text.trim()) continue
-      const cost = utf8(text)
+      const cost = shortcutCost(text)
       if (cost > budget) continue
       budget -= cost
       const given = typeof it.label === 'string' ? cutPoints(it.label.trim(), SHORTCUT_LABEL_MAX) : ''
@@ -249,8 +264,8 @@ export function shortcutDraftProblem(d: ShortcutDraft, othersText: readonly stri
   if (Array.from(d.text).length > SHORTCUT_TEXT_MAX) return `The text is longer than ${SHORTCUT_TEXT_MAX} characters.`
   if (Array.from(d.label.trim()).length > SHORTCUT_LABEL_MAX) return `The label is longer than ${SHORTCUT_LABEL_MAX} characters.`
   if (d.icon && !isSingleEmoji(d.icon)) return 'The icon is one emoji, or nothing.'
-  const used = othersText.reduce((n, t) => n + utf8(t), 0)
-  if (used + utf8(d.text) > SHORTCUT_TEXT_BUDGET) return 'Your shortcuts together hold as much text as the title bar keeps. Shorten this one or remove another.'
+  const used = othersText.reduce((n, t) => n + shortcutCost(t), 0)
+  if (used + shortcutCost(d.text) > SHORTCUT_TEXT_BUDGET) return 'Your shortcuts together hold as much text as the title bar keeps. Shorten this one or remove another.'
   return null
 }
 

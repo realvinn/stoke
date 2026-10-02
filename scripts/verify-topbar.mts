@@ -25,6 +25,7 @@ import {
   SHORTCUT_TEXT_MAX,
   shortcutDraftProblem,
   shortcutFromDraft,
+  shortcutCost,
   shortcutVerdict,
   tabsFloorPx,
   topBarKeep,
@@ -36,7 +37,7 @@ import {
 } from '../src/shared/topBar.ts'
 import { DEFAULT_SETTINGS, hydrateSettings } from '../src/main/settingsSchema.ts'
 import { LOCAL_KEYS, PORTABLE_KEYS } from '../src/shared/setupFile.ts'
-import { T1_KEYS, MAX_ITEM_PLAINTEXT_BYTES } from '../src/shared/hub/items.ts'
+import { T1_KEYS, MAX_ITEM_PLAINTEXT_BYTES, itemPlaintextText } from '../src/shared/hub/items.ts'
 
 let failures = 0
 
@@ -155,7 +156,35 @@ console.log('\nthe block fits one hub item')
   const bytes = new TextEncoder().encode(JSON.stringify(kept)).length
   check('shortcuts past the text budget are dropped from the end', kept.items.length < worst.length && kept.items.length > 0, true)
   check(`the clamped worst case is under MAX_ITEM_PLAINTEXT_BYTES (${bytes} bytes)`, bytes < MAX_ITEM_PLAINTEXT_BYTES, true)
-  check('the budget is what is spent', kept.items.reduce((n, i) => n + (i.kind === 'shortcut' ? new TextEncoder().encode(i.text).length : 0), 0) <= SHORTCUT_TEXT_BUDGET, true)
+  check('the budget is what is spent', kept.items.reduce((n, i) => n + (i.kind === 'shortcut' ? shortcutCost(i.text) : 0), 0) <= SHORTCUT_TEXT_BUDGET, true)
+
+  /*
+   * Measured the way `sealItem` measures it (`itemPlaintextText`), and with
+   * the worst escape there is: a control character is one UTF-8 byte and six
+   * in the item (`\u0001`). Counted in raw bytes, 24 such shortcuts fit the
+   * budget and made a 288 KB item — and an oversize item throws inside the
+   * hub upload's batch, failing every other setting's sync with it.
+   */
+  const asItem = (value: unknown): number =>
+    new TextEncoder().encode(itemPlaintextText({ path: 't1/settings/topBar', editedAt: 1_790_000_000_000, deleted: false, value })).length
+  const control = Array.from({ length: 30 }, (_, i) => ({
+    id: `c${i}`,
+    kind: 'shortcut',
+    label: '\u0001'.repeat(40),
+    icon: '🧑‍💻',
+    text: '\u0001'.repeat(SHORTCUT_TEXT_MAX),
+    send: true,
+    on: 'claude'
+  }))
+  const keptControl = clampTopBar({ enabled: true, items: control })
+  check(`control characters: the clamped block fits one hub item (${asItem(keptControl)} bytes)`, asItem(keptControl) < MAX_ITEM_PLAINTEXT_BYTES, true)
+  check('and so does the CJK worst case, measured as the item', asItem(kept) < MAX_ITEM_PLAINTEXT_BYTES, true)
+  check('a control character costs its escape, a plain one its byte', [shortcutCost('\u0001'), shortcutCost('a'), shortcutCost('"')], [8, 3, 4])
+  check(
+    'the form refuses what the repair would drop: the same count',
+    shortcutDraftProblem({ label: 'x', icon: '', text: '\u0001'.repeat(SHORTCUT_TEXT_MAX), send: false, on: 'any' }, Array.from({ length: 4 }, () => '\u0001'.repeat(SHORTCUT_TEXT_MAX))) !== null,
+    true
+  )
 }
 
 console.log('\nhydrate is idempotent here (gotcha 116)')
