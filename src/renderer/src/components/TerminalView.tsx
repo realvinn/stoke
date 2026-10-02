@@ -5,7 +5,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes'
 import type { ClipboardPeek } from '@shared/api'
-import type { TerminalSettings, Theme, VoiceSettings } from '@shared/types'
+import type { SshHost, TerminalSettings, Theme, VoiceSettings } from '@shared/types'
 import { dropText, imagePasteKeys } from '@shared/drop'
 import { noSignalLine } from '@shared/micDevice'
 import { createRecorder, voiceSupported, type Recorder } from '@shared/voice'
@@ -29,6 +29,7 @@ import { terminalTheme } from '../lib/theme'
 import { agentMark, paneAgent } from '../lib/agentColor'
 import type { Tab } from '../types'
 import { ContextMenu } from './ContextMenu'
+import { useSshImages } from './ImageSendStrip'
 
 /**
  * How far the pointer may travel between press and release and still count as a
@@ -118,6 +119,10 @@ interface Props {
   /** A kept SSH tab waiting to reconnect (`tab.reconnect`): try now, or stop trying. */
   onReconnectNow?: (tab: Tab) => void
   onStopReconnect?: (tabId: string) => void
+  /** The machine an SSH tab runs on (`tab.hostId` in settings), for sending it images. */
+  host?: SshHost | null
+  /** "Set up key login" from the image strip, when ssh said Permission denied. */
+  onSetUpKey?: (hostId: string) => void
 }
 
 /**
@@ -153,10 +158,18 @@ export function TerminalView({
   onRestart,
   onClose,
   onReconnectNow,
-  onStopReconnect
+  onStopReconnect,
+  host = null,
+  onSetUpKey
 }: Props): React.JSX.Element {
   const hostRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
+  /*
+   * Images into an SSH tab: a pasted or dropped image is copied to the machine
+   * and its far path typed (ImageSendStrip.tsx). `images.on` is false for every
+   * other tab, and for a host whose images are turned off.
+   */
+  const images = useSshImages({ tab, host, termRef, onSetUpKey })
   /*
    * The one fit, callable from every effect that resizes.
    *
@@ -248,20 +261,25 @@ export function TerminalView({
   const openUrlRef = useRef(onOpenUrl)
   openUrlRef.current = onOpenUrl
   /*
-   * An image-only clipboard, pasted by a chord or the menu. A local tab hands
-   * the agent its own paste key so it reads the clipboard itself
-   * (`imagePasteKeys`: Ctrl+V, or Alt+V for Claude Code on Windows). Refs,
-   * because the key handler is bound once per pty and the tab can change under it.
+   * An image-only clipboard, pasted by a chord or the menu. An SSH tab sends
+   * the image to its machine and types the far path, since the `claude` there
+   * cannot read this clipboard. A local tab hands the agent its own paste key
+   * so it reads the clipboard itself (`imagePasteKeys`: Ctrl+V, or Alt+V for
+   * Claude Code on Windows). Refs, because the key handler is bound once per
+   * pty and the tab can change under it.
    */
   const pasteImageRef = useRef<() => void>(() => {})
-  pasteImageRef.current = () =>
-    window.stoke.pty.write(tab.ptyId, imagePasteKeys(window.stoke.platform, tab.cliId, !!tab.hostId))
+  pasteImageRef.current = () => {
+    if (images.on) images.pasteClipboard()
+    else window.stoke.pty.write(tab.ptyId, imagePasteKeys(window.stoke.platform, tab.cliId, !!tab.hostId))
+  }
   /**
    * Whether a bare Ctrl+V with an image must be taken from xterm, whose own
-   * answer is `\x16`: only when that would be the wrong key.
+   * answer is `\x16`: only when that would be the wrong thing.
    */
   const imageNeedsHandingRef = useRef<() => boolean>(() => false)
-  imageNeedsHandingRef.current = () => imagePasteKeys(window.stoke.platform, tab.cliId, !!tab.hostId) !== '\x16'
+  imageNeedsHandingRef.current = () =>
+    images.on || imagePasteKeys(window.stoke.platform, tab.cliId, !!tab.hostId) !== '\x16'
 
   // Build the terminal once per pty. Theme and font changes are applied in
   // separate effects rather than by rebuilding, so scrollback survives them.
@@ -1409,6 +1427,13 @@ export function TerminalView({
      */
     const term = termRef.current
     if (!term) return
+    /*
+     * An SSH tab sends dropped IMAGES to its machine and types their far paths
+     * (the local path names nothing there). Read from the File's own bytes, so
+     * a drag with no path — an image out of a browser — works too. A drop
+     * with no image in it falls through to the path, as before.
+     */
+    if (images.on && images.dropFiles(Array.from(e.dataTransfer.files))) return
     const paths = Array.from(e.dataTransfer.files)
       .map((f) => window.stoke.pathForFile(f))
       .filter((p): p is string => p !== null)
@@ -1552,6 +1577,7 @@ export function TerminalView({
           ]}
         />
       )}
+      {images.strip}
       {!voiceOn && voiceNotice && (
         <div className="voice-strip" role="status">
           <span className="voice-dot" data-state="idle" />

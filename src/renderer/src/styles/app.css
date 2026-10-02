@@ -2264,6 +2264,7 @@ mark.hit {
 
 /* The floating strips sit inside the card rather than on its rim. */
 :root[data-term-frame='true'] .voice-strip,
+:root[data-term-frame='true'] .image-strip,
 :root[data-term-frame='true'] .term-exit {
   --strip-inset: calc(var(--space-12) + var(--space-8));
 }
@@ -2387,6 +2388,71 @@ mark.hit {
   .voice-level-fill {
     transition: none;
   }
+}
+
+/*
+ * An image on its way to an SSH tab's machine (ImageSendStrip.tsx), and why it
+ * did not get there. Bottom-RIGHT, where only the exit card ever sits — and a
+ * tab that exits drops its images, so the two never meet; the voice strip
+ * keeps the bottom-left. Floating, like the voice strip, so showing it does
+ * not resize the pty. Inside `.term-pane`, so the docked browser never covers
+ * it (gotcha 14). Its one motion is `pop`, which reduced motion cuts to 1ms
+ * and leaves the strip at rest (gotcha 72); the spinner has its own still state.
+ */
+.image-strip {
+  position: absolute;
+  inset: auto var(--strip-inset, var(--space-12)) var(--strip-inset, var(--space-12)) auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  max-width: min(36rem, calc(100% - var(--space-24)));
+  padding: var(--space-8) var(--space-12);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-md);
+  font-size: var(--fs-sm);
+  z-index: var(--z-sticky);
+  animation: pop var(--dur) var(--ease);
+}
+
+.image-strip[data-tone='error'] {
+  border-color: var(--danger);
+}
+
+/* The clipboard the user cannot otherwise see: what is being sent. */
+.image-strip-thumb {
+  flex: none;
+  max-width: 3rem;
+  max-height: 3rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  object-fit: contain;
+  background: var(--bg-sunken);
+}
+
+.image-strip-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.image-strip-size {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ssh's own last line, under Stoke's sentence: the words the tool said. */
+.image-strip-detail {
+  display: block;
+  margin-top: var(--space-4);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+}
+
+.image-strip .btn {
+  flex: none;
+  padding: 0.1875rem var(--space-8);
+  font-size: var(--fs-sm);
 }
 
 .term-exit {
