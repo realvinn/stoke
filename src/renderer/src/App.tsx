@@ -4741,7 +4741,10 @@ export function App(): React.JSX.Element {
         case 'newPrivate':
           // Through refs, like zoom's settings (gotcha 31): this listener is
           // not rebuilt when the start callback or Claude Code's state moves.
-          if (!privateBlockedRef.current) void startPrivateRef.current()
+          // Never on a key's auto-repeat: `startPrivate`'s claim is released
+          // once a chat has started, so a ⇧⌘N held past the repeat delay
+          // started one `claude` per repeat (gotcha 51's shape, from a key).
+          if (!e.repeat && !privateBlockedRef.current) void startPrivateRef.current()
           break
         case 'zoom': {
           /*

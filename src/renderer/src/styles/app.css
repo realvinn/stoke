@@ -3662,8 +3662,19 @@ mark.hit {
   --icon-size: 0.875rem;
 }
 
+/*
+ * Wraps, unlike the SSH offer's one line: this is a disclosure, and its last
+ * clause ("Anthropic still receives what you send") is the one an ellipsis
+ * took first — measured with the docked browser open, 661px of text in a 622px
+ * box. The words never change while the tab runs (only a leak or a resume
+ * swaps them, once), so the terminal is refitted at most that often, not as
+ * stages arrive the way the offer's would be.
+ */
 .private-strip .ssh-prompt-text {
   color: var(--text);
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
 }
 
 .private-strip[data-private-strip='leak'],
