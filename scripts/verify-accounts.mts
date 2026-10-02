@@ -339,8 +339,11 @@ console.log('\nClaude Code\u2019s Keychain service name (wN() in 2.1.285)')
   check('and set empty it means the plain name', claudeKeychainService({ CLAUDE_CONFIG_DIR: dir, CLAUDE_SECURESTORAGE_CONFIG_DIR: '' }), 'Claude Code-credentials')
   check('a staging OAuth URL adds its suffix first', claudeKeychainService({ CLAUDE_CODE_CUSTOM_OAUTH_URL: 'https://staging.example' }), 'Claude Code-staging-oauth-credentials')
   check('usage.ts reads the item for the dir it was started with', usageKeychainService({ CLAUDE_CONFIG_DIR: dir }), claudeKeychainService({ CLAUDE_CONFIG_DIR: dir }))
-  check('and the credentials file beside it', usageCredentialsPath({ CLAUDE_CONFIG_DIR: dir }, '/Users/v'), `${dir}/.credentials.json`)
-  check('with no dir, ~/.claude as ever', usageCredentialsPath({}, '/Users/v'), '/Users/v/.claude/.credentials.json')
+  // usage.ts builds these with node's `join`, so on Windows they come back with
+  // backslashes; the dir chosen and the file name are what is held, read slashed.
+  const slashed = (p: string): string => p.replaceAll('\\', '/')
+  check('and the credentials file beside it', slashed(usageCredentialsPath({ CLAUDE_CONFIG_DIR: dir }, '/Users/v')), `${dir}/.credentials.json`)
+  check('with no dir, ~/.claude as ever', slashed(usageCredentialsPath({}, '/Users/v')), '/Users/v/.claude/.credentials.json')
 }
 
 /* ---------------------------------------------------- the shared index */
@@ -412,7 +415,14 @@ console.log('\nthe index is shared by every Stoke on the machine: merged per wri
 
 /* ---------------------------------------------------- folders and links */
 console.log('\nthe account folder and its links, against synthetic trees (gotcha 74)')
-const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'stoke-verify-accounts-')))
+/*
+ * Every "realpath" this block expects is `realpathSync.native`: it is the call
+ * `fs/promises`' `realpath` makes, which is what accounts.ts stores. Node's JS
+ * `realpathSync` follows links but keeps each other segment as spelled, so on
+ * GitHub's Windows runner, whose tmpdir() is the 8.3 `C:\Users\RUNNER~1\…`, it
+ * kept `RUNNER~1` where the product rightly stored `runneradmin`.
+ */
+const scratch = realpathSync.native(mkdtempSync(join(tmpdir(), 'stoke-verify-accounts-')))
 try {
   const userHome = join(scratch, 'home')
   const claudeTree = join(userHome, '.claude')
@@ -437,7 +447,7 @@ try {
 
   const made = await makeAccountHome({ root: accountsDir, id: 'claude-work', cli: 'claude', trees })
   const home = made.home
-  check('the home is <root>/<id>, realpath\u2019d', home, join(realpathSync(accountsDir), 'claude-work'))
+  check('the home is <root>/<id>, realpath\u2019d', home, join(realpathSync.native(accountsDir), 'claude-work'))
   check('linked: the dirs the default tree has, plus the two it must', made.report.linked, ['projects', 'sessions', 'skills', 'commands'])
   check('skipped: the ones it does not have', made.report.skipped, ['agents', 'plugins', 'output-styles'])
   check('copied once: settings.json and CLAUDE.md', made.report.copied, ['settings.json', 'CLAUDE.md'])
@@ -483,7 +493,7 @@ try {
   const linkedRoot = join(scratch, 'linked-accounts')
   symlinkSync(realRoot, linkedRoot, process.platform === 'win32' ? 'junction' : 'dir')
   const via = await makeAccountHome({ root: linkedRoot, id: 'claude-x', cli: 'claude', trees })
-  check('a home made through a symlinked root is stored as its realpath', via.home, join(realpathSync(realRoot), 'claude-x'))
+  check('a home made through a symlinked root is stored as its realpath', via.home, join(realpathSync.native(realRoot), 'claude-x'))
 
   let refused = false
   try {
