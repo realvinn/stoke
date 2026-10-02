@@ -421,8 +421,10 @@ export interface FitItem {
   /** Width in px compact: folder as its name, git as its branch; anything else as full. */
   compact: number
   /**
-   * The least it can be squeezed to, its text cut with an ellipsis (the folder
-   * and git chips' CSS `min-width`). Absent: it cannot be squeezed.
+   * The folder and git chips' CSS `min-width`: the least it can be squeezed
+   * to, its text cut with an ellipsis — and, being a min-width, also the least
+   * it is ever drawn, so a compact chip narrower than this (git's "main" is
+   * ~64px against a 5.5rem floor) is counted at it. Absent: it cannot be squeezed.
    */
   min?: number
 }
@@ -465,7 +467,14 @@ export function fitTopBar(input: FitInput): FitResult {
     const shown = items.filter((i) => !out.has(i.id) && !hidden.has(i.id))
     const widths = shown.map((i) => {
       const w = compact.has(i.id) ? i.compact : i.full
-      return squeeze && i.min !== undefined ? Math.min(w, i.min) : w
+      /*
+       * A min-width both floors and grows: squeezed, the chip is its min;
+       * otherwise never narrower than it. Counted at its content alone, git
+       * compact as "main" read 24px short at 940px, and the chips ran 5px past
+       * the list, under the "»" (driven, 2026-10-02).
+       */
+      if (i.min === undefined) return w
+      return squeeze ? i.min : Math.max(w, i.min)
     })
     const count = shown.length + 1 + (out.size > 0 ? 1 : 0)
     return widths.reduce((a, b) => a + b, 0) + fixed + (out.size > 0 ? more : 0) + gap * Math.max(0, count - 1)

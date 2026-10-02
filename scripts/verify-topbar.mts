@@ -352,6 +352,23 @@ console.log('\ngiving way on a narrow window')
     hidden: []
   })
   check('and only below that is git left out', fitTopBar({ room: 211, gap: 4, fixed: 28, more: 28, items: wide }).hidden, ['git'])
+  /*
+   * A min-width also GROWS a chip: compact git "main" is ~64px of content in
+   * an 88px (5.5rem) floor. Counted at 64, the fit kept both chips and they ran
+   * 5px past the list at 940px. Here: compact at content would be
+   * 40+50+28+28+3 gaps = 158 ≤ 160; at their floors, 64+88+28+28+12 = 220.
+   */
+  const small: FitItem[] = [
+    { id: 'folder', kind: 'folder', full: 300, compact: 40, min: 64 },
+    { id: 'git', kind: 'git', full: 200, compact: 50, min: 88 },
+    { id: 's1', kind: 'shortcut', full: 80, compact: 80 }
+  ]
+  check('a compact chip narrower than its min-width is counted at it, so the fit leaves git out', fitTopBar({ room: 160, gap: 4, fixed: 28, more: 28, items: small }), {
+    compact: ['folder', 'git'],
+    overflow: ['s1'],
+    hidden: ['git']
+  })
+  check('and keeps both once its floors fit', fitTopBar({ room: 220, gap: 4, fixed: 28, more: 28, items: small }).hidden, [])
   check(
     'with no folder item, git is the first to give way',
     fitTopBar({ room: 200, gap: 4, fixed: 28, more: 28, items: [items[1], items[3]] }),
