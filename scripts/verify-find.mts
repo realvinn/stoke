@@ -42,6 +42,7 @@ import {
   findTargetOf,
   paletteFindMatch,
   roleLabel,
+  screenCall,
   screenCountLabel,
   typedInto
 } from '../src/renderer/src/lib/terminalFind.ts'
@@ -505,6 +506,14 @@ console.log('\na key pressed inside the bar never reaches the terminal')
   check('no answer stays no answer', consentAfterSend(null), null)
 }
 
+console.log('\nthe screen, newest first like the conversation')
+// Found driving the built app: findNext with no selection starts at row 0, so
+// typing a query threw a terminal at the bottom of its scrollback to the top,
+// and its first match was the OLDEST one.
+check('typing searches from the bottom up', screenCall('incremental'), 'findPrevious')
+check('Enter steps to the next older match', screenCall('older'), 'findPrevious')
+check('Shift+Enter to the next newer one', screenCall('newer'), 'findNext')
+
 console.log('\nthe words')
 check('alternate screen: "on screen"', screenCountLabel(3, 0, 'alternate'), '1 of 3 on screen')
 check('normal buffer: "in the terminal", scrollback and all', screenCountLabel(0, -1, 'normal'), 'None in the terminal')
@@ -530,6 +539,12 @@ console.log('\nthe wires a pure suite cannot otherwise see (gotcha 31)')
     'every key in the bar is decided on its root, a button included, not only on the input',
     /className="term-find"[\s\S]*?onKeyDown=\{onRootKeyDown\}/.test(bar) &&
       /const onRootKeyDown = [\s\S]*?barKey\(e, e\.target === inputRef\.current\)[\s\S]*?if \(what === 'chord'\) return\s+e\.stopPropagation\(\)[\s\S]*?close\(\)[\s\S]*?typedInto\(/.test(bar),
+    true
+  )
+  check(
+    'the screen engine steps through screenCall, Enter older and Shift+Enter newer',
+    /screenCall\(dir\) === 'findPrevious'\) search\.findPrevious\(query, o\)\s+else search\.findNext\(query, o\)/.test(bar) &&
+      /else step\(e\.shiftKey \? 'newer' : 'older'\)/.test(bar),
     true
   )
   check(

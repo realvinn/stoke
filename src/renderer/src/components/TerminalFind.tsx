@@ -10,8 +10,10 @@ import {
   consentAfterSend,
   conversationCountLabel,
   roleLabel,
+  screenCall,
   screenCountLabel,
-  typedInto
+  typedInto,
+  type ScreenStep
 } from '../lib/terminalFind'
 import type { FindColors } from '../lib/theme'
 import { Highlight } from './Highlight'
@@ -103,7 +105,7 @@ export function TerminalFind({ tab, term, search, colors, initialQuery, openSeq,
   /* ---------------------------------------------------------------- screen */
 
   const runScreen = useCallback(
-    (dir: 'incremental' | 'next' | 'prev'): void => {
+    (dir: ScreenStep): void => {
       setScreenError(null)
       if (!scopes.screen || !query) {
         search.clearDecorations()
@@ -128,7 +130,8 @@ export function TerminalFind({ tab, term, search, colors, initialQuery, openSeq,
         decorations: colors
       }
       try {
-        if (dir === 'prev') search.findPrevious(query, o)
+        // Newest first, from the bottom up, like the conversation's hits (`screenCall`).
+        if (screenCall(dir) === 'findPrevious') search.findPrevious(query, o)
         else search.findNext(query, o)
       } catch (err) {
         setScreenError((err as Error).message || 'The terminal search failed')
@@ -273,7 +276,7 @@ export function TerminalFind({ tab, term, search, colors, initialQuery, openSeq,
     setAskSeq((s) => s + 1)
   }
 
-  const step = (dir: 'next' | 'prev'): void => runScreen(dir)
+  const step = (dir: 'older' | 'newer'): void => runScreen(dir)
 
   /*
    * Every key pressed in the bar — the input, a toggle, a hit's button — is
@@ -304,7 +307,7 @@ export function TerminalFind({ tab, term, search, colors, initialQuery, openSeq,
       e.preventDefault()
       const hit = selected >= 0 ? hits[selected] : undefined
       if (hit) copy(hit.matchText, `“${hit.matchText}”`)
-      else step(e.shiftKey ? 'prev' : 'next')
+      else step(e.shiftKey ? 'newer' : 'older')
       return
     }
     const findAgain = IS_MAC
@@ -312,7 +315,7 @@ export function TerminalFind({ tab, term, search, colors, initialQuery, openSeq,
       : e.key === 'F3' && !e.ctrlKey && !e.metaKey && !e.altKey
     if (findAgain) {
       e.preventDefault()
-      step(e.shiftKey ? 'prev' : 'next')
+      step(e.shiftKey ? 'newer' : 'older')
       return
     }
     if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && hits.length > 0) {
@@ -420,22 +423,22 @@ export function TerminalFind({ tab, term, search, colors, initialQuery, openSeq,
         <button
           type="button"
           className="icon-btn"
-          title={`Previous on screen (⇧Enter)`}
+          title={`Older on screen (Enter, ${findAgainHint})`}
           disabled={!query || !scopes.screen}
-          onClick={() => step('prev')}
+          onClick={() => step('older')}
         >
           <IconArrowUp />
-          <span className="sr-only">Previous on screen</span>
+          <span className="sr-only">Older on screen</span>
         </button>
         <button
           type="button"
           className="icon-btn"
-          title={`Next on screen (Enter, ${findAgainHint})`}
+          title={`Newer on screen (⇧Enter, ⇧${findAgainHint})`}
           disabled={!query || !scopes.screen}
-          onClick={() => step('next')}
+          onClick={() => step('newer')}
         >
           <IconArrowDown />
-          <span className="sr-only">Next on screen</span>
+          <span className="sr-only">Newer on screen</span>
         </button>
         <button type="button" className="icon-btn" title="Close (Esc)" onClick={close}>
           <IconClose />

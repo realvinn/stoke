@@ -55,6 +55,25 @@ export function consentAfterSend(sent: FindConsent | null): FindConsent | null {
   return sent === 'once' ? 'once' : null
 }
 
+/* ------------------------------------------------- stepping on the screen */
+
+/** A move of the screen engine: as the query is typed, or one match older or newer. */
+export type ScreenStep = 'incremental' | 'older' | 'newer'
+
+/**
+ * Which SearchAddon call a screen step is. Newest first, as the conversation
+ * half lists its hits: with no selection `findNext` starts at row 0 — the
+ * OLDEST line of up to 20,000 of scrollback — so typing the first letter of a
+ * query threw the viewport to the top of the history and left it there, and
+ * the first match was the earliest one rather than the one "a bit back up".
+ * Measured in the built app on 2026-10-02: viewport at row 115 of 115, type
+ * "stub line 1", and the selection landed on row 0, "1 of 62". `findPrevious`
+ * starts at the bottom and walks up, which is also what Enter does after it.
+ */
+export function screenCall(step: ScreenStep): 'findPrevious' | 'findNext' {
+  return step === 'newer' ? 'findNext' : 'findPrevious'
+}
+
 /* --------------------------------------------------------- who takes Cmd+F */
 
 /** Where a key event landed, read off the DOM by `findTargetOf`. */
