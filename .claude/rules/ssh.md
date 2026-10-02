@@ -473,3 +473,28 @@ Windows (`ssh.exe` stdin of binary bytes, Alt+V), a real `claude` attaching the 
 user's own ControlMaster, a remote tmux pane passing the bracketed paste, and fish or a Windows
 OpenSSH server on the far side.
 
+> **Checked against the code on 2026-10-02 (review of the branch).** Two of the hook's promises did
+> not hold once a second paste or drop queued behind the first, and both were measured in the
+> builder's own build against a ProxyCommand that throttles the upload to 100–400 KB/s:
+> - **A queued paste read the clipboard when its turn came, not when it was pressed.** Copy A, Cmd+V,
+>   copy B, Cmd+V, then copy some text: A arrived and B became "There is no image on the clipboard."
+>   (with an image copied instead, that image would have been sent as B). `paste()` now asks main to
+>   read and hold the clipboard at once; only the send waits its turn.
+> - **A failure was drawn over by the job queued behind it.** With B queued, A's upload cut (its
+>   proxy killed) showed no failure at all, even sampled every 100 ms: B started in the same tick, its
+>   path was typed and A was lost without a word. A failure now holds the queue until it is answered:
+>   Try again resends the held image and the queue carries on in order; Dismiss, or a new paste, lets
+>   it go.
+> The order, the waiting and what main is told to let go moved out of the hook into
+> `ImageJobs` (src/shared/imageJobs.ts), pure, so verify:ssh holds them with a fake main: each rule
+> was mutated back to red (eager read 1 check, the hold 1, Cancel ending only its own job 7, a
+> cancelled send not holding the queue 2, an image held after the pane went being let go 1). Every
+> id main holds belongs to one job and is let go when that job ends, however it ends. Also: main
+> answers an image it no longer holds (`HELD_MS`) as `not-allowed`, a sentence, where `failed`
+> offered a Try again that could only fail the same way. Re-proven in the fixed build on the same
+> rig: A then B typed in order with the clipboard holding text by then (hashes A, B); A cut with B
+> waiting held "The image was not sent. (1 more waiting)" plus ssh's `client_loop: send
+> disconnect: Broken pipe` for 3 s with no upload running and nothing typed, then Try again typed A
+> then B (hashes A, B, no `.part`); Cancel on A with B waiting published nothing of A and sent B; a
+> two-screenshot drop with a `.txt`, the password host, the menu's Paste image and the opt-out (the
+> stub got `^V`, nothing sent) behaved as before.

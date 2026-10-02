@@ -950,7 +950,9 @@ npm run verify:ssh            # ssh argv, ~/.ssh/config parsing, the remote tran
                               # the command run by every local login shell against a fake tmux;
                               # the image upload's argv, name whitelist and magic bytes, its
                               # body run by every login shell (bytes identical, a cut stream
-                              # leaves nothing), and the stdin runner's EPIPE/timeout/cancel
+                              # leaves nothing), the stdin runner's EPIPE/timeout/cancel, and
+                              # the paste queue (clipboard read when pressed, a failure holding
+                              # the queue, Cancel ending only its own job) over a fake main
 npm run verify:ssh-enroll     # the password-prompt detector (POSIX and ConPTY-shaped streams),
                               # the login watch that gates a reconnect (a `su` or nested ssh
                               # after login is never "at the prompt"), the offer table,
@@ -1538,8 +1540,8 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     compared; nothing is approved from the strip
   src/components/ImageSendStrip.tsx  `useSshImages`: an image pasted (Cmd/Ctrl+V, the
                     menu's Paste image) or dropped on an SSH tab is prepared and sent by
-                    main, then its far path typed like a drop. Jobs chain per tab, claimed
-                    before any await; the strip inside `.term-pane` shows a thumbnail and
+                    main, then its far path typed like a drop. The queue is `ImageJobs`
+                    (shared/imageJobs.ts); the strip inside `.term-pane` shows a thumbnail and
                     Cancel, and a failure ssh's own line with Try again / Set up key login
   src/components/SshKeyPrompt.tsx  "E2E box asked for a password. Set up key login?" — a
                     `.main-col` row, never an overlay (gotcha 14). Add a key opens the
@@ -1820,6 +1822,10 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     Claude Code's splitter reads), the refusal for a name that cannot be
                     typed, and the image-paste key per platform (`imagePasteKeys`). Pure,
                     platform passed in, so verify:drop runs it for every OS. Gotchas 59, 146
+  imageJobs.ts      `ImageJobs`, one SSH tab's queue of pastes and drops: the clipboard read
+                    when pressed, one send at a time in press order, a failure holding the
+                    queue until Try again or Dismiss, every image main holds let go when its
+                    job ends. Pure, so verify:ssh drives it with a fake main. Gotcha 146
   imageUpload.ts    images into an SSH tab, the rules both processes share: the 25 MB cap,
                     `imageKind` from magic bytes, the far file-name whitelist and the two
                     namers, the far path check (`parseUploadPath`) and the failure sort by

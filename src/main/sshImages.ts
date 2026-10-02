@@ -159,7 +159,9 @@ export function registerSshImageHandlers(deps: {
     if (!deps.isAppWindow(e.sender)) return { ok: false, reason: 'not-allowed', message: 'Not from this window.', detail: '' }
     const id = typeof uploadId === 'string' ? uploadId : ''
     const h = held.get(id)
-    if (!h) return { ok: false, reason: 'failed', message: 'That image is no longer waiting to be sent. Paste it again.', detail: '' }
+    // Gone (let go after HELD_MS, or cancelled): never `failed`, whose answer is
+    // Try again — that would only ask main for it again, and again.
+    if (!h) return { ok: false, reason: 'not-allowed', message: 'That image is no longer waiting to be sent. Paste it again.', detail: '' }
     // Claimed before the first await (gotcha 20): a second press is refused, not a second send.
     if (h.abort) return { ok: false, reason: 'failed', message: 'That image is already being sent.', detail: '' }
     const host = deps.getSettings().hosts.find((x) => x.id === h.hostId)

@@ -52,12 +52,15 @@ import {
   MAX_IMAGE_BYTES,
   clipboardImageName,
   droppedImageName,
+  formatBytes,
   imageKind,
   isSafeUploadName,
   parseUploadPath,
   uploadFailureKind,
   uploadTimeoutMs
 } from '../src/shared/imageUpload.ts'
+import { ImageJobs, type DroppedImageFile, type ImagePhase } from '../src/shared/imageJobs.ts'
+import type { ImagePrepared, ImageSent, ImageSource } from '../src/shared/api.ts'
 import {
   isPersistableCommand,
   isSafeRemoteSessionName,
@@ -1476,6 +1479,240 @@ console.log('\nan image sent to the machine: the stdin runner and the result')
   const before = seen.length
   same('a bad name never runs ssh', (await sendImage(host({}), '../x.png', bytes, { run: fake({}) })).ok, false)
   same('…and nothing was run', seen.length, before)
+}
+
+
+console.log('\nan image sent to the machine: the queue a tab’s pastes and drops go through')
+
+{
+  /*
+   * A fake main that answers like the real one (sshImages.ts): prepare reads
+   * "the clipboard" the moment it is called and holds the image under an id;
+   * send waits until the test answers it; release of an id whose send is in
+   * flight answers that send 'cancelled', as an aborted ssh does.
+   */
+  const tick = async (): Promise<void> => {
+    for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0))
+  }
+  const rig = (opts: { slowPrepare?: boolean; stuckSends?: boolean } = {}) => {
+    const clip = { now: 'A' }
+    const log: string[] = []
+    const released: string[] = []
+    const typed: string[][] = []
+    const said: string[][] = []
+    const phases: ImagePhase[] = []
+    const sends = new Map<string, (r: ImageSent) => void>()
+    const prepares: (() => void)[] = []
+    let n = 0
+    const prepare = (source: ImageSource): Promise<ImagePrepared> => {
+      const what = source.kind === 'clipboard' ? clip.now : source.name
+      log.push(`prepare ${what}`)
+      const answer = (): ImagePrepared =>
+        what === ''
+          ? { ok: false, reason: 'no-image', message: 'There is no image on the clipboard.' }
+          : { ok: true, uploadId: `${what}#${++n}`, name: `${what}.png`, bytes: 10, thumb: null }
+      if (!opts.slowPrepare) return Promise.resolve(answer())
+      return new Promise((r) => prepares.push(() => r(answer())))
+    }
+    const jobs = new ImageJobs({
+      prepare,
+      send: (id) => {
+        log.push(`send ${id}`)
+        return new Promise((r) => sends.set(id, r))
+      },
+      release: (id) => {
+        released.push(id)
+        if (opts.stuckSends) return
+        const pending = sends.get(id)
+        sends.delete(id)
+        pending?.({ ok: false, reason: 'cancelled', message: 'Cancelled.', detail: '' })
+      },
+      phase: (p) => phases.push(p),
+      waiting: () => {},
+      finished: (paths, notes) => {
+        typed.push(paths)
+        said.push(notes)
+      }
+    })
+    /** Answer the send in flight whose id starts with `what#`. */
+    const answer = async (what: string, r: ImageSent | 'ok'): Promise<void> => {
+      await tick()
+      const id = [...sends.keys()].find((k) => k.startsWith(`${what}#`))
+      if (!id) {
+        // A missing reading is a failure, not a skip (gotcha 113) — and not a crash that hides the rest.
+        check(`a send of ${what} was in flight to answer`, false, `in flight: ${[...sends.keys()].join(', ') || 'none'}`)
+        return
+      }
+      const resolve = sends.get(id)
+      sends.delete(id)
+      resolve?.(r === 'ok' ? { ok: true, path: what.includes('.') ? `/far/${what}` : `/far/${what}.png` } : r)
+      await tick()
+    }
+    const sent = (what: string): number => log.filter((l) => l.startsWith(`send ${what}#`)).length
+    const last = (): string => phases[phases.length - 1]?.kind ?? 'none'
+    return { jobs, clip, log, released, typed, said, phases, prepares, answer, sent, last }
+  }
+  const unreachable: ImageSent = { ok: false, reason: 'unreachable', message: 'The machine could not be reached.', detail: 'ssh: connect to host h port 22: Connection refused' }
+
+  {
+    // Copy A, paste; copy B, paste; copy C. The queue must send A then B, never C.
+    const t = rig()
+    t.jobs.paste()
+    t.clip.now = 'B'
+    t.jobs.paste()
+    t.clip.now = 'C'
+    same('a paste reads the clipboard when it is pressed, not when its turn comes', t.log.filter((l) => l.startsWith('prepare')), ['prepare A', 'prepare B'])
+    await t.answer('A', 'ok')
+    same('…and only one image is sent at a time', [t.sent('A'), t.sent('B')], [1, 1])
+    await t.answer('B', 'ok')
+    same('the paths are typed in the order of the presses', t.typed, [['/far/A.png'], ['/far/B.png']])
+    same('nothing main holds is let go after a send lands (main drops it itself)', t.released, [])
+  }
+
+  {
+    // A fails with B queued: B waits for the answer; Try again sends A, then B.
+    const t = rig()
+    t.jobs.paste()
+    t.clip.now = 'B'
+    t.jobs.paste()
+    await t.answer('A', unreachable)
+    same('a failure stays on screen while a paste waits behind it', [t.last(), t.sent('B'), t.typed], ['failed', 0, []])
+    t.jobs.retry()
+    await t.answer('A', 'ok')
+    await t.answer('B', 'ok')
+    same('Try again sends the same held image, then the queue goes on, in order', [t.sent('A'), t.typed], [2, [['/far/A.png'], ['/far/B.png']]])
+  }
+
+  {
+    // A fails with B queued; Dismiss lets A go and B goes on.
+    const t = rig()
+    t.jobs.paste()
+    t.clip.now = 'B'
+    t.jobs.paste()
+    await t.answer('A', unreachable)
+    t.jobs.cancel()
+    await t.answer('B', 'ok')
+    same('Dismiss lets the failed image go, types nothing for it, and the next goes on', [t.released.filter((id) => id.startsWith('A#')).length, t.typed], [1, [['/far/B.png']]])
+  }
+
+  {
+    // A new paste while a failure is on screen answers it.
+    const t = rig()
+    t.jobs.paste()
+    await t.answer('A', unreachable)
+    t.clip.now = 'C'
+    t.jobs.paste()
+    await t.answer('C', 'ok')
+    same('a new paste answers a failure on screen: that image let go, the new one sent', [t.released.some((id) => id.startsWith('A#')), t.typed], [true, [['/far/C.png']]])
+  }
+
+  {
+    // Cancel while A sends, B queued: only A is let go.
+    const t = rig()
+    t.jobs.paste()
+    t.clip.now = 'B'
+    t.jobs.paste()
+    await tick()
+    t.jobs.cancel()
+    await tick()
+    same('Cancel lets go of the image being sent and never one waiting behind it', [t.released.map((id) => id.split('#')[0]), t.sent('B')], [['A'], 1])
+    await t.answer('B', 'ok')
+    same('…which is then sent and typed', t.typed, [['/far/B.png']])
+  }
+
+  {
+    // Main slow to answer a send it was told to stop: the next job must not wait for it.
+    const t = rig({ stuckSends: true })
+    t.jobs.paste()
+    t.clip.now = 'B'
+    t.jobs.paste()
+    await tick()
+    t.jobs.cancel()
+    await t.answer('B', 'ok')
+    same('a cancelled send main has not answered yet never holds the queue', t.typed, [['/far/B.png']])
+  }
+
+  {
+    // The pane goes while A sends and B waits: everything held is let go, nothing typed or sent after.
+    const t = rig()
+    t.jobs.paste()
+    t.clip.now = 'B'
+    t.jobs.paste()
+    await tick()
+    t.jobs.close()
+    await tick()
+    same('closing the pane lets every held image go, waiting ones too, and sends nothing more', [t.released.map((id) => id.split('#')[0]).sort(), t.sent('B'), t.typed], [['A', 'B'], 0, []])
+    t.jobs.paste()
+    same('a closed queue takes nothing new', t.log.filter((l) => l.startsWith('prepare')).length, 2)
+  }
+
+  {
+    // An image main finishes holding only after the pane went is let go too.
+    const t = rig({ slowPrepare: true })
+    t.jobs.paste()
+    t.jobs.close()
+    for (const p of t.prepares) p()
+    await tick()
+    same('an image held after the pane went is let go, not left in main', t.released.map((id) => id.split('#')[0]), ['A'])
+  }
+
+  {
+    // The tab stops running: every job ends, and the queue still takes the next paste.
+    const t = rig()
+    t.jobs.paste()
+    t.clip.now = 'B'
+    t.jobs.paste()
+    await tick()
+    t.jobs.reset()
+    await tick()
+    same('a stopped tab lets go of the one sending and the one waiting', [t.released.map((id) => id.split('#')[0]).sort(), t.sent('B'), t.last()], [['A', 'B'], 0, 'idle'])
+    t.clip.now = 'C'
+    t.jobs.paste()
+    await t.answer('C', 'ok')
+    same('…and the next paste after it is sent', t.typed, [['/far/C.png']])
+  }
+
+  {
+    // Main says the image is gone (held too long): a sentence, no Try again.
+    const t = rig()
+    t.jobs.paste()
+    await t.answer('A', { ok: false, reason: 'not-allowed', message: 'That image is no longer waiting to be sent. Paste it again.', detail: '' })
+    same('an image main no longer holds is a sentence, not a Try again', [t.last(), t.typed], ['note', []])
+    t.clip.now = ''
+    t.jobs.paste()
+    await tick()
+    const p = t.phases[t.phases.length - 1]
+    same('an empty clipboard is a sentence', p.kind === 'note' ? p.message : p.kind, 'There is no image on the clipboard.')
+  }
+
+  {
+    // A drop: images only, read in turn, an oversized one never read.
+    const t = rig()
+    const reads: string[] = []
+    const file = (name: string, type: string, size = 10): DroppedImageFile => ({
+      name,
+      type,
+      size,
+      read: async () => {
+        reads.push(name)
+        return new ArrayBuffer(4)
+      }
+    })
+    same('a drop with no image is left to the caller', t.jobs.drop([file('notes.txt', 'text/plain')]), false)
+    const took = t.jobs.drop([file('one.png', 'image/png'), file('huge.png', 'image/png', MAX_IMAGE_BYTES + 1), file('notes.txt', 'text/plain'), file('two.jpg', '')])
+    same('a drop with images is taken', took, true)
+    await tick()
+    same('…and only the first image is read before it is sent', reads, ['one.png'])
+    await t.answer('one.png', 'ok')
+    await t.answer('two.jpg', 'ok')
+    same('every image of a drop is typed together, in the drop’s order', t.typed, [['/far/one.png', '/far/two.jpg']])
+    same('an oversized image is never read', reads, ['one.png', 'two.jpg'])
+    same(
+      'what was refused or left out is said, never typed',
+      t.said[0],
+      [`huge.png is ${formatBytes(MAX_IMAGE_BYTES + 1)}; Stoke sends images up to ${formatBytes(MAX_IMAGE_BYTES)}.`, 'Only images are sent; left out: notes.txt.']
+    )
+  }
 }
 
 /* ------------------------------------------------------------------------ */
