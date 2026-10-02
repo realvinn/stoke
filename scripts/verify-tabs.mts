@@ -43,7 +43,13 @@ import {
   newTabToReuse,
   nextCustomTitle,
   tabLabel,
-  tabsToClose
+  tabsToClose,
+  openableFolder,
+  folderMenuEntry,
+  revealLabel,
+  profileClosePlan,
+  profileCloseLabel,
+  profileCloseNote
 } from '../src/renderer/src/lib/tabs.ts'
 
 let failures = 0
@@ -1385,6 +1391,204 @@ check('close to the left takes only what precedes', tabsToClose(five, 'c', 'left
 check('close to the right of the last closes nothing', tabsToClose(five, 'e', 'right'), [])
 check('close to the left of the first closes nothing', tabsToClose(five, 'a', 'left'), [])
 check('an anchor not in the list closes nothing', tabsToClose(five, 'zz', 'others'), [])
+
+console.log('\nopenableFolder: only a local session has a folder this computer can open')
+{
+  const local = { kind: 'session', cwd: '/Users/v/dev/stoke', hostId: null }
+  check('a local session opens its folder', openableFolder(local), '/Users/v/dev/stoke')
+  check('a Windows path is a folder', openableFolder({ ...local, cwd: 'C:\\Users\\v\\dev\\stoke' }), 'C:\\Users\\v\\dev\\stoke')
+  check('so is one with forward slashes', openableFolder({ ...local, cwd: 'C:/Users/v/dev' }), 'C:/Users/v/dev')
+  check('and a UNC share', openableFolder({ ...local, cwd: '\\\\nas\\work' }), '\\\\nas\\work')
+  // Gotcha 18: the cwd is the alias. Gated on hostId, never on the string, so
+  // even an alias that LOOKS like a path is refused.
+  check('an SSH tab has none (its cwd is the alias)', openableFolder({ kind: 'session', cwd: 'vps', hostId: 'host-1' }), null)
+  check('even when the alias looks like a path', openableFolder({ kind: 'session', cwd: '/srv/box', hostId: 'host-1' }), null)
+  check(
+    'an Add-key tab has none',
+    openableFolder({ kind: 'session', cwd: 'vps', hostId: 'host-1', enrollHostId: 'host-1' }),
+    null
+  )
+  check(
+    'nor does an Add-key tab whose hostId is somehow missing',
+    openableFolder({ kind: 'session', cwd: '/srv/box', hostId: null, enrollHostId: 'host-1' }),
+    null
+  )
+  check('a New tab has none', openableFolder({ kind: 'new', cwd: '', hostId: null }), null)
+  check('another machine\u2019s session has none', openableFolder({ kind: 'remote', cwd: '/Users/other/dev', hostId: null }), null)
+  check('a bare alias on a local tab is not a folder', openableFolder({ ...local, cwd: 'vps' }), null)
+  check('nor is the SSH start\u2019s "." fallback', openableFolder({ ...local, cwd: '.' }), null)
+  check('nor an empty cwd', openableFolder({ ...local, cwd: '' }), null)
+}
+
+console.log('\nfolderMenuEntry: the tab menu\u2019s folder item, hidden or disabled with a reason')
+{
+  check(
+    'a local session gets an item that opens the folder',
+    folderMenuEntry({ kind: 'session', cwd: '/Users/v/dev/stoke', hostId: null }, null),
+    { path: '/Users/v/dev/stoke' }
+  )
+  check(
+    'an SSH tab gets a disabled item naming the host',
+    folderMenuEntry({ kind: 'session', cwd: 'vps', hostId: 'host-1' }, 'My VPS'),
+    { reason: 'This session runs on My VPS; its folder is on that machine.' }
+  )
+  check(
+    'with the alias when the host has no name in Settings',
+    folderMenuEntry({ kind: 'session', cwd: 'vps', hostId: 'host-1' }, null),
+    { reason: 'This session runs on vps; its folder is on that machine.' }
+  )
+  // Settings keeps a host's name as typed; every other reader trims it.
+  check(
+    'a name of only spaces is no name: the alias stands in',
+    folderMenuEntry({ kind: 'session', cwd: 'vps', hostId: 'host-1' }, '   '),
+    { reason: 'This session runs on vps; its folder is on that machine.' }
+  )
+  check(
+    'and a name with spaces round it is trimmed',
+    folderMenuEntry({ kind: 'session', cwd: 'vps', hostId: 'host-1' }, ' My VPS '),
+    { reason: 'This session runs on My VPS; its folder is on that machine.' }
+  )
+  check(
+    'an Add-key tab gets the same disabled item',
+    folderMenuEntry({ kind: 'session', cwd: 'vps', hostId: 'host-1', enrollHostId: 'host-1' }, ''),
+    { reason: 'This session runs on vps; its folder is on that machine.' }
+  )
+  check('a New tab gets no item', folderMenuEntry({ kind: 'new', cwd: '', hostId: null }, null), null)
+  check('another machine\u2019s session gets no item', folderMenuEntry({ kind: 'remote', cwd: '/x', hostId: null }, null), null)
+  check(
+    'a local tab with no usable path is disabled, not hidden',
+    folderMenuEntry({ kind: 'session', cwd: '.', hostId: null }, null),
+    { reason: 'This tab has no folder on this computer.' }
+  )
+  check('macOS says Finder', revealLabel('darwin'), 'Reveal in Finder')
+  check('Windows says Explorer', revealLabel('win32'), 'Show in Explorer')
+  check('Linux says Open folder', revealLabel('linux'), 'Open folder')
+}
+
+console.log('\nprofileClosePlan: a profile chip closes its own local sessions, never a running turn')
+{
+  // Folders resolve to profiles the way profileIdForCwd would.
+  const owner = (cwd: string): string | null =>
+    cwd.startsWith('/w/') ? 'Work' : cwd.startsWith('/p/') ? 'personal' : null
+  type P = Parameters<typeof profileClosePlan>[0][number]
+  const tab = (id: string, cwd: string, more: Partial<P> = {}): P => ({
+    id,
+    kind: 'session',
+    status: 'running',
+    ptyId: `pty-${id}`,
+    cwd,
+    hostId: null,
+    ...more
+  })
+  const strip: P[] = [
+    tab('w1', '/w/api'),
+    tab('p1', '/p/blog'),
+    tab('w2', '/w/web', { status: 'paused', ptyId: '' }),
+    tab('w3', '/w/app'),
+    tab('w4', '/w/old', { status: 'exited' }),
+    tab('ssh', 'work-box', { hostId: 'host-1' }),
+    tab('key', 'work-box', { hostId: 'host-1', enrollHostId: 'host-1' }),
+    tab('new', '', { kind: 'new' }),
+    tab('rem', '/w/api', { kind: 'remote' }),
+    tab('inst', '/w/api', { installing: ['codex'] }),
+    tab('login', '/w/api', { accountLogin: 'claude-work' }),
+    tab('loose', '/tmp/x'),
+    tab('w5', '/w/cli')
+  ]
+  const live = {
+    'pty-w3': { busy: true },
+    'pty-w4': { busy: true },
+    'pty-w1': { busy: false },
+    'pty-w5': { busy: null }
+  }
+  const none = new Set<string>()
+  const plan = profileClosePlan(strip, 'work', owner, live, none)
+  check(
+    'closes the profile\u2019s local sessions, paused and exited included, in strip order',
+    plan.close,
+    ['w1', 'w2', 'w4', 'w5']
+  )
+  check('leaves a tab whose registry says a turn is running', plan.busy, ['w3'])
+  check('and nothing is starting', plan.starting, [])
+  check(
+    'an exited tab is never busy, whatever its last registry reading said',
+    plan.close.includes('w4') && !plan.busy.includes('w4'),
+    true
+  )
+  check('no reading closes, as requestCloseTab does', plan.close.includes('w5'), true)
+  check(
+    'never an SSH tab, an Add-key tab, a New tab, a remote tab, an install or a sign-in',
+    [...plan.close, ...plan.busy].filter((id) => ['ssh', 'key', 'new', 'rem', 'inst', 'login'].includes(id)),
+    []
+  )
+  check('never another profile\u2019s tab, nor a folder in no profile', [...plan.close, ...plan.busy].filter((id) => id === 'p1' || id === 'loose'), [])
+  check(
+    'the profile id is compared case-folded',
+    profileClosePlan(strip, 'Personal', owner, live, none),
+    { close: ['p1'], busy: [], starting: [] }
+  )
+  check(
+    'a profile with no tabs open closes nothing',
+    profileClosePlan(strip, 'study', owner, live, none),
+    { close: [], busy: [], starting: [] }
+  )
+  // An SSH tab whose alias happens to resolve to the profile is still not its.
+  const aliasOwner = (cwd: string): string | null => (cwd === 'work-box' ? 'work' : owner(cwd))
+  const viaAlias = profileClosePlan(strip, 'work', aliasOwner, live, none)
+  check(
+    'an SSH or Add-key tab is not the profile\u2019s even when its alias resolves to it',
+    [...viaAlias.close, ...viaAlias.busy].filter((id) => id === 'ssh' || id === 'key'),
+    []
+  )
+  /*
+   * A Resume, Start again or relaunch in flight: the tab still reads paused,
+   * exited or running on the old pty, and its pty.start replaces it BY ID. Closed
+   * now, that start finds the id gone and appends the tab again with a live
+   * claude the close never killed (App's startingRef note; Close them refuses
+   * the same tabs). So it stays, whatever its status or registry reading says.
+   */
+  const inFlight = profileClosePlan(strip, 'work', owner, live, new Set(['w2', 'w4', 'w3', 'p1', 'ssh']))
+  check('a paused tab mid-Resume and an exited one mid-Start again stay open', inFlight.starting, ['w2', 'w3', 'w4'])
+  check('the rest of the profile still closes', inFlight.close, ['w1', 'w5'])
+  check('a tab both busy and mid-relaunch is counted once, as starting', inFlight.busy, [])
+  check(
+    'another profile\u2019s or an SSH tab in flight is still not this profile\u2019s',
+    inFlight.starting.filter((id) => id === 'p1' || id === 'ssh'),
+    []
+  )
+
+  check('the label counts', profileCloseLabel(3), 'Close 3 tabs')
+  check('in the singular for one', profileCloseLabel(1), 'Close 1 tab')
+  check('and says 0 rather than vanishing', profileCloseLabel(0), 'Close 0 tabs')
+  check('no note when everything closes', profileCloseNote({ close: ['a'], busy: [], starting: [] }, 'Work'), null)
+  check(
+    'one tab left open is named and explained',
+    profileCloseNote({ close: ['a'], busy: ['b'], starting: [] }, 'Work'),
+    '1 session is in the middle of a turn, so it stays open. Close it from its tab to be asked first.'
+  )
+  check(
+    'and several',
+    profileCloseNote({ close: [], busy: ['b', 'c'], starting: [] }, 'Work'),
+    '2 sessions are in the middle of a turn, so they stay open. Close them from their tabs to be asked first.'
+  )
+  check(
+    'a session still starting is named too',
+    profileCloseNote({ close: ['a'], busy: [], starting: ['s'] }, 'Work'),
+    '1 session is still starting, so it stays open for now.'
+  )
+  check(
+    'and both reasons when both apply',
+    profileCloseNote({ close: [], busy: ['b'], starting: ['s', 't'] }, 'Work'),
+    '1 session is in the middle of a turn, so it stays open. Close it from its tab to be asked first. ' +
+      '2 sessions are still starting, so they stay open for now.'
+  )
+  check(
+    'a profile whose only tab is starting does not say none are open',
+    profileCloseNote({ close: [], busy: [], starting: ['s'] }, 'Work'),
+    '1 session is still starting, so it stays open for now.'
+  )
+  check('a profile with nothing open says so', profileCloseNote({ close: [], busy: [], starting: [] }, 'Work'), 'No sessions in Work are open.')
+}
 
 /*
  * The tally is the LAST thing in this file, and it has to stay that way.

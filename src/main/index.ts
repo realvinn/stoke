@@ -185,7 +185,7 @@ import {
   writeSessionSettingsFile
 } from './statusLine.ts'
 import { createScratchDir, resolveDefaultCwd } from './workspace.ts'
-import { launchFolderProblem, realpathFolder } from './folderCheck.ts'
+import { launchFolderProblem, realpathFolder, revealProblem } from './folderCheck.ts'
 import { BrowserMcpServer } from './mcp/server.ts'
 import { connectTarget, generateToken, RemoteServer, tailnetAddress, type RemoteDeps, type RemotePushDeps } from './remote/server.ts'
 import { generateVapidKeys, isVapidPair, sendPush } from './remote/push.ts'
@@ -3151,7 +3151,18 @@ function registerIpc(): void {
     return setSettings({ pinnedProjects: next })
   })
 
-  ipcMain.handle(CH.projectsReveal, (_e, path: string) => shell.openPath(path))
+  /*
+   * Show a folder in Finder / Explorer / the file manager: the tab menu's
+   * folder item and the status bar's path. '' on success, else a sentence the
+   * renderer shows — `shell.openPath`'s own contract, so the preload and api
+   * types are unchanged. Only an absolute path to a folder that still exists
+   * reaches `openPath` (`revealProblem`): a relative alias would resolve
+   * against main's cwd and a file would be launched rather than shown.
+   */
+  ipcMain.handle(CH.projectsReveal, async (_e, path: unknown) => {
+    const problem = await revealProblem(path)
+    return problem ?? shell.openPath(path as string)
+  })
 
   /* ------------------------------------------------------------------- pty */
   ipcMain.handle(CH.ptyStart, async (_e, opts: LaunchOptions) => {

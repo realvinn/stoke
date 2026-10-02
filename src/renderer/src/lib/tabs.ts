@@ -13,6 +13,7 @@
 import { cliFor, cliIdOf, DEFAULT_CLI, isClaudeCode } from '../../../shared/codingClis.ts'
 import type { CodingCliId } from '../../../shared/codingClis.ts'
 import { agentTagText } from '../../../shared/agents.ts'
+import { foldGroup } from '../../../shared/paths.ts'
 
 /**
  * Which tab id to select once `closedId` is gone, or null when the list empties.
@@ -1142,4 +1143,168 @@ export function tabsToClose(ids: string[], anchorId: string, side: CloseSide): s
   if (at < 0) return []
   if (side === 'others') return ids.filter((id) => id !== anchorId)
   return side === 'right' ? ids.slice(at + 1) : ids.slice(0, at)
+}
+
+/* ------------------------------------------------- a tab's folder on disk */
+
+/** The fields of a tab the folder rules read. */
+export interface FolderTab {
+  kind: string
+  cwd: string
+  hostId: string | null
+  enrollHostId?: string
+}
+
+/** A path this computer can open: POSIX `/…`, Windows `C:\…` or `C:/…`, or a UNC `\\server\share`. */
+const ABSOLUTE_PATH = /^(?:\/|[A-Za-z]:[\\/]|\\\\)/
+
+/**
+ * The folder on THIS computer a tab's session runs in, or null when it has
+ * none to open.
+ *
+ * The tab menu's Reveal item and the status bar's folder button both ask this,
+ * so the two cannot disagree about which tabs have a folder. Gated on what the
+ * tab IS, never on whether the string looks like a path: an SSH tab's `cwd` is
+ * the host alias (gotcha 18), and an "Add key to …" tab carries the same alias
+ * with `hostId` set too. The status bar used to hand that alias to
+ * `shell.openPath`, a click that could open nothing. A New tab has no cwd yet,
+ * and a `remote` tab is another machine's session. The absolute-path test is
+ * the last guard, for a cwd no launch should produce (the SSH start's `'.'`
+ * pty fallback, a relative path from an old tabs.json).
+ */
+export function openableFolder(tab: FolderTab): string | null {
+  if (tab.kind !== 'session' || tab.hostId || tab.enrollHostId) return null
+  return ABSOLUTE_PATH.test(tab.cwd) ? tab.cwd : null
+}
+
+/**
+ * What the tab menu shows for the folder item: nothing (`null`), an item that
+ * opens `path`, or a disabled item with the `reason` the menu's footer gives.
+ *
+ * Hidden on a New tab (no folder yet) and on another machine's session, where
+ * the item could never mean anything. Shown DISABLED on an SSH or Add-key tab,
+ * because those do have a folder — on the far machine — and an item that
+ * silently vanishes reads as a menu that forgot it. `hostLabel` is the host's
+ * name in Settings; the alias in `cwd` stands in when there is none — or when
+ * it is only spaces, which Settings stores as typed (every other reader of
+ * `SshHost.label` trims it, `startSshEnroll` included).
+ */
+export function folderMenuEntry(
+  tab: FolderTab,
+  hostLabel: string | null
+): { path: string } | { reason: string } | null {
+  if (tab.kind !== 'session') return null
+  const path = openableFolder(tab)
+  if (path) return { path }
+  if (tab.hostId || tab.enrollHostId) {
+    return { reason: `This session runs on ${hostLabel?.trim() || tab.cwd.trim()}; its folder is on that machine.` }
+  }
+  return { reason: 'This tab has no folder on this computer.' }
+}
+
+/**
+ * The folder item's words, in the platform's own: Finder on macOS, Explorer on
+ * Windows, and a plain "Open folder" for every Linux file manager. Not
+ * "Open folder" everywhere, because the sidebar's Open button already means
+ * "pick a folder to start in", and the menu item does the other thing.
+ */
+export function revealLabel(platform: string): string {
+  if (platform === 'darwin') return 'Reveal in Finder'
+  if (platform === 'win32') return 'Show in Explorer'
+  return 'Open folder'
+}
+
+/* ----------------------------------------------- a profile's tabs, closed */
+
+/** The fields of a tab a profile close reads. */
+export interface ProfileTab extends FolderTab {
+  id: string
+  status: string
+  ptyId: string
+  installing?: readonly string[]
+  accountLogin?: string
+}
+
+/**
+ * The tabs a sidebar profile chip's "Close N tabs" acts on, split into the ones
+ * it closes and the ones it leaves open: a turn is running in them (`busy`), or
+ * a start is in flight for them (`starting`).
+ *
+ * A tab is the profile's when it is a local session (never an SSH tab, whose
+ * `cwd` is an alias, gotcha 18; never an install or a sign-in, which run no
+ * session of the profile's) whose folder `owner` resolves to this profile —
+ * App passes `profileIdForCwd` bound to the projects, roots and platform, the
+ * same resolver the follow-the-tab effect uses. A folder in no profile is no
+ * profile's. Paused and exited tabs close like any other: there is no process
+ * to lose.
+ *
+ * `busy` is the registry's stated busy/shell/waiting (`live[ptyId].busy ===
+ * true`, the threshold `requestCloseTab` and `closeTabsSide` read). A bulk
+ * close never SIGHUPs a running turn (gotchas 82, 90): those tabs stay, and
+ * the menu says how many and why rather than skipping them in silence.
+ *
+ * `inFlight` is every tab id whose Resume, Start again or relaunch has not
+ * landed yet (App's `startingRef` and `relaunchingRef`). Such a tab still
+ * reads paused, exited, or running on the pty being replaced, and its
+ * `pty.start` ends in `replaceOrAppend` by id: closed now, it finds its id
+ * gone and APPENDS, so the tab comes back at the end of the strip with a live
+ * `claude` the close never killed. The restore bar's `Close them` refuses the
+ * same tabs for the same reason, and `Resume all` sits beside it. Ids in strip
+ * order.
+ */
+export function profileClosePlan(
+  tabs: readonly ProfileTab[],
+  profileId: string,
+  owner: (cwd: string) => string | null,
+  live: Readonly<Record<string, { busy: boolean | null } | undefined>>,
+  inFlight: ReadonlySet<string>
+): { close: string[]; busy: string[]; starting: string[] } {
+  const close: string[] = []
+  const busy: string[] = []
+  const starting: string[] = []
+  const want = foldGroup(profileId)
+  for (const t of tabs) {
+    if (t.kind !== 'session' || t.hostId || t.enrollHostId || t.installing?.length || t.accountLogin) continue
+    const id = owner(t.cwd)
+    if (!id || foldGroup(id) !== want) continue
+    if (inFlight.has(t.id)) starting.push(t.id)
+    else if (t.status === 'running' && live[t.ptyId]?.busy === true) busy.push(t.id)
+    else close.push(t.id)
+  }
+  return { close, busy, starting }
+}
+
+/** "Close 3 tabs", "Close 1 tab". Unique within the menu, as `ContextMenu` keys items by label. */
+export function profileCloseLabel(count: number): string {
+  return `Close ${count} tab${count === 1 ? '' : 's'}`
+}
+
+/**
+ * The profile menu's footer: why some of the profile's tabs stay open, or that
+ * it has none open at all. Null when every tab it names will close.
+ */
+export function profileCloseNote(
+  plan: { close: readonly string[]; busy: readonly string[]; starting: readonly string[] },
+  label: string
+): string | null {
+  const n = plan.busy.length
+  const m = plan.starting.length
+  const parts: string[] = []
+  if (n > 0) {
+    parts.push(
+      n === 1
+        ? '1 session is in the middle of a turn, so it stays open. Close it from its tab to be asked first.'
+        : `${n} sessions are in the middle of a turn, so they stay open. Close them from their tabs to be asked first.`
+    )
+  }
+  if (m > 0) {
+    parts.push(
+      m === 1
+        ? '1 session is still starting, so it stays open for now.'
+        : `${m} sessions are still starting, so they stay open for now.`
+    )
+  }
+  if (parts.length) return parts.join(' ')
+  if (plan.close.length === 0) return `No sessions in ${label} are open.`
+  return null
 }

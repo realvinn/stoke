@@ -22,7 +22,7 @@ import {
 import { chordLabel } from '../lib/shortcuts'
 import { useTabDrag } from '../lib/useTabDrag'
 import { agentMark } from '../lib/agentColor'
-import type { CloseSide } from '../lib/tabs'
+import { folderMenuEntry, revealLabel, type CloseSide } from '../lib/tabs'
 import type { ActivityView } from '@shared/activityView'
 import type { Tab } from '../types'
 
@@ -54,6 +54,13 @@ interface Props {
   onRenameTab: (id: string, title: string) => void
   /** Chrome's Close others / to the right / to the left, from the tab's context menu. */
   onCloseTabsSide: (anchorId: string, side: CloseSide) => void
+  /**
+   * Show a tab's folder in the file manager (the status bar's folder button
+   * does the same). Not `onOpenFolder`, which is the sidebar's folder PICKER.
+   */
+  onRevealFolder?: (path: string) => void
+  /** An SSH host's name in Settings, for the folder item's "runs on <host>" note. */
+  hostLabelFor?: (hostId: string) => string | null
   onNewTab: () => void
   /**
    * Reorder: the dragged tab takes the target's index. Called once per drag,
@@ -115,6 +122,8 @@ export function TitleBar({
   onCloseTab,
   onRenameTab,
   onCloseTabsSide,
+  onRevealFolder,
+  hostLabelFor,
   onNewTab,
   onReorderTab,
   onToggleSidebar,
@@ -230,6 +239,15 @@ export function TitleBar({
   }, [activeTabId, tabs.length, drag])
 
   const menuTab = menu ? tabs.find((t) => t.id === menu.tabId) : null
+  /*
+   * The folder item, by the same rule the status bar's folder button reads
+   * (`openableFolder`): opens a local session's folder, is disabled with the
+   * reason in the footer on an SSH or Add-key tab (gotcha 18), and is absent
+   * on a New tab or another machine's session.
+   */
+  const folderEntry = menuTab && onRevealFolder
+    ? folderMenuEntry(menuTab, menuTab.hostId ? (hostLabelFor?.(menuTab.hostId) ?? null) : null)
+    : null
 
   return (
     <>
@@ -567,10 +585,19 @@ export function TitleBar({
           // for a New tab. Omitted when there is none yet.
           subtitle: (menuTab.kind === 'new' ? menuTab.projectName : menuTab.cwd) || undefined
         }}
+        footer={folderEntry && 'reason' in folderEntry ? folderEntry.reason : undefined}
         items={buildTabMenu(tabs, menuTab, isMac, {
           onRename: startRename,
           onClose: onCloseTab,
           onCloseSide: onCloseTabsSide,
+          folder:
+            folderEntry && onRevealFolder
+              ? {
+                  label: revealLabel(platform),
+                  path: 'path' in folderEntry ? folderEntry.path : null,
+                  onReveal: onRevealFolder
+                }
+              : null,
           // Only on a tab that has an agent tag to hide or show.
           agentTags:
             onToggleAgentTags && labelFor?.(menuTab).agent
@@ -585,8 +612,8 @@ export function TitleBar({
 }
 
 /**
- * The tab context menu's items — Rename, the agent-tag toggle on a tab that has
- * an agent to tag, then Chrome's four close actions.
+ * The tab context menu's items — Rename, the folder item, the agent-tag toggle
+ * on a tab that has an agent to tag, then Chrome's four close actions.
  */
 function buildTabMenu(
   tabs: Tab[],
@@ -596,9 +623,12 @@ function buildTabMenu(
     onRename: (t: Tab) => void
     onClose: (id: string) => void
     onCloseSide: (anchorId: string, side: CloseSide) => void
+    /** Reveal the tab's folder; `path` null draws the item disabled. Null: no item. */
+    folder: { label: string; path: string | null; onReveal: (path: string) => void } | null
     agentTags: { shown: boolean; onToggle: () => void } | null
   }
 ): MenuItem[] {
+  const folder = on.folder
   const idx = tabs.findIndex((t) => t.id === tab.id)
   const hasRight = idx >= 0 && idx < tabs.length - 1
   const hasLeft = idx > 0
@@ -610,6 +640,19 @@ function buildTabMenu(
       disabled: tab.kind !== 'session',
       onSelect: () => on.onRename(tab)
     },
+    // After Rename and before the tag toggle, so the Close group stays together.
+    // No chord: none was asked for, and a new one must clear gotcha 56.
+    ...(folder
+      ? [
+          {
+            label: folder.label,
+            disabled: !folder.path,
+            onSelect: () => {
+              if (folder.path) folder.onReveal(folder.path)
+            }
+          }
+        ]
+      : []),
     ...(on.agentTags
       ? [
           {

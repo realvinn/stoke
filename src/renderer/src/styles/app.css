@@ -3929,6 +3929,12 @@ mark.hit {
   color: var(--text);
 }
 
+/* The folder item on a tab with no folder here to open (an SSH tab's alias):
+   the button's inset, none of its hover, so it does not look clickable. */
+.status-static {
+  padding: 0 var(--space-4);
+}
+
 /* Whose move it is, beside the model. Same states and colours as the tab
    strip's dot — both are drawn from one activityView — so the two never
    disagree about the same session. */

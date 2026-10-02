@@ -126,6 +126,7 @@ import {
   closeAsksDetach,
   tabLabel,
   tabsToClose,
+  profileClosePlan,
   type CloseSide,
   type PendingOrigin,
   type RelaunchPlan
@@ -3469,6 +3470,48 @@ export function App(): React.JSX.Element {
     [closeTab]
   )
 
+  /*
+   * A sidebar profile chip's "Close N tabs": the profile's local session tabs,
+   * resolved with the same `profileIdForCwd` the follow-the-tab effect uses.
+   * `profileTabsNow` counts for the menu from this render; the close re-plans
+   * from the refs at the click (gotcha 127), so a tab that went busy while the
+   * menu was up is still left standing (gotchas 82, 90). So is one whose
+   * Resume, Start again or relaunch is in flight: closed, its `pty.start` would
+   * append it again with a live `claude` (`startingRef`'s own note).
+   */
+  const profileOwner = useCallback(
+    (cwd: string): string | null =>
+      settings ? profileIdForCwd(cwd, projects, settings.projectRoots, availableProfiles, platform) : null,
+    [settings, projects, availableProfiles, platform]
+  )
+  const profileTabsNow = useCallback(
+    (profileId: string) =>
+      profileClosePlan(tabs, profileId, profileOwner, live, new Set([...starting, ...relaunching])),
+    [tabs, live, profileOwner, starting, relaunching]
+  )
+  const closeProfileTabs = useCallback(
+    (profileId: string): void => {
+      const inFlight = new Set([...startingRef.current, ...relaunchingRef.current])
+      const plan = profileClosePlan(tabsRef.current, profileId, profileOwner, liveRef.current, inFlight)
+      for (const id of plan.close) closeTab(id)
+    },
+    [closeTab, profileOwner]
+  )
+
+  /*
+   * Show a folder in the file manager — the tab menu's folder item and the
+   * status bar's path. Main answers '' or a sentence (`revealProblem`); it used
+   * to be thrown away, so a deleted folder did nothing and said nothing.
+   */
+  const revealFolder = useCallback((path: string): void => {
+    void window.stoke.projects.reveal(path).then(
+      (problem) => {
+        if (problem) setError(`Could not open the folder: ${problem}`)
+      },
+      (e) => setError(ipcErrorMessage(e))
+    )
+  }, [])
+
   /**
    * "Start again", on the bar a session leaves behind when it exits.
    *
@@ -5336,6 +5379,8 @@ export function App(): React.JSX.Element {
         onCloseTab={requestCloseTab}
         onRenameTab={renameTab}
         onCloseTabsSide={closeTabsSide}
+        onRevealFolder={revealFolder}
+        hostLabelFor={(id) => settings?.hosts.find((h) => h.id === id)?.label || null}
         onNewTab={openNewTab}
         onReorderTab={reorderTab}
         onToggleSidebar={() => setSidebarOpen((v) => !v)}
@@ -5431,6 +5476,9 @@ export function App(): React.JSX.Element {
                 profiles={availableProfiles}
                 activeProfile={activeProfile?.id ?? null}
                 onSelectProfile={(id) => void patchSettings({ activeProfile: id })}
+                profileTabs={profileTabsNow}
+                onCloseProfileTabs={closeProfileTabs}
+                onEditProfiles={() => openSettings('profiles')}
                 projectHints={query.trim() ? allProjectHints : projectHints}
                 chatSearch={chatSearch}
                 onOpenChat={openChat}
@@ -5916,7 +5964,7 @@ export function App(): React.JSX.Element {
         }}
         liveVersion={activeTab ? (live[activeTab.ptyId]?.version ?? null) : null}
         profileLabel={activeProfile?.label ?? null}
-        onRevealProject={(p) => void window.stoke.projects.reveal(p)}
+        onRevealProject={revealFolder}
         onOpenSettings={() => openSettings('updates')}
       />
 

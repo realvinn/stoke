@@ -46,6 +46,7 @@ import {
   migrateSymlinkedProjectKeys
 } from '../src/main/projects.ts'
 import { defaultCwdCandidates, resolveDefaultCwd } from '../src/main/workspaceRoots.ts'
+import { revealProblem } from '../src/main/folderCheck.ts'
 import { addRemoteProject, browseRemoteFolder, resolveFolderBases } from '../src/main/remote/folders.ts'
 import { ContextWatcher } from '../src/main/context.ts'
 import {
@@ -1445,6 +1446,28 @@ try {
   }
 } finally {
   rmSync(tx, { recursive: true, force: true })
+}
+
+console.log('\nrevealProblem: the file manager is asked only for an absolute path to a folder that exists')
+{
+  // Gotcha 74: synthetic paths only, in a scratch dir of this run's own.
+  const box = realpathSync.native(mkdtempSync(join(tmpdir(), 'stoke-reveal-')))
+  try {
+    const folder = join(box, 'proj')
+    const file = join(box, 'notes.txt')
+    mkdirSync(folder)
+    writeFileSync(file, 'x')
+    check('a folder that exists is opened', await revealProblem(folder), null)
+    check('an SSH alias (relative) is refused', await revealProblem('vps'), 'That is not a folder on this computer.')
+    check('so is the "." fallback', await revealProblem('.'), 'That is not a folder on this computer.')
+    check('and an empty string', await revealProblem(''), 'That is not a folder on this computer.')
+    check('and anything that is not a string', await revealProblem(42), 'That is not a folder on this computer.')
+    check('a folder since deleted says so', await revealProblem(join(box, 'gone')), `There is no folder at ${join(box, 'gone')} any more.`)
+    // shell.openPath on a file LAUNCHES it with its default app.
+    check('a file is refused, never launched', await revealProblem(file), `${file} is a file, not a folder.`)
+  } finally {
+    rmSync(box, { recursive: true, force: true })
+  }
 }
 
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
