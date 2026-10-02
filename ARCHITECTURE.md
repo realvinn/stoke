@@ -770,7 +770,9 @@ npm run verify:folders        # folder metadata: trimming, caps, added folders, 
                               # listSessions re-parsing only what changed (gotcha 103); and a
                               # phone's Start here / New folder under a real symlinked place,
                               # remembered by its realpath and listed once (gotcha 91), and
-                              # Start here on every place, three rounds, moving no place (121)
+                              # Start here on every place, three rounds, moving no place (121);
+                              # and what projects:reveal refuses before the file manager is
+                              # asked: an alias, a relative path, a gone folder, a file
 npm run verify:search         # sidebar + palette search: tiers, recency, highlight ranges on
                               # accented text, the label in both surfaces; and the session
                               # index against real files in a temp dir - a 40 MB transcript
@@ -1286,8 +1288,9 @@ src/main/         Electron main process
   workspace.ts      default folder + scratch folders
   folderCheck.ts    a named folder asked about under the launch deadline: why it cannot be
                     opened (`launchFolderProblem`) and its realpath (`realpathFolder`, gotcha
-                    91). No electron import, so the phone's folder routes and verify:folders
-                    run the very checks `stoke .` does
+                    91), and what `projects:reveal` refuses before `shell.openPath`
+                    (`revealProblem`). No electron import, so the phone's folder routes and
+                    verify:folders run the very checks `stoke .` does
   workspaceRoots.ts where a session with no project starts, per platform. Takes the
                     platform and home as arguments so a suite can ask for another machine's
   wallpaper.ts      the picked image, copied under userData and served over the custom

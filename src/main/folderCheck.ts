@@ -7,6 +7,7 @@
  * under node's strip-types.
  */
 import { realpath, stat } from 'node:fs/promises'
+import { isAbsolute } from 'node:path'
 import type { FolderProblem } from '../shared/stokeArgs.ts'
 
 /** The same deadline `projects.ts` gives a folder check, for the same reason (gotcha 40). */
@@ -34,6 +35,33 @@ export async function launchFolderProblem(path: string): Promise<FolderProblem |
     return 'unreachable'
   } finally {
     if (timer) clearTimeout(timer)
+  }
+}
+
+/**
+ * Why the file manager will NOT be asked to show `path`, as a sentence for the
+ * user, or null to go ahead — `projects:reveal`, behind the tab menu's folder
+ * item and the status bar's path.
+ *
+ * `shell.openPath` takes any string: a relative one (an SSH tab's host alias,
+ * which the status bar used to send, gotcha 18) resolves against main's own
+ * cwd, and a FILE is launched with its default app rather than shown. The
+ * renderer already refuses both (`openableFolder`); this is the second lock,
+ * asked under the same deadline as every other folder check (gotcha 40).
+ */
+export async function revealProblem(path: unknown): Promise<string | null> {
+  if (typeof path !== 'string' || !path || !isAbsolute(path)) return 'That is not a folder on this computer.'
+  switch (await launchFolderProblem(path)) {
+    case null:
+      return null
+    case 'missing':
+      return `There is no folder at ${path} any more.`
+    case 'not-a-folder':
+      return `${path} is a file, not a folder.`
+    case 'denied':
+      return `Stoke is not allowed to read ${path}.`
+    case 'unreachable':
+      return `${path} did not answer in time — a sleeping or disconnected disk, most likely. Try again.`
   }
 }
 
