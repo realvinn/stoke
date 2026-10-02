@@ -2659,7 +2659,11 @@ mark.hit {
   flex-direction: column;
   gap: var(--space-4);
   width: min(36rem, calc(100% - 2 * var(--strip-inset, var(--space-12))));
-  max-height: calc(100% - 2 * var(--strip-inset, var(--space-12)));
+  /* Stops above whatever floats along the pane's foot (`--find-floor`, set by
+     TerminalView while the bar is open): the image strip, the exit card and
+     the dictation strip came later in the pane at the same z-index and covered
+     the bar's last hits. */
+  max-height: calc(100% - 2 * var(--strip-inset, var(--space-12)) - var(--find-floor, 0px));
   padding: var(--space-8);
   border: 1px solid var(--border);
   border-radius: var(--r-lg);

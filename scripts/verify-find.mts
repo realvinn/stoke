@@ -38,14 +38,17 @@ import { ConversationFinder, REMOTE_FRESH_MS, type FinderDeps } from '../src/mai
 import {
   barKey,
   consentAfterSend,
+  findConversation,
   findOwner,
   findTargetOf,
+  paletteFindHint,
   paletteFindMatch,
   roleLabel,
   screenCall,
   screenCountLabel,
   typedInto
 } from '../src/renderer/src/lib/terminalFind.ts'
+import { PRIVATE_FIND_TEXT } from '../src/shared/privateChat.ts'
 import { chordLabel, matchShortcut } from '../src/renderer/src/lib/shortcuts.ts'
 import { hydrateSettings } from '../src/main/settingsSchema.ts'
 import type { SshHost } from '../src/shared/types.ts'
@@ -524,6 +527,55 @@ check('and for "search conv"', paletteFindMatch('search conv'), [[13, 17]])
 check('two words on one spot mark it once (Highlight takes no overlaps)', paletteFindMatch('find fin'), [[0, 4]])
 check('not for a project name', paletteFindMatch('stoke'), null)
 check('not on an empty query', paletteFindMatch(''), null)
+
+/*
+ * A private chat (shared/privateChat.ts) writes no transcript. Merged beside
+ * Find, the bar asked main anyway and showed "Claude has not written this
+ * conversation to disk yet." under a Conversation chip that could never find
+ * anything (driven on the merged build, 2026-10-02); the palette's row said
+ * "The screen and the transcript". It searches the screen and says why.
+ */
+console.log('\na private chat: the screen only, said plainly')
+{
+  const local = { hostId: null, cliId: 'claude' as const }
+  check('a local Claude tab searches its transcript', findConversation(local), 'transcript')
+  check('an SSH tab, its host\'s newest conversation', findConversation({ hostId: 'h1', cliId: 'claude' as const }), 'transcript')
+  check('a private chat: the screen only, as its own case', findConversation({ ...local, private: true }), 'private')
+  check('another agent has no Claude transcript', findConversation({ hostId: null, cliId: 'codex' as const }), 'none')
+  check('nor an install or an Add-key tab', [findConversation({ ...local, installing: ['codex'] }), findConversation({ hostId: 'h1', cliId: 'claude' as const, enrollHostId: 'h1' })], ['none', 'none'])
+  check('the palette row says where it looks on a transcript tab', paletteFindHint('transcript'), 'The screen and the transcript')
+  check('and on a private chat, the screen alone', paletteFindHint('private'), 'The screen')
+  check('the bar\'s sentence names the reason, not a missing file', /nothing is saved/.test(PRIVATE_FIND_TEXT) && !/disk/.test(PRIVATE_FIND_TEXT), true)
+  const bar = read('src/renderer/src/components/TerminalFind.tsx')
+  check('the bar decides by findConversation, and asks main only for a transcript', /const conversation = findConversation\(tab\)\s+const supported = conversation === 'transcript'\s+const conversationOn = supported &&/.test(bar), true)
+  check('and shows PRIVATE_FIND_TEXT on a private chat', /conversation === 'private'\s+\? PRIVATE_FIND_TEXT/.test(bar), true)
+  const app = read('src/renderer/src/App.tsx')
+  check('App gives the palette the row\'s words for the tab in front', /findHint=\{paletteFindHint\(activeTab\?\.kind === 'session' \? findConversation\(activeTab\) : 'none'\)\}/.test(app), true)
+}
+
+/*
+ * The find bar floats top-right and grows with its hits; the image strip (SSH
+ * images), the exit card and the dictation strip float along the pane's foot,
+ * at the same z-index and later in the pane, so they covered the bar's last
+ * hits. While the bar is open the tallest of them is its floor.
+ */
+console.log('\nthe bar stops above what floats along the pane\'s foot')
+{
+  const tv = read('src/renderer/src/components/TerminalView.tsx')
+  const css = read('src/renderer/src/styles/app.css')
+  check(
+    'TerminalView measures the image strip, the exit card and the dictation strip',
+    /const FIND_FLOOR_SELECTOR = ':scope > \.image-strip, :scope > \.term-exit, :scope > \.voice-strip'/.test(tv),
+    true
+  )
+  check(
+    'while the bar is open, into --find-floor, kept by a ResizeObserver',
+    /if \(!pane \|\| !findOpen\) return[\s\S]*?pane\.style\.setProperty\('--find-floor'[\s\S]*?new ResizeObserver\(set\)[\s\S]*?\}, \[findOpen, floatsKey\]\)/.test(tv),
+    true
+  )
+  const rule = /\n\.term-find \{[^}]*\}/.exec(css)?.[0] ?? ''
+  check('and the bar\'s max-height leaves it', /max-height: calc\(100% - 2 \* var\(--strip-inset, var\(--space-12\)\) - var\(--find-floor, 0px\)\)/.test(rule), true)
+}
 
 /* --------------------------------------------------------------- the wires */
 

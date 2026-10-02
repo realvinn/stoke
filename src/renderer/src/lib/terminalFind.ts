@@ -4,6 +4,7 @@
  * by relative `.ts` path (gotcha 78), so `verify:find` runs it as it ships.
  */
 import type { FindConsent, FindRole, TranscriptFindResult } from '../../../shared/transcriptFind.ts'
+import { cliIdOf, isClaudeCode, type CodingCliId } from '../../../shared/codingClis.ts'
 
 /* ------------------------------------------------- a key pressed in the bar */
 
@@ -154,6 +155,39 @@ export function roleLabel(role: FindRole, tool: string | null, isError: boolean)
     case 'tool-output':
       return `${tool ? `${tool} output` : 'Tool output'}${isError ? ' (error)' : ''}`
   }
+}
+
+/* ------------------------------------- what a tab's conversation half reads */
+
+/**
+ * What the bar's conversation half can search on this tab:
+ *
+ * - `transcript`: a local Claude Code tab's own transcript, or an SSH tab's
+ *   host's newest conversation (on the host's answer).
+ * - `private`: a private chat (shared/privateChat.ts) writes no transcript, so
+ *   the bar searches the screen only and says why (`PRIVATE_FIND_TEXT`) — it
+ *   used to ask main anyway and show "Claude has not written this conversation
+ *   to disk yet", a promise of a file that never comes. Checked first: a
+ *   private chat is a local Claude tab by every other test.
+ * - `none`: an install, Add-key tab or another agent: no Claude transcript.
+ */
+export type FindConversation = 'transcript' | 'private' | 'none'
+
+export function findConversation(tab: {
+  hostId: string | null
+  cliId?: CodingCliId
+  private?: boolean
+  enrollHostId?: string
+  installing?: readonly string[]
+}): FindConversation {
+  if (tab.private) return 'private'
+  if (tab.enrollHostId || (tab.installing?.length ?? 0) > 0) return 'none'
+  return tab.hostId !== null || isClaudeCode(cliIdOf(tab.cliId)) ? 'transcript' : 'none'
+}
+
+/** The palette find row's second line: where a find on the tab in front looks. */
+export function paletteFindHint(conversation: FindConversation): string {
+  return conversation === 'transcript' ? 'The screen and the transcript' : 'The screen'
 }
 
 /* ------------------------------------------------------------ the palette */

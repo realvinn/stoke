@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { SearchAddon } from '@xterm/addon-search'
@@ -56,6 +56,9 @@ const MAX_OSC52_BASE64 = 200_000
  * chords out per platform.
  */
 const IS_MAC = window.stoke.platform === 'darwin'
+
+/** What floats along the pane's foot, under which the find bar must stop (`--find-floor`). */
+const FIND_FLOOR_SELECTOR = ':scope > .image-strip, :scope > .term-exit, :scope > .voice-strip'
 
 /**
  * The luminance class the CLI sorts a background into (gotcha 42): it asks
@@ -1085,6 +1088,34 @@ export function TerminalView({
     if (!active) return
     return registerFinder(tab.ptyId, openFind)
   }, [active, tab.ptyId, openFind])
+
+  /*
+   * The find bar floats top-right and grows with its hits; the image strip and
+   * the exit card float bottom-right, the dictation strip bottom-left. Same
+   * z-index, later in the pane: on a short pane they painted over the bar's
+   * last hits, which no scroll could bring out from under them. While the bar
+   * is open the tallest of them is its floor (`--find-floor`, app.css), kept
+   * with a ResizeObserver as an error's ssh line wraps or a thumbnail arrives.
+   */
+  // Which floats are drawn: the two dictation strips are different elements.
+  const floatsKey = `${images.strip ? 1 : 0}${tab.status === 'exited' ? 1 : 0}${voiceOn ? 2 : voiceNotice ? 1 : 0}`
+  useLayoutEffect(() => {
+    const pane = hostRef.current?.parentElement
+    if (!pane || !findOpen) return
+    const floats = Array.from(pane.querySelectorAll<HTMLElement>(FIND_FLOOR_SELECTOR))
+    const set = (): void => {
+      const h = Math.max(0, ...floats.map((el) => el.offsetHeight))
+      if (h > 0) pane.style.setProperty('--find-floor', `calc(${h}px + var(--space-8))`)
+      else pane.style.removeProperty('--find-floor')
+    }
+    set()
+    const ro = new ResizeObserver(set)
+    for (const el of floats) ro.observe(el)
+    return () => {
+      ro.disconnect()
+      pane.style.removeProperty('--find-floor')
+    }
+  }, [findOpen, floatsKey])
 
   const findPalette = useMemo(() => findColors(theme, accent), [theme, accent])
 

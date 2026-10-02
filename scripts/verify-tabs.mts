@@ -50,11 +50,14 @@ import {
   profileClosePlan,
   profileCloseLabel,
   profileCloseNote,
+  profileCwd,
   dataAttrOf,
   dragItemSelector,
   lastDragLeft,
   previewLefts
 } from '../src/renderer/src/lib/tabs.ts'
+import { PRIVATE_FOLDER_TEXT } from '../src/shared/privateChat.ts'
+import { readFileSync } from 'node:fs'
 
 let failures = 0
 
@@ -1671,6 +1674,60 @@ console.log('\nprofileClosePlan: a profile chip closes its own local sessions, n
     '1 session is still starting, so it stays open for now.'
   )
   check('a profile with nothing open says so', profileCloseNote({ close: [], busy: [], starting: [] }, 'Work'), 'No sessions in Work are open.')
+}
+
+console.log('\na private chat: its folder is no place to open and no profile’s (integration of the five features)')
+{
+  /*
+   * A private chat's cwd is Stoke's own scratch folder under userData, deleted
+   * with the chat (shared/privateChat.ts). Built beside the tab menu's Reveal
+   * item, the status bar's folder button and the profile chip's Close N tabs,
+   * none of which knew about it. Driven on the merged build (2026-10-02): the
+   * menu offered "Reveal in Finder" and the status bar's path opened the
+   * `<userData>/private/<uuid>` folder, and with userData under a scan root
+   * the Space chip said "Close 2 tabs" for a normal tab and a private chat
+   * holding a file, and closed the chat unasked, file and all.
+   */
+  const priv = { kind: 'session', cwd: '/Users/v/Library/Application Support/Stoke/private/1b2c', hostId: null, private: true }
+  check('a private chat has no folder to open (the status bar draws no button)', openableFolder(priv), null)
+  check(
+    'its menu item is disabled, with the reason in the footer — not hidden',
+    folderMenuEntry(priv, null),
+    { reason: PRIVATE_FOLDER_TEXT }
+  )
+  check('a normal tab beside it still opens its folder', openableFolder({ ...priv, private: false, cwd: '/Users/v/dev/stoke' }), '/Users/v/dev/stoke')
+
+  check('profileCwd: a local tab is read by its folder', profileCwd({ kind: 'session', cwd: '/w/api', hostId: null }), '/w/api')
+  check('a New tab too (the follow-the-tab effect aims by it)', profileCwd({ kind: 'new', cwd: '/w/api', hostId: null }), '/w/api')
+  check('never an SSH tab, whose cwd is an alias', profileCwd({ kind: 'session', cwd: 'work-box', hostId: 'h' }), null)
+  check('never an Add-key tab', profileCwd({ kind: 'session', cwd: 'work-box', hostId: null, enrollHostId: 'h' }), null)
+  check('never a private chat, wherever its folder resolves', profileCwd(priv), null)
+
+  // The scratch folder resolves to the profile, as a scan root over userData
+  // (or a home folder that is a project) makes it in the field.
+  const owner = (cwd: string): string | null => (cwd.startsWith('/w/') || cwd.includes('/private/') ? 'work' : null)
+  type P = Parameters<typeof profileClosePlan>[0][number]
+  const tab = (id: string, cwd: string, more: Partial<P> = {}): P => ({ id, kind: 'session', status: 'running', ptyId: `pty-${id}`, cwd, hostId: null, ...more })
+  const strip: P[] = [
+    tab('w1', '/w/api'),
+    tab('pv', '/w/ud/private/1b2c', { private: true }),
+    tab('pv-ended', '/w/ud/private/9f9f', { private: true, status: 'exited' })
+  ]
+  const plan = profileClosePlan(strip, 'work', owner, {}, new Set())
+  check('Close N tabs takes the profile’s own tab and never a private chat, running or ended', plan, {
+    close: ['w1'],
+    busy: [],
+    starting: []
+  })
+  check(
+    'so the chip counts 1, not 2',
+    profileCloseLabel(plan.close.length),
+    'Close 1 tab'
+  )
+
+  // The follow-the-tab effect and the bulk close read the one rule.
+  const app = readFileSync(new URL('../src/renderer/src/App.tsx', import.meta.url), 'utf8')
+  check('App’s follow-the-tab effect resolves through profileCwd (no private chat moves the profile chip)', /const cwd = tab \? profileCwd\(tab\) : null/.test(app), true)
 }
 
 /*

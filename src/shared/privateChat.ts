@@ -116,6 +116,20 @@ export const PRIVATE_FOREIGN_TEXT =
 export const PRIVATE_ENDED_TEXT = 'Private chat ended. Nothing was kept.'
 /** The OS notification's title for a private tab: never the tab's own title. */
 export const PRIVATE_NOTIFY_TITLE = 'Private chat'
+/**
+ * Why a private tab's folder is never offered to open — the title bar's folder
+ * chip, the tab menu's Reveal item, the status bar's path. It is a scratch
+ * folder main made under userData and deletes with the chat, not a project:
+ * shown, it was a uuid path and an Open that put Finder (or Explorer, which can
+ * hold the folder and make the close's removal fail) on a folder about to go.
+ */
+export const PRIVATE_FOLDER_TEXT = 'A private chat runs in a temporary folder that is deleted when it closes.'
+/**
+ * The find bar's line on a private tab: no transcript is written, so there is
+ * no conversation to search — said, never left to main's "not written to disk
+ * yet", which promised a file that never comes.
+ */
+export const PRIVATE_FIND_TEXT = 'Private chat: nothing is saved, so only the screen is searched.'
 
 /* -------------------------------------------------------------------- ids */
 

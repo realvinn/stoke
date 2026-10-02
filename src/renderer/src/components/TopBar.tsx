@@ -33,6 +33,7 @@ import {
   IconClose,
   IconEnter,
   IconFolder,
+  IconGhost,
   IconGrip,
   IconPencil,
   IconPlus,
@@ -151,7 +152,13 @@ export function TopBar({
 
   /* ------------------------------------------------------- the tab in front */
 
-  const local = !!tab && tab.kind === 'session' && !tab.hostId && !!tab.cwd
+  /*
+   * A folder on this computer git may be asked about: never an SSH tab (its
+   * cwd is an alias, gotcha 18) and never a private chat, whose folder is
+   * Stoke's own scratch under userData — git there would walk up into
+   * whatever repo holds it (a home kept in git) and show that as the chat's.
+   */
+  const local = !!tab && tab.kind === 'session' && !tab.hostId && !tab.private && !!tab.cwd
   const hasGit = items.some((i) => i.kind === 'git')
   const busy = dot === 'working' || dot === 'background'
   const git = useGitStatus(local && tab ? tab.cwd : null, { enabled: hasGit && local, busy })
@@ -185,7 +192,7 @@ export function TopBar({
   const views: ChipView[] = []
   for (const item of items) {
     if (item.kind === 'folder') {
-      const f = folderChip(tab ? { kind: tab.kind, cwd: tab.cwd, hostId: tab.hostId } : null, {
+      const f = folderChip(tab ? { kind: tab.kind, cwd: tab.cwd, hostId: tab.hostId, private: tab.private } : null, {
         style: item.style,
         hostLabel,
         deviceLabel: tab?.remote?.deviceLabel ?? null
@@ -194,7 +201,7 @@ export function TopBar({
         if (editing) views.push(placeholder(item, <IconFolder />, 'Folder', 'Where the tab in front is'))
         continue
       }
-      const icon = f.where === 'local' ? <IconFolder /> : <IconServer />
+      const icon = f.where === 'local' ? <IconFolder /> : f.where === 'private' ? <IconGhost /> : <IconServer />
       const open = f.open
       views.push({
         item,

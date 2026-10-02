@@ -20,7 +20,7 @@ import {
   IconSearch,
   IconSidebar
 } from './Icons'
-import { PRIVATE_BUTTON_TITLE } from '@shared/privateChat'
+import { PRIVATE_BUTTON_TITLE, PRIVATE_FOLDER_TEXT } from '@shared/privateChat'
 import { chordLabel } from '../lib/shortcuts'
 import { useTabDrag } from '../lib/useTabDrag'
 import { agentMark } from '../lib/agentColor'
@@ -366,7 +366,7 @@ export function TitleBar({
                     ? `${label.text} — press Enter on the page to start, or pick another folder`
                     : `${label.text}${agentName ? ` · running ${agentName}` : ''}${
                         account ? ` · on ${account.text}` : ''
-                      }\n${tab.cwd}`
+                      }\n${tab.private ? PRIVATE_FOLDER_TEXT : tab.cwd}`
                 }
               >
                 {/*
@@ -610,8 +610,9 @@ export function TitleBar({
           title: titleOf(menuTab),
           // Where Claude was launched: the folder for a local session, the host
           // alias for SSH (its cwd IS the alias, gotcha 18), the aimed project
-          // for a New tab. Omitted when there is none yet.
-          subtitle: (menuTab.kind === 'new' ? menuTab.projectName : menuTab.cwd) || undefined
+          // for a New tab. Omitted when there is none yet, and for a private
+          // chat, whose folder is Stoke's scratch (the footer says so).
+          subtitle: (menuTab.kind === 'new' ? menuTab.projectName : menuTab.private ? '' : menuTab.cwd) || undefined
         }}
         footer={folderEntry && 'reason' in folderEntry ? folderEntry.reason : undefined}
         items={buildTabMenu(tabs, menuTab, isMac, {

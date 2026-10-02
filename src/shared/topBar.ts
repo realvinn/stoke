@@ -15,6 +15,7 @@
  * then shortcuts into a "»" menu — and the tab strip keeps `TABS_FLOOR_REM`.
  */
 import { cliIdOf, isClaudeCode } from './codingClis.ts'
+import { PRIVATE_CHAT_NAME, PRIVATE_FOLDER_TEXT } from './privateChat.ts'
 
 /** Where the folder chip reads: the whole (shortened) path, or the folder's name. */
 export type FolderStyle = 'path' | 'name'
@@ -326,19 +327,28 @@ export function shortcutVerdict(item: Pick<TopBarShortcut, 'on'>, tab: ShortcutT
  * which machine and is never openable — `shell.openPath('vps')` opens nothing
  * useful. Another machine's session names that machine. A New tab has no
  * folder yet.
+ *
+ * A private chat's `cwd` is the scratch folder main made for it under
+ * userData and deletes with it (shared/privateChat.ts), so the chip says
+ * "Private chat" and is never openable: it drew `…/<uuid>` with an Open that
+ * put the file manager on a folder about to go. A host label of only spaces
+ * names the alias, as the tab menu does (Settings stores a label as typed).
  */
 export function folderChip(
-  tab: { kind: 'session' | 'new' | 'remote'; cwd: string; hostId: string | null } | null,
+  tab: { kind: 'session' | 'new' | 'remote'; cwd: string; hostId: string | null; private?: boolean } | null,
   opts: { style: FolderStyle; hostLabel: string | null; deviceLabel: string | null }
-): { text: string; compact: string; title: string; open: string | null; where: 'local' | 'host' | 'device' } | null {
+): { text: string; compact: string; title: string; open: string | null; where: 'local' | 'host' | 'device' | 'private' } | null {
   if (!tab || tab.kind === 'new') return null
   if (tab.kind === 'remote') {
-    const name = opts.deviceLabel || 'another machine'
+    const name = opts.deviceLabel?.trim() || 'another machine'
     return { text: name, compact: name, title: `A session on ${name}`, open: null, where: 'device' }
   }
   if (tab.hostId) {
-    const name = opts.hostLabel || tab.cwd
+    const name = opts.hostLabel?.trim() || tab.cwd.trim()
     return { text: name, compact: name, title: `On ${name} over SSH — its folders are on that machine`, open: null, where: 'host' }
+  }
+  if (tab.private) {
+    return { text: PRIVATE_CHAT_NAME, compact: 'Private', title: PRIVATE_FOLDER_TEXT, open: null, where: 'private' }
   }
   if (!tab.cwd) return null
   const name = baseNameOf(tab.cwd)

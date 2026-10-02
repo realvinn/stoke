@@ -4,7 +4,7 @@ import type { ImagePrepared } from '@shared/api'
 import type { SshHost } from '@shared/types'
 import { dropText } from '@shared/drop'
 import { formatBytes } from '@shared/imageUpload'
-import { ImageJobs, type ImagePhase } from '@shared/imageJobs'
+import { ImageJobs, pathTakesFocus, type ImagePhase } from '@shared/imageJobs'
 import type { Tab } from '../types'
 import { Spinner } from './Spinner'
 
@@ -53,6 +53,8 @@ export function useSshImages({
   const [phase, setPhase] = useState<ImagePhase>({ kind: 'idle' })
   const [waiting, setWaiting] = useState(0)
   const jobsRef = useRef<ImageJobs | null>(null)
+  /** The strip's own element, whose buttons may hand the keyboard back to the terminal. */
+  const stripRef = useRef<HTMLDivElement | null>(null)
   const noteTimer = useRef<number | null>(null)
   const label = (host?.label.trim() || host?.alias.trim() || tab.projectName || 'the machine').trim()
   const labelRef = useRef(label)
@@ -101,7 +103,9 @@ export function useSshImages({
         const text = dropText(paths, 'linux')
         if (term && text) {
           term.paste(text)
-          term.focus()
+          // Not out of the find bar (or any other field) the user went to
+          // while the image was on its way (`pathTakesFocus`).
+          if (pathTakesFocus(document.activeElement, document.body, [term.element, stripRef.current])) term.focus()
         }
         const hostId = hostIdRef.current
         const where = paths[0].slice(0, paths[0].lastIndexOf('/'))
@@ -148,6 +152,7 @@ export function useSshImages({
   }
 
   const strip = renderStrip(phase, waiting, label, {
+    ref: stripRef,
     cancel,
     retry,
     dismissNote,
@@ -160,14 +165,14 @@ function renderStrip(
   phase: ImagePhase,
   waiting: number,
   label: string,
-  act: { cancel: () => void; retry: () => void; dismissNote: () => void; setUpKey: (() => void) | null }
+  act: { ref: React.Ref<HTMLDivElement>; cancel: () => void; retry: () => void; dismissNote: () => void; setUpKey: (() => void) | null }
 ): React.JSX.Element | null {
   if (phase.kind === 'idle') return null
   const more = waiting > 0 ? ` (${waiting} more waiting)` : ''
   const of = (p: { index: number; count: number }): string => (p.count > 1 ? ` ${p.index + 1} of ${p.count}` : '')
   if (phase.kind === 'reading') {
     return (
-      <div className="image-strip" role="status">
+      <div className="image-strip" role="status" ref={act.ref}>
         <Spinner />
         <span className="image-strip-text">
           {`Reading image${of(phase)}…`}
@@ -181,7 +186,7 @@ function renderStrip(
   }
   if (phase.kind === 'sending') {
     return (
-      <div className="image-strip" role="status" aria-busy="true">
+      <div className="image-strip" role="status" aria-busy="true" ref={act.ref}>
         {phase.thumb ? <img className="image-strip-thumb" src={phase.thumb} alt="" /> : <Spinner />}
         <span className="image-strip-text">
           {`Sending image${of(phase)} to ${label}…`} <span className="image-strip-size">{formatBytes(phase.bytes)}</span>
@@ -195,7 +200,7 @@ function renderStrip(
   }
   if (phase.kind === 'note') {
     return (
-      <div className="image-strip" role="status">
+      <div className="image-strip" role="status" ref={act.ref}>
         <span className="image-strip-text">{phase.message}</span>
         <button className="btn" data-variant="ghost" onClick={act.dismissNote}>
           Dismiss
@@ -204,7 +209,7 @@ function renderStrip(
     )
   }
   return (
-    <div className="image-strip" role="status" data-tone="error">
+    <div className="image-strip" role="status" data-tone="error" ref={act.ref}>
       <span className="image-strip-text">
         {phase.message}
         {more}

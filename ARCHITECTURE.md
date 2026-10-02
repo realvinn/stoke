@@ -836,7 +836,8 @@ npm run verify:topbar         # the title bar's items: the default (on, folder +
                               # the whole block within one hub item), hydrate twice = once,
                               # the editor's moves, what a shortcut may type into (never a
                               # tab waiting on a question), the folder chip (an SSH tab's
-                              # alias never opened), the order the bar gives way in, and the
+                              # alias and a private chat's scratch folder never opened, gotcha
+                              # 150), the order the bar gives way in, and the
                               # tab strip's floor yielding to the actions (`tabsFloorPx`)
 npm run verify:git            # the git chip against REAL scratch repos: clean, dirty,
                               # conflicted, ahead/behind as of a fetch (and never fetching),
@@ -874,7 +875,9 @@ npm run verify:find           # Find in a conversation: what a transcript gives 
                               # a hit's window and token, newest first and the caps, the chunked
                               # reader and its cache, a runaway regex ended by the worker's budget
                               # (a real Worker), SSH consent and the one-fetch claim with fakes,
-                              # who takes Cmd+F with the browser docked, and the wires
+                              # who takes Cmd+F with the browser docked, and the wires; a
+                              # private chat searched on screen only (gotcha 150), and the bar
+                              # stopping above the image strip and exit card (`--find-floor`)
 npm run verify:drop           # what a dropped file types: quoting per platform, the
                               # names that cannot be typed at all, several paths read back
                               # by Claude Code's own splitter and by real shells, and the

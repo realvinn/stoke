@@ -110,7 +110,7 @@ import { newTab } from './lib/newTab'
 import { profileIdForCwd } from './lib/projectProfile'
 import { fromStored, screensFrom, toStored } from './lib/restore'
 import { focusTerm, hasActiveFinder, openActiveFinder, screenOf, termSizeHint } from './lib/termRegistry'
-import { findOwner, findTargetOf } from './lib/terminalFind'
+import { findConversation, findOwner, findTargetOf, paletteFindHint } from './lib/terminalFind'
 import {
   autoRelaunchKey,
   autoRelaunchStep,
@@ -135,6 +135,7 @@ import {
   tabLabel,
   tabsToClose,
   profileClosePlan,
+  profileCwd,
   type CloseSide,
   type PendingOrigin,
   type RelaunchPlan
@@ -1821,9 +1822,12 @@ export function App(): React.JSX.Element {
     if (profiledTabId.current === activeTabId) return
     profiledTabId.current = activeTabId
     const tab = tabs.find((t) => t.id === activeTabId)
-    if (!tab || tab.hostId) return
+    // An SSH tab's cwd is an alias, a private chat's is Stoke's own scratch
+    // folder: neither is any profile's work (`profileCwd`).
+    const cwd = tab ? profileCwd(tab) : null
+    if (cwd === null) return
     const id = profileIdForCwd(
-      tab.cwd,
+      cwd,
       projects,
       settings.projectRoots,
       availableProfiles,
@@ -5619,7 +5623,13 @@ export function App(): React.JSX.Element {
                   : null
               }
               dot={activeTab ? (activityViews[activeTab.id]?.dot ?? null) : null}
-              onReveal={(p) => void window.stoke.projects.reveal(p)}
+              /*
+               * The same door as the tab menu and the status bar, so a folder
+               * that has gone says so: main answers `projects:reveal` with a
+               * sentence (`revealProblem`), and this chip threw it away — a
+               * click on a deleted folder did nothing and said nothing.
+               */
+              onReveal={revealFolder}
             />
           ) : null
         }
@@ -6228,6 +6238,7 @@ export function App(): React.JSX.Element {
                 }
               : undefined
           }
+          findHint={paletteFindHint(activeTab?.kind === 'session' ? findConversation(activeTab) : 'none')}
           onPickAction={(action) => {
             setPaletteOpen(false)
             if (action.id === 'private') void startPrivate()
