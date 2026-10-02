@@ -81,7 +81,7 @@ import { TopBar } from './components/TopBar'
 import { ActivityPanel } from './components/ActivityPanel'
 import { SshKeyPrompt } from './components/SshKeyPrompt'
 import { OtherMachines } from './components/OtherMachines'
-import { RemoteHostStrip } from './components/RemoteHostStrip'
+import { RemoteHostFab, RemoteHostStrip } from './components/RemoteHostStrip'
 import { PrivateChatStrip } from './components/PrivateChatStrip'
 import {
   PRIVATE_CHAT_NAME,
@@ -1138,6 +1138,16 @@ export function App(): React.JSX.Element {
   tabsRef.current = tabs
   /** "Other machines" (src/main/hub/remote.ts), as main pushes it. */
   const hubRemote = useHubRemote()
+  /** On the host: who is attached to which local session from another machine (the tab's two arrows). */
+  const hostedBy = useMemo(() => {
+    const out: Record<string, string[]> = {}
+    for (const g of hubRemote.guests) {
+      if (!g.ptyId) continue
+      const names = (out[g.ptyId] ??= [])
+      if (!names.includes(g.label)) names.push(g.label)
+    }
+    return out
+  }, [hubRemote.guests])
   const activeTabIdRef = useRef<string | null>(activeTabId)
   activeTabIdRef.current = activeTabId
 
@@ -5563,6 +5573,7 @@ export function App(): React.JSX.Element {
       style={revealLayout ? ({ '--reveal-inset': `${revealInset}px` } as React.CSSProperties) : undefined}
     >
       <TitleBar
+        hostedBy={hostedBy}
         platform={platform}
         showBrand={settings?.showBrand !== false}
         maximized={maximized}
@@ -5890,7 +5901,7 @@ export function App(): React.JSX.Element {
             is attached now: strips in the flow for the same reason as the SSH
             key offer above (gotcha 14).
           */}
-          <RemoteHostStrip view={hubRemote} />
+          <RemoteHostStrip view={hubRemote} bar={settings?.remoteBar ?? 'fab'} />
           {/*
             What a private tab is, above its terminal: nothing kept here, closing
             deletes it, Anthropic still receives it — or the warning when main
@@ -5959,6 +5970,7 @@ export function App(): React.JSX.Element {
                   terminal={settings?.terminal ?? TERMINAL_DEFAULTS}
                   accent={activeProfile?.accent ?? null}
                   alpha={termAlpha}
+                  bar={settings?.remoteBar ?? 'fab'}
                   onClose={requestCloseTab}
                 />
               ))}
@@ -6094,6 +6106,13 @@ export function App(): React.JSX.Element {
               }
             />
           )}
+          {/*
+            Who is attached from another machine, as a floating button in the
+            main column's bottom-right corner (the default; `remoteBar: 'bar'`
+            draws the strip above instead). Inside `.main-col`, so never over
+            the docked browser (gotcha 14).
+          */}
+          {(settings?.remoteBar ?? 'fab') === 'fab' && <RemoteHostFab view={hubRemote} />}
         </div>
 
         {/*
@@ -6170,6 +6189,12 @@ export function App(): React.JSX.Element {
 
       <StatusBar
         tab={activeTab}
+        remoteSession={
+          // While the link is open: a refused or lost tab's last reading is not the session's now.
+          activeTab?.kind === 'remote'
+            ? ((v) => (v?.state === 'open' ? v.session : null))(hubRemote.tabs.find((v) => v.id === activeTab.remote?.tabId))
+            : null
+        }
         claudeDefaultMode={
           activeTab?.hostId || !activeLocalCwd
             ? null
