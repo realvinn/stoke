@@ -144,7 +144,7 @@ import { sttConfigFrom, sttConfigOf, sttReadiness } from '../shared/speechProvid
 import { createProfile, planProfile } from './profiles.ts'
 import { readSshConfigHosts } from './ssh.ts'
 import { endRemoteSession, listRemoteSessions } from './sshSessions.ts'
-import { registerSshImageHandlers } from './sshImages.ts'
+import { clipboardFiles, registerSshImageHandlers } from './sshImages.ts'
 import { hostPersists, isSafeRemoteSessionName, mintRemoteSessionName } from '../shared/sshPersist.ts'
 import { shouldOfferKey } from '../shared/sshAuth.ts'
 import { EnrollRuns } from './enrollRuns.ts'
@@ -172,7 +172,7 @@ import { autoScanStateFile, readAutoScanState, writeAutoScanState } from './work
 import { readSessionState, sessionStateFile, writeSessionState } from './worklog/sessionStore.ts'
 import { invalidateRecall, recall, scanOutcomeFor } from './worklog/recall.ts'
 import type { CreateProfileInput } from '@shared/profiles'
-import type { CliRunResult, RemoteSessionStarted, RemoteState, StokeCommandState, VoiceState } from '@shared/api'
+import type { ClipboardPeek, CliRunResult, RemoteSessionStarted, RemoteState, StokeCommandState, VoiceState } from '@shared/api'
 import { flushSettings, getSettings, initSecretStore, onSettingsChanged, secretStoreStatus, setSettings } from './store.ts'
 import { hydrateSettings } from './settingsSchema.ts'
 import { defaultSetupName, openSetup, sealSetup } from './setupFile.ts'
@@ -4732,12 +4732,18 @@ function registerIpc(): void {
    * hasImage is what lets plain Ctrl+V fall through to Claude Code's own image
    * handler: the CLI reads the image off the OS clipboard itself, so no image
    * bytes ever have to cross the PTY.
+   *
+   * files is how many files a file manager copied, so an SSH tab sends them
+   * rather than typing their names (Finder puts each name on as text too). A
+   * count, never the paths: main reads those itself when the tab asks.
    */
   ipcMain.on(CH.clipboardRead, (e) => {
-    e.returnValue = {
+    const peek: ClipboardPeek = {
       text: clipboard.readText(),
-      hasImage: !clipboard.readImage().isEmpty()
+      hasImage: !clipboard.readImage().isEmpty(),
+      files: clipboardFiles().count
     }
+    e.returnValue = peek
   })
   ipcMain.on(CH.clipboardWrite, (_e, text: string) => {
     if (typeof text === 'string' && text) clipboard.writeText(text)

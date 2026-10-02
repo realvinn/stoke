@@ -2982,7 +2982,7 @@ mark.hit {
 }
 
 /*
- * An image on its way to an SSH tab's machine (ImageSendStrip.tsx), and why it
+ * An image or a file on its way to an SSH tab's machine (ImageSendStrip.tsx), and why it
  * did not get there. Bottom-RIGHT, where only the exit card ever sits — and a
  * tab that exits drops its images, so the two never meet; the voice strip
  * keeps the bottom-left. Floating, like the voice strip, so showing it does
@@ -3030,6 +3030,20 @@ mark.hit {
 .image-strip-size {
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
+}
+
+/*
+ * How much of an upload ssh has taken (`--sent`, set from main's progress): a
+ * 2px fill along the strip's foot, kept off its rounded corners. No transition,
+ * so reduced motion has nothing to still (gotcha 72); it moves a few times a
+ * second as main pushes.
+ */
+.image-strip-progress {
+  position: absolute;
+  inset: auto var(--r-lg) 0 var(--r-lg);
+  height: 2px;
+  background: linear-gradient(to right, var(--accent) var(--sent, 0%), var(--border-subtle) var(--sent, 0%));
+  pointer-events: none;
 }
 
 /* ssh's own last line, under Stoke's sentence: the words the tool said. */

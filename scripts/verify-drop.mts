@@ -10,7 +10,7 @@
  *   node scripts/verify-drop.mts
  */
 import { execFileSync } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { dropText, escapePath, imagePasteKeys, isInsertable, quotePath } from '../src/shared/drop.ts'
 
 let failures = 0
@@ -163,6 +163,32 @@ else {
     const out = execFileSync(sh, ['-c', script, 'sh', dropText(awkward, 'linux')], { encoding: 'utf8' })
     check(`${sh} reads each path back as one argument`, out.split('\0').slice(0, -1), awkward)
   }
+}
+
+console.log('\nfar paths typed after files are sent to an SSH host (gotchas 146, 152)')
+/*
+ * What `useSshImages` types once a drop of several files has landed: the FAR
+ * paths, POSIX whatever Stoke runs on, in the form Claude Code's splitter
+ * reads. The names are Stoke's own (`droppedFileName`, no spaces), but the
+ * folder is the far user's, and a home can have a space in it.
+ */
+const far = [
+  '/home/my user/.cache/stoke/paste/server-2026-10-02-a1b2c3.log',
+  '/home/my user/.cache/stoke/paste/My-Report-final-d4e5f6.pdf',
+  '/home/my user/.cache/stoke/paste/empty-0a1b2c'
+]
+check(
+  'several far paths: space separated, each in the backslash form',
+  dropText(far, 'linux'),
+  String.raw`/home/my\ user/.cache/stoke/paste/server-2026-10-02-a1b2c3.log /home/my\ user/.cache/stoke/paste/My-Report-final-d4e5f6.pdf /home/my\ user/.cache/stoke/paste/empty-0a1b2c `
+)
+check('Claude reads each far path of the drop back exactly', claudePieces(dropText(far, 'linux')), far)
+check('one far path keeps its single quotes', dropText([far[1]], 'linux'), `'${far[1]}' `)
+check('a far path with no space is typed bare', dropText(['/root/.cache/stoke/paste/notes-a1b2c3.txt'], 'linux'), '/root/.cache/stoke/paste/notes-a1b2c3.txt ')
+{
+  // The wire: the strip types the far paths as POSIX even when Stoke runs on Windows (gotcha 18's shape).
+  const strip = readFileSync(new URL('../src/renderer/src/components/ImageSendStrip.tsx', import.meta.url), 'utf8')
+  check('the strip types far paths through dropText(paths, \'linux\')', /dropText\(paths, 'linux'\)/.test(strip), true)
 }
 
 console.log('\nan image-only clipboard, on a local tab')

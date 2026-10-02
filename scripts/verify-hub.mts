@@ -918,10 +918,12 @@ console.log('\nsettings: applying what arrives')
   const renamed = hydrateSettings(applySyncedSettings(cleared, { hosts: { [nucSync]: hostPayloadFor({ id: 'host-9', label: 'NUC (basement)', alias: 'nuc', command: '' }) } }).raw)
   check('an update by sync id keeps the local settings id', renamed.hosts.map((h) => [h.id, h.label]), [['host-1', 'NUC (basement)']])
   /*
-   * `noUploads` ("never send images to this machine") is a choice about the
-   * machine, like `keyEnrollRefused`, so it travels with the host: set on one
-   * computer, the others stop writing files there too. Only a literal true
-   * survives hydrate on the way in.
+   * `noUploads` ("never send images or files to this machine") is a choice
+   * about the machine, like `keyEnrollRefused`, so it travels with the host:
+   * set on one computer, the others stop writing files there too. Only a
+   * literal true survives hydrate on the way in. Files joined images under the
+   * same field with the same meaning, so an older Stoke's payload still says
+   * exactly this.
    */
   check('noUploads rides in the host payload', hostPayloadFor({ id: 'host-1', label: 'B', alias: 'bastion', command: '', noUploads: true }).host.noUploads, true)
   const refusing = hydrateSettings(applySyncedSettings(renamed, { hosts: { [nucSync]: hostPayloadFor({ id: 'host-9', label: 'NUC (basement)', alias: 'nuc', command: '', noUploads: true }) } }).raw)

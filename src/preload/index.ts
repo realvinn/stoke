@@ -1,7 +1,7 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { IpcRendererEvent } from 'electron'
 import { CH } from '@shared/ipc'
-import type { ClipboardPeek, StokeApi } from '@shared/api'
+import type { ClipboardPeek, ImagePrepared, StokeApi, UploadProgress } from '@shared/api'
 import type { ChatIndexStatus } from '@shared/chatIndex'
 import type { TranscriptFindRequest } from '@shared/transcriptFind'
 import type { SttConfig } from '@shared/speechProviders'
@@ -297,8 +297,26 @@ const api: StokeApi = {
     remoteSessions: (hostId: string) => ipcRenderer.invoke(CH.sshRemoteSessions, hostId),
     endRemoteSession: (hostId: string, name: string) => ipcRenderer.invoke(CH.sshEndRemoteSession, hostId, name),
     prepareImage: (hostId, source) => ipcRenderer.invoke(CH.sshImagePrepare, hostId, source),
+    /*
+     * The path is read HERE, off the File the drop handed the page — the one
+     * place holding both halves (see `pathForFile` below) — so the page names
+     * a File and never a path. A File with no path behind it (a drag out of a
+     * browser) is answered without asking main.
+     */
+    prepareFile: async (hostId: string, file: File): Promise<ImagePrepared> => {
+      let path = ''
+      try {
+        path = webUtils.getPathForFile(file)
+      } catch {
+        path = ''
+      }
+      if (!path) return { ok: false, reason: 'not-file', message: `${file.name || 'That file'} is not a file on this computer.` }
+      return ipcRenderer.invoke(CH.sshFilePrepare, hostId, path)
+    },
+    prepareClipboardFiles: (hostId: string) => ipcRenderer.invoke(CH.sshClipboardFilesPrepare, hostId),
     sendImage: (uploadId: string) => ipcRenderer.invoke(CH.sshImageSend, uploadId),
-    cancelImage: (uploadId: string) => ipcRenderer.invoke(CH.sshImageCancel, uploadId)
+    cancelImage: (uploadId: string) => ipcRenderer.invoke(CH.sshImageCancel, uploadId),
+    onUploadProgress: (cb) => on<[UploadProgress]>(CH.sshUploadProgress, cb)
   },
 
   activity: {

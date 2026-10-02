@@ -122,6 +122,12 @@ export interface VoiceTestResult {
 export interface ClipboardPeek {
   text: string
   hasImage: boolean
+  /**
+   * How many files the file manager put there (Finder's or Explorer's Copy),
+   * 0 for none. An SSH tab sends them on Cmd/Ctrl+V instead of typing their
+   * names; main reads the paths itself when asked (`prepareClipboardFiles`).
+   */
+  files: number
 }
 
 /**
@@ -131,22 +137,36 @@ export interface ClipboardPeek {
  */
 export type ImageSource = { kind: 'clipboard' } | { kind: 'bytes'; name: string; data: ArrayBuffer }
 
-/** Main has the image, checked and named, waiting to be sent by `uploadId`. */
+/**
+ * Main has the image or file, checked and named, waiting to be sent by
+ * `uploadId`. `file` is set for a FILE (anything sent by its path rather than
+ * as an image's bytes): the name the user knows it by, for the strip. An
+ * image's has none and is called "image".
+ */
 export type ImagePrepared =
-  | { ok: true; uploadId: string; name: string; bytes: number; thumb: string | null }
-  | { ok: false; reason: 'no-image' | 'not-image' | 'too-large' | 'not-allowed'; message: string }
+  | { ok: true; uploadId: string; name: string; bytes: number; thumb: string | null; file?: string }
+  | { ok: false; reason: 'no-image' | 'not-image' | 'too-large' | 'not-file' | 'no-file' | 'not-allowed'; message: string }
+
+/** How far a send is: bytes ssh has taken of `total`. Pushed while it runs. */
+export interface UploadProgress {
+  uploadId: string
+  sent: number
+  total: number
+}
 
 /**
  * Where a sent image landed on the machine, or why it did not. `detail` is
  * ssh's own last line of complaint when there is one, never Stoke's guess;
  * `needs-login` is ssh's "Permission denied", which a key fixes. A failed
- * image stays prepared, so it can be sent again.
+ * image stays prepared, so it can be sent again. `not-file` is a held file
+ * that could not be opened when its turn came (gone, or no longer a regular
+ * file): said, and the rest of its drop still sent.
  */
 export type ImageSent =
   | { ok: true; path: string }
   | {
       ok: false
-      reason: 'needs-login' | 'unreachable' | 'failed' | 'cancelled' | 'not-allowed'
+      reason: 'needs-login' | 'unreachable' | 'failed' | 'cancelled' | 'not-allowed' | 'not-file'
       message: string
       detail: string
     }
@@ -1002,8 +1022,19 @@ export interface StokeApi {
      * throws; `cancelImage` stops a send in flight or drops a held image.
      */
     prepareImage(hostId: string, source: ImageSource): Promise<ImagePrepared>
+    /**
+     * A dropped FILE of any kind, by the path the preload reads off it
+     * (`webUtils.getPathForFile`): main resolves and checks it (a regular file,
+     * at most 100 MB) and holds it to send under its own name. A File with no
+     * path on this computer is answered `not-file` without asking main.
+     */
+    prepareFile(hostId: string, file: File): Promise<ImagePrepared>
+    /** The files Finder or Explorer copied, read off the clipboard by main, each checked and held. */
+    prepareClipboardFiles(hostId: string): Promise<ImagePrepared[]>
     sendImage(uploadId: string): Promise<ImageSent>
     cancelImage(uploadId: string): Promise<void>
+    /** Progress of a send in flight; returns the unsubscribe. */
+    onUploadProgress(cb: (p: UploadProgress) => void): () => void
   }
 
   /**

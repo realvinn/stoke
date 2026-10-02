@@ -540,7 +540,7 @@ export const SETTING_ROWS: readonly SettingRow[] = [
     fallback: 'hosts.list'
   },
   // Inside each machine's row, so drawn only once a machine exists.
-  { id: 'hosts.images', page: 'hosts', label: 'Send pasted and dropped images to this machine', keywords: ['image', 'screenshot', 'paste image', 'upload', 'picture', 'scp', 'drop file'], fallback: 'hosts.list' },
+  { id: 'hosts.images', page: 'hosts', label: 'Send pasted and dropped files and images to this machine', keywords: ['image', 'screenshot', 'paste image', 'upload', 'picture', 'scp', 'drop file', 'file', 'send file', 'upload file', 'paste file', 'attach', 'pdf', 'document'], fallback: 'hosts.list' },
 
   // Browser
   { id: 'browser.profiles', page: 'browser', label: 'Browser profiles', keywords: ['logins', 'cookies', 'site data', 'profile'] },

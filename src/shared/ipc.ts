@@ -393,6 +393,16 @@ export const CH = {
    * an id, its size and a thumbnail. No path or name from the renderer is used.
    */
   sshImagePrepare: 'ssh:image-prepare',
+  /**
+   * renderer -> main: a dropped file of any kind for an SSH host, as the path
+   * the PRELOAD read off the File (`webUtils.getPathForFile`). Main resolves it,
+   * refuses anything but a regular file within the cap, and holds it.
+   */
+  sshFilePrepare: 'ssh:file-prepare',
+  /** renderer -> main: the files Finder/Explorer copied; main reads the clipboard itself. */
+  sshClipboardFilesPrepare: 'ssh:clipboard-files-prepare',
+  /** main -> renderer: how far a send is (`UploadProgress`), a few times a second. */
+  sshUploadProgress: 'ssh:upload-progress',
   /** renderer -> main: send a prepared image (by id) over a second BatchMode ssh. */
   sshImageSend: 'ssh:image-send',
   /** renderer -> main: stop a send in flight, or drop a prepared image. */

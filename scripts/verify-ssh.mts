@@ -47,19 +47,39 @@ import {
 } from '../src/main/ssh.ts'
 import { endRemoteSession, listRemoteSessions, type RunResult } from '../src/main/sshSessions.ts'
 import { buildUploadArgs, buildUploadBody } from '../src/main/ssh.ts'
-import { sendImage, spawnWithInput, type InputRunResult } from '../src/main/sshUpload.ts'
 import {
+  inspectUploadFile,
+  openUploadFile,
+  sendFile,
+  sendImage,
+  sendUpload,
+  spawnWithInput,
+  type InputRunOpts,
+  type InputRunResult,
+  type UploadInput
+} from '../src/main/sshUpload.ts'
+import {
+  MAX_FILE_BYTES,
   MAX_IMAGE_BYTES,
+  UPLOAD_IDLE_MS,
+  cidaCount,
   clipboardImageName,
+  droppedFileName,
   droppedImageName,
+  fileNameW,
+  fileUploadTimeoutMs,
+  fileUrlPath,
   formatBytes,
   imageKind,
+  isSafeFarName,
   isSafeUploadName,
+  parseFilenamesPlist,
   parseUploadPath,
+  parseUriList,
   uploadFailureKind,
   uploadTimeoutMs
 } from '../src/shared/imageUpload.ts'
-import { ImageJobs, type DroppedImageFile, type ImagePhase } from '../src/shared/imageJobs.ts'
+import { ImageJobs, type DroppedFile, type DroppedImageFile, type ImagePhase } from '../src/shared/imageJobs.ts'
 import type { ImagePrepared, ImageSent, ImageSource } from '../src/shared/api.ts'
 import {
   isPersistableCommand,
@@ -1302,19 +1322,23 @@ console.log('\nan image sent to the machine: what may be named, and how big')
     '-x.png',
     '.x.png',
     'a\nb.png',
-    'x.txt',
-    'x.png.sh',
-    'x',
+    '_x.txt',
     '',
     `${'a'.repeat(77)}.png`
   ]) {
-    same(`refused as a name: ${JSON.stringify(bad)}`, [isSafeUploadName(bad), buildUploadBody(bad, 10), buildUploadArgs(host({}), bad, 10)], [false, null, null])
+    same(`refused as a name: ${JSON.stringify(bad)}`, [isSafeUploadName(bad), isSafeFarName(bad), buildUploadBody(bad, 10), buildUploadArgs(host({}), bad, 10)], [false, false, null, null])
   }
   same('a name at the cap is fine', isSafeUploadName(`${'a'.repeat(76)}.png`), true)
-  for (const size of [0, -1, 1.5, Number.NaN, MAX_IMAGE_BYTES + 1]) {
+  // A FILE keeps its own extension (gotcha 152): what an image's name may not end in, a file's may.
+  for (const file of ['x.txt', 'x.png.sh', 'x', 'notes-a1b2c3.log', 'archive-a1b2c3.tar.gz']) {
+    same(`a file may be called ${JSON.stringify(file)}, an image may not`, [isSafeUploadName(file), isSafeFarName(file), typeof buildUploadBody(file, 10)], [file.endsWith('.png'), true, 'string'])
+  }
+  for (const size of [-1, 1.5, Number.NaN, MAX_FILE_BYTES + 1]) {
     same(`refused as a size: ${size}`, buildUploadBody('a.png', size), null)
   }
-  same('the cap itself is allowed', typeof buildUploadBody('a.png', MAX_IMAGE_BYTES), 'string')
+  same('a 0-byte file is a file (the body makes it empty)', buildUploadBody('empty-a1b2c3', 0)?.includes('[ $n -eq 0 ]'), true)
+  same('the file cap itself is allowed', typeof buildUploadBody('a.bin', MAX_FILE_BYTES), 'string')
+  same('an image past its own cap is still a size the body takes (it goes as a file)', typeof buildUploadBody('a.png', MAX_IMAGE_BYTES + 1), 'string')
 
   const at = new Date(2026, 9, 2, 14, 30, 5)
   same('a clipboard image is named by local time and six hex digits', clipboardImageName(at, 'a1b2c3ff'), 'pasted-image-20261002-143005-a1b2c3.png')
@@ -1326,11 +1350,54 @@ console.log('\nan image sent to the machine: what may be named, and how big')
     ['---.webp', 'webp', 'image-a1b2c3.webp'],
     ['日本語.png', 'png', 'image-a1b2c3.png'],
     [`${'long'.repeat(30)}.png`, 'png', `${'long'.repeat(12)}-a1b2c3.png`],
-    ['photo.txt', 'png', 'photo-a1b2c3.png']
+    ['photo.txt', 'png', 'photo-a1b2c3.png'],
+    // An underscore at the start used to survive and fail isSafeUploadName: "could not name that image safely".
+    ['__init__.png', 'png', 'init__-a1b2c3.png']
   ] as const
   for (const [file, kind, want] of dropped) {
     const got = droppedImageName(file, 'a1b2c3', kind)
     same(`a dropped ${JSON.stringify(file)} keeps a safe, recognisable name`, [got, isSafeUploadName(got)], [want, true])
+  }
+
+  // A FILE keeps its own name and extension through the same whitelist, plus the suffix (gotcha 152).
+  const files = [
+    ['report.pdf', 'report-a1b2c3.pdf'],
+    ['My Report (final).pdf', 'My-Report-final-a1b2c3.pdf'],
+    ['server 2026-10-02.log', 'server-2026-10-02-a1b2c3.log'],
+    ['archive.tar.gz', 'archive-a1b2c3.tar.gz'],
+    ['backup.TAR.XZ', 'backup-a1b2c3.TAR.XZ'],
+    ['a.b.c.txt', 'a.b.c-a1b2c3.txt'],
+    ['Makefile', 'Makefile-a1b2c3'],
+    ['.env', 'env-a1b2c3'],
+    ['.bashrc.local', 'bashrc-a1b2c3.local'],
+    ['__init__.py', 'init__-a1b2c3.py'],
+    ['日本語.pdf', 'file-a1b2c3.pdf'],
+    ['notes.日本', 'notes-a1b2c3'],
+    ['data.reallylongextension', 'data.reallylongextension-a1b2c3'],
+    ["it's $(rm -rf ~) `x`.sh", 'it-s-rm-rf-x-a1b2c3.sh'],
+    ['../../etc/passwd', 'passwd-a1b2c3'],
+    ['C:\\Users\\me\\Q3 plan.docx', 'Q3-plan-a1b2c3.docx'],
+    ['-rf', 'rf-a1b2c3'],
+    ['...', 'file-a1b2c3'],
+    [`${'long'.repeat(30)}.csv`, `${'long'.repeat(12)}-a1b2c3.csv`]
+  ] as const
+  for (const [file, want] of files) {
+    const got = droppedFileName(file, 'a1b2c3ff')
+    same(`a dropped file ${JSON.stringify(file)} keeps its own name, made safe`, [got, isSafeFarName(got)], [want, true])
+  }
+  same('two drops of one name never meet: the suffix is main’s random hex', droppedFileName('notes.txt', '000001') === droppedFileName('notes.txt', '000002'), false)
+  {
+    // Whatever the name, the result is one Stoke may write (fuzzed over awkward characters).
+    const alphabet = ['a', 'Z', '9', '.', '-', '_', ' ', "'", '"', '$', '`', '\\', '/', '\n', 'é', '日', '🎉', '(', ';', '&']
+    let bad = ''
+    for (let i = 0; i < 3000 && !bad; i++) {
+      let n = ''
+      const len = 1 + (i % 90)
+      for (let j = 0; j < len; j++) n += alphabet[(i * 31 + j * 17 + ((i * j) % 7)) % alphabet.length]
+      const got = droppedFileName(n, 'a1b2c3')
+      if (!isSafeFarName(got)) bad = `${JSON.stringify(n)} -> ${JSON.stringify(got)}`
+    }
+    same('3000 awkward names all come out as safe far names', bad, '')
   }
 
   const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0])
@@ -1415,6 +1482,15 @@ console.log('\nan image sent to the machine: the body, run by real login shells'
       same(`${login}: the bytes arrive identical (sha256)`, sha(got), sha(bytes))
       same(`${login}: the folder is 0700 and the file 0600`, [(await stat(dir)).mode & 0o777, existsSync(file) ? (await stat(file)).mode & 0o777 : -1], [0o700, 0o600])
       same(`${login}: no .part is left`, (await readdir(dir)).filter((f) => f.endsWith('.part')), [])
+
+      // A 0-byte file is a file (gotcha 152): the body publishes it empty.
+      const zero = 'empty-a1b2c3'
+      const z = await run(login, remote(zero, 0), new Uint8Array(0), { HOME: home, TMPDIR: tmp })
+      same(
+        `${login}: a 0-byte file arrives, empty, and says where`,
+        [z.code, parseUploadPath(z.stdout, zero), existsSync(join(dir, zero)) ? (await stat(join(dir, zero))).size : -1],
+        [0, join(dir, zero), 0]
+      )
 
       // A stream cut short, and one too long: never published, nothing left behind.
       const short = 'cut-short-a1b2c3.png'
@@ -1529,6 +1605,239 @@ console.log('\nan image sent to the machine: the stdin runner and the result')
   const before = seen.length
   same('a bad name never runs ssh', (await sendImage(host({}), '../x.png', bytes, { run: fake({}) })).ok, false)
   same('…and nothing was run', seen.length, before)
+
+  // A file's sentences say "file", and it gets a file's limits: longer, and a stall limit.
+  const limits: InputRunOpts[] = []
+  const fakeOpts =
+    (r: Partial<InputRunResult>) =>
+    async (_args: string[], _input: UploadInput, opts: InputRunOpts): Promise<InputRunResult> => {
+      limits.push(opts)
+      return { stdout: '', stderr: '', code: 0, error: '', cancelled: false, ...r }
+    }
+  const big = 60 * 1024 * 1024
+  const denied = await sendUpload(host({}), 'r-a1b2c3.pdf', { noun: 'file', size: big, input: new Uint8Array(0) }, { run: fakeOpts({ code: 255, stderr: 'v@h: Permission denied (publickey).\n' }) })
+  same('a file’s Permission denied says "files"', denied.ok ? 'sent' : denied.message, 'Stoke sends files over a second connection, which cannot type a password.')
+  same('…and it got the long limit and the stall limit', [limits[0]?.timeoutMs, limits[0]?.idleMs], [fileUploadTimeoutMs(big), UPLOAD_IDLE_MS])
+  const cutFile = await sendUpload(host({}), 'r-a1b2c3.pdf', { noun: 'file', size: 3, input: bytes }, { run: fakeOpts({ code: 5 }) })
+  same('a cut-off file says "file"', cutFile.ok ? 'sent' : cutFile.message, 'The file arrived incomplete, so it was not kept.')
+  await sendImage(host({}), 'a1-a1b2c3.png', bytes, { run: fakeOpts({ stdout: 'STOKE_PATH /x/a1-a1b2c3.png\n' }) })
+  same('an image keeps its own limit and no stall limit', [limits[limits.length - 1]?.timeoutMs, limits[limits.length - 1]?.idleMs], [uploadTimeoutMs(3), undefined])
+  same('100 MB may take half an hour at most; 2 minutes stays an image’s', [fileUploadTimeoutMs(MAX_FILE_BYTES), fileUploadTimeoutMs(0), uploadTimeoutMs(MAX_IMAGE_BYTES)], [30 * 60_000, 15_000, 120_000])
+}
+
+console.log('\na file sent to the machine: the runner reads it as it sends, and says how far it is')
+
+if (!existsSync('/bin/sh') || process.platform === 'win32') {
+  console.log('  SKIP  no /bin/sh here (Windows), so the file runner was not run')
+} else {
+  const { createHash, randomBytes } = await import('node:crypto')
+  const sha = (b: Uint8Array): string => createHash('sha256').update(b).digest('hex')
+  const root = await mkdtemp(join(tmpdir(), 'stoke-files-'))
+  try {
+    // Chunks from a generator, as a file is read: every byte arrives, and progress climbs to the total.
+    const data = new Uint8Array(randomBytes(3 * 1024 * 1024 + 17))
+    const out = join(root, 'out.bin')
+    const seen: number[] = []
+    const r = await spawnWithInput('/bin/sh', ['-c', `cat > '${out}'`], async function* () {
+      for (let at = 0; at < data.length; at += 100_000) yield data.subarray(at, at + 100_000)
+    }, { timeoutMs: 20_000, idleMs: 10_000, onProgress: (n) => seen.push(n) })
+    same('a streamed input arrives whole (sha256)', [r.code, sha(new Uint8Array(await readFile(out)))], [0, sha(data)])
+    same('progress only climbs, and ends at the total', [seen.every((n, i) => i === 0 || n > seen[i - 1]), seen[seen.length - 1]], [true, data.length])
+    const bytesSeen: number[] = []
+    await spawnWithInput('/bin/sh', ['-c', 'cat > /dev/null'], data, { timeoutMs: 20_000, onProgress: (n) => bytesSeen.push(n) })
+    same('bytes in hand go in chunks too, so an image shows progress', [bytesSeen.length > 1, bytesSeen[bytesSeen.length - 1]], [true, data.length])
+
+    // A read that fails half-way: ssh is stopped, and the far side would see EOF short of the size.
+    const failed = await spawnWithInput('/bin/sh', ['-c', 'cat > /dev/null'], async function* () {
+      yield data.subarray(0, 1000)
+      throw new Error('disk went away')
+    }, { timeoutMs: 20_000 })
+    same('a read that fails is the result, in its own words, and no exit code', [failed.code, failed.error], [null, 'disk went away'])
+
+    // A link that stops taking bytes: given up after the stall limit, not the half-hour one.
+    const t0 = Date.now()
+    const stalled = await spawnWithInput('/bin/sh', ['-c', 'exec sleep 30'], new Uint8Array(4 * 1024 * 1024), { timeoutMs: 60_000, idleMs: 1000 })
+    same('a child that stops reading is given up at the stall limit', [stalled.code, stalled.error, Date.now() - t0 < 10_000], [null, 'Nothing was taken for 1 s.', true])
+    // …but not once everything is written: the stall limit is for bytes left to give.
+    const slowExit = await spawnWithInput('/bin/sh', ['-c', 'cat > /dev/null; sleep 1.5; echo done'], new Uint8Array(10), { timeoutMs: 20_000, idleMs: 500 })
+    same('a slow far side after the last byte is not a stall', [slowExit.code, slowExit.stdout.trim()], [0, 'done'])
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+}
+
+console.log('\na file sent to the machine: what may be read, and what is refused with a sentence')
+
+if (process.platform === 'win32') {
+  console.log('  SKIP  links, pipes, sockets and devices are POSIX fixtures')
+} else {
+  const { createHash, randomBytes } = await import('node:crypto')
+  const { truncate, unlink, appendFile, stat } = await import('node:fs/promises')
+  const { createServer } = await import('node:net')
+  const sha = (b: Uint8Array): string => createHash('sha256').update(b).digest('hex')
+  const collect = async (src: AsyncIterable<Uint8Array>): Promise<Uint8Array> => {
+    const parts: Uint8Array[] = []
+    for await (const c of src) parts.push(c)
+    return new Uint8Array(Buffer.concat(parts))
+  }
+  // realpath'd: macOS's own TMPDIR is a link, and the resolved path is what comes back.
+  const { realpath } = await import('node:fs/promises')
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'stoke-files-')))
+  const server = createServer()
+  try {
+    const log = join(root, 'server 2026-10-02.log')
+    const logBytes = new Uint8Array(randomBytes(70_000))
+    await writeFile(log, logBytes)
+    const empty = join(root, 'empty')
+    await writeFile(empty, '')
+    const folder = join(root, 'Projects')
+    await mkdir(folder)
+    await symlink(log, join(root, 'link-to-log'))
+    await symlink(folder, join(root, 'link-to-folder'))
+    await symlink(join(root, 'gone'), join(root, 'dangling'))
+    const fifo = join(root, 'a-pipe')
+    await execFileAsync('mkfifo', [fifo])
+    const sock = join(root, 's.sock')
+    await new Promise<void>((resolve) => server.listen(sock, resolve))
+    const huge = join(root, 'huge.bin')
+    await writeFile(huge, '')
+    await truncate(huge, MAX_FILE_BYTES + 1) // sparse: no disk is used
+    const atCap = join(root, 'at-cap.bin')
+    await writeFile(atCap, '')
+    await truncate(atCap, MAX_FILE_BYTES)
+
+    same('a regular file: its path and size', await inspectUploadFile(log, 'server 2026-10-02.log'), { ok: true, path: log, size: logBytes.length })
+    same('a 0-byte file is a file', await inspectUploadFile(empty, 'empty'), { ok: true, path: empty, size: 0 })
+    same('a link is followed to the file it names', await inspectUploadFile(join(root, 'link-to-log'), 'link-to-log'), { ok: true, path: log, size: logBytes.length })
+    same('exactly the cap is allowed', (await inspectUploadFile(atCap, 'at-cap.bin')).ok, true)
+    const refusals: [string, unknown, string][] = [
+      ['a folder', folder, 'Projects is a folder. Stoke sends files, not folders: drop the files inside it, or zip it first.'],
+      ['a link to a folder', join(root, 'link-to-folder'), 'link-to-folder is a folder. Stoke sends files, not folders: drop the files inside it, or zip it first.'],
+      ['a link to nothing', join(root, 'dangling'), 'dangling is a link to something that is not there.'],
+      ['a pipe', fifo, 'a-pipe is a pipe, not a file.'],
+      ['a socket', sock, 's.sock is a socket, not a file.'],
+      ['a device', '/dev/null', 'null is a device, not a file.'],
+      ['past the cap', huge, `huge.bin is ${formatBytes(MAX_FILE_BYTES + 1)}; Stoke sends files up to ${formatBytes(MAX_FILE_BYTES)}. Copy it with scp instead.`],
+      ['a missing file', join(root, 'nope.txt'), 'nope.txt is no longer there.'],
+      ['a relative path', 'notes.txt', 'notes.txt is not a file on this computer.'],
+      ['not a string', 42, 'that is not a file on this computer.'],
+      ['a NUL in the path', `${log}\u0000.txt`, 'x is not a file on this computer.']
+    ]
+    for (const [what, p, want] of refusals) {
+      const label = typeof p === 'string' ? (p.split('/').pop() ?? '').replace(/\u0000.*$/, '') : 'that'
+      const r = await inspectUploadFile(p, what === 'a NUL in the path' ? 'x' : label)
+      same(`refused with a sentence: ${what}`, r.ok ? 'accepted' : r.message, want)
+    }
+
+    // Opening for the send: the bytes are the file's, read as they are sent.
+    const opened = await openUploadFile(log, 'server 2026-10-02.log')
+    same('opened: the size, and the bytes read back identical', opened.ok ? [opened.size, sha(await collect(opened.input()))] : opened.message, [logBytes.length, sha(logBytes)])
+    if (opened.ok) await opened.close()
+    const zero = await openUploadFile(empty, 'empty')
+    same('a 0-byte file opens and yields nothing', zero.ok ? [zero.size, (await collect(zero.input())).length] : zero.message, [0, 0])
+    if (zero.ok) await zero.close()
+
+    // Swapped after the check: a link (O_NOFOLLOW) and a pipe (O_NONBLOCK, so the open cannot hang main).
+    const swapped = join(root, 'swapped.txt')
+    await writeFile(swapped, 'x')
+    const checked = await inspectUploadFile(swapped, 'swapped.txt')
+    await unlink(swapped)
+    await symlink(log, swapped)
+    const asLink = await openUploadFile(checked.ok ? checked.path : swapped, 'swapped.txt')
+    same('a link swapped in after the check is refused, not followed', asLink.ok ? 'opened' : asLink.message, 'swapped.txt changed since it was dropped. Drop it again.')
+    await unlink(swapped)
+    await execFileAsync('mkfifo', [swapped])
+    const t0 = Date.now()
+    const asPipe = await openUploadFile(swapped, 'swapped.txt')
+    same('a pipe swapped in is refused at once, never waited on', [asPipe.ok ? 'opened' : asPipe.message, Date.now() - t0 < 2000], ['swapped.txt is a pipe, not a file.', true])
+
+    // A log still being written: sent as it was when opened (its first `size` bytes), whole.
+    const growing = join(root, 'growing.log')
+    await writeFile(growing, 'line 1\n')
+    const g = await openUploadFile(growing, 'growing.log')
+    await appendFile(growing, 'line 2\n')
+    same('a file that grows after it is opened is sent as it was then', g.ok ? [g.size, new TextDecoder().decode(await collect(g.input()))] : g.message, [7, 'line 1\n'])
+    if (g.ok) await g.close()
+    // One that shrinks: stopped, in a sentence, so the far side keeps nothing.
+    const shrinking = join(root, 'shrinking.log')
+    await writeFile(shrinking, 'x'.repeat(5000))
+    const s = await openUploadFile(shrinking, 'shrinking.log')
+    await truncate(shrinking, 10)
+    let shrunk = ''
+    if (s.ok) {
+      await collect(s.input()).catch((e: Error) => {
+        shrunk = e.message
+      })
+      await s.close()
+    }
+    same('a file that shrinks while it is sent stops, and says so', shrunk, 'shrinking.log got shorter while it was being sent.')
+
+    // The whole route, but ssh: sendFile runs the REAL upload body under sh with a scratch HOME.
+    const home = join(root, 'home')
+    await mkdir(home)
+    const viaSh = (args: string[], input: UploadInput, opts: InputRunOpts): Promise<InputRunResult> =>
+      spawnWithInput('/usr/bin/env', ['-i', `HOME=${home}`, 'PATH=/usr/bin:/bin', '/bin/sh', '-c', args[args.length - 1]], input, opts)
+    const name = droppedFileName('server 2026-10-02.log', 'a1b2c3')
+    const progress: number[] = []
+    const sent = await sendFile(host({}), name, log, 'server 2026-10-02.log', { run: viaSh, onProgress: (n) => progress.push(n) })
+    const far = join(home, '.cache', 'stoke', 'paste', name)
+    same(
+      'sendFile: the file arrives under its own name, sha256 identical, and the path comes back',
+      [sent, existsSync(far) ? sha(new Uint8Array(await readFile(far))) : 'missing'],
+      [{ ok: true, path: far }, sha(logBytes)]
+    )
+    same('…with progress up to its size', progress[progress.length - 1], logBytes.length)
+    const sentEmpty = await sendFile(host({}), 'empty-a1b2c3', empty, 'empty', { run: viaSh })
+    same('sendFile: a 0-byte file arrives empty', [sentEmpty.ok, existsSync(join(home, '.cache', 'stoke', 'paste', 'empty-a1b2c3')) ? (await stat(join(home, '.cache', 'stoke', 'paste', 'empty-a1b2c3'))).size : -1], [true, 0])
+    const gone = await sendFile(host({}), 'gone-a1b2c3.txt', join(root, 'gone.txt'), 'gone.txt', { run: viaSh })
+    same('sendFile: a file gone by its turn is not-file, a sentence, and no ssh', gone, { ok: false, reason: 'not-file', message: 'gone.txt is no longer there.', detail: '' })
+  } finally {
+    server.close()
+    await rm(root, { recursive: true, force: true })
+  }
+}
+
+console.log('\nfiles copied in Finder, Explorer or a Linux file manager: reading the clipboard')
+
+{
+  // What Electron's clipboard.read('NSFilenamesPboardType') returned on this Mac for two copied files.
+  const plist = [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+    '<plist version="1.0">',
+    '<array>',
+    '\t<string>/tmp/b2/a.log</string>',
+    '\t<string>/tmp/b2/my report &amp; co.pdf</string>',
+    '\t<string>/tmp/b2/&lt;odd&gt; &#233;t&#xE9; &apos;q&apos; &quot;d&quot;.txt</string>',
+    '</array>',
+    '</plist>',
+    ''
+  ].join('\n')
+  same('macOS: every copied file, in order, entities read', parseFilenamesPlist(plist), ['/tmp/b2/a.log', '/tmp/b2/my report & co.pdf', `/tmp/b2/<odd> été 'q' "d".txt`])
+  same('macOS: nothing copied is no paths', parseFilenamesPlist(''), [])
+  same('macOS: a relative entry is not a path', parseFilenamesPlist('<array><string>a.txt</string></array>'), [])
+  same('a file URL is its path, decoded', fileUrlPath('file:///tmp/b2/my%20report%20%26%20co.pdf'), '/tmp/b2/my report & co.pdf')
+  same('file://localhost/ is this machine too', fileUrlPath('file://localhost/etc/hosts'), '/etc/hosts')
+  same('a file URL naming another host is not a file here', fileUrlPath('file://server/share/x.txt'), null)
+  same('an http URL is not a file', fileUrlPath('https://example.com/x.pdf'), null)
+  same('a NUL is refused', fileUrlPath('file:///tmp/a%00b'), null)
+  same('broken percent-encoding is refused, not thrown', fileUrlPath('file:///tmp/%E0%A4%A'), null)
+  same(
+    'Linux: text/uri-list, CRLF and comments, file URLs only',
+    parseUriList('# copied by Files\r\nfile:///home/v/a%20b.txt\r\nhttps://example.com/\r\nfile:///home/v/c.log\r\n'),
+    ['/home/v/a b.txt', '/home/v/c.log']
+  )
+  const utf16 = (s: string): Uint8Array => {
+    const b = new Uint8Array((s.length + 1) * 2)
+    for (let i = 0; i < s.length; i++) {
+      b[i * 2] = s.charCodeAt(i) & 0xff
+      b[i * 2 + 1] = s.charCodeAt(i) >> 8
+    }
+    return b
+  }
+  same('Windows: FileNameW is the first path, to its NUL', fileNameW(utf16('C:\\Users\\me\\Q3 plan.docx')), 'C:\\Users\\me\\Q3 plan.docx')
+  same('Windows: an empty FileNameW is no path', fileNameW(new Uint8Array(0)), '')
+  same('Windows: the CIDA count is its first UINT', [cidaCount(new Uint8Array([3, 0, 0, 0, 20, 0])), cidaCount(new Uint8Array([1, 1, 0, 0])), cidaCount(new Uint8Array([1]))], [3, 257, 0])
 }
 
 
@@ -1545,7 +1854,13 @@ console.log('\nan image sent to the machine: the queue a tab’s pastes and drop
     for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0))
   }
   const rig = (opts: { slowPrepare?: boolean; stuckSends?: boolean } = {}) => {
-    const clip = { now: 'A' }
+    /*
+     * `clip.now` is the clipboard's image; `clip.files` the files a file
+     * manager copied (a name each, or a sentence main refuses the paste with).
+     * A dropped name in `notImages` has bytes that are not an image.
+     */
+    const clip: { now: string; files: string[] | string } = { now: 'A', files: [] }
+    const notImages = new Set<string>()
     const log: string[] = []
     const released: string[] = []
     const typed: string[][] = []
@@ -1560,12 +1875,39 @@ console.log('\nan image sent to the machine: the queue a tab’s pastes and drop
       const answer = (): ImagePrepared =>
         what === ''
           ? { ok: false, reason: 'no-image', message: 'There is no image on the clipboard.' }
-          : { ok: true, uploadId: `${what}#${++n}`, name: `${what}.png`, bytes: 10, thumb: null }
+          : notImages.has(what)
+            ? { ok: false, reason: 'not-image', message: `${what} is not a PNG, JPEG, GIF or WebP image.` }
+            : { ok: true, uploadId: `${what}#${++n}`, name: `${what}.png`, bytes: 10, thumb: null }
       if (!opts.slowPrepare) return Promise.resolve(answer())
       return new Promise((r) => prepares.push(() => r(answer())))
     }
+    /** What main answers for a file it checked by its path: held, under its own name. */
+    const heldFile = (name: string): ImagePrepared => ({ ok: true, uploadId: `${name}#${++n}`, name: `far-${name}`, bytes: 10, thumb: null, file: name })
+    /** A dropped File with a path behind it; `refuse` is main's sentence for it (a folder, say). */
+    const file = (name: string, type: string, size = 10, p: { refuse?: string; path?: boolean } = {}): DroppedFile => ({
+      name,
+      type,
+      size,
+      read: async () => {
+        log.push(`read ${name}`)
+        return new ArrayBuffer(4)
+      },
+      viaPath:
+        p.path === false
+          ? undefined
+          : async () => {
+              log.push(`path ${name}`)
+              return p.refuse ? { ok: false, reason: 'not-file', message: p.refuse } : heldFile(name)
+            }
+    })
     const jobs = new ImageJobs({
       prepare,
+      prepareClipboardFiles: async () => {
+        log.push('prepare clipboard files')
+        const now = clip.files
+        if (typeof now === 'string') return [{ ok: false, reason: 'not-allowed', message: now }]
+        return now.map(heldFile)
+      },
       send: (id) => {
         log.push(`send ${id}`)
         return new Promise((r) => sends.set(id, r))
@@ -1600,7 +1942,7 @@ console.log('\nan image sent to the machine: the queue a tab’s pastes and drop
     }
     const sent = (what: string): number => log.filter((l) => l.startsWith(`send ${what}#`)).length
     const last = (): string => phases[phases.length - 1]?.kind ?? 'none'
-    return { jobs, clip, log, released, typed, said, phases, prepares, answer, sent, last }
+    return { jobs, clip, notImages, file, log, released, typed, said, phases, prepares, answer, sent, last }
   }
   const unreachable: ImageSent = { ok: false, reason: 'unreachable', message: 'The machine could not be reached.', detail: 'ssh: connect to host h port 22: Connection refused' }
 
@@ -1736,7 +2078,7 @@ console.log('\nan image sent to the machine: the queue a tab’s pastes and drop
   }
 
   {
-    // A drop: images only, read in turn, an oversized one never read.
+    // A drop with no path behind its files (a drag out of a browser): images as before, anything else said.
     const t = rig()
     const reads: string[] = []
     const file = (name: string, type: string, size = 10): DroppedImageFile => ({
@@ -1748,9 +2090,9 @@ console.log('\nan image sent to the machine: the queue a tab’s pastes and drop
         return new ArrayBuffer(4)
       }
     })
-    same('a drop with no image is left to the caller', t.jobs.drop([file('notes.txt', 'text/plain')]), false)
+    same('an empty drop is left to the caller', t.jobs.drop([]), false)
     const took = t.jobs.drop([file('one.png', 'image/png'), file('huge.png', 'image/png', MAX_IMAGE_BYTES + 1), file('notes.txt', 'text/plain'), file('two.jpg', '')])
-    same('a drop with images is taken', took, true)
+    same('a drop is taken', took, true)
     await tick()
     same('…and only the first image is read before it is sent', reads, ['one.png'])
     await t.answer('one.png', 'ok')
@@ -1758,10 +2100,103 @@ console.log('\nan image sent to the machine: the queue a tab’s pastes and drop
     same('every image of a drop is typed together, in the drop’s order', t.typed, [['/far/one.png', '/far/two.jpg']])
     same('an oversized image is never read', reads, ['one.png', 'two.jpg'])
     same(
-      'what was refused or left out is said, never typed',
+      'what could not be sent is said, never typed',
       t.said[0],
-      [`huge.png is ${formatBytes(MAX_IMAGE_BYTES + 1)}; Stoke sends images up to ${formatBytes(MAX_IMAGE_BYTES)}.`, 'Only images are sent; left out: notes.txt.']
+      [`huge.png is ${formatBytes(MAX_IMAGE_BYTES + 1)}; Stoke sends images up to ${formatBytes(MAX_IMAGE_BYTES)}.`, 'notes.txt is not a file on this computer, so it cannot be sent.']
     )
+  }
+
+  {
+    // Any file (gotcha 152): an image, a log, a PDF and a folder in one drop, by their paths, one at a time.
+    const t = rig()
+    const took = t.jobs.drop([
+      t.file('shot.png', 'image/png'),
+      t.file('server.log', 'text/plain'),
+      t.file('My Report.pdf', 'application/pdf'),
+      t.file('Projects', '', 96, { refuse: 'Projects is a folder. Stoke sends files, not folders: drop the files inside it, or zip it first.' }),
+      t.file('empty', '', 0)
+    ])
+    same('a drop of files of any kind is taken', took, true)
+    await tick()
+    same('the image is read as an image; nothing after it is asked for yet', t.log.filter((l) => /^(read|path|prepare) /.test(l)), ['read shot.png', 'prepare shot.png'])
+    await t.answer('shot.png', 'ok')
+    same('then the log, by its path (main reads it), and only now', t.log.filter((l) => /^(read|path|prepare) /.test(l)).slice(2), ['path server.log'])
+    const sending = t.phases.filter((p): p is Extract<ImagePhase, { kind: 'sending' }> => p.kind === 'sending')
+    const s = sending[sending.length - 1]
+    same('the strip names the file and can match main’s progress to it', [s?.file, s?.uploadId.startsWith('server.log#'), s?.index, s?.count], ['server.log', true, 1, 5])
+    await t.answer('server.log', 'ok')
+    await t.answer('My Report.pdf', 'ok')
+    await t.answer('empty', 'ok')
+    same('every path of the drop is typed together, in the drop’s order', t.typed, [['/far/shot.png', '/far/server.log', '/far/My Report.pdf', '/far/empty.png']])
+    same('a folder is said, with main’s sentence, and never typed', t.said[0], ['Projects is a folder. Stoke sends files, not folders: drop the files inside it, or zip it first.'])
+    same('nothing main held is left held', t.released, [])
+  }
+
+  {
+    // Images past their cap, and "images" that are not: each goes as the file it is.
+    const t = rig()
+    t.notImages.add('fake.png')
+    t.jobs.drop([t.file('big.png', 'image/png', MAX_IMAGE_BYTES + 1), t.file('fake.png', 'image/png')])
+    await tick()
+    same('an image past the image cap goes by its path, never read here', t.log.filter((l) => /^(read|path|prepare) /.test(l)), ['path big.png'])
+    await t.answer('big.png', 'ok')
+    same('a .png whose bytes are not an image goes by its path too', t.log.filter((l) => /^(read|path|prepare) /.test(l)).slice(1), ['read fake.png', 'prepare fake.png', 'path fake.png'])
+    await t.answer('fake.png', 'ok')
+    same('…and both are typed', [t.typed, t.said], [[['/far/big.png', '/far/fake.png']], [[]]])
+  }
+
+  {
+    // Past the file cap: refused before main is asked, so it is never opened.
+    const t = rig()
+    t.jobs.drop([t.file('disk.img', '', MAX_FILE_BYTES + 1), t.file('ok.txt', 'text/plain')])
+    await tick()
+    await t.answer('ok.txt', 'ok')
+    same('a file past the cap never reaches main', t.log.some((l) => l === 'path disk.img'), false)
+    same(
+      '…it is said, and the rest still goes',
+      [t.typed, t.said[0]],
+      [[['/far/ok.txt']], [`disk.img is ${formatBytes(MAX_FILE_BYTES + 1)}; Stoke sends files up to ${formatBytes(MAX_FILE_BYTES)}. Copy it with scp instead.`]]
+    )
+  }
+
+  {
+    // A file gone by its turn (main answers not-file): said, and the rest of the drop still typed.
+    const t = rig()
+    t.jobs.drop([t.file('a.txt', 'text/plain'), t.file('b.txt', 'text/plain'), t.file('c.txt', 'text/plain')])
+    await t.answer('a.txt', 'ok')
+    await t.answer('b.txt', { ok: false, reason: 'not-file', message: 'b.txt is no longer there.', detail: '' })
+    await t.answer('c.txt', 'ok')
+    same('a file that went missing is said; the others are typed', [t.typed, t.said[0]], [[['/far/a.txt', '/far/c.txt']], ['b.txt is no longer there.']])
+  }
+
+  {
+    // Files copied in Finder: main reads them at the PRESS, and they are typed together, in order.
+    const t = rig()
+    t.jobs.paste()
+    t.clip.files = ['notes.txt', 'Q3 plan.pdf']
+    t.jobs.pasteFiles()
+    t.clip.files = ['later.txt']
+    await tick()
+    same('a file paste reads the clipboard when it is pressed, even queued behind a send', t.log.filter((l) => l.startsWith('prepare')), ['prepare A', 'prepare clipboard files'])
+    await t.answer('A', 'ok')
+    await t.answer('notes.txt', 'ok')
+    await t.answer('Q3 plan.pdf', 'ok')
+    same('…and its files are typed together, after the paste before it', t.typed, [['/far/A.png'], ['/far/notes.txt', '/far/Q3 plan.pdf']])
+    t.clip.files = 'Stoke can read only the first of the 3 files copied here. Drop them on the tab instead, or copy one at a time.'
+    t.jobs.pasteFiles()
+    await tick()
+    const p = t.phases[t.phases.length - 1]
+    same('a paste main refuses whole is its sentence, nothing typed', [p.kind === 'note' ? p.message : p.kind, t.typed.length], ['Stoke can read only the first of the 3 files copied here. Drop them on the tab instead, or copy one at a time.', 2])
+  }
+
+  {
+    // The pane goes while main is still reading the copied files: whatever it then holds is let go.
+    const t = rig()
+    t.clip.files = ['x.txt', 'y.txt']
+    t.jobs.pasteFiles()
+    t.jobs.close()
+    await tick()
+    same('files held after the pane went are let go, not left in main', t.released.map((id) => id.split('#')[0]).sort(), ['x.txt', 'y.txt'])
   }
 }
 

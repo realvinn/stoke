@@ -646,10 +646,11 @@ export function HostsSettings({
               </label>
 
               {/*
-                Images pasted or dropped on this machine's tabs are copied there
-                (sshUpload.ts). Per host, like the key offer: a shared bastion or
-                a client's box may not want files written. Its own search row
-                (`hosts.images`), landing on the list when no machine is drawn.
+                Images and files pasted or dropped on this machine's tabs are
+                copied there (sshUpload.ts). Per host, like the key offer: a
+                shared bastion or a client's box may not want files written.
+                Its own search row (`hosts.images`, the id it has always had),
+                landing on the list when no machine is drawn.
               */}
               <label className="check-row" data-setting="hosts.images">
                 <input
@@ -658,10 +659,10 @@ export function HostsSettings({
                   onChange={(e) => update(host.id, { noUploads: !e.target.checked })}
                 />
                 <span>
-                  <span className="field-label">Send pasted and dropped images to this machine</span>
+                  <span className="field-label">Send pasted and dropped files and images to this machine</span>
                   {host.noUploads === true && (
                     <span className="field-hint">
-                      Off: a pasted image is left to the terminal, and a dropped one types its path on
+                      Off: a pasted image is left to the terminal, and a dropped file types its path on
                       this computer.
                     </span>
                   )}
