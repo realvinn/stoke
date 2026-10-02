@@ -840,6 +840,12 @@ npm run verify:registry       # Claude Code's session registry: parsing junk, mi
                               # activityView's whole table beside the hooks (gotcha 104)
 npm run verify:shortcuts      # app chords vs the keys the terminal owns, the zoom maths, and
                               # that Ctrl+Tab and the bare brackets still reach the CLI
+npm run verify:find           # Find in a conversation: what a transcript gives the search (tool
+                              # calls and output, never thinking or sidechains), the pattern,
+                              # a hit's window and token, newest first and the caps, the chunked
+                              # reader and its cache, a runaway regex ended by the worker's budget
+                              # (a real Worker), SSH consent and the one-fetch claim with fakes,
+                              # who takes Cmd+F with the browser docked, and the wires
 npm run verify:drop           # what a dropped file types: quoting per platform, and the
                               # names that cannot be typed at all
 npm run verify:fullscreen     # the macOS full-screen menu bar: how far it reaches (notch,
@@ -1397,7 +1403,21 @@ src/main/         Electron main process
   enrollRuns.ts     which enrollment tab a pty is, each proven once: on the tab printing that
                     the install ran to its end (`enrollInstallDone`) or on its exit, first
                     wins. Its own module so index.ts imports it statically, sshEnroll lazily
-  sshTranscript.ts  pulls a remote session's JSONL back, so SSH sessions can be read
+  sshTranscript.ts  pulls a remote session's JSONL back, so SSH sessions can be read;
+                    `readRemoteTranscript` is the read alone (Find's "Just this once" keeps
+                    nothing on disk), `keepRemoteTranscript` the cache write
+  findInConversation.ts  the find bar's transcript search, main's half: the tab's own file,
+                    or an SSH host's newest conversation only on the host's answer
+                    (`SshHost.transcriptFind`, or "Just this once" in memory); one fetch per
+                    host and session at a time, claimed before the await, reused 15 s.
+                    Every dependency injected (verify:find)
+  transcriptFindHost.ts  its worker's handle: lazy start, idle stop, and a 2 s budget per
+                    search that ENDS the thread — a runaway user regex has no other cure, which
+                    is why it is not the chat index's worker
+  transcriptFind.worker.ts  the worker (its own bundle via `?modulePath`): reads, parses, runs
+                    the pattern
+  transcriptFind.ts the reader: 1 MB chunks cut at a newline before decoding (gotcha 103),
+                    only the last 64 MB of a huge file, one parse cached by size and mtime
   agent.ts          headless `claude -p` runner (prompt on stdin, json out)
   skillsScan.ts     lists the skills in every folder an agent reads, with each one's real
                     path, so a symlink is told apart from a copy that drifts, plus Claude
@@ -1540,6 +1560,14 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     six caps (committed on blur/Enter, gotcha 63), Index now, Rebuild (imports
                     kept), Delete (waits for a running import); "Import an export…" and a drop zone (Files only, gotcha 59)
                     with each import, what it left in the index, and its Remove
+  src/components/TerminalFind.tsx  Find in a conversation (Cmd+F / Ctrl+Shift+F, the terminal's
+                    right-click Find…, the palette's row): one bar floating inside the pane, so
+                    the pty is never resized. xterm's SearchAddon over the screen and
+                    scrollback, decorated only while the bar has focus; and the tab's Claude
+                    transcript newest first, since a fullscreen Claude tab keeps no scrollback.
+                    Copy match / token / message, Paste into prompt; an SSH host's consent
+                    asked inline. `lib/terminalFind.ts` holds its rules, `findOwner` among them
+                    (focus decides which find a Cmd+F opens when the browser is docked)
   src/components/ChatViewer.tsx  the read-only chat viewer: a `.body-row` column beside the main
                     one, never an overlay (gotcha 14) — messages in order with who and when, the
                     query's words marked (`highlightRanges`), copy per message and Copy all, and
@@ -1833,6 +1861,11 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     (`pressAllowed`), the agent picker's sections and scoped Select all, and
                     whether a card can start Claude Code (`claudeLaunchesHere`) — then its
                     chips and bypass warning show whatever the default agent is
+  transcriptFind.ts Find in a conversation's pure half: the wire types, `compileFind` (whole
+                    word as xterm reads it), what a transcript record gives the search
+                    (`blocksOfRecord`: tool input and output in, thinking and sidechains out),
+                    a hit's window and token, `searchBlocks` (newest first, capped) and
+                    `consentVerdict`
   chatIndex.ts      chat history's pure half: the source registry, the `chatIndex` setting and
                     `clampChatIndexOptions`, the caps and presets, `sourceDisclosure` (every
                     cap that binds is said), the FTS query and snippet marks, and

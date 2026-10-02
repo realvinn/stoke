@@ -41,7 +41,7 @@ A `dist:*` exists per target and each MUST run on that target's own platform and
 Every suite runs alone as `npm run verify:<name>`: context, statusline, unicode, usage,
 profiles, settings, secrets, hub, hub-server, hub-client, hub-relay, providers, claude-config, folders, search, settings-search, chat-sources, color, theme-gen, activity,
 worklog-gate, tabs, launcher, registry,
-restore, shortcuts, drop, fullscreen, layers, browser-url, browser-profiles, safari-import, chrome-import, voice, agents, accounts, campfire, cli, stoke-args, updates, targets, manifests, portable, winget, worklog-runner,
+restore, shortcuts, find, drop, fullscreen, layers, browser-url, browser-profiles, safari-import, chrome-import, voice, agents, accounts, campfire, cli, stoke-args, updates, targets, manifests, portable, winget, worklog-runner,
 worklog-retry, worklog-recall, worklog-autoscan, ssh, ssh-enroll, remote, phone-ui, installer-art, install, welcome,
 selection — the `check` chain — plus extract and security, which
 need a live instance (`verify:security <url> <token> --access`). `verify:selection` opens a real
@@ -212,6 +212,8 @@ rule file named on the group line.
   brackets (bare Ctrl+`-`/`=`/`0` are zoom's exception, 32): `matchShortcut` withholds every match
   from the pty, and the bare Ctrl+1..9 tab chords already steal Ctrl+3..8. Stepping chords read
   pending state; `zoom` still steps from `settingsRef`.
+- **145.** Let one function decide a chord two features share and have every listener ask it (`findOwner`:
+  focus picks the terminal's or the docked browser's Cmd+F); never a panel's window listener acting from any focus.
 
 **File drop** — `.claude/rules/drop.md`
 - **59.** On a file drop, take only drags carrying `Files` and `preventDefault` on `dragover`
