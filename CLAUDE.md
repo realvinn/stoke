@@ -208,6 +208,8 @@ rule file named on the group line.
   only while mode 2031 is on.
 - **79.** Give a held Space one owner per tab (`spaceOwner`): Claude Code's `/voice` on a local
   Claude tab, else Stoke's dictation, whose `spaceHold` takes every repeat and records only a hold.
+- **151.** Let a shared pty's grid follow USE only (`SizeClaimer`, `claimCounts`: a pane change counts
+  just after a person acted, `recentlyUsed`), and watch the pane's BORDER box: scrollbars move the content box.
 
 **Keyboard chords** — `.claude/rules/keys.md`
 - **32.** Zoom-out must stay bare Cmd/Ctrl+`-` and refuse Shift: Ctrl+Shift+`-` is Ctrl+`_`, which
@@ -391,7 +393,7 @@ rule file named on the group line.
 - **86.** Type a phone message to Claude Code, never bracket it (`submitFrames`): a paste — or one
   write past ~1 KB — is filed as `<pasted_content>` the model will not act on. Newlines are `ESC CR`.
 - **87.** Pad the phone terminal's box, not xterm's parent, and let only `decideResize` resize the
-  pty: Fit to phone only, on a width change only, never while the composer has focus.
+  phone's pty: Fit to phone, on a width change, never while composing; a hub remote tab claims it when used (151).
 - **111.** Give the phone server anything it does not bind as a per-call `RemoteDeps` read
   (`transcribe`), never `RemoteConfig`: that is a snapshot from `start()`, restarted only for bind keys.
 - **121.** Let a phone reach a folder only via `remoteFolderVerdict` on its realpath, places no shallower

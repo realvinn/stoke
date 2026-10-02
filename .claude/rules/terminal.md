@@ -1,6 +1,9 @@
 ---
 paths:
   - "src/renderer/src/components/TerminalView.tsx"
+  - "src/renderer/src/components/RemoteTerminal.tsx"
+  - "src/shared/sizeClaim.ts"
+  - "src/renderer/src/lib/lastInput.ts"
   - "src/renderer/src/lib/mouseReport.ts"
   - "src/renderer/src/lib/termRegistry.ts"
   - "scripts/verify-selection.mts"
@@ -349,3 +352,57 @@ were run against the old file from `HEAD` to confirm they fail there.
 > open kept one stream live after Stop and after closing Settings. It now claims with a fresh
 > object per press. Gotcha 20's 2026-09-30 note has the measurement, and `verify:voice` holds the
 > claim's shape (shown to fail against the old file).
+
+## 151. Two machines on one pty: a size claim needs a person, and the pane is watched by its border box
+
+**Built 2026-10-02, from the owner's "whichever is active we force it to that screen ratio".** A hub
+remote tab (RemoteTerminal) and the session's own tab on the machine it runs on (TerminalView) draw
+one pty, and only one grid can be its. Last active wins (`SizeClaimer`, shared/sizeClaim.ts): the
+side being USED claims the grid for its pane — the guest sends the phone's own `{type:'resize',
+force:true}` through the relay, the host fits as it always did — and the other side draws that grid
+as it is until someone uses it there. Use is a focus, a key or a click on the terminal, or its pane
+changing size. Two passive things change a pane's size, and each would have answered the other
+machine's claim with one of its own:
+
+- **Scrollbars, through the content box.** The side not in use draws a grid that can be larger than
+  its pane, so `.remote-host` and `.term-host[data-sized-elsewhere]` scroll, and a scrollbar that
+  takes layout space shrinks the CONTENT box. Measured in the built app on 2026-10-02 with
+  layout-taking scrollbars (forced on this Mac with `* { scrollbar-width: auto; scrollbar-color:
+  auto }`, so app.css's 10 px `::-webkit-scrollbar` applies, as Windows and Linux draw by default):
+  a remote grid grown from 143x38 to 220x70 in a 1160x784 pane fired a content-box
+  `ResizeObserver` (1150x774) and not a border-box one; shrunk back, the content box fired again
+  (1160x784) and the border box did not. On this Mac's default overlay scrollbars
+  (`offsetWidth - clientWidth` 0 with `scrollWidth` 1734 against 1160) neither fires — so a
+  content-box trigger would have ping-ponged on Windows and Linux at the speed of the relay and
+  never on a Mac. Both terminals observe `{ box: 'border-box' }`; `.term-host` has no padding or
+  border, so for TerminalView's own fit nothing else changes.
+- **A strip appearing above a terminal nobody is at.** On a machine the owner walked away from,
+  the window keeps the OS's focus and the terminal keeps the keyboard, and a worklog proposal or
+  another device's question pushes the pane down. `claimCounts` takes a pane change only while the
+  terminal holds the keyboard in a focused window that someone acted on inside `PANE_INPUT_MS`
+  (lib/lastInput.ts: a trusted key, press or wheel, or the window resized). Measured with the guest
+  holding 143x38 and the host's terminal focused (CDP focus emulation): a script putting the
+  "Remote" strip up left the host drawing 143x38; a trusted wheel over the sidebar and then the
+  strip going took the grid back to the host's 106x31.
+
+The rest of the rule, each in `verify:hub-relay` on a fake clock with two sides on one pty, and each
+shown red by mutating it back: a burst of keys is ONE resize after `CLAIM_DEBOUNCE_MS`; with no use
+nothing is resized for ten idle minutes; a claim inside `CLAIM_SETTLE_MS` of the other side's
+resize waits for it and then wins; a side's own resize echoing back is not "the other side" (or
+every claim would arm a settle against itself); and a tab merely shown, or a reconnect, claims
+nothing (`claimedOpenRef`: the FIRST open of a remote tab is use; a dropped link coming back is the
+network, so the focus the tab gives its terminal then is marked quiet, `quietFocusRef`). In the
+built app, 20 idle seconds after each claim both sides still read the same grid, and with the host
+holding 106x31 a hub restart dropped the relay and the guest reconnected without touching it, until
+a real key on the guest claimed 143x38.
+
+**When driving it, a scripted `focus()` on a terminal is a claim:** it fires `focusin`. The first
+run of the passive check above focused the host's terminal from the script to set the scene, and
+that alone took the grid back before the check began. Leave focus where a person left it, and use
+`Emulation.setFocusEmulationEnabled` for `document.hasFocus()` instead.
+
+The phone is unchanged: it resizes through the phone server, which tells the desktop nothing, and
+only in Fit to phone (gotcha 87). The relay's own instance of that server (`serveRelay` hooks) is
+what tells the desktop (`pty:sized`), pushes each grid to every relayed viewer at once, forgets the
+desktop's saved size when the desktop resizes (`desktopResized`), and puts it back — with the
+desktop's tab refitting — when the last remote tab leaves.
