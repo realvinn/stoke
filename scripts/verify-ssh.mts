@@ -1566,8 +1566,10 @@ console.log('\nan image sent to the machine: the stdin runner and the result')
     const ac = new AbortController()
     const t0 = Date.now()
     setTimeout(() => ac.abort(), 150)
-    const cut = await spawnWithInput('/bin/sh', ['-c', 'sleep 5'], new Uint8Array(1), { timeoutMs: 10_000, signal: ac.signal })
-    same('Cancel ends it at once', [cut.cancelled, cut.code, Date.now() - t0 < 3000], [true, null, true])
+    // `; :` keeps `sleep` a CHILD of sh on every platform (dash always does; bash and macOS's sh
+    // exec a lone last command), and that child holds the pipes open: Cancel must not wait for it.
+    const cut = await spawnWithInput('/bin/sh', ['-c', 'sleep 5; :'], new Uint8Array(1), { timeoutMs: 10_000, signal: ac.signal })
+    same('Cancel ends it at once, even with a child still holding the pipes', [cut.cancelled, cut.code, Date.now() - t0 < 3000], [true, null, true])
     const missing = await spawnWithInput('/nonexistent/ssh-xyz', [], new Uint8Array(1), { timeoutMs: 1000 })
     same('an ssh that is not there is a result, not a throw', [missing.code, missing.error.length > 0], [null, true])
   }

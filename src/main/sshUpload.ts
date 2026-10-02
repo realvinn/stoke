@@ -175,12 +175,26 @@ export function spawnWithInput(exe: string, args: string[], input: UploadInput, 
       /* EPIPE: the far end stopped reading. The exit code says why. */
     })
     proc.on('error', (e) => finish({ code: null, error: e.message || 'ssh could not be started.' }))
-    proc.on('close', (code) => {
+    const settle = (code: number | null): void => {
       if (cancelled) finish({ code: null, error: 'Cancelled.' })
       else if (readError) finish({ code: null, error: readError })
       else if (stalled) finish({ code: null, error: `Nothing was taken for ${Math.round((opts.idleMs ?? 0) / 1000)} s.` })
       else if (timedOut) finish({ code: null, error: `No answer within ${Math.round(opts.timeoutMs / 1000)} s.` })
       else finish({ code: typeof code === 'number' ? code : null, error: typeof code === 'number' ? '' : 'ssh was stopped.' })
+    }
+    // An ordinary end waits for every pipe to close, so the STOKE_PATH line is never cut short.
+    proc.on('close', (code) => settle(code))
+    /*
+     * One this runner stopped (Cancel, a timeout, a stall, a failed read) is over when it EXITS:
+     * a child it left behind can hold the pipes open for as long as that child lives, and 'close'
+     * waits for them. Found on the v1.0.0-beta.1 release gate (2026-10-02): under dash, `sh -c
+     * 'sleep 5'` keeps `sleep` as a child, so Cancel took the full five seconds on Linux and none
+     * on macOS, whose sh execs the last command. A ProxyCommand ssh started is the same shape.
+     */
+    proc.on('exit', (code) => {
+      if (!cancelled && !readError && !stalled && !timedOut) return
+      for (const s of [proc.stdout, proc.stderr, proc.stdin]) s?.destroy()
+      settle(code)
     })
 
     const stdin = proc.stdin
