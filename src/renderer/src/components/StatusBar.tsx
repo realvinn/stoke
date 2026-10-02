@@ -322,6 +322,11 @@ export function StatusBar({
         >
           {shortPath(tab.cwd, 52)}
         </button>
+      ) : tab.private ? (
+        /* Not the scratch folder's uuid path: it is no place of the user's (PRIVATE_FOLDER_TEXT). */
+        <span className="status-item status-shrink status-static" title={noFolder ?? undefined}>
+          Temporary folder
+        </span>
       ) : (
         <span className="status-item status-shrink status-static mono" title={noFolder ?? tab.cwd}>
           {shortPath(tab.cwd, 52)}

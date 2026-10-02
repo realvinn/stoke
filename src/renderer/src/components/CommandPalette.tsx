@@ -5,7 +5,7 @@ import { searchSettings, settingsEntries, type SettingsHit } from '@shared/setti
 import { relativeTime } from '../lib/format'
 import { rankForPalette } from '../lib/projectSearch'
 import { paletteRows, searchPaletteActions, SETTINGS_IN_PALETTE, type PaletteAction, type PaletteRow } from '../lib/paletteRows'
-import { FIND_PALETTE_LABEL, paletteFindMatch } from '../lib/terminalFind'
+import { FIND_PALETTE_LABEL, paletteFindHint, paletteFindMatch } from '../lib/terminalFind'
 import { chordLabel } from '../lib/shortcuts'
 import { Highlight } from './Highlight'
 import { IconGear, IconGhost, IconSearch } from './Icons'
@@ -22,6 +22,12 @@ interface Props {
    * then "find" lists no such row.
    */
   onFind?: () => void
+  /**
+   * The find row's second line: where a find on the tab in front looks
+   * (`paletteFindHint`) — "The screen" alone on a private chat, which keeps
+   * no transcript.
+   */
+  findHint?: string
   /** Run an action row (a new private chat). Absent lists no actions. */
   onPickAction?: (action: PaletteAction) => void
   /** Why an action cannot run now (Claude Code is not), shown on its row; the row is then inert. */
@@ -55,6 +61,7 @@ export function CommandPalette({
   onPick,
   onPickSetting,
   onFind,
+  findHint = paletteFindHint('transcript'),
   onPickAction,
   actionBlocked = null,
   onClose
@@ -148,7 +155,7 @@ export function CommandPalette({
                   <Highlight text={FIND_PALETTE_LABEL} ranges={row.ranges} />
                 </span>
                 <span className="palette-item-path truncate">
-                  The screen and the transcript · {chordLabel('find', IS_MAC)}
+                  {findHint} · {chordLabel('find', IS_MAC)}
                 </span>
                 <span className="palette-item-time palette-item-kind" aria-hidden="true">
                   <IconSearch />

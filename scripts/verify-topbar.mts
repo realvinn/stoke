@@ -38,6 +38,8 @@ import {
 import { DEFAULT_SETTINGS, hydrateSettings } from '../src/main/settingsSchema.ts'
 import { LOCAL_KEYS, PORTABLE_KEYS } from '../src/shared/setupFile.ts'
 import { T1_KEYS, MAX_ITEM_PLAINTEXT_BYTES, itemPlaintextText } from '../src/shared/hub/items.ts'
+import { PRIVATE_FOLDER_TEXT } from '../src/shared/privateChat.ts'
+import { readFileSync } from 'node:fs'
 
 let failures = 0
 
@@ -296,6 +298,38 @@ console.log('\nthe folder chip')
   check('another machine’s session names that machine', folderChip({ kind: 'remote', cwd: '/x', hostId: null }, { ...opts, deviceLabel: 'Desk' })?.text, 'Desk')
   check('a New tab, no tab, or no folder draws nothing', [folderChip({ kind: 'new', cwd: '', hostId: null }, opts), folderChip(null, opts), folderChip({ kind: 'session', cwd: '', hostId: null }, opts)], [null, null, null])
   check('a Windows path: the name is its last segment', folderChip({ kind: 'session', cwd: 'C:\\Users\\me\\code\\app', hostId: null }, opts)?.compact, 'app')
+  /*
+   * A private chat's cwd is Stoke's scratch folder (shared/privateChat.ts):
+   * driven on the merged build, the chip drew `…/<uuid>` and its Open put
+   * Finder on a folder deleted with the chat — and at 940 px it took the room
+   * the tab's own title needed ("Pr…").
+   */
+  const priv = folderChip({ kind: 'session', cwd: '/Users/me/Library/Application Support/Stoke/private/1b2c', hostId: null, private: true }, opts)
+  check('a private chat says so and is NEVER openable', priv, {
+    text: 'Private chat',
+    compact: 'Private',
+    title: PRIVATE_FOLDER_TEXT,
+    open: null,
+    where: 'private'
+  })
+  check('whichever style the chip is set to', folderChip({ kind: 'session', cwd: '/x/private/1b2c', hostId: null, private: true }, { ...opts, style: 'name' })?.text, 'Private chat')
+  check(
+    'a host label of only spaces names the alias (Settings stores labels as typed), as the tab menu does',
+    folderChip({ kind: 'session', cwd: 'vps', hostId: 'h' }, { ...opts, hostLabel: '   ' })?.text,
+    'vps'
+  )
+  check('a padded label is trimmed', folderChip({ kind: 'session', cwd: 'vps', hostId: 'h' }, { ...opts, hostLabel: ' My VPS ' })?.text, 'My VPS')
+  {
+    const bar = readFileSync(new URL('../src/renderer/src/components/TopBar.tsx', import.meta.url), 'utf8')
+    const app = readFileSync(new URL('../src/renderer/src/App.tsx', import.meta.url), 'utf8')
+    check('the bar hands the chip the tab\u2019s private flag', /private: tab\.private/.test(bar), true)
+    check('and never asks git about a private chat\u2019s folder', /const local = [^\n]*!tab\.private/.test(bar), true)
+    check(
+      'App opens the chip\u2019s folder through revealFolder, so a folder that has gone says so (revealProblem)',
+      /<TopBar[\s\S]*?onReveal=\{revealFolder\}/.test(app),
+      true
+    )
+  }
   check('a short path is whole', pathTail('/a/b/c'), '/a/b/c')
   const long = '/Users/someone/dev/personal/clients/acme/monorepo/packages/web'
   const tail = pathTail(long)

@@ -2,13 +2,14 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Terminal } from '@xterm/xterm'
 import type { ISearchOptions, SearchAddon } from '@xterm/addon-search'
 import type { FindConsent, TranscriptFindHit, TranscriptFindResult } from '@shared/transcriptFind'
-import { isClaudeCode } from '@shared/codingClis'
+import { PRIVATE_FIND_TEXT } from '@shared/privateChat'
 import type { Tab } from '../types'
 import { relativeTime, shortPath } from '../lib/format'
 import {
   barKey,
   consentAfterSend,
   conversationCountLabel,
+  findConversation,
   roleLabel,
   screenCall,
   screenCountLabel,
@@ -98,8 +99,13 @@ export function TerminalFind({ tab, term, search, colors, initialQuery, openSeq,
   /** Whether the bar holds focus, so a blur can drop the highlights and a focus bring them back. */
   const focusedRef = useRef(true)
 
-  const supported =
-    !tab.enrollHostId && !(tab.installing?.length ?? 0) && (tab.hostId !== null || isClaudeCode(tab.cliId))
+  /*
+   * A private chat searches the screen only and says so (`findConversation`):
+   * there is no transcript, and asking main for one answered "not written to
+   * disk yet".
+   */
+  const conversation = findConversation(tab)
+  const supported = conversation === 'transcript'
   const conversationOn = supported && scopes.conversation && !declined
 
   /* ---------------------------------------------------------------- screen */
@@ -341,11 +347,13 @@ export function TerminalFind({ tab, term, search, colors, initialQuery, openSeq,
   const result = tx.result
   const screenLabel = scopes.screen && query ? (screenError ?? (screen ? screenCountLabel(screen.count, screen.index, buffer) : null)) : null
   const conversationLabel =
-    supported && declined && query
-      ? 'Conversation not searched'
-      : conversationOn && query
-        ? conversationCountLabel(result, tx.busy)
-        : null
+    conversation === 'private'
+      ? PRIVATE_FIND_TEXT
+      : supported && declined && query
+        ? 'Conversation not searched'
+        : conversationOn && query
+          ? conversationCountLabel(result, tx.busy)
+          : null
   /*
    * The owner's case, said plainly: a fullscreen Claude tab where the needle is
    * not on screen any more but IS in the conversation.

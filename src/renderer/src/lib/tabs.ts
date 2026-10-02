@@ -14,6 +14,7 @@ import { cliFor, cliIdOf, DEFAULT_CLI, isClaudeCode } from '../../../shared/codi
 import type { CodingCliId } from '../../../shared/codingClis.ts'
 import { agentTagText } from '../../../shared/agents.ts'
 import { foldGroup } from '../../../shared/paths.ts'
+import { PRIVATE_FOLDER_TEXT } from '../../../shared/privateChat.ts'
 
 /**
  * Which tab id to select once `closedId` is gone, or null when the list empties.
@@ -1234,6 +1235,8 @@ export interface FolderTab {
   cwd: string
   hostId: string | null
   enrollHostId?: string
+  /** A private chat: its cwd is Stoke's own scratch folder, deleted with it. */
+  private?: boolean
 }
 
 /** A path this computer can open: POSIX `/…`, Windows `C:\…` or `C:/…`, or a UNC `\\server\share`. */
@@ -1254,7 +1257,9 @@ const ABSOLUTE_PATH = /^(?:\/|[A-Za-z]:[\\/]|\\\\)/
  * pty fallback, a relative path from an old tabs.json).
  */
 export function openableFolder(tab: FolderTab): string | null {
-  if (tab.kind !== 'session' || tab.hostId || tab.enrollHostId) return null
+  // A private chat's folder is a scratch folder main deletes with the chat,
+  // never a place to send the file manager (PRIVATE_FOLDER_TEXT).
+  if (tab.kind !== 'session' || tab.hostId || tab.enrollHostId || tab.private) return null
   return ABSOLUTE_PATH.test(tab.cwd) ? tab.cwd : null
 }
 
@@ -1280,6 +1285,9 @@ export function folderMenuEntry(
   if (tab.hostId || tab.enrollHostId) {
     return { reason: `This session runs on ${hostLabel?.trim() || tab.cwd.trim()}; its folder is on that machine.` }
   }
+  // Disabled with its reason, like an SSH tab's: a private chat does have a
+  // folder, and an item that silently vanished would read as forgotten.
+  if (tab.private) return { reason: PRIVATE_FOLDER_TEXT }
   return { reason: 'This tab has no folder on this computer.' }
 }
 
@@ -1296,6 +1304,20 @@ export function revealLabel(platform: string): string {
 }
 
 /* ----------------------------------------------- a profile's tabs, closed */
+
+/**
+ * The folder a tab's profile is read from, or null when the tab belongs to no
+ * profile however its `cwd` resolves: an SSH or Add-key tab (the cwd is a host
+ * alias, gotcha 18) and a private chat (Stoke's own scratch folder under
+ * userData — on a machine whose home folder is a project, or whose scan root
+ * holds userData, it resolved to that profile). The follow-the-tab effect and
+ * a profile chip's Close N tabs both ask this, so a tab one of them leaves out
+ * the other cannot count.
+ */
+export function profileCwd(tab: FolderTab): string | null {
+  if (tab.hostId || tab.enrollHostId || tab.private) return null
+  return tab.cwd
+}
 
 /** The fields of a tab a profile close reads. */
 export interface ProfileTab extends FolderTab {
@@ -1318,6 +1340,13 @@ export interface ProfileTab extends FolderTab {
  * same resolver the follow-the-tab effect uses. A folder in no profile is no
  * profile's. Paused and exited tabs close like any other: there is no process
  * to lose.
+ *
+ * A private chat is never a profile's (`profileCwd`): its folder is Stoke's
+ * own scratch under userData, which a scan root or a home-folder project can
+ * still contain, and closing a running one DELETES it — which only its own
+ * Close may do, after its own "Delete this private chat?" (`requestCloseTab`).
+ * Driven before this rule: a chat holding a file went with "Close 2 tabs",
+ * unasked, file and all.
  *
  * `busy` is the registry's stated busy/shell/waiting (`live[ptyId].busy ===
  * true`, the threshold `requestCloseTab` and `closeTabsSide` read). A bulk
@@ -1345,8 +1374,10 @@ export function profileClosePlan(
   const starting: string[] = []
   const want = foldGroup(profileId)
   for (const t of tabs) {
-    if (t.kind !== 'session' || t.hostId || t.enrollHostId || t.installing?.length || t.accountLogin) continue
-    const id = owner(t.cwd)
+    if (t.kind !== 'session' || t.installing?.length || t.accountLogin) continue
+    const cwd = profileCwd(t)
+    if (cwd === null) continue
+    const id = owner(cwd)
     if (!id || foldGroup(id) !== want) continue
     if (inFlight.has(t.id)) starting.push(t.id)
     else if (t.status === 'running' && live[t.ptyId]?.busy === true) busy.push(t.id)
