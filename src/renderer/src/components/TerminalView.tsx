@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
+import { SearchAddon } from '@xterm/addon-search'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes'
@@ -23,12 +24,13 @@ import {
 } from '@shared/voiceRoute'
 import { attachSink, noteInput } from '../lib/ptyBus'
 import { isButtonlessMotionReport } from '../lib/mouseReport'
-import { matchShortcut } from '../lib/shortcuts'
-import { registerTerm, screenOf, unregisterTerm } from '../lib/termRegistry'
-import { terminalTheme } from '../lib/theme'
+import { chordLabel, matchShortcut } from '../lib/shortcuts'
+import { registerFinder, registerTerm, screenOf, unregisterTerm } from '../lib/termRegistry'
+import { findColors, terminalTheme } from '../lib/theme'
 import { agentMark, paneAgent } from '../lib/agentColor'
 import type { Tab } from '../types'
 import { ContextMenu } from './ContextMenu'
+import { TerminalFind } from './TerminalFind'
 
 /**
  * How far the pointer may travel between press and release and still count as a
@@ -187,7 +189,19 @@ export function TerminalView({
    */
   const themeNotifyRef = useRef(false)
   const fitRef = useRef<FitAddon | null>(null)
+  /** xterm's search over this terminal's buffer, the find bar's screen engine. */
+  const searchRef = useRef<SearchAddon | null>(null)
   const [menu, setMenu] = useState<MenuState | null>(null)
+  /*
+   * The find bar (TerminalFind). Open state lives here, with the pane, so each
+   * tab keeps its own query; `findSeq` is bumped by every open request so a
+   * second Cmd+F re-focuses an open bar; the ref answers "is it open" inside
+   * the opener without a render in between.
+   */
+  const [findOpen, setFindOpen] = useState(false)
+  const [findSeq, setFindSeq] = useState(0)
+  const [findInitial, setFindInitial] = useState('')
+  const findOpenRef = useRef(false)
   /*
    * Dictation. Off until asked for, because arming it takes Space away from the
    * terminal — the most-pressed key there after Enter — so it must never be a
@@ -395,6 +409,16 @@ export function TerminalView({
     term.unicode.activeVersion = '15-graphemes'
 
     term.loadAddon(new WebLinksAddon(openLink))
+
+    /*
+     * The find bar's screen engine. It searches `buffer.active` only: the
+     * scrollback on a normal-buffer tab, just the visible rows on the alternate
+     * screen a fullscreen Claude Code draws on — which is why the bar also
+     * searches the transcript. Decorations need `allowProposedApi`, set above.
+     */
+    const searcher = new SearchAddon({ highlightLimit: 2000 })
+    term.loadAddon(searcher)
+    searchRef.current = searcher
 
     /*
      * OSC 52, the only way text copied on the far side of an SSH connection can
@@ -958,6 +982,10 @@ export function TerminalView({
       unregisterTerm(tab.ptyId)
       termRef.current = null
       fitRef.current = null
+      searchRef.current = null
+      // The bar searched THIS terminal; a relaunch's new one starts without it.
+      findOpenRef.current = false
+      setFindOpen(false)
     }
     // Rebuild only when the process changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -983,6 +1011,38 @@ export function TerminalView({
     if (text) window.stoke.clipboard.writeText(text)
     termRef.current?.focus()
   }
+
+  /*
+   * Open the find bar, or focus and select it when it is open already. The
+   * first open starts from the selection when that is one short line — select
+   * a word, Cmd+F, and it is the query.
+   */
+  const openFind = useCallback((): void => {
+    const term = termRef.current
+    if (!term) return
+    if (!findOpenRef.current) {
+      const sel = term.getSelection()
+      setFindInitial(sel && !/[\r\n]/.test(sel) && sel.length <= 200 ? sel : '')
+      findOpenRef.current = true
+      setFindOpen(true)
+    }
+    setFindSeq((s) => s + 1)
+  }, [])
+
+  const closeFind = useCallback((): void => {
+    findOpenRef.current = false
+    setFindOpen(false)
+    termRef.current?.focus()
+  }, [])
+
+  // Cmd+F (App), the palette's row and the browser's listener reach the bar of
+  // the pane in front through the registry; a hidden pane is not listed.
+  useEffect(() => {
+    if (!active) return
+    return registerFinder(tab.ptyId, openFind)
+  }, [active, tab.ptyId, openFind])
+
+  const findPalette = useMemo(() => findColors(theme, accent), [theme, accent])
 
   /*
    * Switch Stoke's dictation, after asking who owns Space in this tab.
@@ -1428,6 +1488,17 @@ export function TerminalView({
       {/* The right-click is handled by a capture-phase listener on this host,
           attached with the terminal, so it never reaches xterm. */}
       <div className="term-host" ref={hostRef} />
+      {findOpen && termRef.current && searchRef.current && (
+        <TerminalFind
+          tab={tab}
+          term={termRef.current}
+          search={searchRef.current}
+          colors={findPalette}
+          initialQuery={findInitial}
+          openSeq={findSeq}
+          onClose={closeFind}
+        />
+      )}
       {menu && (
         <ContextMenu
           x={menu.x}
@@ -1486,9 +1557,19 @@ export function TerminalView({
                 termRef.current?.focus()
               }
             },
+            /*
+             * Find in the screen and the conversation behind it. Here as well
+             * as on the chord, because a chord nobody has been told about is a
+             * feature nobody has.
+             */
+            {
+              label: 'Find…',
+              hint: chordLabel('find', IS_MAC),
+              separated: true,
+              onSelect: openFind
+            },
             {
               label: 'Select all',
-              separated: true,
               onSelect: () => termRef.current?.selectAll()
             },
             /*

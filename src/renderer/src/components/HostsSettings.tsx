@@ -261,6 +261,7 @@ export function HostsSettings({
         alias: '',
         command: DEFAULT_COMMAND,
         worklog: false,
+        transcriptFind: false,
         keyEnrollRefused: false,
         keyEnrolled: false,
         // A NEW machine keeps its tabs' shells running between connections;
@@ -578,6 +579,25 @@ export function HostsSettings({
                   }
                 />
                 <span className="field-label">Write up work done on this machine</span>
+              </label>
+
+              {/*
+                Find in a conversation's consent for this machine (the find
+                bar's "Allow for this host" sets it). Its own tick, not the
+                worklog's: both read the same copy, for different reasons.
+              */}
+              <label className="check-row" data-setting="hosts.transcript-find">
+                <input
+                  type="checkbox"
+                  checked={host.transcriptFind === true}
+                  onChange={(e) => update(host.id, { transcriptFind: e.target.checked })}
+                />
+                <span>
+                  <span className="field-label">Let Find search this machine’s Claude conversation</span>
+                  <span className="field-hint">
+                    Copies the last 4 MB of the newest one here over ssh when you search a tab on it.
+                  </span>
+                </span>
               </label>
 
               {/*

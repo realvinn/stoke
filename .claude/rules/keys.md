@@ -5,6 +5,10 @@ paths:
   - "src/renderer/src/App.tsx"
   - "src/renderer/src/components/TitleBar.tsx"
   - "src/renderer/src/components/TerminalView.tsx"
+  - "src/renderer/src/components/TerminalFind.tsx"
+  - "src/renderer/src/lib/terminalFind.ts"
+  - "src/renderer/src/components/BrowserPanel.tsx"
+  - "scripts/verify-find.mts"
 ---
 
 # Keyboard chords
@@ -64,3 +68,50 @@ the label is derived from the same table the matcher uses.
 > - This does not happen for a bound chord. `TerminalView`'s `attachCustomKeyEventHandler` returns false on any `matchShortcut` match (TerminalView.tsx:380-391, there since 226a114). xterm runs that handler at the top of `_keyDown` (CoreBrowserTerminal.ts:1025), before `evaluateKeyboardEvent` (:1043). `_keyPress` also drops Ctrl/Meta chords (:1165-1168). So a bound Ctrl+Tab would be withheld from the pty, not leaked. What any binding really costs is that key in the CLI, as verify-shortcuts.mts:6-9 says; its :200-206 repeats this entry's wrong claim.
 > - `zoom` also steps from the current value. App.tsx:1765-1781 calls `zoomStep(settingsRef.current…, action.direction)`, and `settingsRef` only changes on render after the `window.stoke.settings.set` round trip (App.tsx:446-449, :463-464). So two presses before that render step from the same value, which is the bug this entry fixed for `cycleTab`.
 > - The tab-number chords are bare Ctrl off macOS (shortcuts.ts:35-36). xterm's `ctrlKey && !shiftKey` branch sends Ctrl+3..7 as ESC/FS/GS/RS/US and Ctrl+8 as DEL (Keyboard.ts:308-317). So six of them take a key away from the pty on Windows and Linux. Ctrl+7 is ^_, the same readline undo that gotcha 32 protects.
+
+## 145. Two finds share Cmd+F on macOS, and a panel's window listener must not take it from every focus
+
+**Built 2026-10-02, with Find in a conversation (TerminalFind).** The docked browser already had a
+page find, opened by a `keydown` listener on `window` in BrowserPanel that matched primary+F and
+nothing else — no test of where focus was. xterm has no use for a Cmd chord and does not cancel
+one, so a Cmd+F typed in the terminal bubbled to that listener and opened the PAGE's find bar,
+whenever the browser was docked. Read from the code; not reproduced on the old build. The
+terminal's find takes the same chord on macOS (`matchShortcut` → `find`; Ctrl+Shift+F elsewhere,
+and bare Ctrl+F stays the CLI's ^F, gotcha 56), so two window listeners now want one key.
+
+The rule: **one pure function decides, and every listener for the chord asks it with the same
+inputs** — `findOwner` (lib/terminalFind.ts): in the browser panel's own chrome
+(`section.browser`) the page; else the terminal when one is in front (`hasActiveFinder`, which
+only the shown pane registers); a page chord inside a live terminal is nobody's; else the page if
+the browser is open. App's `find` case and BrowserPanel's listener both call it, so exactly one
+acts whatever order the listeners were registered in — and neither has to `stopPropagation` the
+other away. Off macOS a bare Ctrl+F on the chrome still opens the page find, as before.
+`verify:find` holds the table both ways and reads both files for the call (and for the old
+unconditional `open()`, which it refuses).
+
+Measured in the built app over CDP, browser docked: focus in the terminal, Cmd+F → the terminal's
+bar focused, no `.browser-find`; focus in the address bar, Cmd+F → `.browser-find`, no terminal
+bar. Two more the same drive found, both now in `verify:find`:
+
+- **A control that unmounts under focus drops it to `<body>`.** The host question's buttons go
+  the moment it is answered, so focus left the bar, its Escape (bound on the input) no longer
+  reached it, and a second Cmd+F re-focused the SAME bar, its "Just this once" still in force.
+  Escape is bound on the bar's root now, and answering puts focus back in the input first.
+- **A case-folded query matches more than the word typed.** "INV" also matched "invite" and
+  "Invoice", so the first card's Copy token offered `invite`, and one message showed as two
+  cards with the same lines. Hits are grouped per window now, every match marked in it, and a
+  hit's own match is the one spelled exactly as typed (`searchBlocks`' `prefer`).
+
+> **Checked against the code on 2026-10-02 (a review of Find, driven in the built app)** — the
+> other window listener a bar has to reckon with is App's own unclaimed-key route. `typeThroughKey`
+> types any plain key on a focused BUTTON through to the terminal in front (that is what it is for:
+> a click on a chrome button leaves focus there), so inside the find bar its own controls were a
+> path to the pty. Measured against a stub `claude` that logs every byte: click Aa and keep typing,
+> and the letters reached Claude's prompt; Tab to a hit's Copy message and press Enter, and `\r`
+> was written to the pty — the prompt was SUBMITTED — while the button never ran. The bar's root
+> now decides every key first (`barKey`): Escape closes, a chord goes on to App, a character on a
+> control edits the query (`typedInto`), and any other plain key stops at the bar so Enter and
+> Space press the focused button. Any future in-pane surface with buttons (a strip, a card) has
+> the same exposure. In the same review the screen half was found stepping from row 0 —
+> `findNext` with no selection starts at the OLDEST line — so typing a query threw the viewport to
+> the top of the scrollback; it steps with `findPrevious` now (`screenCall`), newest first.

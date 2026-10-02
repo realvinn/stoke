@@ -667,6 +667,15 @@ export interface SshHost {
    */
   worklog?: boolean
   /**
+   * Find in a conversation may copy this machine's newest Claude conversation
+   * (its last 4 MB, over a BatchMode ssh) to this computer and search it.
+   *
+   * Its own answer, never the worklog's (`worklog` gates a different use of
+   * the same copy), given from the find bar's "Allow for this host" or in
+   * Settings › SSH hosts. Off unless asked; "Just this once" never sets it.
+   */
+  transcriptFind?: boolean
+  /**
    * The user pressed "Never for this host" on the add-a-key offer.
    *
    * Per host rather than global, for the same reason `worklog` is: the answer

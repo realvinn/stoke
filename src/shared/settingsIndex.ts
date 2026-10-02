@@ -526,6 +526,18 @@ export const SETTING_ROWS: readonly SettingRow[] = [
     keywords: ['ssh hosts', 'add host', 'server', 'alias', 'ssh config', 'command on connect', 'keep sessions running', 'kept session', 'persistent', 'tmux', 'byobu', 'write up work done', 'worklog', 'offer to add a key', 'asks for a password']
   },
   { id: 'hosts.key-enroll', page: 'hosts', label: 'When a remote asks for a password', keywords: ['ssh key', 'key login', 'password', 'ssh-copy-id'] },
+  /*
+   * Drawn once per machine, inside its row's disclosure (the first machine's
+   * is where a jump lands): with no machine yet there is nothing to land on
+   * but the list.
+   */
+  {
+    id: 'hosts.transcript-find',
+    page: 'hosts',
+    label: 'Let Find search this machine’s Claude conversation',
+    keywords: ['find', 'search', 'cmd+f', 'ctrl+shift+f', 'conversation', 'transcript', 'copy conversation'],
+    fallback: 'hosts.list'
+  },
 
   // Browser
   { id: 'browser.profiles', page: 'browser', label: 'Browser profiles', keywords: ['logins', 'cookies', 'site data', 'profile'] },

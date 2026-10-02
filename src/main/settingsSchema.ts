@@ -410,6 +410,9 @@ export function hydrateSettings(raw: unknown): Settings {
               ...rest,
               ...(isId('host', syncId) ? { syncId } : {}),
               worklog: h.worklog === true,
+              // Find's consent to copy this host's conversation here: the
+              // same literal-`true` rule as `worklog`, for the same reason.
+              transcriptFind: h.transcriptFind === true,
               keyEnrollRefused: h.keyEnrollRefused === true,
               keyEnrolled: h.keyEnrolled === true,
               persist: h.persist === 'tmux' ? ('tmux' as const) : ('off' as const)

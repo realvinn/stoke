@@ -1,7 +1,7 @@
 import type { TerminalSettings, Theme, WallpaperSettings } from '@shared/types'
 import type { Profile } from '@shared/profiles'
 import { deriveAccent } from '@shared/accent'
-import { parseColor } from '@shared/color'
+import { over, parseColor, toHex } from '@shared/color'
 import { meterScale } from '@shared/meter'
 import { agentColorTokens, agentTokenNames, type AgentColors } from '@shared/agentColors'
 
@@ -206,5 +206,40 @@ export function terminalTheme(
     scrollbarSliderHoverBackground: rgba(c.textMuted, 0.5),
     scrollbarSliderActiveBackground: rgba(c.accent, 0.7),
     overviewRulerBorder: c.borderSubtle
+  }
+}
+
+/** The find bar's highlight colours, as `@xterm/addon-search` takes them. */
+export interface FindColors {
+  matchBackground: string
+  activeMatchBackground: string
+  matchOverviewRuler: string
+  activeMatchColorOverviewRuler: string
+}
+
+/**
+ * The search addon's decoration colours, from the theme and the profile's
+ * accent like the selection's.
+ *
+ * The addon takes `#RRGGBB` and nothing else — no alpha, no CSS variable — so
+ * a tint is composited over the terminal's own background here and handed over
+ * as an opaque hex. Every match is a light wash of the accent; the active one a
+ * stronger one (it is also the xterm selection, which paints over it).
+ */
+export function findColors(theme: Theme, accent: string | null = null): FindColors {
+  const c = theme.colors
+  const fill = parseColor(accent ? deriveAccent(accent, theme.appearance, c.bg).accent : c.accent)
+  const ground = parseColor(theme.terminal.background) ?? parseColor(c.bg)
+  if (!fill || !ground) {
+    // Unreadable theme colours: the addon still needs four valid hexes.
+    const any = toHex({ r: 128, g: 128, b: 128, a: 1 })
+    return { matchBackground: any, activeMatchBackground: any, matchOverviewRuler: any, activeMatchColorOverviewRuler: any }
+  }
+  const tint = (a: number): string => toHex(over({ ...fill, a }, { ...ground, a: 1 }))
+  return {
+    matchBackground: tint(0.3),
+    activeMatchBackground: tint(0.6),
+    matchOverviewRuler: tint(0.7),
+    activeMatchColorOverviewRuler: toHex(fill)
   }
 }

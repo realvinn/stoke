@@ -116,7 +116,10 @@ import {
   withPushSubscription
 } from '../shared/remotePhone.ts'
 import { parseSession, readTranscript } from './sessionFile.ts'
-import { fetchRemoteTranscript } from './sshTranscript.ts'
+import { fetchRemoteTranscript, keepRemoteTranscript, readRemoteTranscript } from './sshTranscript.ts'
+import { TranscriptFindHost } from './transcriptFindHost.ts'
+import { ConversationFinder } from './findInConversation.ts'
+import transcriptFindWorkerPath from './transcriptFind.worker.ts?modulePath'
 import { PtyManager, type StartResult } from './pty.ts'
 import { checkMicrophone } from './audio/defaultDevice.ts'
 import { CODING_CLIS, capsFor, cliIdOf, isClaudeCode, isCodingCliId, type CodingCliId } from '../shared/codingClis.ts'
@@ -339,6 +342,50 @@ function chatHost(): ChatIndexHost {
     onError: (err) => console.error('[stoke] chat index:', err.message)
   })
   return chatIndex
+}
+
+/**
+ * Find in a conversation (findInConversation.ts): its worker, made on the
+ * first search, and the finder that picks the transcript. A worker of its own,
+ * never the chat index's: a runaway pattern is cured only by ending the
+ * thread running it.
+ */
+let findWorker: TranscriptFindHost | null = null
+let conversationFinder: ConversationFinder | null = null
+
+function finder(): ConversationFinder {
+  conversationFinder ??= new ConversationFinder({
+    hostFor: (sessionId, hostId) => {
+      const known = hostForSession(sessionId)
+      if (known) return known
+      return hostId ? (getSettings().hosts.find((h) => h.id === hostId) ?? null) : null
+    },
+    allowHost: (hostId) => {
+      if (!getSettings().hosts.some((h) => h.id === hostId)) return
+      const hosts = getSettings().hosts.map((h) => (h.id === hostId ? { ...h, transcriptFind: true } : h))
+      send(CH.settingsChanged, setSettings({ hosts }))
+    },
+    localFile: async (sessionId) => {
+      // Both roots, as `transcriptExists` reads them.
+      const roots = [...new Set([projectsRoot(), join(claudeConfigDir(process.env, homedir()), 'projects')])]
+      for (const root of roots) {
+        const file = await findSessionFile(sessionId, root)
+        if (file) return file
+      }
+      return null
+    },
+    readRemote: (host) => readRemoteTranscript(host),
+    keepRemote: (_host, sessionId, read) => keepRemoteTranscript(sessionId, app.getPath('userData'), read)?.file ?? null,
+    search: (req) => {
+      findWorker ??= new TranscriptFindHost({ workerPath: transcriptFindWorkerPath })
+      return findWorker.find(req)
+    },
+    now: () => Date.now(),
+    later: (fn, ms) => {
+      setTimeout(fn, ms).unref()
+    }
+  })
+  return conversationFinder
 }
 
 /** The status with the setting's word on it: a store can exist while indexing is off. */
@@ -3060,6 +3107,10 @@ function registerIpc(): void {
     return t
   })
 
+  // The find bar's transcript search. Everything is checked in the finder:
+  // the request crosses IPC and its session id names a file.
+  ipcMain.handle(CH.transcriptFind, (_e, req: unknown) => finder().find(req))
+
   ipcMain.handle(CH.projectsAddRoot, async () => {
     if (!win) return null
     const res = await dialog.showOpenDialog(win, {
@@ -4740,6 +4791,8 @@ if (!app.requestSingleInstanceLock(launchRequest ? { stokeCli: launchRequest } :
     watcher?.disposeAll()
     // A pass stops where it is; the store is WAL, so an interrupted write is simply not there.
     void chatIndex?.stop()
+    conversationFinder?.forget()
+    void findWorker?.stop()
     mcp?.stop()
     void remote?.stop()
     tunnel.stop()

@@ -92,6 +92,33 @@ function runSsh(host: SshHost, sessionId: string | null, timeoutMs: number): Pro
 }
 
 /**
+ * What one fetch found on the far machine, before anything is written here.
+ * `ssh` is the connection failing (the host asleep, a key needing a passphrase
+ * under BatchMode, no key at all); `none` is a machine that answered with no
+ * Claude conversation to give.
+ */
+export type RemoteRead = { ok: true; remotePath: string; jsonl: string } | { ok: false; why: 'ssh' | 'none' }
+
+/**
+ * Read the newest transcript off the far machine into memory, and only that.
+ * Find's "Just this once" stops here, so nothing of the conversation is written
+ * to this disk; `fetchRemoteTranscript` below caches what this returns.
+ */
+export async function readRemoteTranscript(host: SshHost, opts: FetchOptions = {}): Promise<RemoteRead> {
+  let stdout: string
+  try {
+    stdout = opts.run
+      ? await opts.run(host, null)
+      : await runSsh(host, null, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS)
+  } catch {
+    return { ok: false, why: 'ssh' }
+  }
+  const split = splitTranscriptOutput(stdout)
+  if (!split || !split.jsonl.trim()) return { ok: false, why: 'none' }
+  return { ok: true, remotePath: split.path, jsonl: split.jsonl }
+}
+
+/**
  * Pull a remote session's transcript back and cache it locally.
  *
  * Returns null rather than throwing for every "not this time" — no transcript
@@ -105,18 +132,20 @@ export async function fetchRemoteTranscript(
   userDataDir: string,
   opts: FetchOptions = {}
 ): Promise<RemoteTranscript | null> {
-  let stdout: string
-  try {
-    stdout = opts.run
-      ? await opts.run(host, null)
-      : await runSsh(host, null, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS)
-  } catch {
-    return null
-  }
+  const read = await readRemoteTranscript(host, opts)
+  return read.ok ? keepRemoteTranscript(sessionId, userDataDir, read) : null
+}
 
-  const split = splitTranscriptOutput(stdout)
-  if (!split || !split.jsonl.trim()) return null
-
+/**
+ * Write one read into the cache, under the local session id, unless it is the
+ * same as what is there. Null when it could not be written.
+ */
+export function keepRemoteTranscript(
+  sessionId: string,
+  userDataDir: string,
+  read: Extract<RemoteRead, { ok: true }>
+): RemoteTranscript | null {
+  const split = { path: read.remotePath, jsonl: read.jsonl }
   try {
     const dir = join(userDataDir, REMOTE_TRANSCRIPT_DIR)
     mkdirSync(dir, { recursive: true })
