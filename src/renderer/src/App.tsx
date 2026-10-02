@@ -3475,7 +3475,9 @@ export function App(): React.JSX.Element {
    * resolved with the same `profileIdForCwd` the follow-the-tab effect uses.
    * `profileTabsNow` counts for the menu from this render; the close re-plans
    * from the refs at the click (gotcha 127), so a tab that went busy while the
-   * menu was up is still left standing (gotchas 82, 90).
+   * menu was up is still left standing (gotchas 82, 90). So is one whose
+   * Resume, Start again or relaunch is in flight: closed, its `pty.start` would
+   * append it again with a live `claude` (`startingRef`'s own note).
    */
   const profileOwner = useCallback(
     (cwd: string): string | null =>
@@ -3483,12 +3485,14 @@ export function App(): React.JSX.Element {
     [settings, projects, availableProfiles, platform]
   )
   const profileTabsNow = useCallback(
-    (profileId: string) => profileClosePlan(tabs, profileId, profileOwner, live),
-    [tabs, live, profileOwner]
+    (profileId: string) =>
+      profileClosePlan(tabs, profileId, profileOwner, live, new Set([...starting, ...relaunching])),
+    [tabs, live, profileOwner, starting, relaunching]
   )
   const closeProfileTabs = useCallback(
     (profileId: string): void => {
-      const plan = profileClosePlan(tabsRef.current, profileId, profileOwner, liveRef.current)
+      const inFlight = new Set([...startingRef.current, ...relaunchingRef.current])
+      const plan = profileClosePlan(tabsRef.current, profileId, profileOwner, liveRef.current, inFlight)
       for (const id of plan.close) closeTab(id)
     },
     [closeTab, profileOwner]

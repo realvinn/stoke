@@ -827,7 +827,8 @@ npm run verify:tabs           # which tab is selected after one is closed, where
                               # And the agent tag: hidden, renamed, keyed on the default agent.
                               # And the menus: which tabs have a folder here to reveal (never
                               # an SSH or Add-key tab, gotcha 18), and which tabs a profile
-                              # chip's Close N tabs takes (never SSH, never a running turn)
+                              # chip's Close N tabs takes (never SSH, never a running turn,
+                              # never a tab whose Resume or relaunch is still in flight)
 npm run verify:restore        # the tab-restore store: what survives a quit, the caps and age
                               # limits, a corrupt file, and the update-restart marker consumed
                               # once and only while fresh
@@ -1610,7 +1611,8 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     label, on tabs whose agent is not the default one); and the menus':
                     `openableFolder`/`folderMenuEntry` (the tab menu's Reveal item and the
                     status bar's path, disabled with a reason on SSH), `profileClosePlan`
-                    (a sidebar profile chip's Close N tabs, leaving running turns open)
+                    (a sidebar profile chip's Close N tabs, leaving running turns and
+                    starts still in flight open)
   src/lib/agentColor.ts  `agentMark(key)`: `data-agent` plus `--agent-ink`/`-text`/`-fill`
                     pointed at that key's tokens, inline, so a new agent or account needs
                     no stylesheet line. `paneAgent`: an install or key-enrolment tab is no

@@ -1490,13 +1490,15 @@ console.log('\nprofileClosePlan: a profile chip closes its own local sessions, n
     'pty-w1': { busy: false },
     'pty-w5': { busy: null }
   }
-  const plan = profileClosePlan(strip, 'work', owner, live)
+  const none = new Set<string>()
+  const plan = profileClosePlan(strip, 'work', owner, live, none)
   check(
     'closes the profile\u2019s local sessions, paused and exited included, in strip order',
     plan.close,
     ['w1', 'w2', 'w4', 'w5']
   )
   check('leaves a tab whose registry says a turn is running', plan.busy, ['w3'])
+  check('and nothing is starting', plan.starting, [])
   check(
     'an exited tab is never busy, whatever its last registry reading said',
     plan.close.includes('w4') && !plan.busy.includes('w4'),
@@ -1509,32 +1511,72 @@ console.log('\nprofileClosePlan: a profile chip closes its own local sessions, n
     []
   )
   check('never another profile\u2019s tab, nor a folder in no profile', [...plan.close, ...plan.busy].filter((id) => id === 'p1' || id === 'loose'), [])
-  check('the profile id is compared case-folded', profileClosePlan(strip, 'Personal', owner, live), { close: ['p1'], busy: [] })
-  check('a profile with no tabs open closes nothing', profileClosePlan(strip, 'study', owner, live), { close: [], busy: [] })
+  check(
+    'the profile id is compared case-folded',
+    profileClosePlan(strip, 'Personal', owner, live, none),
+    { close: ['p1'], busy: [], starting: [] }
+  )
+  check(
+    'a profile with no tabs open closes nothing',
+    profileClosePlan(strip, 'study', owner, live, none),
+    { close: [], busy: [], starting: [] }
+  )
   // An SSH tab whose alias happens to resolve to the profile is still not its.
   const aliasOwner = (cwd: string): string | null => (cwd === 'work-box' ? 'work' : owner(cwd))
-  const viaAlias = profileClosePlan(strip, 'work', aliasOwner, live)
+  const viaAlias = profileClosePlan(strip, 'work', aliasOwner, live, none)
   check(
     'an SSH or Add-key tab is not the profile\u2019s even when its alias resolves to it',
     [...viaAlias.close, ...viaAlias.busy].filter((id) => id === 'ssh' || id === 'key'),
+    []
+  )
+  /*
+   * A Resume, Start again or relaunch in flight: the tab still reads paused,
+   * exited or running on the old pty, and its pty.start replaces it BY ID. Closed
+   * now, that start finds the id gone and appends the tab again with a live
+   * claude the close never killed (App's startingRef note; Close them refuses
+   * the same tabs). So it stays, whatever its status or registry reading says.
+   */
+  const inFlight = profileClosePlan(strip, 'work', owner, live, new Set(['w2', 'w4', 'w3', 'p1', 'ssh']))
+  check('a paused tab mid-Resume and an exited one mid-Start again stay open', inFlight.starting, ['w2', 'w3', 'w4'])
+  check('the rest of the profile still closes', inFlight.close, ['w1', 'w5'])
+  check('a tab both busy and mid-relaunch is counted once, as starting', inFlight.busy, [])
+  check(
+    'another profile\u2019s or an SSH tab in flight is still not this profile\u2019s',
+    inFlight.starting.filter((id) => id === 'p1' || id === 'ssh'),
     []
   )
 
   check('the label counts', profileCloseLabel(3), 'Close 3 tabs')
   check('in the singular for one', profileCloseLabel(1), 'Close 1 tab')
   check('and says 0 rather than vanishing', profileCloseLabel(0), 'Close 0 tabs')
-  check('no note when everything closes', profileCloseNote({ close: ['a'], busy: [] }, 'Work'), null)
+  check('no note when everything closes', profileCloseNote({ close: ['a'], busy: [], starting: [] }, 'Work'), null)
   check(
     'one tab left open is named and explained',
-    profileCloseNote({ close: ['a'], busy: ['b'] }, 'Work'),
+    profileCloseNote({ close: ['a'], busy: ['b'], starting: [] }, 'Work'),
     '1 session is in the middle of a turn, so it stays open. Close it from its tab to be asked first.'
   )
   check(
     'and several',
-    profileCloseNote({ close: [], busy: ['b', 'c'] }, 'Work'),
+    profileCloseNote({ close: [], busy: ['b', 'c'], starting: [] }, 'Work'),
     '2 sessions are in the middle of a turn, so they stay open. Close them from their tabs to be asked first.'
   )
-  check('a profile with nothing open says so', profileCloseNote({ close: [], busy: [] }, 'Work'), 'No sessions in Work are open.')
+  check(
+    'a session still starting is named too',
+    profileCloseNote({ close: ['a'], busy: [], starting: ['s'] }, 'Work'),
+    '1 session is still starting, so it stays open for now.'
+  )
+  check(
+    'and both reasons when both apply',
+    profileCloseNote({ close: [], busy: ['b'], starting: ['s', 't'] }, 'Work'),
+    '1 session is in the middle of a turn, so it stays open. Close it from its tab to be asked first. ' +
+      '2 sessions are still starting, so they stay open for now.'
+  )
+  check(
+    'a profile whose only tab is starting does not say none are open',
+    profileCloseNote({ close: [], busy: [], starting: ['s'] }, 'Work'),
+    '1 session is still starting, so it stays open for now.'
+  )
+  check('a profile with nothing open says so', profileCloseNote({ close: [], busy: [], starting: [] }, 'Work'), 'No sessions in Work are open.')
 }
 
 /*

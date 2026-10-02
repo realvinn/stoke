@@ -89,11 +89,11 @@ interface Props {
   onSelectProfile: (id: string | null) => void
   /**
    * The tabs a profile chip's right-click "Close N tabs" would close, and the
-   * ones it leaves open because a turn is running (`profileClosePlan`). Read
-   * at render, so the count follows the strip while the menu is open; the
-   * close itself re-reads the strip at the click.
+   * ones it leaves open because a turn is running or a start is in flight
+   * (`profileClosePlan`). Read at render, so the count follows the strip while
+   * the menu is open; the close itself re-reads the strip at the click.
    */
-  profileTabs?: (profileId: string) => { close: string[]; busy: string[] }
+  profileTabs?: (profileId: string) => { close: string[]; busy: string[]; starting: string[] }
   onCloseProfileTabs?: (profileId: string) => void
   /** Settings › Profiles, from the chip menu. */
   onEditProfiles?: () => void

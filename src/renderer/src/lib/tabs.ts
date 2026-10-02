@@ -1225,7 +1225,8 @@ export interface ProfileTab extends FolderTab {
 
 /**
  * The tabs a sidebar profile chip's "Close N tabs" acts on, split into the ones
- * it closes and the ones it leaves open because a turn is running in them.
+ * it closes and the ones it leaves open: a turn is running in them (`busy`), or
+ * a start is in flight for them (`starting`).
  *
  * A tab is the profile's when it is a local session (never an SSH tab, whose
  * `cwd` is an alias, gotcha 18; never an install or a sign-in, which run no
@@ -1238,26 +1239,37 @@ export interface ProfileTab extends FolderTab {
  * `busy` is the registry's stated busy/shell/waiting (`live[ptyId].busy ===
  * true`, the threshold `requestCloseTab` and `closeTabsSide` read). A bulk
  * close never SIGHUPs a running turn (gotchas 82, 90): those tabs stay, and
- * the menu says how many and why rather than skipping them in silence. Ids in
- * strip order.
+ * the menu says how many and why rather than skipping them in silence.
+ *
+ * `inFlight` is every tab id whose Resume, Start again or relaunch has not
+ * landed yet (App's `startingRef` and `relaunchingRef`). Such a tab still
+ * reads paused, exited, or running on the pty being replaced, and its
+ * `pty.start` ends in `replaceOrAppend` by id: closed now, it finds its id
+ * gone and APPENDS, so the tab comes back at the end of the strip with a live
+ * `claude` the close never killed. The restore bar's `Close them` refuses the
+ * same tabs for the same reason, and `Resume all` sits beside it. Ids in strip
+ * order.
  */
 export function profileClosePlan(
   tabs: readonly ProfileTab[],
   profileId: string,
   owner: (cwd: string) => string | null,
-  live: Readonly<Record<string, { busy: boolean | null } | undefined>>
-): { close: string[]; busy: string[] } {
+  live: Readonly<Record<string, { busy: boolean | null } | undefined>>,
+  inFlight: ReadonlySet<string>
+): { close: string[]; busy: string[]; starting: string[] } {
   const close: string[] = []
   const busy: string[] = []
+  const starting: string[] = []
   const want = foldGroup(profileId)
   for (const t of tabs) {
     if (t.kind !== 'session' || t.hostId || t.enrollHostId || t.installing?.length || t.accountLogin) continue
     const id = owner(t.cwd)
     if (!id || foldGroup(id) !== want) continue
-    if (t.status === 'running' && live[t.ptyId]?.busy === true) busy.push(t.id)
+    if (inFlight.has(t.id)) starting.push(t.id)
+    else if (t.status === 'running' && live[t.ptyId]?.busy === true) busy.push(t.id)
     else close.push(t.id)
   }
-  return { close, busy }
+  return { close, busy, starting }
 }
 
 /** "Close 3 tabs", "Close 1 tab". Unique within the menu, as `ContextMenu` keys items by label. */
@@ -1269,13 +1281,28 @@ export function profileCloseLabel(count: number): string {
  * The profile menu's footer: why some of the profile's tabs stay open, or that
  * it has none open at all. Null when every tab it names will close.
  */
-export function profileCloseNote(plan: { close: readonly string[]; busy: readonly string[] }, label: string): string | null {
+export function profileCloseNote(
+  plan: { close: readonly string[]; busy: readonly string[]; starting: readonly string[] },
+  label: string
+): string | null {
   const n = plan.busy.length
+  const m = plan.starting.length
+  const parts: string[] = []
   if (n > 0) {
-    return n === 1
-      ? '1 session is in the middle of a turn, so it stays open. Close it from its tab to be asked first.'
-      : `${n} sessions are in the middle of a turn, so they stay open. Close them from their tabs to be asked first.`
+    parts.push(
+      n === 1
+        ? '1 session is in the middle of a turn, so it stays open. Close it from its tab to be asked first.'
+        : `${n} sessions are in the middle of a turn, so they stay open. Close them from their tabs to be asked first.`
+    )
   }
+  if (m > 0) {
+    parts.push(
+      m === 1
+        ? '1 session is still starting, so it stays open for now.'
+        : `${m} sessions are still starting, so they stay open for now.`
+    )
+  }
+  if (parts.length) return parts.join(' ')
   if (plan.close.length === 0) return `No sessions in ${label} are open.`
   return null
 }
