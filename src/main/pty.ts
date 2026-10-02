@@ -40,6 +40,7 @@ import {
   type SshLoginWatch
 } from '../shared/sshAuth.ts'
 import { claimSessionFiles, releaseSessionFiles } from './statusLine.ts'
+import { PRIVATE_ENV } from '../shared/privateChat.ts'
 import type { RegistryTarget } from '../shared/claudeRegistry.ts'
 import {
   isEndedExpired,
@@ -89,6 +90,12 @@ export interface StartResult {
    * an SSH tab and a key enrollment.
    */
   accountId?: string
+  /**
+   * A private chat (`LaunchOptions.private`): set, with the folder main made
+   * for it in `cwd`. The tab shows that folder and nothing else names it.
+   */
+  private?: true
+  cwd?: string
 }
 
 interface Session {
@@ -125,6 +132,13 @@ interface Session {
   enroll: boolean
   /** A sign-in tab running an agent's own login for an account (`opts.accountLogin`), not a session. */
   accountLogin: boolean
+  /**
+   * A private chat (`opts.private`, shared/privateChat.ts): left out of
+   * `list()` — so the phone, the hub and every list built on it never see it —
+   * and dropped from the map the moment it exits, with no ended ring to keep
+   * its scrollback in (gotcha 84 is for sessions that are kept).
+   */
+  private: boolean
   /**
    * The account this process runs on (shared/accounts.ts): an account id, or
    * `'default'`. Main resolves it before the spawn and passes it in
@@ -502,6 +516,14 @@ export class PtyManager {
     const loggingIn = !remote && !installing && !enrolling && !!opts.accountLogin
     if (loggingIn && !agentPlan) throw new Error('An account sign-in is started by main, from settings.')
     const instrumented = !remote && !installing && !enrolling && !loggingIn && isClaudeCode(cliId)
+    /*
+     * A private chat is a local Claude Code session and nothing else: the env
+     * that turns its saving off means something only to Claude Code, on this
+     * machine. Main decides it (`launchSession`); refused here too, so no other
+     * path can start a "private" ssh or install tab that saves everything.
+     */
+    const isPrivate = opts.private === true
+    if (isPrivate && !instrumented) throw new Error('A private chat runs Claude Code on this computer only.')
 
     const exe = remote
       ? sshExecutable()
@@ -693,6 +715,12 @@ export class PtyManager {
         // Where windowsInstallerArgs' stub reads the script from.
         env[INSTALL_SCRIPT_ENV] = installFile
       }
+      /*
+       * Last of all, after the provider or account env: nothing either carries
+       * may switch a private chat's saving back on (shared/privateChat.ts says
+       * what each variable does, read out of the CLI).
+       */
+      if (isPrivate) Object.assign(env, PRIVATE_ENV)
 
       proc = nodePty.spawn(spec.file, spec.args, {
         name: 'xterm-256color',
@@ -721,6 +749,7 @@ export class PtyManager {
       instrumented,
       enroll: enrolling,
       accountLogin: loggingIn,
+      private: isPrivate,
       accountId: !remote && !installing && !enrolling && opts.accountId ? opts.accountId : 'default',
       exited: false,
       endedAt: null,
@@ -838,6 +867,8 @@ export class PtyManager {
       // session's settings file out from under a CLI that has not read it yet
       // (gotcha 73).
       releaseSessionFiles(session.statusKey, session.ptyId)
+      // A private chat keeps no ended row: its scrollback goes with it.
+      if (session.private && this.sessions.get(ptyId) === session) this.sessions.delete(ptyId)
       this.onExit(ptyId, exitCode, signal, session.sessionId, session.login ? session.login.settled : null)
       for (const fn of this.exitSubscribers) fn(ptyId, exitCode)
     })
@@ -1123,6 +1154,11 @@ export class PtyManager {
     return null
   }
 
+  /** Is this pty a private chat (`opts.private`)? */
+  isPrivate(ptyId: string): boolean {
+    return this.sessions.get(ptyId)?.private === true
+  }
+
   sessionIdFor(ptyId: string): string | null {
     return this.sessions.get(ptyId)?.sessionId ?? null
   }
@@ -1165,9 +1201,14 @@ export class PtyManager {
     return s ? s.chunks.join('') : ''
   }
 
+  /**
+   * Every session a list may show — the phone's, the hub's presence, the
+   * worklog's folder lookup. A private chat is never one of them: its whole
+   * promise is that nothing outside its tab knows it is there.
+   */
   list(): SessionInfo[] {
     this.pruneEnded()
-    return [...this.sessions.values()].map((s) => ({
+    return [...this.sessions.values()].filter((s) => !s.private).map((s) => ({
       ptyId: s.ptyId,
       sessionId: s.sessionId,
       cwd: s.cwd,

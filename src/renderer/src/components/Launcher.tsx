@@ -387,6 +387,8 @@ export function Launcher(props: Props): React.JSX.Element {
             }}
             triggerRef={switcherRef}
             scratchBlocked={primaryBroken}
+            privateChat
+            privateBlocked={claudeBroken}
           />
           <span className="launcher-path mono">{target?.path ?? ' '}</span>
           {props.profileNote && (

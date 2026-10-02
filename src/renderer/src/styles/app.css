@@ -846,6 +846,28 @@ body {
 }
 
 /*
+ * A private chat (shared/privateChat.ts): a ghost before the label, drawn
+ * whatever the tag settings say, and a dashed edge on the tab so it reads as
+ * "not kept" at a glance — existing tokens only, no motion (gotcha 72).
+ */
+.tab-private {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  color: var(--text-muted);
+  --icon-size: 0.875rem;
+}
+
+.tab[data-private='true'] {
+  border-style: dashed;
+  border-color: var(--border);
+}
+
+.tab[data-private='true'][aria-selected='true'] .tab-private {
+  color: var(--text);
+}
+
+/*
  * With tags off, the agent stays on the tab as a rule along its foot, in the
  * same ink — the top rule is the selection's and the profile's, so the agent
  * takes the other edge. Nothing at all while only one agent is in view.
@@ -4254,6 +4276,51 @@ mark.hit {
 .ssh-prompt .btn,
 .ssh-prompt .icon-btn {
   flex-shrink: 0;
+}
+
+/*
+ * Above a private chat's terminal (PrivateChatStrip.tsx): the strip shape the
+ * SSH offer uses, on a neutral ground rather than the accent's — it is a fact
+ * about the tab, not a question — and on the warning's tint when main says the
+ * promise broke (a transcript written anyway, a resume into a saved chat).
+ */
+.private-strip {
+  background: var(--surface);
+}
+
+.private-strip-kind {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-4);
+  background: var(--surface-hover);
+  color: var(--text);
+  --icon-size: 0.875rem;
+}
+
+/*
+ * Wraps, unlike the SSH offer's one line: this is a disclosure, and its last
+ * clause ("Anthropic still receives what you send") is the one an ellipsis
+ * took first — measured with the docked browser open, 661px of text in a 622px
+ * box. The words never change while the tab runs (only a leak or a resume
+ * swaps them, once), so the terminal is refitted at most that often, not as
+ * stages arrive the way the offer's would be.
+ */
+.private-strip .ssh-prompt-text {
+  color: var(--text);
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+.private-strip[data-private-strip='leak'],
+.private-strip[data-private-strip='foreign'] {
+  background: color-mix(in srgb, var(--warning) 14%, var(--bg));
+}
+
+/* The ghost beside Scratch: square, so the row keeps its two labelled routes wide. */
+.sidebar-private {
+  flex: 0 0 auto;
+  padding: 0 var(--space-8);
 }
 
 /* -------------------------------------------------------- other machines */

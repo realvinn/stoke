@@ -20,6 +20,7 @@ import { join } from 'node:path'
 import { zstdDecompressSync } from 'node:zlib'
 import { DatabaseSync } from 'node:sqlite'
 import { isInside, pathRulesFor } from '../../shared/paths.ts'
+import { isPrivateProjectDir } from '../../shared/privateChat.ts'
 import type { ChatSourceEstimate, ChatSourceId } from '../../shared/chatIndex.ts'
 import {
   clineMeta,
@@ -40,6 +41,12 @@ export interface SourceEnv {
   home: string
   env: Record<string, string | undefined>
   platform: string
+  /**
+   * Private chats' roots (shared/privateChat.ts): a Claude history folder named
+   * after a folder under one is never listed, so a transcript the CLI wrote
+   * despite being told not to is never copied into the index.
+   */
+  privateRoots?: readonly string[]
 }
 
 /** Discovery's own cap: this many directory entries, or this long, per source. */
@@ -175,10 +182,18 @@ function newestFirst(list: Candidate[]): Candidate[] {
 
 /* ------------------------------------------------------------ Claude Code */
 
-function claudeTopLevel(root: string, d: Discovery, subagents: boolean, source: ChatSourceId, meta: Partial<ChatMeta> = {}): Candidate[] {
+function claudeTopLevel(
+  root: string,
+  d: Discovery,
+  subagents: boolean,
+  source: ChatSourceId,
+  meta: Partial<ChatMeta> = {},
+  privateRoots: readonly string[] = []
+): Candidate[] {
   const out: Candidate[] = []
   for (const proj of dirents(root)) {
     if (!proj.isDirectory() || !tick(d)) continue
+    if (privateRoots.length && isPrivateProjectDir(proj.name, privateRoots)) continue
     const dir = join(root, proj.name)
     for (const f of dirents(dir)) {
       if (!tick(d)) break
@@ -229,7 +244,7 @@ function claudeTopLevel(root: string, d: Discovery, subagents: boolean, source: 
 function listClaude(e: SourceEnv, subagents: boolean, d: Discovery): Listing {
   const byId = new Map<string, Candidate>()
   for (const root of claudeRoots(e)) {
-    for (const c of claudeTopLevel(root, d, subagents, 'claude')) {
+    for (const c of claudeTopLevel(root, d, subagents, 'claude', {}, e.privateRoots ?? [])) {
       const prev = byId.get(c.nativeId)
       if (!prev || c.mtimeMs > prev.mtimeMs) byId.set(c.nativeId, c)
     }

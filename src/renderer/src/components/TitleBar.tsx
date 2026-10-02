@@ -10,6 +10,7 @@ import {
   BrandMark,
   IconClose,
   IconGear,
+  IconGhost,
   IconGlobe,
   IconMaximize,
   IconMinimize,
@@ -19,6 +20,7 @@ import {
   IconSearch,
   IconSidebar
 } from './Icons'
+import { PRIVATE_BUTTON_TITLE } from '@shared/privateChat'
 import { chordLabel } from '../lib/shortcuts'
 import { useTabDrag } from '../lib/useTabDrag'
 import { agentMark } from '../lib/agentColor'
@@ -303,6 +305,7 @@ export function TitleBar({
                 role="tab"
                 aria-selected={tab.id === activeTabId}
                 data-activity={dot ?? undefined}
+                data-private={tab.private ? 'true' : undefined}
                 /*
                  * What `useTabDrag` finds tabs by. It also writes
                  * `data-dragging` and an inline transform onto this node while
@@ -366,6 +369,17 @@ export function TitleBar({
                       }\n${tab.cwd}`
                 }
               >
+                {/*
+                  A private chat's ghost, drawn whatever the tag settings say:
+                  that a tab saves nothing and is deleted on close is not
+                  decoration. Before the label, so a long title cannot hide it.
+                */}
+                {tab.private && (
+                  <span className="tab-private" title={PRIVATE_BUTTON_TITLE}>
+                    <IconGhost />
+                    <span className="sr-only">Private chat. </span>
+                  </span>
+                )}
                 <TabIndicator
                   kind={tab.kind}
                   context={ctx}

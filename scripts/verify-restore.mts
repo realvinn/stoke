@@ -24,6 +24,7 @@ import {
 } from '../src/main/tabStore.ts'
 import type { ContextSnapshot, StoredTab, StoredTabs } from '../src/shared/types.ts'
 import { fromStored, screensFrom, toStored } from '../src/renderer/src/lib/restore.ts'
+import { dropPrivateStoredTabs } from '../src/shared/privateChat.ts'
 import type { Tab } from '../src/renderer/src/types.ts'
 
 let failures = 0
@@ -463,6 +464,38 @@ console.log('\nthe account a tab ran on (shared/accounts.ts)')
     'an account tab stores its id; a Default tab\u2019s stored form is what it always was',
     snap.tabs.map((t) => ('accountId' in t ? t.accountId : 'absent')),
     ['claude-work', 'absent']
+  )
+}
+
+console.log('\na private chat is never saved, whatever writes the file')
+{
+  /*
+   * shared/privateChat.ts: the renderer drops a private tab in `toStored`, and
+   * main drops one again on every `tabs:save` and on restore
+   * (`dropPrivateStoredTabs`), by the ids it minted and the folder every
+   * private chat runs in. The screen it would carry is raw terminal text.
+   */
+  const ghost = '1b4e28ba-2fa1-4d3b-a3f5-ef19b5a7633b'
+  const base = {
+    kind: 'session' as const, cliId: 'claude' as const, permissionMode: 'default' as const, model: '',
+    effort: 'default' as const, ultracode: false, exitCode: null, selectedPath: null, expandedPath: null, hostId: null
+  }
+  const live: Tab[] = [
+    { ...base, id: 'a', ptyId: 'a', sessionId: 's-a', cwd: '/w', projectName: 'w', title: 'kept', status: 'running' },
+    { ...base, id: 'p', ptyId: 'p', sessionId: ghost, cwd: `/ud/private/${ghost}`, projectName: 'Private chat', title: 'Private chat', status: 'running', private: true },
+    { ...base, id: 'b', ptyId: 'b', sessionId: 's-b', cwd: '/w', projectName: 'w', title: 'also kept', status: 'exited' }
+  ]
+  const snap = toStored(live, 'p', {}, () => 'SECRET SCREEN TEXT', NOW)
+  check('the renderer never sends it', snap.tabs.map((t) => t.title), ['kept', 'also kept'])
+  check('nor anything of it', JSON.stringify(snap).includes(ghost), false)
+  const sent = toStored(live.map((t) => ({ ...t, private: undefined })), 'p', {}, () => 'x', NOW)
+  const onDisk = dropPrivateStoredTabs(sent, new Set([ghost]), ['/ud/private'], 'darwin')
+  check('and main drops one a renderer forgot, by the id it minted', onDisk.tabs.map((t) => t.title), ['kept', 'also kept'])
+  check('selection: the private tab was in front, so the tab before it is', onDisk.activeIndex, 0)
+  check(
+    'or, on restore, by its folder alone (an older build wrote it)',
+    dropPrivateStoredTabs(sent, new Set(), ['/ud/private'], 'darwin').tabs.length,
+    2
   )
 }
 

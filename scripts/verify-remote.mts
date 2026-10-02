@@ -78,6 +78,8 @@ import {
 } from '../src/shared/remotePhone.ts'
 import { isInside, pathRulesFor } from '../src/shared/paths.ts'
 import { CLI_CAPS } from '../src/shared/codingClis.ts'
+import { privateLaunchProblem } from '../src/shared/privateChat.ts'
+import { phonePickerGroups } from '../src/shared/phoneUi.ts'
 import { browseRemoteFolder, listSubfolders, resolveFolderBases } from '../src/main/remote/folders.ts'
 import { createServer, type Server } from 'node:http'
 import { join } from 'node:path'
@@ -2091,6 +2093,23 @@ console.log('\nWeb Push: when, what, to where, and the bytes (phone contract poi
   windows = []
   await tap('#/s/pty-9')
   check('with no window open, it opens the session', opened, ['https://phone.example/#/s/pty-9'])
+}
+
+console.log('\na private chat never reaches the phone, in either direction')
+{
+  /*
+   * shared/privateChat.ts. The phone cannot START one: main refuses a
+   * `private` launch from any origin but the desktop's own (the hub's relay
+   * comes in through the same phone API). And it cannot SEE one: the phone's
+   * picker is built by `folderChoices` without the desktop's `privateChat`
+   * flag, so no query surfaces the row, and every list the server sends is
+   * `PtyManager.list()`, which leaves private chats out (pty.ts).
+   */
+  const none = { host: false, install: false, enroll: false, accountLogin: false }
+  check('a phone-started private chat is refused', privateLaunchProblem({ origin: 'remote', ...none }) !== null, true)
+  check('the desktop may start one', privateLaunchProblem({ origin: 'desktop', ...none }), null)
+  const picker = phonePickerGroups({ projects: [], defaultCwd: '/home/me', hosts: [], query: 'private', platform: 'darwin' })
+  check('the phone picker never offers one, even asked by name', picker.flatMap((g) => g.items).some((c) => c.kind === 'private'), false)
 }
 
 console.log(failures ? `\n${failures} FAILED` : '\nall pass')

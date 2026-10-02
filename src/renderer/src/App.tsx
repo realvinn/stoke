@@ -33,7 +33,7 @@ import type {
   WorklogProposal,
   WorklogWatchState
 } from '@shared/types'
-import type { UpdateInfo } from '@shared/api'
+import type { PrivateTabState, UpdateInfo } from '@shared/api'
 import { foldGroup, profileFor, resolveProfiles, visibleProfiles } from '@shared/profiles'
 import { pathKey, pathRulesFor } from '@shared/paths'
 import {
@@ -82,6 +82,12 @@ import { ActivityPanel } from './components/ActivityPanel'
 import { SshKeyPrompt } from './components/SshKeyPrompt'
 import { OtherMachines } from './components/OtherMachines'
 import { RemoteHostStrip } from './components/RemoteHostStrip'
+import { PrivateChatStrip } from './components/PrivateChatStrip'
+import {
+  PRIVATE_CHAT_NAME,
+  PRIVATE_NOTIFY_TITLE,
+  privateCloseAsks
+} from '@shared/privateChat'
 import { HubJoinPrompt } from './components/HubJoinPrompt'
 import { RemoteTerminal } from './components/RemoteTerminal'
 import { useHubRemote } from './lib/hubRemote'
@@ -195,6 +201,12 @@ type BusyPrompt =
   | { kind: 'relaunch'; tabId: string }
   | { kind: 'restart'; tabIds: string[] }
   | { kind: 'close'; tabId: string }
+  /**
+   * Closing a private chat deletes it (shared/privateChat.ts), so it asks when
+   * that loses something: files Claude made in its folder (`files`, null when
+   * main could not count them in time), or a turn still running.
+   */
+  | { kind: 'closePrivate'; tabId: string; files: number | null; busy: boolean }
   /**
    * Closing a kept SSH tab: detach (the shell keeps running) or end it (gotcha
    * 126). Carries the managed session's NAME as well as the tab id: a
@@ -329,6 +341,14 @@ export function App(): React.JSX.Element {
     : agentDetection
       ? installedAgentIds.has(primaryCli)
       : null
+  /**
+   * Why a private chat cannot start now, or null. It is always Claude Code
+   * (shared/privateChat.ts), whatever the default agent is, so it is Claude
+   * Code's own probe that decides — the ghost, the launcher row and the palette
+   * row all read this one value.
+   */
+  const privateBlocked: string | null =
+    cli && !cli.ok ? "Claude Code isn't runnable here, and a private chat is always Claude Code." : null
   /** The agent picker: opened by hand, or once on a launch that has never answered it. */
   const [agentPickerOpen, setAgentPickerOpen] = useState(false)
 
@@ -757,6 +777,8 @@ export function App(): React.JSX.Element {
 
   /** The busy dialog, when it is up. */
   const [busyPrompt, setBusyPrompt] = useState<BusyPrompt | null>(null)
+  /** What main says about each live private tab beyond its being private, by pty (`private:state`). */
+  const [privateStates, setPrivateStates] = useState<Record<string, PrivateTabState>>({})
   const busyPromptRef = useRef<BusyPrompt | null>(null)
   busyPromptRef.current = busyPrompt
   /** Is the Detach/End question up for this kept session right now? */
@@ -1246,9 +1268,19 @@ export function App(): React.JSX.Element {
       if (typeof Notification === 'undefined' || Notification.permission === 'denied') return
       // A name the user gave the tab wins here too, so the OS notification names
       // the session the way the strip does (the review caught it using the ai-title).
-      const title = tab?.customTitle?.trim() || tab?.title || tab?.projectName || 'Claude Code'
-      const body =
-        ev.kind === 'stop'
+      /*
+       * A private chat's notification says only that it is one: no tab title,
+       * no reply. Notification Center keeps what it is shown, and a private
+       * chat's promise is that nothing of it is kept on this computer.
+       */
+      const title = tab?.private
+        ? PRIVATE_NOTIFY_TITLE
+        : tab?.customTitle?.trim() || tab?.title || tab?.projectName || 'Claude Code'
+      const body = tab?.private
+        ? ev.kind === 'stop'
+          ? 'Finished.'
+          : 'Needs your attention.'
+        : ev.kind === 'stop'
           ? (ev.message ?? 'Finished — waiting for you.')
           : (ev.message ?? 'Needs your attention.')
       try {
@@ -1261,6 +1293,16 @@ export function App(): React.JSX.Element {
         /* the platform refused; the dot in the strip still says it */
       }
     })
+    // A private tab's leak or resume warning (privateChat.ts), keyed by pty.
+    const offPrivate = window.stoke.private.onState((st) => {
+      setPrivateStates((prev) => ({ ...prev, [st.ptyId]: st }))
+    })
+    void window.stoke.private
+      .states()
+      .then((all) => {
+        if (all.length) setPrivateStates((prev) => ({ ...Object.fromEntries(all.map((st) => [st.ptyId, st])), ...prev }))
+      })
+      .catch(() => {})
     /*
      * The CLI's own session registry, per live local pty (main's
      * sessionRegistry.ts): which session it is on now, whether a turn is
@@ -1499,6 +1541,7 @@ export function App(): React.JSX.Element {
       offCtx()
       offEvents()
       offState()
+      offPrivate()
       offRebind()
       offLine()
       offUpdates()
@@ -2156,6 +2199,12 @@ export function App(): React.JSX.Element {
       /** Another agent's chat to reopen by its own id (chat search; `resumeArgs`). */
       agentResumeId?: string
       /**
+       * A private chat (shared/privateChat.ts): only the flag goes to main,
+       * which makes the folder and the id; the tab takes the folder from the
+       * reply. `cwd` is ignored.
+       */
+      private?: boolean
+      /**
        * The account to start on: a tab's own (relaunch, Resume, Start again),
        * or absent for the agent's default account. Main resolves and checks
        * it; the tab stores main's answer (`StartResult.accountId`).
@@ -2197,6 +2246,7 @@ export function App(): React.JSX.Element {
           install: opts.install,
           // Never a Claude flag: Claude's resume is `sessionId` + `resume` above.
           agentResumeId: isClaudeCode(launchCli) ? undefined : opts.agentResumeId,
+          ...(opts.private ? { private: true } : {}),
           accountId: opts.install?.length ? undefined : opts.accountId,
           permissionMode,
           model: sessionModel,
@@ -2220,9 +2270,12 @@ export function App(): React.JSX.Element {
           ...(opts.install?.length ? { installing: opts.install } : {}),
           ...(replaced?.customTitle ? { customTitle: replaced.customTitle } : {}),
           ...(!opts.install?.length && res.accountId ? { accountId: res.accountId } : {}),
+          ...(res.private ? { private: true as const } : {}),
           ptyId: res.ptyId,
           sessionId: res.sessionId,
-          cwd: opts.cwd,
+          // A private chat's folder is main's, from the reply: never one the
+          // renderer named (it is deleted when the tab closes).
+          cwd: res.private && res.cwd ? res.cwd : opts.cwd,
           projectName: opts.name,
           title: opts.title ?? opts.name,
           permissionMode,
@@ -2690,6 +2743,39 @@ export function App(): React.JSX.Element {
       replaceTabId: activeNewTabId ?? undefined
     })
   }, [defaultCwd, startSession, activeNewTabId, primaryCli])
+
+  /**
+   * A private chat (shared/privateChat.ts): Claude Code in a fresh folder main
+   * makes, saving nothing, deleted with everything it left when the tab
+   * closes. Always Claude Code, whatever the default agent is. Claimed before
+   * the await and released in `.finally` (gotchas 20, 51): a double click on
+   * the ghost would otherwise make two folders and two tabs.
+   */
+  const privateStartingRef = useRef(false)
+  const startPrivate = useCallback(
+    async (replaceTabId?: string, launch?: LaunchChoice): Promise<boolean> => {
+      if (privateStartingRef.current) return false
+      privateStartingRef.current = true
+      try {
+        return await startSession({
+          cwd: '',
+          cli: 'claude',
+          private: true,
+          name: PRIVATE_CHAT_NAME,
+          replaceTabId: replaceTabId ?? activeNewTabId ?? undefined,
+          ...(launch ?? {})
+        })
+      } finally {
+        privateStartingRef.current = false
+      }
+    },
+    [startSession, activeNewTabId]
+  )
+
+  const startPrivateRef = useRef(startPrivate)
+  startPrivateRef.current = startPrivate
+  const privateBlockedRef = useRef(privateBlocked)
+  privateBlockedRef.current = privateBlocked
 
   /** Quick start of the default agent in a fresh throwaway folder. */
   const startScratch = useCallback(async (launch?: LaunchChoice): Promise<void> => {
@@ -3201,6 +3287,32 @@ export function App(): React.JSX.Element {
         setBusyPrompt(prompt)
         return
       }
+      /*
+       * A running private chat: closing deletes it. Main counts the files in
+       * its folder (an ended one's folder has already gone, and closes at
+       * once); it asks only when something would be lost (`privateCloseAsks`).
+       * Claimed per tab before the await, so a second Cmd+W asks nothing twice.
+       */
+      if (tab.kind === 'session' && tab.private && tab.status === 'running') {
+        if (privateClosingRef.current.has(id)) return
+        privateClosingRef.current.add(id)
+        const busy = liveRef.current[tab.ptyId]?.busy ?? null
+        void window.stoke.private
+          .inspect(tab.ptyId)
+          .catch(() => ({ files: null }))
+          .then(({ files }) => {
+            if (!tabsRef.current.some((t) => t.id === id)) return
+            if (!privateCloseAsks({ files, busy })) {
+              closeTab(id)
+              return
+            }
+            const prompt: BusyPrompt = { kind: 'closePrivate', tabId: id, files, busy: busy === true }
+            busyPromptRef.current = prompt
+            setBusyPrompt(prompt)
+          })
+          .finally(() => privateClosingRef.current.delete(id))
+        return
+      }
       if (
         tab.kind === 'session' &&
         tab.status === 'running' &&
@@ -3213,6 +3325,8 @@ export function App(): React.JSX.Element {
     },
     [closeTab]
   )
+  /** Private tabs whose close is asking main about their folder (see above). */
+  const privateClosingRef = useRef(new Set<string>())
 
   /* ------------------------------------------------------ ssh key login */
 
@@ -3480,6 +3594,9 @@ export function App(): React.JSX.Element {
         const tab = tabsRef.current.find((t) => t.id === id)
         if (!tab) continue
         if (tab.kind === 'session' && tab.status === 'running' && liveRef.current[tab.ptyId]?.busy === true) continue
+        // A running private chat is deleted by its close, so only its own
+        // Close does that, after its own question (`requestCloseTab`).
+        if (tab.kind === 'session' && tab.private && tab.status === 'running') continue
         closeTab(id)
       }
     },
@@ -3604,6 +3721,13 @@ export function App(): React.JSX.Element {
         return
       }
 
+      if (plan.kind === 'private') {
+        // "New private chat" on an ended one: a fresh chat in its slot. The old
+        // one's folder and files went when its process exited.
+        void startPrivate(tab.id).finally(() => releaseStart(tab.id))
+        return
+      }
+
       if (plan.kind === 'login') {
         // "Start again" on a sign-in tab: the same sign-in, in this tab's slot.
         void startAccountLogin(plan.accountId, tab.id).finally(() => releaseStart(tab.id))
@@ -3636,7 +3760,7 @@ export function App(): React.JSX.Element {
         ultracode: tab.ultracode
       }).finally(() => releaseStart(tab.id))
     },
-    [settings, startSession, startHostSession, startSshEnroll, startAccountLogin, claimStart, releaseStart, defaultCwd, cancelReconnect]
+    [settings, startSession, startHostSession, startSshEnroll, startAccountLogin, claimStart, releaseStart, defaultCwd, cancelReconnect, startPrivate]
   )
 
   /**
@@ -3970,6 +4094,11 @@ export function App(): React.JSX.Element {
           selfRestartPendingRef.current = true
           setSelfRestartPending(true)
         }
+        return
+      }
+      if (prompt.kind === 'closePrivate') {
+        // 'force' is "Delete and close": closing deletes, nothing else to do.
+        if (answer === 'force') closeTab(prompt.tabId)
         return
       }
       if (prompt.kind === 'close') {
@@ -4686,6 +4815,14 @@ export function App(): React.JSX.Element {
           setActiveTabId((cur) => cycleTab(ids, cur, action.delta) ?? cur)
           break
         }
+        case 'newPrivate':
+          // Through refs, like zoom's settings (gotcha 31): this listener is
+          // not rebuilt when the start callback or Claude Code's state moves.
+          // Never on a key's auto-repeat: `startPrivate`'s claim is released
+          // once a chat has started, so a ⇧⌘N held past the repeat delay
+          // started one `claude` per repeat (gotcha 51's shape, from a key).
+          if (!e.repeat && !privateBlockedRef.current) void startPrivateRef.current()
+          break
         case 'zoom': {
           /*
            * Read through the ref, and off settings rather than local state: the
@@ -5079,6 +5216,11 @@ export function App(): React.JSX.Element {
           if (primaryReady === false) return
           void startScratch(launchNow.choice)
           return
+        case 'private':
+          // Always Claude Code; the row is disabled while it is not runnable.
+          if (privateBlocked) return
+          void startPrivate(activeNewTabId ?? undefined, launchNow.choice)
+          return
         case 'host': {
           const host = settingsRef.current?.hosts.find((h) => h.id === c.id)
           if (host) {
@@ -5115,7 +5257,7 @@ export function App(): React.JSX.Element {
         }
       }
     },
-    [selectProject, openFolder, startScratch, startHostSession, activeNewTabId, launchNow, primaryReady]
+    [selectProject, openFolder, startScratch, startPrivate, privateBlocked, startHostSession, activeNewTabId, launchNow, primaryReady]
   )
 
   /**
@@ -5297,6 +5439,29 @@ export function App(): React.JSX.Element {
           <p>
             <strong>End session</strong> closes the tab and ends the shell and whatever it is running.
           </p>
+        </BusyDialog>
+      )
+    }
+    if (busyPrompt.kind === 'closePrivate') {
+      const files = busyPrompt.files
+      const made =
+        files === null
+          ? 'Stoke could not check its folder in time, so it asks rather than guess.'
+          : files > 0
+            ? `Claude made ${files === 1 ? 'a file' : `${files}${files >= 500 ? '+' : ''} files`} in its folder, and ${files === 1 ? 'it goes' : 'they go'} too.`
+            : null
+      return (
+        <BusyDialog
+          title="Delete this private chat?"
+          forceLabel="Delete and close"
+          onForce={() => answerBusy('force')}
+          onCancel={() => answerBusy('cancel')}
+        >
+          <p>
+            Closing this tab deletes the private chat from this computer. <strong>It can&rsquo;t be brought back.</strong>
+          </p>
+          {made && <p>{made}</p>}
+          {busyPrompt.busy && <p>Claude is still working on a reply; closing stops it.</p>}
         </BusyDialog>
       )
     }
@@ -5527,6 +5692,8 @@ export function App(): React.JSX.Element {
                 onAddRoot={() => void addRoot()}
                 onOpenFolder={() => void openFolder()}
                 onStartScratch={() => void startScratch()}
+                onStartPrivate={() => void startPrivate()}
+                privateBlocked={privateBlocked}
                 profiles={availableProfiles}
                 activeProfile={activeProfile?.id ?? null}
                 onSelectProfile={(id) => void patchSettings({ activeProfile: id })}
@@ -5724,6 +5891,17 @@ export function App(): React.JSX.Element {
             key offer above (gotcha 14).
           */}
           <RemoteHostStrip view={hubRemote} />
+          {/*
+            What a private tab is, above its terminal: nothing kept here, closing
+            deletes it, Anthropic still receives it — or the warning when main
+            says the promise broke (a transcript written anyway, a resume into a
+            saved conversation). A `.main-col` strip, never an overlay (gotcha 14).
+            Only while it runs: once it has ended its files are gone, and the
+            exit card says so.
+          */}
+          {activeTab?.kind === 'session' && activeTab.private && activeTab.status === 'running' && (
+            <PrivateChatStrip state={privateStates[activeTab.ptyId] ?? null} />
+          )}
           <HubJoinPrompt onReview={() => openSettings('account')} />
 
           <WorklogPrompt
@@ -6050,6 +6228,11 @@ export function App(): React.JSX.Element {
                 }
               : undefined
           }
+          onPickAction={(action) => {
+            setPaletteOpen(false)
+            if (action.id === 'private') void startPrivate()
+          }}
+          actionBlocked={privateBlocked}
           onClose={() => setPaletteOpen(false)}
         />
       )}

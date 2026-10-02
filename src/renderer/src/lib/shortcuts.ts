@@ -8,6 +8,7 @@ export type ShortcutAction =
   | { type: 'cycleTab'; delta: -1 | 1 }
   | { type: 'zoom'; direction: -1 | 0 | 1 }
   | { type: 'find' }
+  | { type: 'newPrivate' }
 
 /**
  * App-level shortcuts, chosen so they never collide with what the terminal
@@ -97,6 +98,14 @@ export function matchShortcut(
   if (e.shiftKey) {
     if (e.code === 'BracketRight') return { type: 'cycleTab', delta: 1 }
     if (e.code === 'BracketLeft') return { type: 'cycleTab', delta: -1 }
+    /*
+     * A new private chat (shared/privateChat.ts): ⇧⌘N, the private-window
+     * chord people already know from browsers, and Ctrl+Shift+N off macOS.
+     * Shift on both platforms, so it is taken here, before the gate refuses
+     * Shift on macOS. Off macOS bare Ctrl+N is readline's next-history and
+     * stays with the terminal; xterm ignores Ctrl+Shift+N (gotcha 56).
+     */
+    if (e.code === 'KeyN') return { type: 'newPrivate' }
   }
 
   const gate = isMac ? !e.shiftKey : e.shiftKey
@@ -138,6 +147,7 @@ export type ChordName =
   | 'nextTab'
   | 'prevTab'
   | 'find'
+  | 'newPrivate'
 
 const CHORD_KEY: Record<ChordName, string> = {
   palette: 'K',
@@ -147,7 +157,8 @@ const CHORD_KEY: Record<ChordName, string> = {
   settings: ',',
   nextTab: ']',
   prevTab: '[',
-  find: 'F'
+  find: 'F',
+  newPrivate: 'N'
 }
 
 /**
@@ -166,8 +177,9 @@ const CHORD_KEY: Record<ChordName, string> = {
  */
 export function chordLabel(name: ChordName, isMac: boolean): string {
   const cycles = name === 'nextTab' || name === 'prevTab'
-  // Shift on every letter chord off macOS, and on the cycle pair everywhere.
-  const shift = cycles || !isMac
+  // Shift on every letter chord off macOS, and on the cycle pair and the
+  // private chat everywhere.
+  const shift = cycles || name === 'newPrivate' || !isMac
   return isMac ? `${shift ? '\u21e7' : ''}\u2318${CHORD_KEY[name]}` : `Ctrl+${shift ? 'Shift+' : ''}${CHORD_KEY[name]}`
 }
 

@@ -279,6 +279,28 @@ const groups = folderChoices({
 })
 check('no query: recent, elsewhere, remote, then Open', groups.map((g) => g.title), ['Recent projects', 'Elsewhere', 'Remote machines', ''])
 check('the default folder and scratch are always one pick away (QA L6)', groups[1].items.map((c) => c.kind), ['default', 'scratch'])
+/*
+ * A private chat (shared/privateChat.ts) is offered only where it was asked
+ * for: the desktop's launcher. The phone builds its list with this same
+ * function and never asks, and main refuses one from the phone outright.
+ */
+check(
+  'the desktop launcher lists Private chat under Elsewhere, after scratch',
+  folderChoices({ projects, defaultCwd: '/home/me', hosts: [], query: '', privateChat: true })[1].items.map((c) => c.kind),
+  ['default', 'scratch', 'private']
+)
+check(
+  'found by the words people use for it',
+  ['private', 'temp', 'incognito', 'ghost'].map((query) =>
+    flatChoices(folderChoices({ projects: [], defaultCwd: '', hosts: [], query, privateChat: true })).some((c) => c.kind === 'private')
+  ),
+  [true, true, true, true]
+)
+check(
+  'and not by anything else',
+  flatChoices(folderChoices({ projects: [], defaultCwd: '', hosts: [], query: 'zzz', privateChat: true })).map(choiceKey),
+  ['open']
+)
 const laro = groups[0].items.filter((c) => c.kind === 'project' && c.label === 'Laro')
 check('same-name projects carry their hints', laro.map((c) => (c.kind === 'project' ? c.hint : '')), ['w', 'h'])
 check('a missing folder is tagged, not dropped (QA L13)', laro.map((c) => (c.kind === 'project' ? c.missing : null)), [false, true])

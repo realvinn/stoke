@@ -846,7 +846,15 @@ npm run verify:git            # the git chip against REAL scratch repos: clean, 
                               # must NOT run (each beside a control proving it would)
 npm run verify:restore        # the tab-restore store: what survives a quit, the caps and age
                               # limits, a corrupt file, and the update-restart marker consumed
-                              # once and only while fresh
+                              # once and only while fresh. A private chat is never saved
+npm run verify:private        # private chat: the env and settings the CLI gets, where one may
+                              # start, slugs and markers, what is deleted (exact joins, realpath
+                              # containment, a link out of the tree left alone) and what never
+                              # is (bystanders, a resumed saved chat, a folder with no marker),
+                              # the boot sweep, quitSync, the watchdog, a lookup that cannot
+                              # answer (never adopted), a removal that fails (marker kept), and
+                              # the real wrapper's reduced hook event — all on fixture folders
+                              # (gotcha 74)
 npm run verify:launcher       # the new-session page: each launch value resolved through
                               # tab, Stoke and Claude Code's files (the machine the QA ran
                               # on, modelSettings included, reads what the banner said),
@@ -1318,6 +1326,14 @@ src/main/         Electron main process
                     safari.ts + safariCookies.ts + plist.ts (Full Disk Access, binarycookies,
                     Bookmarks.plist), index.ts (scan, runImport). Gotcha 107
   workspace.ts      default folder + scratch folders
+  privateChat.ts    private chats on disk (`PrivateChats`): a fresh 0700 folder per chat under
+                    `<userData>/private/<id>`, the marker written BEFORE it naming the ids and
+                    config dirs, the cleanup once the chat's `claude` has REALLY exited (exact
+                    joins from `privateCleanupTargets`, each parent realpath'd inside an allowed
+                    base; a failed removal keeps the marker), `quitSync` (folders only), the boot
+                    sweep (marker-listed only), the 5 s watchdog for a transcript the CLI writes
+                    anyway, and `findTranscriptStrict` (a rebind's lookup: "none" only when every
+                    folder was read). No electron import: verify:private runs it on fixture folders
   folderCheck.ts    a named folder asked about under the launch deadline: why it cannot be
                     opened (`launchFolderProblem`) and its realpath (`realpathFolder`, gotcha
                     91), and what `projects:reveal` refuses before `shell.openPath`
@@ -1582,6 +1598,10 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
   src/components/RemoteTerminal.tsx  a remote tab: the other machine's pty through the relay,
                     held at that pty's grid (decideResize `native`, gotcha 87), never typing
                     xterm's own reports, under a banner saying whose it is and the link's state
+  src/components/PrivateChatStrip.tsx  above a private chat's terminal, a `.main-col` strip:
+                    nothing saved here, closing deletes it, Anthropic still receives it — or
+                    the warning when main says a transcript was written anyway or the tab
+                    resumed into a saved conversation
   src/components/RemoteHostStrip.tsx  on the host, `.main-col` strips: "Let <device> open
                     <session>?" Allow once / Always / Deny, and who is attached, Disconnect
   src/components/HubJoinPrompt.tsx  on a device in the vault, a `.main-col` strip: "<device>
@@ -1931,6 +1951,13 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     sheet marks (`SETTING_ROWS` plus two generated families) and the search over
                     them (`searchSettings`: phrase, then every word, synonyms, British/US
                     spellings and plurals). The sheet's search and Cmd+K both read it. Gotcha 138
+  privateChat.ts     private chat's pure half: `PRIVATE_ENV` and `PRIVATE_SETTINGS` (read out of
+                    the 2.1.287 binary: `CLAUDE_CODE_SKIP_PROMPT_HISTORY` is the interactive
+                    no-save switch, `--no-session-persistence` is print-only), who may start one
+                    (`privateLaunchProblem`), the slug and marker rules, what is deleted and when
+                    a deletion is allowed, the rebind verdict (a `/resume` into a saved chat is
+                    `foreign`, never deleted), when closing asks, the reduced hook event, and the
+                    `tabs.json` filter main applies on every save
   launcher.ts       the new-session page's pure half: same-name disambiguation, the
                     folder switcher's groups, which conversations list, the keyboard map,
                     the pinned launch aim (`launchAim`), the activation-key burst rule

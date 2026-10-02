@@ -123,6 +123,8 @@ export type FolderChoice =
     }
   | { kind: 'default'; path: string; label: string }
   | { kind: 'scratch'; label: string }
+  /** A private chat (shared/privateChat.ts): Claude Code saving nothing, deleted when its tab closes. */
+  | { kind: 'private'; label: string }
   | { kind: 'open'; label: string }
   | { kind: 'host'; id: string; label: string; alias: string }
   /** A managed session still running on a host: choosing it reattaches (gotcha 126). */
@@ -171,6 +173,12 @@ export function folderChoices(input: {
    * running there. Omitted (the phone, a host not asked yet) lists nothing.
    */
   running?: readonly RunningOnHost[]
+  /**
+   * Offer "Private chat" under Elsewhere. The desktop's launcher only: a
+   * private chat is started on this computer, never from the phone, whose
+   * list is built from this same function without it.
+   */
+  privateChat?: boolean
 }): FolderGroup[] {
   const q = input.query.trim().toLowerCase()
   const ranked = rankProjects(input.projects)
@@ -194,6 +202,9 @@ export function folderChoices(input: {
     places.push({ kind: 'default', path: input.defaultCwd, label: 'Default folder' })
   }
   if (!q || hit(q, 'scratch session')) places.push({ kind: 'scratch', label: 'Scratch session' })
+  if (input.privateChat && (!q || hit(q, 'private chat', 'temporary', 'incognito', 'ghost'))) {
+    places.push({ kind: 'private', label: 'Private chat' })
+  }
   const hosts = input.hosts
     .filter((h) => !q || hit(q, h.label, h.alias))
     .map((h): FolderChoice => ({ kind: 'host', id: h.id, label: h.label || h.alias, alias: h.alias }))

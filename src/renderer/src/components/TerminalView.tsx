@@ -8,6 +8,7 @@ import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes'
 import type { ClipboardPeek } from '@shared/api'
 import type { SshHost, TerminalSettings, Theme, VoiceSettings } from '@shared/types'
 import { dropText, imagePasteKeys } from '@shared/drop'
+import { PRIVATE_ENDED_TEXT } from '@shared/privateChat'
 import { noSignalLine } from '@shared/micDevice'
 import { createRecorder, voiceSupported, type Recorder } from '@shared/voice'
 import { createSignalWatch } from '@shared/voiceLevel'
@@ -1755,6 +1756,22 @@ export function TerminalView({
           </button>
           <button className="btn" data-variant="ghost" onClick={() => onStopReconnect?.(tab.id)}>
             Stop
+          </button>
+          <button className="btn" data-variant="ghost" onClick={() => onClose(tab.id)}>
+            Close tab
+          </button>
+        </div>
+      ) : tab.status === 'exited' && tab.private ? (
+        /*
+         * A private chat that ended: its folder and every file it left are
+         * deleted as its process exits (main's PrivateChats.finish), so there
+         * is nothing to start again or resume. "New private chat" starts a
+         * fresh one in this tab's slot.
+         */
+        <div className="term-exit" role="status" data-private="true">
+          <span>{PRIVATE_ENDED_TEXT}</span>
+          <button className="btn" data-variant="primary" onClick={() => onRestart(tab)}>
+            New private chat
           </button>
           <button className="btn" data-variant="ghost" onClick={() => onClose(tab.id)}>
             Close tab

@@ -66,6 +66,7 @@ import {
   coworkRoot,
   detectSource,
   discovery,
+  listSource,
   opencodeDbPath,
   setDiscoveryLimitForTest,
   zedDbPath,
@@ -1455,6 +1456,31 @@ try {
   await host.stop()
 } finally {
   rmSync(root, { recursive: true, force: true })
+}
+
+/*
+ * A private chat's history folder (shared/privateChat.ts) is never listed, so
+ * a transcript the CLI wrote despite being told not to never reaches the
+ * index. Its own fixture home, so no count above can move.
+ */
+console.log('\na private chat is never indexed')
+{
+  const pRoot = mkdtempSync(join(tmpdir(), 'stoke-chat-private-'))
+  try {
+    const pHome = join(pRoot, 'home')
+    const privateRoot = join(pRoot, 'ud', 'private')
+    const ghost = '1b4e28ba-2fa1-4d3b-a3f5-ef19b5a7633b'
+    const projects = join(pHome, '.claude', 'projects')
+    const enc = (p: string): string => p.replace(/[^a-zA-Z0-9]/g, '-')
+    write(join(projects, enc(join(privateRoot, ghost)), `${ghost}.jsonl`), claudeChat(901, join(privateRoot, ghost)))
+    write(join(projects, enc(join(pRoot, 'work')), `${uuid(902)}.jsonl`), claudeChat(902, join(pRoot, 'work')))
+    const pEnv: SourceEnv = { home: pHome, env: {}, platform: process.platform }
+    const ids = (e: SourceEnv): string[] => listSource('claude', e, false, discovery(Date.now())).candidates.map((c) => c.nativeId).sort()
+    check('without the private root both are listed (so the filter is what hides one)', ids(pEnv), [ghost, uuid(902)].sort())
+    check('with it, only the ordinary chat', ids({ ...pEnv, privateRoots: [privateRoot] }), [uuid(902)])
+  } finally {
+    rmSync(pRoot, { recursive: true, force: true })
+  }
 }
 
 /*

@@ -8,7 +8,7 @@ import {
   type ProjectLike,
   type RunningOnHost
 } from '@shared/launcher'
-import { IconChevron, IconFolder, IconPlus } from './Icons'
+import { IconChevron, IconFolder, IconGhost, IconPlus } from './Icons'
 import { relativeTime } from '../lib/format'
 import { useFloatingLayer } from '../lib/floatingLayers'
 
@@ -42,6 +42,8 @@ export function FolderSwitcher({
   onChoose,
   triggerRef,
   scratchBlocked = false,
+  privateChat = false,
+  privateBlocked = false,
   openSessions = []
 }: {
   /** The target's name; empty while nothing has resolved yet. */
@@ -64,6 +66,10 @@ export function FolderSwitcher({
    * runs its own `claude`).
    */
   scratchBlocked?: boolean
+  /** List "Private chat" under Elsewhere (shared/privateChat.ts): the desktop's launcher. */
+  privateChat?: boolean
+  /** Claude Code is not runnable, and a private chat is always Claude Code. */
+  privateBlocked?: boolean
   /**
    * The managed session names the tabs in this window already hold, so a
    * session still running on a host is marked "open here" rather than offered
@@ -141,8 +147,8 @@ export function FolderSwitcher({
   )
 
   const groups = useMemo(
-    () => folderChoices({ projects, defaultCwd, hosts, query, running: runningNow }),
-    [projects, defaultCwd, hosts, query, runningNow]
+    () => folderChoices({ projects, defaultCwd, hosts, query, running: runningNow, privateChat }),
+    [projects, defaultCwd, hosts, query, runningNow, privateChat]
   )
   const flat = useMemo(() => flatChoices(groups), [groups])
 
@@ -172,6 +178,7 @@ export function FolderSwitcher({
   const choose = (c: FolderChoice | undefined): void => {
     if (!c) return
     if (c.kind === 'scratch' && scratchBlocked) return
+    if (c.kind === 'private' && privateBlocked) return
     onOpenChange(false)
     onChoose(c)
   }
@@ -242,7 +249,7 @@ export function FolderSwitcher({
                   {g.items.map((c) => {
                     index += 1
                     const i = index
-                    const blocked = c.kind === 'scratch' && scratchBlocked
+                    const blocked = (c.kind === 'scratch' && scratchBlocked) || (c.kind === 'private' && privateBlocked)
                     return (
                       <div
                         key={choiceKey(c)}
@@ -303,6 +310,18 @@ function ChoiceBody({ choice: c, blocked }: { choice: FolderChoice; blocked: boo
           </span>
           <span className="switcher-item-side">
             {blocked ? "Claude Code isn't runnable" : 'new dated folder, starts now'}
+          </span>
+        </>
+      )
+    case 'private':
+      return (
+        <>
+          <span className="switcher-item-main">
+            <IconGhost />
+            <span>{c.label}</span>
+          </span>
+          <span className="switcher-item-side">
+            {blocked ? "Claude Code isn't runnable" : 'nothing saved, deleted when closed'}
           </span>
         </>
       )

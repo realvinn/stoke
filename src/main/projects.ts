@@ -2,7 +2,8 @@ import { access, readdir, readFile, realpath, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import type { Project, ProjectMeta, SessionMeta, Settings } from '@shared/types'
-import { normalizePath, pathRulesFor } from '../shared/paths.ts'
+import { isInside, normalizePath, pathRulesFor } from '../shared/paths.ts'
+import { isPrivateProjectDir } from '../shared/privateChat.ts'
 import { applyProjectMeta } from './projectMeta.ts'
 import { claudeConfigDir, claudeGlobalConfigPath } from './claudePaths.ts'
 import {
@@ -341,13 +342,29 @@ async function scanRoots(roots: string[]): Promise<string[]> {
   return found
 }
 
+/**
+ * Folders no project list shows: private chats' (shared/privateChat.ts). The
+ * CLI may still write a `~/.claude.json` entry for one (Stoke does not edit
+ * that file, gotcha 38) and, if a release ever stops honouring the env that
+ * turns saving off, a history folder — neither may become a sidebar row, a
+ * launcher conversation or an activity line. Main sets it once at boot.
+ */
+let hiddenRoots: () => readonly string[] = () => []
+
+export function hideProjectsUnder(roots: () => readonly string[]): void {
+  hiddenRoots = roots
+}
+
 export async function listProjects(settings: Settings): Promise<Project[]> {
   const rules = pathRulesFor(process.platform)
-  const [config, dirs, rootDirs] = await Promise.all([
+  const hidden = hiddenRoots()
+  const [config, allDirs, rootDirs] = await Promise.all([
     readClaudeConfig(),
     scanHistoryDirs(),
     scanRoots(settings.projectRoots)
   ])
+  // A private chat's history folder is never read for its cwd, let alone listed.
+  const dirs = hidden.length ? allDirs.filter((d) => !isPrivateProjectDir(d.dir, hidden)) : allDirs
 
   const byDir = new Map<string, DirInfo>()
   for (const d of dirs) byDir.set(d.dir.toLowerCase(), d)
@@ -508,7 +525,9 @@ export async function listProjects(settings: Settings): Promise<Project[]> {
   })
 
   return withMeta
-    .filter((p) => !hiddenKeys.has(dedupeKey(p.path)))
+    // The private root itself too, not only what is in it: it is Stoke's own
+    // folder, never a project anyone meant to open.
+    .filter((p) => !hiddenKeys.has(dedupeKey(p.path)) && !hidden.some((r) => isInside(r, p.path, rules)))
     .sort((a, b) => {
       if (a.pinned !== b.pinned) return a.pinned ? -1 : 1
       return (b.lastModified ?? 0) - (a.lastModified ?? 0)
