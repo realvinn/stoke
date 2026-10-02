@@ -14,6 +14,9 @@ import {
   IconSearch,
   IconStar
 } from './Icons'
+import { matchShortcut } from '../lib/shortcuts'
+import { hasActiveFinder } from '../lib/termRegistry'
+import { findOwner, findTargetOf } from '../lib/terminalFind'
 
 interface Props {
   state: BrowserState
@@ -98,12 +101,26 @@ export function BrowserPanel({
     }
     const off = window.stoke.browser.onFindRequested(open)
 
+    const isMac = window.stoke.platform === 'darwin'
     const onKey = (e: KeyboardEvent): void => {
-      const primary = window.stoke.platform === 'darwin' ? e.metaKey : e.ctrlKey
-      if (primary && !e.altKey && e.key.toLowerCase() === 'f') {
-        e.preventDefault()
-        open()
-      }
+      const primary = isMac ? e.metaKey : e.ctrlKey
+      if (!primary || e.altKey || e.key.toLowerCase() !== 'f') return
+      /*
+       * Focus decides, not "the browser is docked". This used to open the PAGE
+       * find bar from any focus, so Cmd+F typed in the terminal found on the
+       * web page. On macOS the terminal's find is the same chord; App asks
+       * `findOwner` the same question and acts only on the other answer.
+       */
+      const owner = findOwner({
+        ...findTargetOf(e.target),
+        terminalChord: matchShortcut(e, isMac)?.type === 'find',
+        pageChord: true,
+        terminalShown: hasActiveFinder(),
+        browserOpen: true
+      })
+      if (owner !== 'page') return
+      e.preventDefault()
+      open()
     }
     window.addEventListener('keydown', onKey)
     return () => {
