@@ -13,6 +13,8 @@ import {
   shortcutFromDraft,
   shortcutVerdict,
   TABS_FLOOR_REM,
+  tabsFloorPx,
+  topBarKeep,
   TOP_BAR_DEFAULTS,
   type FitItem,
   type FitResult,
@@ -323,11 +325,30 @@ export function TopBar({
       natural += (parseFloat(getComputedStyle(tabs).columnGap) || 0) * Math.max(0, kids.length - 1)
     }
     const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16
-    const floor = Math.floor(Math.min(natural, TABS_FLOOR_REM * rem))
-    bar.style.setProperty('--tabs-floor', `${floor}px`)
-    const room =
-      bar.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0) - others - gap * Math.max(0, count - 1) - floor
+    // What the strip and the items share: the bar less its padding, everything
+    // else on it (the actions never shrink) and the gaps between.
+    const avail =
+      bar.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0) - others - gap * Math.max(0, count - 1)
     const width = (sel: string): number => meas.querySelector<HTMLElement>(sel)?.getBoundingClientRect().width ?? 0
+    const trail = trailRef.current?.getBoundingClientRect().width ?? 0
+    const innerGap = parseFloat(getComputedStyle(root).columnGap) || 0
+    const more = width('[data-measure="more"]')
+    // The floor yields to the actions, never the other way (`tabsFloorPx`),
+    // and leaves the bar its own controls and, if shortcuts can spill, the "»".
+    const floor = tabsFloorPx({
+      natural,
+      floor: TABS_FLOOR_REM * rem,
+      avail,
+      keep: topBarKeep({
+        trail,
+        more,
+        gap: innerGap,
+        shortcuts: viewsRef.current.some((v) => v.item.kind === 'shortcut'),
+        editing: editingRef.current
+      })
+    })
+    bar.style.setProperty('--tabs-floor', `${floor}px`)
+    const room = avail - floor
     // A space takes only what is left — except in edit mode, where it is a chip
     // with a floor (`SPACER_EDIT_REM`, app.css) that must fit like any other.
     const spacer = editingRef.current ? SPACER_EDIT_REM * rem : 0
@@ -339,13 +360,7 @@ export function TopBar({
       // What the CSS lets these two narrow to, out of edit mode (`.tb-chip` min-widths).
       ...(editingRef.current ? {} : v.item.kind === 'folder' ? { min: SQUEEZE_REM.folder * rem } : v.item.kind === 'git' ? { min: SQUEEZE_REM.git * rem } : {})
     }))
-    const input = {
-      room,
-      gap: parseFloat(getComputedStyle(root).columnGap) || 0,
-      fixed: trailRef.current?.getBoundingClientRect().width ?? 0,
-      more: width('[data-measure="more"]'),
-      items: fitItems
-    }
+    const input = { room, gap: innerGap, fixed: trail, more, items: fitItems }
     // Editing shows every item, so only compaction applies; the list scrolls past that.
     const decided = fitTopBar(input)
     const next = editingRef.current ? { compact: decided.compact, overflow: [], hidden: [] } : decided

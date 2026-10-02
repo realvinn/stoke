@@ -1179,7 +1179,9 @@ body {
  * flexible space has room to grow and the gaps stay the window's drag region.
  * The strip gives way first (the large shrink factor) but never below
  * `--tabs-floor`, which TopBar measures: the lesser of its natural width and
- * TABS_FLOOR_REM. The items then give way in TopBar's own order (`fitTopBar`).
+ * TABS_FLOOR_REM, and never more than the actions leave (`tabsFloorPx`) — they
+ * do not shrink, so a floor that held would push them off the window. The
+ * items then give way in TopBar's own order (`fitTopBar`).
  * Off, `[data-toolbar]` is absent and the strip is `flex: 1` exactly as before.
  */
 .titlebar[data-toolbar] .tabs {

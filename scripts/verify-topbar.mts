@@ -26,6 +26,8 @@ import {
   shortcutDraftProblem,
   shortcutFromDraft,
   shortcutVerdict,
+  tabsFloorPx,
+  topBarKeep,
   TOP_BAR_DEFAULTS,
   TOP_BAR_MAX_ITEMS,
   type FitItem,
@@ -326,6 +328,29 @@ console.log('\ngiving way on a narrow window')
     fitTopBar({ room: 200, gap: 4, fixed: 28, more: 28, items: [items[1], items[3]] }),
     { compact: ['git'], overflow: [], hidden: [] }
   )
+}
+
+console.log('\nthe tab strip’s floor yields to the actions')
+{
+  /*
+   * `.titlebar-actions` never shrinks, so a floor that held pushed the usage
+   * chip and the Settings gear off the window: 940px, Interface scale 1.6, four
+   * tabs — a 409.6px floor (16rem at 25.6px) and the actions ending at 1077px.
+   */
+  const rem16 = 16 * 25.6
+  check('room to spare: the lesser of the strip’s natural width and 16rem', [
+    tabsFloorPx({ natural: 900, floor: rem16, avail: 1200, keep: 40 }),
+    tabsFloorPx({ natural: 224, floor: 256, avail: 1200, keep: 40 })
+  ], [409, 224])
+  check('a tight bar: never more than the actions leave, less the pencil', tabsFloorPx({ natural: 900, floor: rem16, avail: 230, keep: 45 }), 185)
+  check('no room at all: nothing, never a negative floor', tabsFloorPx({ natural: 900, floor: rem16, avail: 20, keep: 45 }), 0)
+  check('whole pixels, rounded down so it never overshoots', tabsFloorPx({ natural: 300.9, floor: 400, avail: 1000, keep: 0 }), 300)
+  // The bar keeps its pencil, and the "»" with its gap once a shortcut could spill into it.
+  check('the bar keeps the "»" too when a shortcut can spill into it', topBarKeep({ trail: 45, more: 45, gap: 6, shortcuts: true, editing: false }), 96)
+  check('only its trail with no shortcuts, or while editing (no "»" then)', [
+    topBarKeep({ trail: 45, more: 45, gap: 6, shortcuts: false, editing: false }),
+    topBarKeep({ trail: 140, more: 45, gap: 6, shortcuts: true, editing: true })
+  ], [45, 140])
 }
 
 console.log(failures ? `\n${failures} FAILED` : '\nall pass')

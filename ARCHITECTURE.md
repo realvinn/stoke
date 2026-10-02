@@ -830,7 +830,8 @@ npm run verify:topbar         # the title bar's items: the default (on, folder +
                               # the whole block within one hub item), hydrate twice = once,
                               # the editor's moves, what a shortcut may type into (never a
                               # tab waiting on a question), the folder chip (an SSH tab's
-                              # alias never opened) and the order the bar gives way in
+                              # alias never opened), the order the bar gives way in, and the
+                              # tab strip's floor yielding to the actions (`tabsFloorPx`)
 npm run verify:git            # the git chip against REAL scratch repos: clean, dirty,
                               # conflicted, ahead/behind as of a fetch (and never fetching),
                               # an upstream gone, detached, unborn, a linked worktree, a
@@ -1624,7 +1625,7 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     Its editor is the bar itself: a pencil, grips and ×, drag (useTabDrag),
                     Alt+arrows, Delete, + Add, the shortcut form (saved by its button or
                     Cmd/Ctrl+Enter, never on blur). A hidden measurer feeds `fitTopBar`; the
-                    strip keeps `--tabs-floor`
+                    strip keeps `--tabs-floor`, which yields to the actions (`tabsFloorPx`)
   src/lib/useGitStatus.ts  the tab in front's git reading, stale-while-revalidate per folder,
                     read again on a tab switch, window focus, a turn's end, a click and a 10 s
                     poll while visible; a claim object per request (gotcha 20)
@@ -1907,7 +1908,8 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     minted by a read, gotcha 116; shortcut text held to one hub item's size),
                     the editor's moves, `shortcutVerdict` (what a shortcut may type into, and
                     why not), `folderChip` (an SSH tab's alias is never opened, gotcha 18) and
-                    `fitTopBar` (how the bar gives way on a narrow window). verify:topbar
+                    `fitTopBar` (how the bar gives way on a narrow window), and `tabsFloorPx`
+                    (the strip's floor never pushes the actions off the window). verify:topbar
   gitStatus.ts      a folder's git state as the chip shows it: `parseStatusV2`, `gitChip`,
                     `shownGitStatus` (a reading past GIT_STALE_MS is "…", never a stale clean)
                     and `filterOverrides` (the repo's own filter commands emptied, gotcha 147).

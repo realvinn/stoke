@@ -366,6 +366,38 @@ export function pathTail(path: string, max: number = FOLDER_PATH_MAX): string {
 
 /* ----------------------------------------------------- giving way on width */
 
+/**
+ * The least the tab strip keeps (`--tabs-floor`), in px: its natural width or
+ * `TABS_FLOOR_REM`, whichever is less — but never more than the bar has left
+ * once the things that never shrink are placed, less `keep` (the bar's own
+ * pencil, or its editing controls).
+ *
+ * `.titlebar-actions` does not shrink (`flex-shrink: 0`), so a floor that does
+ * not yield pushes them past the window's right edge: at the 940px minimum
+ * with Interface scale 1.6 and four tabs, the floor was 409px and the usage
+ * chip and Settings gear ended at 1077px, out of reach (driven in the built
+ * app, 2026-10-02). With the items off, the strip is `min-width: 0` and the
+ * actions always stayed; with them on — the default — the strip gives way to
+ * the actions first, as it always did, and only then holds its floor against
+ * the items.
+ */
+export function tabsFloorPx(input: { natural: number; floor: number; avail: number; keep: number }): number {
+  const { natural, floor, avail, keep } = input
+  return Math.max(0, Math.floor(Math.min(natural, floor, avail - keep)))
+}
+
+/**
+ * The least the bar itself must keep (`tabsFloorPx`'s `keep`): its trailing
+ * controls, plus the "»" and its gap whenever a shortcut could be moved into
+ * it — out of edit mode, with a shortcut on the bar. Kept to the trail alone,
+ * the "»" that appears once every shortcut has moved drew over the Find
+ * button at 940px and Interface scale 1.6 (driven, 2026-10-02).
+ */
+export function topBarKeep(input: { trail: number; more: number; gap: number; shortcuts: boolean; editing: boolean }): number {
+  const { trail, more, gap, shortcuts, editing } = input
+  return trail + (shortcuts && !editing ? more + gap : 0)
+}
+
 export interface FitItem {
   id: string
   kind: TopBarKind
