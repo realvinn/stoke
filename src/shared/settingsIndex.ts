@@ -526,6 +526,8 @@ export const SETTING_ROWS: readonly SettingRow[] = [
     keywords: ['ssh hosts', 'add host', 'server', 'alias', 'ssh config', 'command on connect', 'keep sessions running', 'kept session', 'persistent', 'tmux', 'byobu', 'write up work done', 'worklog', 'offer to add a key', 'asks for a password']
   },
   { id: 'hosts.key-enroll', page: 'hosts', label: 'When a remote asks for a password', keywords: ['ssh key', 'key login', 'password', 'ssh-copy-id'] },
+  // Inside each machine's row, so drawn only once a machine exists.
+  { id: 'hosts.images', page: 'hosts', label: 'Send pasted and dropped images to this machine', keywords: ['image', 'screenshot', 'paste image', 'upload', 'picture', 'scp', 'drop file'], fallback: 'hosts.list' },
 
   // Browser
   { id: 'browser.profiles', page: 'browser', label: 'Browser profiles', keywords: ['logins', 'cookies', 'site data', 'profile'] },
