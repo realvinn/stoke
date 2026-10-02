@@ -595,3 +595,41 @@ The first version of the looking check counted looks over 400 ms, and it failed 
 loaded Mac. A whole signed request does not fit in a fixed slice: a review found the time is spent
 inside fetch's keep-alive reuse, not in the hub.
 
+## 147. A plain `git status` runs the repository's own code: its fsmonitor hook, and its clean filter
+
+**Found 2026-10-02, building the title bar's git chip (`src/main/gitStatus.ts`).** The chip reads
+`git status` in the folder of the tab in front, every 10 s, the moment a tab opens there — before
+the person has looked at the folder, and before Claude Code's own trust prompt has been answered.
+A folder can be an unpacked archive or a checkout whose `.git/config` and `.git/info/attributes`
+nobody has read, and two of the ways a status reads the work tree run commands named there.
+Measured with git 2.55 on scratch repos:
+
+- **`core.fsmonitor` set to a script runs it on every plain status** (it touched a marker), as the
+  scout found first.
+- **`filter.<x>.clean` runs on any stat-dirty file** — one whose mtime moved — because status
+  re-hashes it through the clean filter to decide whether it changed. A `touch` was enough. The
+  attribute can live in `.git/info/attributes`, so it never shows in a diff. This one survives
+  `-c core.fsmonitor=false` and `--no-optional-locks`.
+
+What the reader does, every run: `-c core.fsmonitor=false`; `--no-optional-locks` (and
+`GIT_OPTIONAL_LOCKS=0`), so no index write and no `post-index-change` hook, and no fight with the
+agent's own `git add`; and, from one `git config --null --show-scope --name-only --get-regexp
+'^filter\.'` first (reading config runs nothing), `-c filter.<name>.clean= -c
+filter.<name>.process= -c filter.<name>.required=false` for every filter of `local`, `worktree` or
+unknown scope (`filterOverrides`). The user's own `global`/`system` filters (git-lfs) stay on:
+they are the user's, and turning LFS off reads every touched LFS file as changed. A filter name
+`-c` cannot carry (an `=`) refuses the status outright: the chip then says the changes are unknown
+rather than run it. `--ignore-submodules=dirty` keeps status out of submodules entirely. It never
+fetches, so ahead/behind is "as of your last fetch" and the tooltip says so.
+
+`verify:git` arms a repo with both traps and a `post-index-change` hook, proves each trap with a
+plain `git status` first (the controls), then reads it through `readGitStatus` and requires all
+three markers absent. Mutated back, dropping `core.fsmonitor=false` turned the fsmonitor check red,
+dropping the overrides turned the filter check red, and dropping both lock switches turned the
+hook check red.
+
+Not covered, reasoned only: on a Mac without the Command Line Tools `/usr/bin/git` is a stub that
+opens Apple's install dialog, so `findGit` takes that path only when `xcode-select -p` answers
+(this Mac has the tools; not reproduced). And on Windows the trap scripts are POSIX `sh`, which
+Git for Windows runs for hooks and filters — not run there yet.
+
