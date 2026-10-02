@@ -104,6 +104,13 @@ export const CH = {
   /** One chat for the read-only viewer: re-read from its tool's own copy, or the store's for an import. */
   chatsOpen: 'chats:open',
 
+  /*
+   * Find in a conversation (shared/transcriptFind.ts): the find bar's search of
+   * the tab's own transcript, in a worker of its own. An SSH tab's answers
+   * `consent` until its host is allowed or the bar says "Just this once".
+   */
+  transcriptFind: 'transcript:find',
+
   // sessions that are not tied to a saved project
   workspaceDefault: 'workspace:default',
   workspaceScratch: 'workspace:scratch',

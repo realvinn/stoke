@@ -3,6 +3,7 @@ import type { IpcRendererEvent } from 'electron'
 import { CH } from '@shared/ipc'
 import type { ClipboardPeek, StokeApi } from '@shared/api'
 import type { ChatIndexStatus } from '@shared/chatIndex'
+import type { TranscriptFindRequest } from '@shared/transcriptFind'
 import type { SttConfig } from '@shared/speechProviders'
 import type {
   Rect,
@@ -86,6 +87,10 @@ const api: StokeApi = {
     importExport: (path?: string | null) => ipcRenderer.invoke(CH.chatsImport, path ?? null),
     removeImport: (importId: number) => ipcRenderer.invoke(CH.chatsRemoveImport, importId),
     open: (chatId: number) => ipcRenderer.invoke(CH.chatsOpen, chatId)
+  },
+
+  transcript: {
+    find: (req: TranscriptFindRequest) => ipcRenderer.invoke(CH.transcriptFind, req)
   },
 
   workspace: {

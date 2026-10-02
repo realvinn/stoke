@@ -33,6 +33,7 @@ import type { CreateProfileInput, ProfilePlan } from './profiles'
 import type { CodingCliDetection, CodingCliId } from './codingClis'
 import type { AccountKind, AgentAccount } from './accounts'
 import type { StokeCliRequest } from './stokeArgs'
+import type { TranscriptFindRequest, TranscriptFindResult } from './transcriptFind'
 import type { ClaudeLaunchDefaults } from './launch'
 import type { SecretStoreStatus } from './secrets'
 import type { SetupPreview } from './setupFile'
@@ -569,6 +570,16 @@ export interface StokeApi {
     removeImport(importId: number): Promise<ChatIndexStatus>
     /** One chat for the read-only viewer; null when it is not in the index (or not viewable). */
     open(chatId: number): Promise<ChatTranscript | null>
+  }
+
+  /** Find in a conversation: the find bar's search of a tab's own transcript. */
+  transcript: {
+    /**
+     * Search the tab's transcript, newest first. Main finds the file from the
+     * session id (never a path from here); an SSH tab's answers `consent`
+     * until its host is allowed or `consent: 'once'` is passed.
+     */
+    find(req: TranscriptFindRequest): Promise<TranscriptFindResult>
   }
 
   workspace: {
