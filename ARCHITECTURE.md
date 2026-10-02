@@ -824,7 +824,9 @@ npm run verify:tabs           # which tab is selected after one is closed, where
                               # reorder moves a terminal pane. And the relaunch: the plan
                               # (the registry's id and version over the tab's, busy, fresh),
                               # Wait and the automatic relaunch, and what counts as a draft.
-                              # And the agent tag: hidden, renamed, keyed on the default agent
+                              # And the agent tag: hidden, renamed, keyed on the default agent.
+                              # And the tab menu: which tabs have a folder here to reveal
+                              # (never an SSH or Add-key tab, gotcha 18)
 npm run verify:restore        # the tab-restore store: what survives a quit, the caps and age
                               # limits, a corrupt file, and the update-restart marker consumed
                               # once and only while fresh
@@ -1604,7 +1606,9 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     (`cliRelaunch: 'auto'`) and `looksTyped` (what counts as a draft); and
                     the launcher's: `continuePlan` (Continue resumes by id, never a twin),
                     `newTabToReuse`, `tabLabel` (the agent tag: shown or not, the user's
-                    label, on tabs whose agent is not the default one)
+                    label, on tabs whose agent is not the default one); and the tab menu's
+                    `openableFolder`/`folderMenuEntry` (the Reveal item and the status bar's
+                    path, disabled with a reason on SSH)
   src/lib/agentColor.ts  `agentMark(key)`: `data-agent` plus `--agent-ink`/`-text`/`-fill`
                     pointed at that key's tokens, inline, so a new agent or account needs
                     no stylesheet line. `paneAgent`: an install or key-enrolment tab is no

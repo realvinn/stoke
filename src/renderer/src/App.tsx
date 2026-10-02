@@ -3469,6 +3469,20 @@ export function App(): React.JSX.Element {
     [closeTab]
   )
 
+  /*
+   * Show a folder in the file manager — the tab menu's folder item and the
+   * status bar's path. Main answers '' or a sentence (`revealProblem`); it used
+   * to be thrown away, so a deleted folder did nothing and said nothing.
+   */
+  const revealFolder = useCallback((path: string): void => {
+    void window.stoke.projects.reveal(path).then(
+      (problem) => {
+        if (problem) setError(`Could not open the folder: ${problem}`)
+      },
+      (e) => setError(ipcErrorMessage(e))
+    )
+  }, [])
+
   /**
    * "Start again", on the bar a session leaves behind when it exits.
    *
@@ -5336,6 +5350,8 @@ export function App(): React.JSX.Element {
         onCloseTab={requestCloseTab}
         onRenameTab={renameTab}
         onCloseTabsSide={closeTabsSide}
+        onRevealFolder={revealFolder}
+        hostLabelFor={(id) => settings?.hosts.find((h) => h.id === id)?.label || null}
         onNewTab={openNewTab}
         onReorderTab={reorderTab}
         onToggleSidebar={() => setSidebarOpen((v) => !v)}
@@ -5916,7 +5932,7 @@ export function App(): React.JSX.Element {
         }}
         liveVersion={activeTab ? (live[activeTab.ptyId]?.version ?? null) : null}
         profileLabel={activeProfile?.label ?? null}
-        onRevealProject={(p) => void window.stoke.projects.reveal(p)}
+        onRevealProject={revealFolder}
         onOpenSettings={() => openSettings('updates')}
       />
 

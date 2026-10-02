@@ -43,7 +43,10 @@ import {
   newTabToReuse,
   nextCustomTitle,
   tabLabel,
-  tabsToClose
+  tabsToClose,
+  openableFolder,
+  folderMenuEntry,
+  revealLabel
 } from '../src/renderer/src/lib/tabs.ts'
 
 let failures = 0
@@ -1385,6 +1388,68 @@ check('close to the left takes only what precedes', tabsToClose(five, 'c', 'left
 check('close to the right of the last closes nothing', tabsToClose(five, 'e', 'right'), [])
 check('close to the left of the first closes nothing', tabsToClose(five, 'a', 'left'), [])
 check('an anchor not in the list closes nothing', tabsToClose(five, 'zz', 'others'), [])
+
+console.log('\nopenableFolder: only a local session has a folder this computer can open')
+{
+  const local = { kind: 'session', cwd: '/Users/v/dev/stoke', hostId: null }
+  check('a local session opens its folder', openableFolder(local), '/Users/v/dev/stoke')
+  check('a Windows path is a folder', openableFolder({ ...local, cwd: 'C:\\Users\\v\\dev\\stoke' }), 'C:\\Users\\v\\dev\\stoke')
+  check('so is one with forward slashes', openableFolder({ ...local, cwd: 'C:/Users/v/dev' }), 'C:/Users/v/dev')
+  check('and a UNC share', openableFolder({ ...local, cwd: '\\\\nas\\work' }), '\\\\nas\\work')
+  // Gotcha 18: the cwd is the alias. Gated on hostId, never on the string, so
+  // even an alias that LOOKS like a path is refused.
+  check('an SSH tab has none (its cwd is the alias)', openableFolder({ kind: 'session', cwd: 'vps', hostId: 'host-1' }), null)
+  check('even when the alias looks like a path', openableFolder({ kind: 'session', cwd: '/srv/box', hostId: 'host-1' }), null)
+  check(
+    'an Add-key tab has none',
+    openableFolder({ kind: 'session', cwd: 'vps', hostId: 'host-1', enrollHostId: 'host-1' }),
+    null
+  )
+  check(
+    'nor does an Add-key tab whose hostId is somehow missing',
+    openableFolder({ kind: 'session', cwd: '/srv/box', hostId: null, enrollHostId: 'host-1' }),
+    null
+  )
+  check('a New tab has none', openableFolder({ kind: 'new', cwd: '', hostId: null }), null)
+  check('another machine\u2019s session has none', openableFolder({ kind: 'remote', cwd: '/Users/other/dev', hostId: null }), null)
+  check('a bare alias on a local tab is not a folder', openableFolder({ ...local, cwd: 'vps' }), null)
+  check('nor is the SSH start\u2019s "." fallback', openableFolder({ ...local, cwd: '.' }), null)
+  check('nor an empty cwd', openableFolder({ ...local, cwd: '' }), null)
+}
+
+console.log('\nfolderMenuEntry: the tab menu\u2019s folder item, hidden or disabled with a reason')
+{
+  check(
+    'a local session gets an item that opens the folder',
+    folderMenuEntry({ kind: 'session', cwd: '/Users/v/dev/stoke', hostId: null }, null),
+    { path: '/Users/v/dev/stoke' }
+  )
+  check(
+    'an SSH tab gets a disabled item naming the host',
+    folderMenuEntry({ kind: 'session', cwd: 'vps', hostId: 'host-1' }, 'My VPS'),
+    { reason: 'This session runs on My VPS; its folder is on that machine.' }
+  )
+  check(
+    'with the alias when the host has no name in Settings',
+    folderMenuEntry({ kind: 'session', cwd: 'vps', hostId: 'host-1' }, null),
+    { reason: 'This session runs on vps; its folder is on that machine.' }
+  )
+  check(
+    'an Add-key tab gets the same disabled item',
+    folderMenuEntry({ kind: 'session', cwd: 'vps', hostId: 'host-1', enrollHostId: 'host-1' }, ''),
+    { reason: 'This session runs on vps; its folder is on that machine.' }
+  )
+  check('a New tab gets no item', folderMenuEntry({ kind: 'new', cwd: '', hostId: null }, null), null)
+  check('another machine\u2019s session gets no item', folderMenuEntry({ kind: 'remote', cwd: '/x', hostId: null }, null), null)
+  check(
+    'a local tab with no usable path is disabled, not hidden',
+    folderMenuEntry({ kind: 'session', cwd: '.', hostId: null }, null),
+    { reason: 'This tab has no folder on this computer.' }
+  )
+  check('macOS says Finder', revealLabel('darwin'), 'Reveal in Finder')
+  check('Windows says Explorer', revealLabel('win32'), 'Show in Explorer')
+  check('Linux says Open folder', revealLabel('linux'), 'Open folder')
+}
 
 /*
  * The tally is the LAST thing in this file, and it has to stay that way.

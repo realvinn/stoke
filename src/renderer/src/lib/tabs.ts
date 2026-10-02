@@ -1143,3 +1143,70 @@ export function tabsToClose(ids: string[], anchorId: string, side: CloseSide): s
   if (side === 'others') return ids.filter((id) => id !== anchorId)
   return side === 'right' ? ids.slice(at + 1) : ids.slice(0, at)
 }
+
+/* ------------------------------------------------- a tab's folder on disk */
+
+/** The fields of a tab the folder rules read. */
+export interface FolderTab {
+  kind: string
+  cwd: string
+  hostId: string | null
+  enrollHostId?: string
+}
+
+/** A path this computer can open: POSIX `/…`, Windows `C:\…` or `C:/…`, or a UNC `\\server\share`. */
+const ABSOLUTE_PATH = /^(?:\/|[A-Za-z]:[\\/]|\\\\)/
+
+/**
+ * The folder on THIS computer a tab's session runs in, or null when it has
+ * none to open.
+ *
+ * The tab menu's Reveal item and the status bar's folder button both ask this,
+ * so the two cannot disagree about which tabs have a folder. Gated on what the
+ * tab IS, never on whether the string looks like a path: an SSH tab's `cwd` is
+ * the host alias (gotcha 18), and an "Add key to …" tab carries the same alias
+ * with `hostId` set too. The status bar used to hand that alias to
+ * `shell.openPath`, a click that could open nothing. A New tab has no cwd yet,
+ * and a `remote` tab is another machine's session. The absolute-path test is
+ * the last guard, for a cwd no launch should produce (the SSH start's `'.'`
+ * pty fallback, a relative path from an old tabs.json).
+ */
+export function openableFolder(tab: FolderTab): string | null {
+  if (tab.kind !== 'session' || tab.hostId || tab.enrollHostId) return null
+  return ABSOLUTE_PATH.test(tab.cwd) ? tab.cwd : null
+}
+
+/**
+ * What the tab menu shows for the folder item: nothing (`null`), an item that
+ * opens `path`, or a disabled item with the `reason` the menu's footer gives.
+ *
+ * Hidden on a New tab (no folder yet) and on another machine's session, where
+ * the item could never mean anything. Shown DISABLED on an SSH or Add-key tab,
+ * because those do have a folder — on the far machine — and an item that
+ * silently vanishes reads as a menu that forgot it. `hostLabel` is the host's
+ * name in Settings; the alias in `cwd` stands in when there is none.
+ */
+export function folderMenuEntry(
+  tab: FolderTab,
+  hostLabel: string | null
+): { path: string } | { reason: string } | null {
+  if (tab.kind !== 'session') return null
+  const path = openableFolder(tab)
+  if (path) return { path }
+  if (tab.hostId || tab.enrollHostId) {
+    return { reason: `This session runs on ${hostLabel || tab.cwd}; its folder is on that machine.` }
+  }
+  return { reason: 'This tab has no folder on this computer.' }
+}
+
+/**
+ * The folder item's words, in the platform's own: Finder on macOS, Explorer on
+ * Windows, and a plain "Open folder" for every Linux file manager. Not
+ * "Open folder" everywhere, because the sidebar's Open button already means
+ * "pick a folder to start in", and the menu item does the other thing.
+ */
+export function revealLabel(platform: string): string {
+  if (platform === 'darwin') return 'Reveal in Finder'
+  if (platform === 'win32') return 'Show in Explorer'
+  return 'Open folder'
+}

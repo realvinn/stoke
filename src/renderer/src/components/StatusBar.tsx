@@ -4,7 +4,7 @@ import { ContextBar } from './ContextMeter'
 import { modelLabel, shortPath } from '../lib/format'
 import { PERMISSION_LABELS } from '../lib/permissions'
 import { MODE_LABELS, sessionMode } from '@shared/launch'
-import { versionNumber, type RelaunchPlan } from '../lib/tabs'
+import { folderMenuEntry, openableFolder, versionNumber, type RelaunchPlan } from '../lib/tabs'
 import { agentMark } from '../lib/agentColor'
 import type { ActivityView } from '@shared/activityView'
 import type { Tab } from '../types'
@@ -294,6 +294,10 @@ export function StatusBar({
    * `=== 'paused'` comparison at each render site below.
    */
   const paused = tab.status === 'paused'
+  const folder = openableFolder(tab)
+  // Why not, in the tab menu's own words ("This session runs on vps; …").
+  const folderEntry = folder ? null : folderMenuEntry(tab, null)
+  const noFolder = folderEntry && 'reason' in folderEntry ? folderEntry.reason : null
 
   return (
     <footer className="statusbar">
@@ -304,13 +308,25 @@ export function StatusBar({
         and the relaunch pill off the end of a bar that is `overflow: hidden`,
         and the two things you most need to see are the two that leave.
       */}
-      <button
-        className="status-btn status-item status-shrink mono"
-        onClick={() => onRevealProject(tab.cwd)}
-        title={`Open ${tab.cwd}`}
-      >
-        {shortPath(tab.cwd, 52)}
-      </button>
+      {/*
+        Clickable only where there is a folder HERE to open — the rule the tab
+        menu's folder item reads (`openableFolder`). An SSH tab's cwd is the
+        host alias (gotcha 18), and this button used to hand `vps` to
+        `shell.openPath`: a click that promised a folder and opened nothing.
+      */}
+      {folder ? (
+        <button
+          className="status-btn status-item status-shrink mono"
+          onClick={() => onRevealProject(folder)}
+          title={`Open ${folder}`}
+        >
+          {shortPath(tab.cwd, 52)}
+        </button>
+      ) : (
+        <span className="status-item status-shrink status-static mono" title={noFolder ?? tab.cwd}>
+          {shortPath(tab.cwd, 52)}
+        </span>
+      )}
 
       {profilePill}
 
