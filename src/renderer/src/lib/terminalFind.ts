@@ -5,6 +5,45 @@
  */
 import type { FindRole, TranscriptFindResult } from '../../../shared/transcriptFind.ts'
 
+/* ------------------------------------------------- a key pressed in the bar */
+
+/**
+ * What the bar does with a key pressed anywhere inside it, before the key can
+ * bubble on to App's window listener.
+ *
+ * That listener hands every key nobody claimed to the terminal in front
+ * (`typeThroughKey`), and it refuses only text fields — a focused BUTTON is
+ * exactly the case it was written for (a click on a chip leaves focus there).
+ * In the bar that was a trap, found driving the built app on 2026-10-02: click
+ * Aa and go on typing the query, and the letters landed in Claude's prompt; Tab
+ * to Copy message and press Enter, and the Enter was written to the pty — it
+ * SUBMITTED the prompt — instead of pressing the button. So:
+ *
+ * - `close`: Escape, from the input or any control.
+ * - `chord`: anything with Ctrl, Cmd or Alt goes on to App, so Cmd+F still
+ *   re-focuses the bar and Cmd+K, Cmd+W and the rest still work.
+ * - `type`: a printable character or Backspace on one of the bar's controls is
+ *   the query being edited: it goes into the input (`typedInto`).
+ * - `keep`: every other plain key stays in the bar — Enter and Space press the
+ *   focused button natively, Tab moves between controls, the input takes its own.
+ */
+export type BarKey = 'close' | 'chord' | 'type' | 'keep'
+
+export function barKey(e: { key: string; ctrlKey: boolean; metaKey: boolean; altKey: boolean }, onInput: boolean): BarKey {
+  if (e.key === 'Escape') return 'close'
+  if (e.ctrlKey || e.metaKey || e.altKey) return 'chord'
+  if (onInput) return 'keep'
+  if (e.key === 'Backspace') return 'type'
+  // One code point is a character (an astral one too); a name ("Enter") is not.
+  // Space is a button's own key, so it presses the control rather than typing.
+  return [...e.key].length === 1 && e.key !== ' ' ? 'type' : 'keep'
+}
+
+/** The query after a `type` key pressed on one of the bar's controls. */
+export function typedInto(query: string, key: string): string {
+  return key === 'Backspace' ? [...query].slice(0, -1).join('') : query + key
+}
+
 /* --------------------------------------------------------- who takes Cmd+F */
 
 /** Where a key event landed, read off the DOM by `findTargetOf`. */

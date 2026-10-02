@@ -35,7 +35,15 @@ import {
 import { BlockCache, readBlocks } from '../src/main/transcriptFind.ts'
 import { TranscriptFindHost } from '../src/main/transcriptFindHost.ts'
 import { ConversationFinder, REMOTE_FRESH_MS, type FinderDeps } from '../src/main/findInConversation.ts'
-import { findOwner, findTargetOf, paletteFindMatch, roleLabel, screenCountLabel } from '../src/renderer/src/lib/terminalFind.ts'
+import {
+  barKey,
+  findOwner,
+  findTargetOf,
+  paletteFindMatch,
+  roleLabel,
+  screenCountLabel,
+  typedInto
+} from '../src/renderer/src/lib/terminalFind.ts'
 import { chordLabel, matchShortcut } from '../src/renderer/src/lib/shortcuts.ts'
 import { hydrateSettings } from '../src/main/settingsSchema.ts'
 import type { SshHost } from '../src/shared/types.ts'
@@ -439,6 +447,32 @@ check('the label says what each platform presses', [chordLabel('find', true), ch
   check('off macOS, Ctrl+Shift+F in the terminal: the terminal', own({ inTerminal: true }), 'terminal')
 }
 
+console.log('\na key pressed inside the bar never reaches the terminal')
+{
+  const k2 = (key: string, m: { ctrl?: boolean; meta?: boolean; alt?: boolean } = {}) => ({
+    key,
+    ctrlKey: !!m.ctrl,
+    metaKey: !!m.meta,
+    altKey: !!m.alt
+  })
+  // Found driving the built app: Enter on a focused Copy message was written to
+  // the pty (submitting the prompt), and letters typed after clicking Aa landed
+  // in Claude's prompt, because App's window listener types a plain key on a
+  // button through to the terminal.
+  check('Enter on a focused button stays in the bar, to press it', barKey(k2('Enter'), false), 'keep')
+  check('so does Space', barKey(k2(' '), false), 'keep')
+  check('a letter typed on a toggle edits the query', barKey(k2('x'), false), 'type')
+  check('Backspace on a toggle edits the query', barKey(k2('Backspace'), false), 'type')
+  check('an emoji is one character', barKey(k2('\u{1F525}'), false), 'type')
+  check('Tab moves between controls, in the bar', barKey(k2('Tab'), false), 'keep')
+  check('in the input every plain key is the input\'s', [barKey(k2('x'), true), barKey(k2('Enter'), true)], ['keep', 'keep'])
+  check('Escape closes from the input or a control', [barKey(k2('Escape'), true), barKey(k2('Escape'), false)], ['close', 'close'])
+  check('a chord goes on to App: Cmd+F re-focuses, Cmd+K opens the palette', [barKey(k2('f', { meta: true }), false), barKey(k2('F', { ctrl: true }), true)], ['chord', 'chord'])
+  check('Alt too (Alt+C on the input is the bar\'s own toggle, handled there)', barKey(k2('c', { alt: true }), true), 'chord')
+  check('typing on a control appends', typedInto('INV', '-'), 'INV-')
+  check('Backspace takes the last character, an emoji whole', typedInto('a\u{1F525}', 'Backspace'), 'a')
+}
+
 console.log('\nthe words')
 check('alternate screen: "on screen"', screenCountLabel(3, 0, 'alternate'), '1 of 3 on screen')
 check('normal buffer: "in the terminal", scrollback and all', screenCountLabel(0, -1, 'normal'), 'None in the terminal')
@@ -461,8 +495,9 @@ console.log('\nthe wires a pure suite cannot otherwise see (gotcha 31)')
   check('the right-click menu offers Find… with the chord', /label: 'Find…',\s+hint: chordLabel\('find', IS_MAC\)/.test(tv), true)
   const bar = read('src/renderer/src/components/TerminalFind.tsx')
   check(
-    'Escape closes the bar from anywhere in it, a button included, not only from the input',
-    /className="term-find"[\s\S]*?onKeyDown=\{onRootKeyDown\}/.test(bar) && /if \(e\.key !== 'Escape'\) return[\s\S]*?close\(\)/.test(bar),
+    'every key in the bar is decided on its root, a button included, not only on the input',
+    /className="term-find"[\s\S]*?onKeyDown=\{onRootKeyDown\}/.test(bar) &&
+      /const onRootKeyDown = [\s\S]*?barKey\(e, e\.target === inputRef\.current\)[\s\S]*?if \(what === 'chord'\) return\s+e\.stopPropagation\(\)[\s\S]*?close\(\)[\s\S]*?typedInto\(/.test(bar),
     true
   )
   check(

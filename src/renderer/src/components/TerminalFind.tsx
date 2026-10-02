@@ -5,7 +5,13 @@ import type { FindConsent, TranscriptFindHit, TranscriptFindResult } from '@shar
 import { isClaudeCode } from '@shared/codingClis'
 import type { Tab } from '../types'
 import { relativeTime, shortPath } from '../lib/format'
-import { conversationCountLabel, roleLabel, screenCountLabel } from '../lib/terminalFind'
+import {
+  barKey,
+  conversationCountLabel,
+  roleLabel,
+  screenCountLabel,
+  typedInto
+} from '../lib/terminalFind'
 import type { FindColors } from '../lib/theme'
 import { Highlight } from './Highlight'
 import { IconArrowDown, IconArrowUp, IconClose, IconRefresh } from './Icons'
@@ -267,13 +273,28 @@ export function TerminalFind({ tab, term, search, colors, initialQuery, openSeq,
 
   const step = (dir: 'next' | 'prev'): void => runScreen(dir)
 
-  // Escape from anywhere in the bar — the input, a toggle, a hit's button —
-  // closes it and hands the keyboard back to the terminal.
+  /*
+   * Every key pressed in the bar — the input, a toggle, a hit's button — is
+   * decided here before it can reach App's window listener, which would hand a
+   * plain key on a button to the terminal: the letters typed after clicking Aa,
+   * and an Enter meant for Copy message that submitted Claude's prompt instead
+   * (`barKey`). Escape closes and hands the keyboard back to the terminal.
+   * React's stopPropagation stops the native event at the root, before window.
+   */
   const onRootKeyDown = (e: React.KeyboardEvent<HTMLDivElement>): void => {
-    if (e.key !== 'Escape') return
-    e.preventDefault()
+    const what = barKey(e, e.target === inputRef.current)
+    if (what === 'chord') return
     e.stopPropagation()
-    close()
+    if (what === 'close') {
+      e.preventDefault()
+      close()
+    } else if (what === 'type') {
+      e.preventDefault()
+      const typed = e.key
+      setQuery((q) => typedInto(q, typed))
+      setSelected(-1)
+      inputRef.current?.focus()
+    }
   }
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>): void => {
