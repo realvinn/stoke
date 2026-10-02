@@ -646,3 +646,29 @@ whole; a quit left markers only, and the next boot swept them. Every check in ve
 mutated back to red. **Not proven:** the real CLI honouring the variable (only its binary was read),
 subagents, `/compact`, plan mode and a pasted image with saving off, the trust prompt on a machine
 whose home is not trusted, and Windows.
+
+> **Checked against the code on 2026-10-02 (a review of the private chat).** Three holes in the
+> cleanup and one in the chord, each shown red by its suite case or measured in the built app:
+> - **"No transcript found" was also what a FAILED lookup said.** The rebind looked the new id up
+>   through `findSessionFile`, which answers null for a folder it could not read and for a
+>   `pathExists` past its deadline (gotcha 40's "briefly wrong rather than late"), and the rebind
+>   caught any throw as null too. Null is `adopt`, so a `/resume` into a saved conversation on a
+>   slow or unreadable disk joined the delete set, and the close took that conversation's
+>   `file-history` checkpoints, `session-env`, `image-cache` and telemetry. The lookup is
+>   `findTranscriptStrict` now (rejects unless every `projects` folder was listed and every stat
+>   said ENOENT/ENOTDIR), a reject or the deadline is `unsure` (`privateRebindVerdict`), and an
+>   unsure id is looked at again by the watchdog and the close and never adopted on a guess.
+> - **The marker went even when a removal failed.** A folder a process still holds (Windows
+>   refuses to remove one), a permission, a tree past the 4 s deadline: the target stayed and the
+>   only list naming it was deleted, so no sweep could ever find it. `cleanup` keeps the marker when
+>   anything but absence or a refusal by containment stops a removal. Driven: `session-env` made
+>   0500, the close left the marker and logged "the next start tries again", and the next start
+>   swept it.
+> - **A close during a rebind's lookup** listed its targets before the `/clear` id joined them and
+>   then had its marker rewritten after it was removed. `finish` waits for pending rebinds (`pending`).
+> - **A held ⇧⌘N started one `claude` per key repeat**: `startPrivate`'s claim is released once a
+>   chat has started, so it guards a double click, not a held key. Measured on the built app with
+>   one second of synthetic repeats at 33 ms: 30 private chats; with `e.repeat` refused, 1.
+>
+> And the strip's disclosure was an ellipsis: the SSH offer's one-line style cut "Anthropic still
+> receives what you send" first (661 px of text in 622 px with the docked browser open). It wraps.

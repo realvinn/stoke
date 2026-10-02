@@ -830,8 +830,10 @@ npm run verify:private        # private chat: the env and settings the CLI gets,
                               # start, slugs and markers, what is deleted (exact joins, realpath
                               # containment, a link out of the tree left alone) and what never
                               # is (bystanders, a resumed saved chat, a folder with no marker),
-                              # the boot sweep, quitSync, the watchdog, and the real wrapper's
-                              # reduced hook event — all on fixture folders (gotcha 74)
+                              # the boot sweep, quitSync, the watchdog, a lookup that cannot
+                              # answer (never adopted), a removal that fails (marker kept), and
+                              # the real wrapper's reduced hook event — all on fixture folders
+                              # (gotcha 74)
 npm run verify:launcher       # the new-session page: each launch value resolved through
                               # tab, Stoke and Claude Code's files (the machine the QA ran
                               # on, modelSettings included, reads what the banner said),
@@ -1294,9 +1296,10 @@ src/main/         Electron main process
                     `<userData>/private/<id>`, the marker written BEFORE it naming the ids and
                     config dirs, the cleanup once the chat's `claude` has REALLY exited (exact
                     joins from `privateCleanupTargets`, each parent realpath'd inside an allowed
-                    base), `quitSync` (folders only), the boot sweep (marker-listed only), and
-                    the 5 s watchdog for a transcript the CLI writes anyway. No electron import:
-                    verify:private runs it on fixture folders
+                    base; a failed removal keeps the marker), `quitSync` (folders only), the boot
+                    sweep (marker-listed only), the 5 s watchdog for a transcript the CLI writes
+                    anyway, and `findTranscriptStrict` (a rebind's lookup: "none" only when every
+                    folder was read). No electron import: verify:private runs it on fixture folders
   folderCheck.ts    a named folder asked about under the launch deadline: why it cannot be
                     opened (`launchFolderProblem`) and its realpath (`realpathFolder`, gotcha
                     91). No electron import, so the phone's folder routes and verify:folders
