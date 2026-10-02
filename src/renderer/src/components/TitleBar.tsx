@@ -104,6 +104,12 @@ interface Props {
    * moment the sheet appears, however it got opened.
    */
   settingsOpen: boolean
+  /**
+   * The title bar's own items (`TopBar`): drawn between the tab strip and the
+   * actions when the owner has them on, and nothing otherwise — so with them
+   * off the bar is exactly what it was.
+   */
+  toolbar?: React.ReactNode
 }
 
 export function TitleBar({
@@ -138,7 +144,8 @@ export function TitleBar({
   labelFor,
   agentTagsShown = true,
   onToggleAgentTags,
-  settingsOpen
+  settingsOpen,
+  toolbar
 }: Props): React.JSX.Element {
   const isMac = platform === 'darwin'
   const listRef = useRef<HTMLDivElement>(null)
@@ -251,7 +258,12 @@ export function TitleBar({
 
   return (
     <>
-    <header className="titlebar" data-platform={platform} data-fullscreen={fullScreen || undefined}>
+    <header
+      className="titlebar"
+      data-platform={platform}
+      data-fullscreen={fullScreen || undefined}
+      data-toolbar={toolbar ? true : undefined}
+    >
       <button
         className="icon-btn"
         onClick={onToggleSidebar}
@@ -475,6 +487,8 @@ export function TitleBar({
           <span className="sr-only">New session</span>
         </button>
       </div>
+
+      {toolbar}
 
       <div className="titlebar-actions">
         <button

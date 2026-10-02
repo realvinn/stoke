@@ -40,7 +40,7 @@ A `dist:*` exists per target and each MUST run on that target's own platform and
 
 Every suite runs alone as `npm run verify:<name>`: context, statusline, unicode, usage,
 profiles, settings, secrets, hub, hub-server, hub-client, hub-relay, providers, claude-config, folders, search, settings-search, chat-sources, color, theme-gen, activity,
-worklog-gate, tabs, launcher, registry,
+worklog-gate, tabs, topbar, git, launcher, registry,
 restore, shortcuts, find, drop, fullscreen, layers, browser-url, browser-profiles, safari-import, chrome-import, voice, agents, accounts, campfire, cli, stoke-args, updates, targets, manifests, portable, winget, worklog-runner,
 worklog-retry, worklog-recall, worklog-autoscan, ssh, ssh-enroll, remote, phone-ui, installer-art, install, welcome,
 selection — the `check` chain — plus extract and security, which
@@ -184,6 +184,8 @@ rule file named on the group line.
   target has had it (`kitHandlers`); a Kit join replaces the Kit in the same append (`postRecovery`).
 - **142.** Send every hub relay frame through `relayFrameParts` (a 512 K pty replay is 1.23 MB as JSON in JSON, over the
   1 MiB cap), stamp a status `max(now, lastAt + 1)`, serve a frame only past BOTH verdicts and a live chain (`chainChanged`).
+- **147.** Never run a plain `git status` in a tab's folder: it runs the repo's `core.fsmonitor` and, on a touched file, its
+  `filter.<x>.clean`. `readGitStatus` passes `core.fsmonitor=false`, no optional locks, and `filterOverrides`; never fetch.
 - **143.** Give every hub waiting state its own poll: a device outside the vault has no presence and no
   sync timer (`waitDelay`, `vaultAppeared`); it asks to join once per sign-in (`autoJoin`), never at start.
 

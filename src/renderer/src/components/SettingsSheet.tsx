@@ -24,6 +24,7 @@ import {
   clampWallpaper
 } from '@shared/ui'
 import { installedAgents } from '@shared/agents'
+import { TOP_BAR_DEFAULTS } from '@shared/topBar'
 import {
   ancestorsOf,
   navAgents,
@@ -211,6 +212,12 @@ interface Props {
   }
   /** Chat history's status and detection, which App holds for the offer and the sidebar too. */
   chats: { status: ChatIndexStatus | null; detection: ChatDetection | null }
+  /**
+   * Appearance › Title bar's "Customise on the title bar…": App closes the
+   * sheet, turns the items on and leaves the bar in edit mode — the editor is
+   * the bar itself.
+   */
+  onCustomiseTitleBar: () => void
   onClose: () => void
 }
 
@@ -241,6 +248,7 @@ export function SettingsSheet({
   onRestartToUpdate,
   sshKeys,
   chats,
+  onCustomiseTitleBar,
   onClose
 }: Props): React.JSX.Element {
   const themes: Theme[] = [...BUILT_IN_THEMES, ...settings.customThemes]
@@ -831,6 +839,43 @@ export function SettingsSheet({
                     </FieldHint>
                   </span>
                 </label>
+
+                {/*
+                  The title bar's own items. The editor is the bar itself
+                  (drag, Alt+arrows, Delete, + Add); this row turns them on and
+                  off, opens that editor, and puts the default back.
+                */}
+                <div className="field" data-setting="appearance.title-bar">
+                  <span className="field-label">Title bar</span>
+                  <label className="check-row">
+                    <input
+                      type="checkbox"
+                      checked={settings.topBar.enabled}
+                      onChange={(e) => onPatch({ topBar: { ...settings.topBar, enabled: e.target.checked } })}
+                    />
+                    <span>
+                      <span className="field-label">Show folder, git and text shortcuts in the title bar</span>
+                      <FieldHint>
+                        Between the tabs and the buttons on the right. A shortcut types its text into the session in
+                        front; one marked to send presses Enter too.
+                      </FieldHint>
+                    </span>
+                  </label>
+                  <div className="btn-row">
+                    <button className="btn" onClick={onCustomiseTitleBar}>
+                      Customise on the title bar…
+                    </button>
+                    <button
+                      className="btn"
+                      data-variant="ghost"
+                      onClick={() =>
+                        onPatch({ topBar: { enabled: true, items: TOP_BAR_DEFAULTS.items.map((i) => ({ ...i })) } })
+                      }
+                    >
+                      Reset to folder and git
+                    </button>
+                  </div>
+                </div>
 
                 <div className="field" data-setting="appearance.interface-scale">
                   <span className="field-label">Interface scale</span>

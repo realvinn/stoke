@@ -76,6 +76,10 @@ const api: StokeApi = {
     reveal: (path: string) => ipcRenderer.invoke(CH.projectsReveal, path)
   },
 
+  git: {
+    status: (path: string, fresh?: boolean) => ipcRenderer.invoke(CH.gitStatus, path, fresh === true)
+  },
+
   chats: {
     detect: () => ipcRenderer.invoke(CH.chatsDetect),
     status: () => ipcRenderer.invoke(CH.chatsStatus),
@@ -105,6 +109,7 @@ const api: StokeApi = {
       ipcRenderer.send(CH.ptyResize, ptyId, cols, rows),
     kill: (ptyId: string) => ipcRenderer.send(CH.ptyKill, ptyId),
     stop: (ptyId: string, capMs?: number) => ipcRenderer.invoke(CH.ptyStop, ptyId, capMs),
+    type: (ptyId: string, text: string, enter: boolean) => ipcRenderer.invoke(CH.ptyType, ptyId, text, enter),
     onData: (cb) => on<[string, string]>(CH.ptyData, cb),
     onExit: (cb) => on<[string, number, number | undefined, boolean | null | undefined]>(CH.ptyExit, cb)
   },

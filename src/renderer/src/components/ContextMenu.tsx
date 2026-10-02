@@ -68,8 +68,18 @@ export function ContextMenu({ x, y, items, header, footer, onClose }: Props): Re
       if (ref.current?.contains(e.target as Node)) return
       onClose()
     }
+    /*
+     * An Escape that closes the menu is the menu's, and stops here. Focus is
+     * usually still in the terminal (a press on a tab or a title-bar chip never
+     * takes it), so one that went on to xterm reached the session as ESC and
+     * interrupted Claude — measured over CDP with a stub that logs its input:
+     * closing a title-bar chip's menu with Escape wrote `\x1b` to the pty.
+     */
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') onClose()
+      if (e.key !== 'Escape') return
+      e.preventDefault()
+      e.stopPropagation()
+      onClose()
     }
     window.addEventListener('mousedown', dismiss, true)
     window.addEventListener('wheel', dismiss, true)

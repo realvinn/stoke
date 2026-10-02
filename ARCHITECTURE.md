@@ -623,9 +623,11 @@ React 19, hand-written CSS, no component library.
 - The tab strip is dragged Chrome-style by `lib/useTabDrag.ts`: pointer events with capture on
   `.tablist`, the real tab on an inline transform, neighbours sliding to preview slots, one
   `moveTab` commit on release with a FLIP settle, Escape reverting. Imperative by design — no
-  React state per frame. Its maths (`nearestSlot`, `previewSlot`, `clampDrag`,
+  React state per frame. Its maths (`nearestSlot`, `previewSlot`, `previewLefts`, `clampDrag`,
   `autoscrollVelocity`) is in `lib/tabs.ts` and asserted by `verify:tabs`; the wiring is not
-  reachable from any suite (gotcha 31).
+  reachable from any suite (gotcha 31). The same hook reorders the title bar's chips in edit
+  mode (`itemAttr: 'tbItem'`), whose widths differ, so neighbours are placed by their own
+  widths (`previewLefts`), which for tabs is exactly the old slot lefts.
 - `lib/ptyBus.ts` retains output per process and replays it on attach, which also makes the
   component safe under React StrictMode's double-mount.
 - Shortcuts (`lib/shortcuts.ts`) use Cmd on macOS and **Ctrl+Shift** elsewhere, because bare
@@ -829,6 +831,19 @@ npm run verify:tabs           # which tab is selected after one is closed, where
                               # an SSH or Add-key tab, gotcha 18), and which tabs a profile
                               # chip's Close N tabs takes (never SSH, never a running turn,
                               # never a tab whose Resume or relaunch is still in flight)
+npm run verify:topbar         # the title bar's items: the default (on, folder + git) and the
+                              # repair (kinds, ids, one folder and one git, shortcut caps,
+                              # the whole block within one hub item), hydrate twice = once,
+                              # the editor's moves, what a shortcut may type into (never a
+                              # tab waiting on a question), the folder chip (an SSH tab's
+                              # alias never opened), the order the bar gives way in, and the
+                              # tab strip's floor yielding to the actions (`tabsFloorPx`)
+npm run verify:git            # the git chip against REAL scratch repos: clean, dirty,
+                              # conflicted, ahead/behind as of a fetch (and never fetching),
+                              # an upstream gone, detached, unborn, a linked worktree, a
+                              # subfolder, no repo; a timeout and no git read "unknown",
+                              # never clean; a repo whose fsmonitor hook and clean filter
+                              # must NOT run (each beside a control proving it would)
 npm run verify:restore        # the tab-restore store: what survives a quit, the caps and age
                               # limits, a corrupt file, and the update-restart marker consumed
                               # once and only while fresh
@@ -1369,6 +1384,12 @@ src/main/         Electron main process
                     electron-free so verify:activity can run it
   activityGit.ts    commit subjects to put names to the activity numbers. Corroboration,
                     never a dependency: several work folders have no repository at all
+  gitStatus.ts      the title bar's git chip (`git:status`): the root and HEAD found with no
+                    process under a deadline, then one `git status --porcelain=v2 --branch`
+                    that runs none of the repo's code — `core.fsmonitor=false`, the repo's
+                    filters emptied, no optional locks (gotcha 147) — and never fetches.
+                    Deduplicated per folder, claimed before any await (`GitStatusReader`).
+                    No electron import: verify:git runs it on real scratch repositories
   updates.ts        claude CLI version/health, and the gate that decides whether to
                     install an update unasked. Reads the CLI's own `autoUpdatesChannel`
                     rather than assuming `latest`, because those are different numbers
@@ -1653,6 +1674,18 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     (profile-scoped, same names told apart), the default folder, scratch,
                     remote machines, Open folder…. Replaced the separate "Start a session"
                     page, which could not be reached again once a project was clicked
+  src/components/TopBar.tsx  the title bar's own items between the tab strip and the actions
+                    (TitleBar's `toolbar` slot): the folder (opens it; an SSH tab's host,
+                    never opened), git (branch, changes, ahead/behind as of the last fetch,
+                    worktree), text shortcuts (typed through `pty:type`, Enter only when the
+                    shortcut sends, refused with a reason where they cannot go) and spaces.
+                    Its editor is the bar itself: a pencil, grips and ×, drag (useTabDrag),
+                    Alt+arrows, Delete, + Add, the shortcut form (saved by its button or
+                    Cmd/Ctrl+Enter, never on blur). A hidden measurer feeds `fitTopBar`; the
+                    strip keeps `--tabs-floor`, which yields to the actions (`tabsFloorPx`)
+  src/lib/useGitStatus.ts  the tab in front's git reading, stale-while-revalidate per folder,
+                    read again on a tab switch, window focus, a turn's end, a click and a 10 s
+                    poll while visible; a claim object per request (gotcha 20)
   src/lib/tabs.ts   besides the tab arithmetic, every relaunch decision as a pure function:
                     `relaunchPlan`, `pendingRelaunchStep` (Wait), `autoRelaunchStep`
                     (`cliRelaunch: 'auto'`) and `looksTyped` (what counts as a draft); and
@@ -1945,6 +1978,19 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     object from named keys, so a settings file written by an older build
                     hydrates a field they miss as undefined and the pane that reads it
                     renders blank. settingsSchema.ts only spreads the defaults
+  topBar.ts         the title bar's own items (`Settings.topBar`): folder, git, text
+                    shortcuts, flexible spaces. TOP_BAR_DEFAULTS (on, folder + git) and
+                    `clampTopBar` (rebuilt from named keys; one folder, one git, ids never
+                    minted by a read, gotcha 116; shortcut text held to one hub item's size,
+                    counted JSON-escaped by `shortcutCost`, as the item carries it),
+                    the editor's moves, `shortcutVerdict` (what a shortcut may type into, and
+                    why not), `folderChip` (an SSH tab's alias is never opened, gotcha 18) and
+                    `fitTopBar` (how the bar gives way on a narrow window), and `tabsFloorPx`
+                    (the strip's floor never pushes the actions off the window). verify:topbar
+  gitStatus.ts      a folder's git state as the chip shows it: `parseStatusV2`, `gitChip`,
+                    `shownGitStatus` (a reading past GIT_STALE_MS is "…", never a stale clean)
+                    and `filterOverrides` (the repo's own filter commands emptied, gotcha 147).
+                    verify:git
   statusLine.ts     the two plan-limit windows the usage chip draws, from the payload
   usageView.ts      the plan-limit chip's arithmetic, framed as what is left and when it
                     comes back, and money as the vendor's own client prints it. Pure

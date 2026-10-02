@@ -907,13 +907,18 @@ export class PtyManager {
    * `SUBMIT_ENTER_DELAY_MS`. Folding the `\r` into the text is the original
    * PX-1 bug: it lands as a newline inside the box. Submits to one session
    * run one at a time (`SubmitQueue`); this returns as soon as it is queued.
+   *
+   * `enter: false` types the text and presses nothing: a title-bar text
+   * shortcut that only types (the default), queued behind any submit in flight
+   * like every other.
    */
-  submit(ptyId: string, text: string): boolean {
+  submit(ptyId: string, text: string, opts: { enter?: boolean } = {}): boolean {
     const s = this.sessions.get(ptyId)
     if (!s || s.exited) return false
     const frames = submitFrames(text, {
       bracketedPaste: s.bracketedPaste,
-      claude: isClaudeCode(cliIdOf(s.cli))
+      claude: isClaudeCode(cliIdOf(s.cli)),
+      enter: opts.enter !== false
     })
     /*
      * Queued behind this session's previous submit, never started beside it:

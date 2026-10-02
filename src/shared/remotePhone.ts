@@ -135,21 +135,27 @@ export function isEndedExpired(endedAt: number | null, now: number): boolean {
  * Another agent's CLI gets the same typed chunks for one line; a multi-line
  * text goes to it inside bracketed paste when the pty has DECSET 2004 on (a
  * shell's own way to keep newlines), plain otherwise.
+ *
+ * `enter: false` types the text and stops: `enter` comes back `''` and
+ * `SubmitQueue` writes no Enter for it. The title bar's text shortcuts use it
+ * — by default a shortcut only TYPES, and the owner presses Enter (2026-10-02).
+ * Same chunks, same newlines, so typing-only is typed exactly like a send.
  */
 export const SUBMIT_CHUNK = 64
 
 export function submitFrames(
   text: string,
-  opts: { bracketedPaste: boolean; claude: boolean }
+  opts: { bracketedPaste: boolean; claude: boolean; enter?: boolean }
 ): { chunks: string[]; enter: string } {
   const multiline = /[\r\n]/.test(text)
+  const enter = opts.enter === false ? '' : '\r'
   if (opts.claude) {
-    return { chunks: typingChunks(text.replace(/\r\n|\r|\n/g, '\u001b\r'), SUBMIT_CHUNK), enter: '\r' }
+    return { chunks: typingChunks(text.replace(/\r\n|\r|\n/g, '\u001b\r'), SUBMIT_CHUNK), enter }
   }
   if (multiline && opts.bracketedPaste) {
-    return { chunks: [`\u001b[200~${text}\u001b[201~`], enter: '\r' }
+    return { chunks: [`\u001b[200~${text}\u001b[201~`], enter }
   }
-  return { chunks: typingChunks(text, SUBMIT_CHUNK), enter: '\r' }
+  return { chunks: typingChunks(text, SUBMIT_CHUNK), enter }
 }
 
 /**
@@ -215,13 +221,21 @@ export class SubmitQueue {
     this.sleep = sleep
   }
 
-  /** Queue one submit; settles once its Enter is written, or it was abandoned. */
+  /**
+   * Queue one submit; settles once its Enter is written, or it was abandoned.
+   * An `enter` of `''` (`submitFrames` with `enter: false`) types and writes no
+   * Enter, and the next queued job starts after its last chunk plus the gap.
+   */
   push(frames: { chunks: string[]; enter: string }, write: (data: string) => boolean): Promise<void> {
     const run = async (): Promise<void> => {
       if (frames.chunks.length === 0) return
       for (let i = 0; i < frames.chunks.length; i++) {
         if (i > 0) await this.sleep(this.timing.chunkGapMs)
         if (!write(frames.chunks[i])) return
+      }
+      if (!frames.enter) {
+        await this.sleep(this.timing.chunkGapMs)
+        return
       }
       await this.sleep(this.timing.enterDelayMs)
       if (!write(frames.enter)) return

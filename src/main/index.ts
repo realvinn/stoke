@@ -19,7 +19,7 @@ import {
 import { createHash, randomUUID } from 'node:crypto'
 import { pathToFileURL } from 'node:url'
 import { homedir } from 'node:os'
-import { basename, dirname, join } from 'node:path'
+import { basename, dirname, isAbsolute, join } from 'node:path'
 import { CH } from '@shared/ipc'
 import { activeThemeId, resolveTheme } from '@shared/themes'
 import { revealInsetFor, revealsOnEntry } from '@shared/fullScreenReveal'
@@ -58,10 +58,14 @@ import {
   loginShellPathValue,
   probeClaude,
   rememberLoginPathIn,
-  resumeOrMint
+  resumeOrMint,
+  setPathKey
 } from './cli.ts'
 import { scanSkills } from './skillsScan.ts'
 import { ClaudeSkillsProjector } from './skillsProject.ts'
+import { findGit, GitStatusReader } from './gitStatus.ts'
+import { NO_REPO } from '../shared/gitStatus.ts'
+import { SHORTCUT_TEXT_MAX } from '../shared/topBar.ts'
 import {
   ClaudeConfigReader,
   McpFileStore,
@@ -295,6 +299,35 @@ let skillsProjector: ClaudeSkillsProjector | null = null
  * (gotcha 40).
  */
 const claudeConfigReader = new ClaudeConfigReader()
+
+/**
+ * The environment the title bar's git runs with: the login-shell PATH Stoke
+ * already builds for every agent (so a Finder launch finds Homebrew's git),
+ * with exactly one PATH key on Windows (gotcha 99).
+ */
+async function gitRunEnv(): Promise<NodeJS.ProcessEnv> {
+  const env: Record<string, string> = {}
+  for (const [k, v] of Object.entries(process.env)) if (typeof v === 'string') env[k] = v
+  setPathKey(env, await buildEnvPath())
+  return env
+}
+
+/**
+ * Which git to run, looked up once and again every few minutes — a git
+ * installed while Stoke runs is found without a restart, and a lookup that
+ * found none is not repeated on every poll.
+ */
+let gitLookup: { at: number; git: Promise<string | null> } | null = null
+function gitBinary(): Promise<string | null> {
+  const now = Date.now()
+  if (!gitLookup || now - gitLookup.at > 5 * 60_000) {
+    gitLookup = { at: now, git: gitRunEnv().then((env) => findGit(env.PATH ?? '')).catch(() => null) }
+  }
+  return gitLookup.git
+}
+
+/** The title bar's git readings, shared by every tab and deduplicated per folder (`git:status`). */
+const gitReader = new GitStatusReader({ git: gitBinary, env: gitRunEnv })
 /** The owner-only MCP files Qwen, Copilot and Claude Code are pointed at; keyed on userData, so made on first use. */
 let mcpFiles: McpFileStore | null = null
 let remote: RemoteServer | null = null
@@ -3216,6 +3249,17 @@ function registerIpc(): void {
     return problem ?? shell.openPath(path as string)
   })
 
+  /*
+   * The title bar's git chip. A folder path in, a reading out; never throws.
+   * Only an absolute path is read: an SSH tab's cwd is a host alias (gotcha
+   * 18), and the renderer never sends one, but a relative string here would
+   * resolve against main's own cwd.
+   */
+  ipcMain.handle(CH.gitStatus, async (_e, path: unknown, fresh: unknown) => {
+    if (typeof path !== 'string' || !path || path.length > 4096 || !isAbsolute(path)) return { ...NO_REPO, at: Date.now() }
+    return gitReader.read(path, fresh === true)
+  })
+
   /* ------------------------------------------------------------------- pty */
   ipcMain.handle(CH.ptyStart, async (_e, opts: LaunchOptions) => {
     const result = await launchSession(opts)
@@ -3227,6 +3271,17 @@ function registerIpc(): void {
   })
 
   ipcMain.on(CH.ptyWrite, (_e, ptyId: string, data: string) => ptys?.write(ptyId, data))
+  /*
+   * A title-bar text shortcut: typed the way Claude Code takes typing (gotchas
+   * 85, 86), Enter only when the shortcut sends. Refused for anything that is
+   * not a non-empty string within the editor's own cap, so the renderer cannot
+   * be used to push an arbitrarily long burst through the typing queue.
+   */
+  ipcMain.handle(CH.ptyType, (_e, ptyId: unknown, text: unknown, enter: unknown) => {
+    if (typeof ptyId !== 'string' || typeof text !== 'string' || !text) return false
+    if (Array.from(text).length > SHORTCUT_TEXT_MAX) return false
+    return ptys?.submit(ptyId, text, { enter: enter === true }) ?? false
+  })
   ipcMain.on(CH.ptyResize, (_e, ptyId: string, cols: number, rows: number) =>
     ptys?.resize(ptyId, cols, rows)
   )

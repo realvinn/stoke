@@ -4,9 +4,13 @@ import { flushSync } from 'react-dom'
 import {
   autoscrollVelocity,
   clampDrag,
+  dataAttrOf,
+  dragItemSelector,
   dragView,
+  lastDragLeft,
   nearestSlot,
   pastSlop,
+  previewLefts,
   previewSlot,
   revealDelta,
   stillOver
@@ -40,6 +44,12 @@ import type { Overhang } from './tabs'
  *
  * The maths is in `tabs.ts` and asserted by `verify:tabs`. What is here is the
  * wiring, which no suite can reach (gotcha 31): prove it over CDP.
+ *
+ * Not only tabs: the title bar's chips reorder the same way in edit mode. The
+ * hook knows its items by one `data-*` attribute (`itemAttr`, `tabId` unless
+ * told otherwise), what a press must not start a drag from (`ignore`), and
+ * whether a press selects (`onSelect`, optional) — the three places it was
+ * once written against tab markup.
  */
 
 export interface TabDragOptions {
@@ -47,7 +57,17 @@ export interface TabDragOptions {
   /** The strip order as rendered. A change mid-drag cancels the drag. */
   ids: readonly string[]
   isMac: boolean
-  onSelect: (id: string) => void
+  /** Called on the press, before any drag: Chrome selects the tab you pick up. Omit to select nothing. */
+  onSelect?: (id: string) => void
+  /**
+   * The dataset key each draggable item carries its id under, as a direct
+   * child of the list (`dragItemSelector`). `tabId` (`data-tab-id`) for the
+   * session strip, the default; the title bar's edit mode drags its chips by
+   * `tbItem`.
+   */
+  itemAttr?: string
+  /** A press inside this never drags: the tab's close button, a chip's remove button. */
+  ignore?: string
   /** The one commit: `dragId` takes `overId`'s index (`moveTab`). */
   onReorder: (dragId: string, overId: string) => void
 }
@@ -81,6 +101,8 @@ interface Dragging {
   /** Slot geometry in list-content coordinates, so scrolling the list moves none of it. */
   lefts: number[]
   centres: number[]
+  /** Each slot's width: the title bar's chips are not all one (`previewLefts`). */
+  widths: number[]
   width: number
   from: number
   to: number
@@ -105,8 +127,15 @@ type Gesture = Pending | Dragging | Spent
 
 const keyOf = (ids: readonly string[]): string => ids.join('\n')
 
-const tabEls = (list: HTMLElement): HTMLElement[] =>
-  Array.from(list.querySelectorAll<HTMLElement>(':scope > [data-tab-id]'))
+const DEFAULT_ITEM_ATTR = 'tabId'
+const DEFAULT_IGNORE = '.tab-close'
+
+/** The draggable items in `list`, in DOM order (`dragItemSelector`). */
+const tabEls = (list: HTMLElement, attr: string): HTMLElement[] =>
+  Array.from(list.querySelectorAll<HTMLElement>(dragItemSelector(attr)))
+
+/** An item's id, read back through the same attribute it was found by. */
+const idOf = (el: HTMLElement, attr: string): string => el.getAttribute(dataAttrOf(attr)) ?? ''
 
 /**
  * The settle's duration and easing, from the same tokens the CSS uses.
@@ -129,6 +158,8 @@ function createTabDrag(get: () => TabDragOptions): TabDrag & {
   let g: Gesture | null = null
   /** Settle animations still running, finished before the next drag measures anything. */
   const running = new Set<Animation>()
+  /** Which attribute this list's items carry their ids under. */
+  const attr = (): string => get().itemAttr ?? DEFAULT_ITEM_ATTR
 
   const listen = (): void => {
     // Capture phase on window, so nothing below can hide a move or a release.
@@ -171,10 +202,10 @@ function createTabDrag(get: () => TabDragOptions): TabDrag & {
      */
     if (e.button !== 0 || e.pointerType === 'touch') return
     if (get().isMac && e.ctrlKey) return
-    if ((e.target as Element).closest('.tab-close')) return
+    if ((e.target as Element).closest(get().ignore ?? DEFAULT_IGNORE)) return
 
     // Chrome selects on press, not on click, so the tab you drag is the one on screen.
-    get().onSelect(id)
+    get().onSelect?.(id)
 
     /*
      * A new press means the previous one was released somewhere we never heard
@@ -205,8 +236,8 @@ function createTabDrag(get: () => TabDragOptions): TabDrag & {
   const begin = (p: Pending, x: number): void => {
     const list = get().listRef.current
     if (!list) return release()
-    const els = tabEls(list)
-    const ids = els.map((el) => el.dataset.tabId ?? '')
+    const els = tabEls(list, attr())
+    const ids = els.map((el) => idOf(el, attr()))
     const from = ids.indexOf(p.id)
     if (from < 0) return release()
 
@@ -257,6 +288,7 @@ function createTabDrag(get: () => TabDragOptions): TabDrag & {
       key: keyOf(ids),
       lefts,
       centres,
+      widths: rects.map((r) => r.width),
       width: rects[from].width,
       from,
       to: from,
@@ -286,9 +318,11 @@ function createTabDrag(get: () => TabDragOptions): TabDrag & {
   const place = (d: Dragging): void => {
     const box = d.list.getBoundingClientRect()
     const scroll = d.list.scrollLeft
+    // The far bound is the last slot's RIGHT edge less this item's width: the
+    // last slot's left for tabs, all one width; never past the list for a chip.
     const left = clampDrag(
       d.x - box.left + scroll - d.grab,
-      d.lefts,
+      [d.lefts[0], lastDragLeft(d.lefts, d.widths, d.width)],
       dragView(scroll, box.width, d.lefts[d.from], d.width, d.over)
     )
     d.over = stillOver(d.over, left, d.width, scroll, box.width)
@@ -296,11 +330,12 @@ function createTabDrag(get: () => TabDragOptions): TabDrag & {
     const to = nearestSlot(d.centres, left + d.width / 2)
     if (to === d.to || to < 0) return
     d.to = to
+    const at = previewLefts(d.lefts, d.widths, d.from, to)
     d.els.forEach((el, i) => {
       if (i === d.from) return
       const slot = previewSlot(i, d.from, to)
       // The CSS transition on `[data-reordering]` is what slides them.
-      el.style.transform = slot === i ? '' : `translateX(${d.lefts[slot] - d.lefts[i]}px)`
+      el.style.transform = slot === i ? '' : `translateX(${at[i] - d.lefts[i]}px)`
     })
   }
 
@@ -373,10 +408,10 @@ function createTabDrag(get: () => TabDragOptions): TabDrag & {
     liftedId: string,
     focus: Element | null
   ): void => {
-    const els = tabEls(list)
+    const els = tabEls(list, attr())
     list.removeAttribute('data-reordering')
     for (const el of els) el.style.transform = ''
-    const lifted = els.find((el) => el.dataset.tabId === liftedId) ?? null
+    const lifted = els.find((el) => idOf(el, attr()) === liftedId) ?? null
 
     /*
      * The tab just put down is the selected one — a press selects — and its
@@ -401,7 +436,7 @@ function createTabDrag(get: () => TabDragOptions): TabDrag & {
       try {
         const { duration, easing } = motion()
         for (let i = 0; i < els.length; i++) {
-          const was = before.get(els[i].dataset.tabId ?? '')
+          const was = before.get(idOf(els[i], attr()))
           if (was === undefined) continue
           const dx = was - after[i]
           if (Math.abs(dx) < 0.5) continue

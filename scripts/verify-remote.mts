@@ -769,6 +769,42 @@ check('only a trailing suffix counts', stripLocalHostnameSuffix('local.example')
     (d) => (empty.push(d), true)
   )
   check('an empty submit writes nothing, not a bare Enter', empty, [])
+
+  /*
+   * `enter: false`: the title bar's text shortcuts type and, by default, press
+   * nothing (the owner, 2026-10-02). The same typing — chunks, ESC CR newlines
+   * — with no Enter written, and the queue still strictly ordered behind it.
+   */
+  check(
+    'enter: false types the same chunks and names no Enter',
+    submitFrames('line one\nline two', { bracketedPaste: true, claude: true, enter: false }),
+    { chunks: ['line one\u001b\rline two'], enter: '' }
+  )
+  check(
+    'enter left out still presses Enter (the phone and every other caller)',
+    submitFrames('hi', { bracketedPaste: false, claude: true }).enter,
+    '\r'
+  )
+  check(
+    'another agent’s multi-line text keeps its paste brackets without the Enter',
+    submitFrames('a\nb', { bracketedPaste: true, claude: false, enter: false }),
+    { chunks: ['\u001b[200~a\nb\u001b[201~'], enter: '' }
+  )
+  const typed: string[] = []
+  const q3 = new SubmitQueue({ chunkGapMs: 1, enterDelayMs: 5, afterEnterMs: 1 })
+  const sink3 = (d: string): boolean => {
+    typed.push(d)
+    return true
+  }
+  await Promise.all([
+    q3.push(submitFrames('T'.repeat(SUBMIT_CHUNK + 3), { bracketedPaste: false, claude: true, enter: false }), sink3),
+    q3.push(submitFrames('send me', { bracketedPaste: false, claude: true }), sink3)
+  ])
+  check(
+    'a type-only job writes no \\r, and the send queued behind it still types after it',
+    typed.map((d) => (d === '\r' ? 'enter' : d[0])),
+    ['T', 'T', 's', 'enter']
+  )
 }
 
 /*

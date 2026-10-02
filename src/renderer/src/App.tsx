@@ -77,6 +77,7 @@ import { Sidebar } from './components/Sidebar'
 import { StatusBar } from './components/StatusBar'
 import { TerminalView } from './components/TerminalView'
 import { TitleBar } from './components/TitleBar'
+import { TopBar } from './components/TopBar'
 import { ActivityPanel } from './components/ActivityPanel'
 import { SshKeyPrompt } from './components/SshKeyPrompt'
 import { OtherMachines } from './components/OtherMachines'
@@ -636,6 +637,17 @@ export function App(): React.JSX.Element {
   // lib/floatingLayers.ts).
   const layerOverBrowser = useBrowserCovered()
   const [settingsOpen, setSettingsOpen] = useState(false)
+  /*
+   * The title bar's items are being arranged (TopBar's edit mode). Here, not in
+   * the bar, because Settings › Appearance › Title bar enters it too: its
+   * "Customise…" closes the sheet and leaves the bar in edit mode.
+   */
+  const [topBarEditing, setTopBarEditing] = useState(false)
+  const topBarOn = settings?.topBar.enabled === true
+  // Turned off mid-edit: the next time it is on, it is on to use, not to arrange.
+  useEffect(() => {
+    if (!topBarOn) setTopBarEditing(false)
+  }, [topBarOn])
   /*
    * Where the sheet opens: a page (any old section id still lands,
    * `resolveSettingsTarget`) and, from the palette, a row on it. Set by whoever
@@ -5426,6 +5438,26 @@ export function App(): React.JSX.Element {
         agentTagsShown={agentTagShown}
         onToggleAgentTags={toggleAgentTags}
         settingsOpen={settingsOpen}
+        toolbar={
+          settings?.topBar.enabled ? (
+            <TopBar
+              isMac={isMac}
+              topBar={settings.topBar}
+              editing={topBarEditing}
+              onEditing={setTopBarEditing}
+              onChange={(topBar) => void patchSettings({ topBar })}
+              tab={activeTab}
+              tabCount={tabs.length}
+              hostLabel={
+                activeTab?.hostId
+                  ? ((h) => (h ? h.label || h.alias : null))(settings.hosts.find((h) => h.id === activeTab.hostId))
+                  : null
+              }
+              dot={activeTab ? (activityViews[activeTab.id]?.dot ?? null) : null}
+              onReveal={(p) => void window.stoke.projects.reveal(p)}
+            />
+          ) : null
+        }
       />
 
       <div className="body-row">
@@ -6054,6 +6086,11 @@ export function App(): React.JSX.Element {
             onPreviewColor: previewAgentColor
           }}
           onRestartToUpdate={requestSelfRestart}
+          onCustomiseTitleBar={() => {
+            setSettingsOpen(false)
+            if (!settings.topBar.enabled) void patchSettings({ topBar: { ...settings.topBar, enabled: true } })
+            setTopBarEditing(true)
+          }}
           chats={{ status: chatStatus, detection: chatDetection }}
           sshKeys={{
             enrollingHostId: sshEnrolling,
