@@ -6,7 +6,7 @@ import { WebglAddon } from '@xterm/addon-webgl'
 import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes'
 import type { ClipboardPeek } from '@shared/api'
 import type { TerminalSettings, Theme, VoiceSettings } from '@shared/types'
-import { dropText } from '@shared/drop'
+import { dropText, imagePasteKeys } from '@shared/drop'
 import { noSignalLine } from '@shared/micDevice'
 import { createRecorder, voiceSupported, type Recorder } from '@shared/voice'
 import { createSignalWatch } from '@shared/voiceLevel'
@@ -247,6 +247,21 @@ export function TerminalView({
   // Kept in a ref so the resize observer can read it without re-subscribing.
   const openUrlRef = useRef(onOpenUrl)
   openUrlRef.current = onOpenUrl
+  /*
+   * An image-only clipboard, pasted by a chord or the menu. A local tab hands
+   * the agent its own paste key so it reads the clipboard itself
+   * (`imagePasteKeys`: Ctrl+V, or Alt+V for Claude Code on Windows). Refs,
+   * because the key handler is bound once per pty and the tab can change under it.
+   */
+  const pasteImageRef = useRef<() => void>(() => {})
+  pasteImageRef.current = () =>
+    window.stoke.pty.write(tab.ptyId, imagePasteKeys(window.stoke.platform, tab.cliId, !!tab.hostId))
+  /**
+   * Whether a bare Ctrl+V with an image must be taken from xterm, whose own
+   * answer is `\x16`: only when that would be the wrong key.
+   */
+  const imageNeedsHandingRef = useRef<() => boolean>(() => false)
+  imageNeedsHandingRef.current = () => imagePasteKeys(window.stoke.platform, tab.cliId, !!tab.hostId) !== '\x16'
 
   // Build the terminal once per pty. Theme and font changes are applied in
   // separate effects rather than by rebuilding, so scrollback survives them.
@@ -588,9 +603,10 @@ export function TerminalView({
          * was consumed and nothing was written, and the Ctrl+V branch below
          * that hands images to the CLI is gated off macOS. `\x16` is what
          * Claude Code reads as "paste", and it then takes the image off the OS
-         * clipboard itself — no image bytes cross the PTY.
+         * clipboard itself — no image bytes cross the PTY. On Windows its
+         * chord is Alt+V instead (`imagePasteKeys`).
          */
-        else if (clip.hasImage) window.stoke.pty.write(tab.ptyId, '\x16')
+        else if (clip.hasImage) pasteImageRef.current()
         return false
       }
 
@@ -601,12 +617,21 @@ export function TerminalView({
        * the OS clipboard - so image paste keeps working and no image bytes ever
        * cross the PTY. Text wins when the clipboard carries both, which is what
        * copying rich content from a page produces.
+       *
+       * An image is handed over here too rather than left to xterm's own \x16
+       * whenever that would be wrong: Claude Code on Windows reads Alt+V, and an
+       * SSH tab sends the image to the machine (`pasteImageRef`).
        */
       if (bareCtrl && key === 'v') {
         const clip = window.stoke.clipboard.readSync()
         if (clip.text) {
           e.preventDefault()
           term.paste(clip.text)
+          return false
+        }
+        if (clip.hasImage && imageNeedsHandingRef.current()) {
+          e.preventDefault()
+          pasteImageRef.current()
           return false
         }
         return true
@@ -1476,13 +1501,14 @@ export function TerminalView({
             },
             {
               // An image clipboard used to show a greyed-out Paste with no
-              // explanation. The CLI reads the image itself on `\x16`.
+              // explanation. The CLI reads the image itself on its paste key
+              // (`pasteImageRef`).
               label: menu.clip.text ? 'Paste' : menu.clip.hasImage ? 'Paste image' : 'Paste',
               hint: IS_MAC ? '⌘V' : 'Ctrl+V',
               disabled: !menu.clip.text && !menu.clip.hasImage,
               onSelect: () => {
                 if (menu.clip.text) termRef.current?.paste(menu.clip.text)
-                else if (menu.clip.hasImage) window.stoke.pty.write(tab.ptyId, '\x16')
+                else if (menu.clip.hasImage) pasteImageRef.current()
                 termRef.current?.focus()
               }
             },

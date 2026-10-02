@@ -9,7 +9,9 @@
  *
  *   node scripts/verify-drop.mts
  */
-import { dropText, isInsertable, quotePath } from '../src/shared/drop.ts'
+import { execFileSync } from 'node:child_process'
+import { existsSync } from 'node:fs'
+import { dropText, escapePath, imagePasteKeys, isInsertable, quotePath } from '../src/shared/drop.ts'
 
 let failures = 0
 
@@ -83,10 +85,28 @@ check('nor a carriage return, for the same reason', isInsertable('/tmp/a\rb'), f
 
 console.log('\na whole drop')
 check('one file, with the trailing space that lets you keep typing', dropText(['/a/b.png'], 'darwin'), '/a/b.png ')
+/*
+ * Several files: the backslash form, never single quotes. This case used to
+ * assert `/a/b.png '/c/d e.png' `, which is the bug: Claude Code splits a paste
+ * only at a space followed by `/` (or a drive letter), so a quoted second path
+ * fused onto the first and no image attached. Its reader is transcribed below
+ * and run over what dropText types.
+ */
 check(
-  'several files are space separated, each quoted on its own merits',
+  'several files are space separated, each escaped on its own merits',
   dropText(['/a/b.png', '/c/d e.png'], 'darwin'),
-  "/a/b.png '/c/d e.png' "
+  String.raw`/a/b.png /c/d\ e.png `
+)
+check(
+  'two macOS screenshots, the case that never attached',
+  dropText(['/a/Screenshot 1.png', '/a/Screenshot 2.png'], 'darwin'),
+  String.raw`/a/Screenshot\ 1.png /a/Screenshot\ 2.png `
+)
+check('one path keeps its single quotes', dropText(['/c/d e.png'], 'linux'), "'/c/d e.png' ")
+check(
+  'Windows keeps double quotes for several too — its backslash is a separator',
+  dropText([String.raw`C:\a b.png`, String.raw`C:\c.png`], 'win32'),
+  String.raw`"C:\a b.png" C:\c.png `
 )
 check('nothing droppable produces nothing, not a bare space', dropText(['/tmp/a\nb'], 'darwin'), '')
 check('an empty drop produces nothing', dropText([], 'darwin'), '')
@@ -95,6 +115,62 @@ check(
   dropText(['/tmp/a\nb', '/good.png'], 'darwin'),
   '/good.png '
 )
+check(
+  'and one bad name of three still leaves several, in the several form',
+  dropText(['/tmp/a\nb', '/x y.png', '/z.png'], 'darwin'),
+  String.raw`/x\ y.png /z.png `
+)
+
+console.log('\nthe backslash form, read back the way each reader reads it')
+/*
+ * Claude Code's reader, transcribed from the installed bundle (2.1.287): split
+ * on a space before `/` or `X:\`, then on newlines; per piece trim, strip one
+ * pair of matching quotes, and turn `\x` into `x` (a doubled backslash
+ * survives as one).
+ */
+const claudePieces = (text: string): string[] =>
+  text
+    .split(/ (?=\/|[A-Za-z]:\\)/)
+    .flatMap((z) => z.split('\n'))
+    .filter((z) => z.trim())
+    .map((z) => {
+      const t = z.trim()
+      const q = (t.startsWith('"') && t.endsWith('"')) || (t.startsWith("'") && t.endsWith("'")) ? t.slice(1, -1) : t
+      return q.replaceAll('\\\\', '\u0000').replace(/\\(.)/g, '$1').replaceAll('\u0000', '\\')
+    })
+const awkward = [
+  '/Users/me/Screenshot 2026-09-02 at 6.11.05\u202fPM.png',
+  "/tmp/it's here.png",
+  '/tmp/$HOME `x` (1) & [2] ; | > *.png',
+  String.raw`/tmp/back\slash.png`,
+  '/tmp/émoji 🎉.png'
+]
+check('Claude reads every path of a multi-file drop back exactly', claudePieces(dropText(awkward, 'darwin')), awkward)
+check(
+  'the old single-quoted form reaches it as ONE piece',
+  claudePieces(`${awkward.slice(0, 2).map((p) => quotePath(p, 'darwin')).join(' ')} `).length,
+  1
+)
+check('escapePath leaves a bare path bare', escapePath('/a/b-c_d.png'), '/a/b-c_d.png')
+check('escapePath leaves non-ASCII alone', escapePath('/a/é\u202f.png'), '/a/é\u202f.png')
+// A real POSIX shell reads the same text back to the same strings.
+if (process.platform === 'win32' || !existsSync('/bin/sh')) console.log('  SKIP  no /bin/sh here')
+else {
+  for (const sh of ['/bin/sh', '/bin/bash', '/bin/dash', '/bin/zsh']) {
+    if (!existsSync(sh)) continue
+    // zsh does not split an unquoted expansion; eval reads the text as typed in every one.
+    const script = `eval "set -- $1"; for a in "$@"; do printf '%s\\0' "$a"; done`
+    const out = execFileSync(sh, ['-c', script, 'sh', dropText(awkward, 'linux')], { encoding: 'utf8' })
+    check(`${sh} reads each path back as one argument`, out.split('\0').slice(0, -1), awkward)
+  }
+}
+
+console.log('\nan image-only clipboard, on a local tab')
+check('macOS: Ctrl+V, which Claude Code reads the clipboard on', imagePasteKeys('darwin', 'claude', false), '\x16')
+check('Linux: the same', imagePasteKeys('linux', 'claude', false), '\x16')
+check('Windows: Alt+V (ESC v), Claude Code’s chord there', imagePasteKeys('win32', 'claude', false), '\x1bv')
+check('Windows, another agent: its terminal Ctrl+V, unchanged', imagePasteKeys('win32', 'codex', false), '\x16')
+check('Windows, an SSH tab: Ctrl+V for the far side, unchanged', imagePasteKeys('win32', 'claude', true), '\x16')
 
 console.log(failures ? `\n${failures} FAILED` : '\nall pass')
 process.exitCode = failures ? 1 : 0

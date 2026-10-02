@@ -64,15 +64,59 @@ export function isInsertable(path: string): boolean {
 }
 
 /**
+ * One POSIX path in the backslash form: every ASCII character outside
+ * `POSIX_BARE` gets a `\` in front, and nothing else changes.
+ *
+ * The form for SEVERAL paths, because it is the one form both readers agree
+ * on. A POSIX shell reads `\x` as a literal `x` outside quotes, so this is as
+ * literal there as single quotes are. Claude Code reads a paste by splitting
+ * it on a space that is followed by `/` or a drive letter
+ * (`/ (?=\/|[A-Za-z]:\\)/`, read out of 2.1.287's bundle), then strips ONE
+ * pair of matching quotes off each piece and turns `\x` back into `x`. So
+ * `'/a/Shot 1.png' '/a/Shot 2.png'` — the old form — reached it as ONE piece
+ * (no space there is followed by `/`), `/a/Shot 1.png' '/a/Shot 2.png`, which
+ * is no file, and neither image attached. Escaped, the only splitting spaces
+ * are the ones between paths.
+ *
+ * Non-ASCII is left alone: no shell splits on it, Claude's splitter looks only
+ * for an ASCII space, and macOS puts a U+202F before "PM" in every screenshot
+ * name, which a backslash would only make harder to read.
+ */
+export function escapePath(path: string): string {
+  return path.replace(/[^A-Za-z0-9_@%+=:,./\-\u0080-￿]/g, (c) => `\\${c}`)
+}
+
+/**
  * A whole drop, ready to be pasted. Empty when nothing in it can be typed,
  * which the caller reads as "do nothing" rather than "paste nothing".
  *
  * The trailing space is deliberate and is what every terminal does: a drop is
  * almost always followed by more typing, and it also keeps a second drop from
  * fusing onto the first path.
+ *
+ * One path keeps its single quotes (`quotePath`); several POSIX paths use the
+ * backslash form (`escapePath`), which is what lets Claude Code attach every
+ * image in a multi-file drop whose names have spaces. Windows keeps its double
+ * quotes either way: a backslash is its separator, not an escape.
  */
 export function dropText(paths: string[], platform: string): string {
   const usable = paths.filter(isInsertable)
   if (!usable.length) return ''
+  if (usable.length > 1 && platform !== 'win32') return `${usable.map(escapePath).join(' ')} `
   return `${usable.map((p) => quotePath(p, platform)).join(' ')} `
+}
+
+/**
+ * What to send a local tab's agent when the clipboard holds only an image, so
+ * it reads the image off the clipboard itself (no bytes cross the pty).
+ *
+ * Claude Code binds its image paste (`chat:imagePaste`) to Ctrl+V on macOS and
+ * Linux and to Alt+V on Windows (read out of 2.1.287's bundle: `alt+v` when
+ * the platform is Windows or WSL). `\x16` is Ctrl+V; Alt+V reaches a terminal
+ * app as ESC v. So on Windows the `\x16` Stoke sent did nothing for Claude.
+ * Every other agent keeps `\x16`, the terminal's own Ctrl+V. An SSH tab never
+ * comes here when uploads are on — its image is sent to the machine instead.
+ */
+export function imagePasteKeys(platform: string, cliId: string, remote: boolean): string {
+  return platform === 'win32' && cliId === 'claude' && !remote ? '\x1bv' : '\x16'
 }
