@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { Project, ProjectMeta, SessionIndexEntry, SessionMeta } from '@shared/types'
 import { chatOriginBadge, type ChatSearchHit } from '@shared/chatIndex'
 import { ContextBar } from './ContextMeter'
@@ -163,6 +163,15 @@ export function Sidebar({
   const [profileMenu, setProfileMenu] = useState<{ x: number; y: number; id: string } | null>(null)
   const menuProfile = profileMenu ? profiles.find((p) => foldGroup(p.id) === foldGroup(profileMenu.id)) : undefined
   const menuPlan = menuProfile && profileTabs ? profileTabs(menuProfile.id) : null
+  /*
+   * A profile that leaves the row while its menu is up (its last folder gone
+   * from the scan, settings changed from the phone or the hub) unmounts the
+   * menu without `onClose`. Dropped here, or the stale menu would pop back at
+   * the old spot the moment that profile returned, with nobody asking.
+   */
+  useEffect(() => {
+    if (profileMenu && !menuProfile) setProfileMenu(null)
+  }, [profileMenu, menuProfile])
 
   /*
    * Only profiles that actually have projects on this machine, so the row never
