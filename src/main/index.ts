@@ -119,7 +119,7 @@ import {
 import { parseSession, readTranscript } from './sessionFile.ts'
 import { fetchRemoteTranscript } from './sshTranscript.ts'
 import { PtyManager, type StartResult } from './pty.ts'
-import { PrivateChats } from './privateChat.ts'
+import { findTranscriptStrict, PrivateChats } from './privateChat.ts'
 import { dropPrivateStoredTabs, privateLaunchProblem } from '../shared/privateChat.ts'
 import { checkMicrophone } from './audio/defaultDevice.ts'
 import { CODING_CLIS, capsFor, cliIdOf, isClaudeCode, isCodingCliId, type CodingCliId } from '../shared/codingClis.ts'
@@ -341,7 +341,8 @@ function privateChatsFor(): PrivateChats {
   privateChats ??= new PrivateChats({
     root: join(app.getPath('userData'), 'private'),
     tmpRoots: privateTmpRoots,
-    findTranscript: findTranscriptIn,
+    // Strict: "could not look" must never read as "no transcript" (gotcha 148).
+    findTranscript: findTranscriptStrict,
     clearStatusFiles: (id) => clearSessionFiles(id),
     onState: (st) => send(CH.privateState, st)
   })
@@ -369,15 +370,6 @@ function privateTmpRoots(): string[] {
   if (process.platform !== 'win32') roots.push(join('/tmp', name))
   if (process.env.CLAUDE_CODE_TMPDIR) roots.push(join(process.env.CLAUDE_CODE_TMPDIR, name))
   return [...new Set(roots)]
-}
-
-/** Where a transcript for `id` is under any of these config dirs, or null. */
-async function findTranscriptIn(id: string, configDirs: readonly string[]): Promise<string | null> {
-  for (const dir of configDirs) {
-    const found = await findSessionFile(id, join(dir, 'projects')).catch(() => null)
-    if (found) return found
-  }
-  return null
 }
 
 /**

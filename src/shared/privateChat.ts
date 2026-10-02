@@ -329,20 +329,27 @@ export function cleanupAllowed(realParent: string, realBases: readonly string[],
  * chat's own folder. `foreign` is a conversation that was saved before, under
  * another folder, which the user `/resume`d into: never deleted — its
  * file-history and session-env are a real conversation's — and the tab says the
- * chat is no longer private. `same` changes nothing; `invalid` is refused.
+ * chat is no longer private. `unsure`: the lookup could not answer (a folder it
+ * could not read, its deadline), so the id is neither — "no transcript found"
+ * would read as a `/clear` and delete a resumed conversation's checkpoints.
+ * `same` changes nothing; `invalid` is refused.
  */
-export type PrivateRebind = 'same' | 'adopt' | 'foreign' | 'invalid'
+export type PrivateRebind = 'same' | 'adopt' | 'foreign' | 'unsure' | 'invalid'
 
 export function privateRebindVerdict(input: {
   newId: string
   known: readonly string[]
-  /** Where a transcript for `newId` was found, or null for none. */
-  transcript: string | null
+  /**
+   * Where a transcript for `newId` was found; null when the lookup read every
+   * folder and found none; undefined when it could not tell.
+   */
+  transcript: string | null | undefined
   /** This chat's `projects/` slug. */
   slug: string | null
 }): PrivateRebind {
   if (!isPrivateId(input.newId)) return 'invalid'
   if (input.known.includes(input.newId)) return 'same'
+  if (input.transcript === undefined) return 'unsure'
   if (input.transcript === null) return 'adopt'
   const parts = input.transcript.split(/[\\/]+/).filter(Boolean)
   const parent = parts.length >= 2 ? parts[parts.length - 2] : ''

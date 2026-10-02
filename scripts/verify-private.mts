@@ -14,7 +14,7 @@
  */
 import { execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import {
@@ -44,7 +44,7 @@ import {
 import { pathRulesFor } from '../src/shared/paths.ts'
 import type { StoredTab, StoredTabs } from '../src/shared/types.ts'
 import { encodePath } from '../src/main/projects.ts'
-import { PrivateChats, type PrivateState } from '../src/main/privateChat.ts'
+import { findTranscriptStrict, PrivateChats, type PrivateState } from '../src/main/privateChat.ts'
 import {
   clearSessionFiles,
   hookCommand,
@@ -215,6 +215,11 @@ console.log('\nrebind, close and the hook event')
     'foreign'
   )
   check('an id that is not one is refused', privateRebindVerdict({ newId: '../x', known: [ID], transcript: null, slug }), 'invalid')
+  check(
+    'a lookup that could not answer is unsure, never a /clear: adopting a resumed chat would delete its checkpoints',
+    privateRebindVerdict({ newId: OTHER, known: [ID], transcript: undefined, slug }),
+    'unsure'
+  )
   check(
     'close asks only when something is lost',
     [
@@ -423,6 +428,99 @@ try {
   }
   check('a root too long for a plain slug refuses to start a chat', refused, true)
   check('and leaves no marker behind', existsSync(longRoot) ? readdirSync(longRoot).length : 0, 0)
+
+  /*
+   * Review fixes (2026-10-02). Each was mutated back to red; see gotcha 148's
+   * "Checked against the code" note.
+   */
+  console.log('\nlooking an id up: "none" only when every folder was read')
+  {
+    const look = join(box, 'look')
+    const lookCfg = join(look, '.claude')
+    check('no config dir at all: none', await findTranscriptStrict(ID, [join(look, 'absent')]), null)
+    put(join(lookCfg, 'projects', '-a', `${OTHER}.jsonl`))
+    put(join(lookCfg, 'projects', 'stray-file'))
+    check('found where it is; a stray file beside the folders is not an error', await findTranscriptStrict(OTHER, [lookCfg]), join(lookCfg, 'projects', '-a', `${OTHER}.jsonl`))
+    check('a folder read through with no such file: none', await findTranscriptStrict(ID2, [lookCfg]), null)
+    if (process.platform !== 'win32' && process.getuid?.() !== 0) {
+      chmodSync(join(lookCfg, 'projects'), 0o000)
+      let threw = false
+      try {
+        await findTranscriptStrict(ID2, [lookCfg])
+      } catch {
+        threw = true
+      }
+      chmodSync(join(lookCfg, 'projects'), 0o700)
+      check('a folder it could not list is "could not tell", never "none"', threw, true)
+    }
+  }
+
+  console.log('\na rebind that cannot look, a rebind still looking at close, and a file that will not go')
+  {
+    // Ids the CLI could move to: a /clear's (no transcript) and a saved chat
+    // resumed into, whose lookups fail until `canLook` is set.
+    const cleared = randomUUID()
+    const resumed = randomUUID()
+    const slowId = randomUUID()
+    let canLook = false
+    const seen: PrivateState[] = []
+    const opts = {
+      root,
+      tmpRoots: () => [tmpRoot],
+      findTranscript: async (id: string): Promise<string | null> => {
+        if (id === slowId) return new Promise((r) => setTimeout(() => r(null), 150))
+        if (id === resumed || !canLook) throw new Error('EACCES')
+        return null
+      },
+      clearStatusFiles: () => {},
+      onState: (st: PrivateState) => seen.push(st)
+    }
+    const c3 = new PrivateChats(opts)
+    const a = await c3.begin([cfg])
+    c3.attach(a.id, 'pty-u')
+    const clearedFile = join(cfg, 'session-env', cleared, 'h.sh')
+    const resumedFile = join(cfg, 'file-history', resumed, 'checkpoint@v1')
+    put(clearedFile)
+    put(resumedFile)
+    check('a rebind whose lookup fails is unsure', await c3.rebind('pty-u', cleared), 'unsure')
+    check('and its id is neither deleted nor called saved yet', [[...c3.sessionIds()].includes(cleared), seen.length], [false, 0])
+    canLook = true
+    await c3.scan()
+    check('the watchdog looks again, and a /clear it can now place is adopted', [...c3.sessionIds()].includes(cleared), true)
+    check('a resumed chat whose lookup never answers stays unsure', await c3.rebind('pty-u', resumed), 'unsure')
+    await c3.finish('pty-u')
+    check("the close deletes the adopted id's files", existsSync(clearedFile), false)
+    check("and leaves the never-placed one's checkpoints whole", existsSync(resumedFile), true)
+
+    // A close while a rebind is still looking its id up waits for it.
+    const b = await c3.begin([cfg])
+    c3.attach(b.id, 'pty-s')
+    const slowFile = join(cfg, 'session-env', slowId, 'h.sh')
+    put(slowFile)
+    const pending = c3.rebind('pty-s', slowId)
+    await c3.finish('pty-s')
+    check('a /clear still being looked up at close is deleted with the rest', [await pending, existsSync(slowFile)], ['adopt', false])
+    await new Promise((r) => setTimeout(r, 200))
+    check('and its marker is not written back after the close removed it', existsSync(join(root, `${b.id}.json`)), false)
+
+    // A file the cleanup cannot remove keeps the marker, so the next start retries.
+    if (process.platform !== 'win32' && process.getuid?.() !== 0) {
+      const d = await c3.begin([cfg])
+      c3.attach(d.id, 'pty-f')
+      const stuck = join(cfg, 'file-history', d.id, 'x@v1')
+      put(stuck)
+      chmodSync(join(cfg, 'file-history'), 0o500)
+      try {
+        await c3.finish('pty-f')
+      } finally {
+        chmodSync(join(cfg, 'file-history'), 0o700)
+      }
+      check('a file that would not go keeps the marker', [existsSync(join(cfg, 'file-history', d.id)), existsSync(join(root, `${d.id}.json`))], [true, true])
+      check('and its folder still went', existsSync(d.folder), false)
+      const after = new PrivateChats(opts)
+      check('the next start sweeps it', [await after.sweepAtBoot(), existsSync(join(cfg, 'file-history', d.id)), existsSync(join(root, `${d.id}.json`))], [1, false, false])
+    }
+  }
 } finally {
   rmSync(box, { recursive: true, force: true })
 }

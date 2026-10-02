@@ -66,7 +66,18 @@ interface Entry {
   foreign: boolean
   /** Claimed before the first await of `finish`, so two exits cannot both clean (gotcha 20). */
   finishing: boolean
+  /**
+   * Ids the chat moved to whose transcript lookup could not answer: neither
+   * deleted nor called saved until a later look does (`settle`). The watchdog
+   * and the close each look again.
+   */
+  unsure: Set<string>
+  /** Rebinds still looking their id up. `finish` waits for them, or an id they adopt would miss the cleanup. */
+  pending: Set<Promise<unknown>>
 }
+
+/** What became of one cleanup target. Only `failed` keeps the marker for the next sweep. */
+type Removal = 'removed' | 'absent' | 'refused' | 'failed'
 
 export interface PrivateChatsOptions {
   /** `<userData>/private`. Made 0700 on first use. */
@@ -74,7 +85,12 @@ export interface PrivateChatsOptions {
   platform?: string
   /** `<tmp>/claude-<uid>` folders the CLI may have written per-cwd temp files under. */
   tmpRoots: () => string[]
-  /** Where a transcript for this id is, under any of these config dirs, or null. */
+  /**
+   * Where a transcript for this id is, under any of these config dirs; null
+   * ONLY when there is certainly none. Rejects when it cannot tell
+   * (`findTranscriptStrict`): a rebind reads null as a `/clear` and deletes
+   * the id's files, so "could not look" must never arrive as null.
+   */
   findTranscript: (id: string, configDirs: readonly string[]) => Promise<string | null>
   /** Remove a status key's statusLine files (a crashed chat's; a live one's go with its pty). */
   clearStatusFiles: (id: string) => void
@@ -166,7 +182,9 @@ export class PrivateChats {
       createdAt: Date.now(),
       leak: false,
       foreign: false,
-      finishing: false
+      finishing: false,
+      unsure: new Set(),
+      pending: new Set()
     }
     // Claimed before the first await below, so a sweep running beside it skips it.
     this.byId.set(id, entry)
@@ -207,16 +225,48 @@ export class PrivateChats {
   async rebind(ptyId: string, newId: string): Promise<PrivateRebind | null> {
     const e = this.byPty.get(ptyId)
     if (!e) return null
-    const known = e.ids
-    if (known.includes(newId)) return 'same'
-    const transcript = isPrivateId(newId) ? await this.findTranscript(newId, e.configDirs).catch(() => null) : null
-    const verdict = privateRebindVerdict({ newId, known, transcript, slug: e.slug })
+    if (e.ids.includes(newId)) return 'same'
+    // Registered before its first await, so a close arriving meanwhile waits
+    // for it (gotcha 20): adopted after the cleanup had listed its targets, the
+    // id's files would stay, and its marker write would land after the marker
+    // was removed.
+    const run = this.settle(e, newId)
+    e.pending.add(run)
+    try {
+      return await run
+    } finally {
+      e.pending.delete(run)
+    }
+  }
+
+  /**
+   * Look `newId` up and act on the verdict. A lookup that cannot answer (an
+   * unreadable folder, the deadline) is `unsure`: the id is kept aside and
+   * looked at again, never adopted on a guess — adopting a conversation the
+   * chat `/resume`d into would delete its checkpoints at close.
+   */
+  private async settle(e: Entry, newId: string): Promise<PrivateRebind> {
+    let transcript: string | null | undefined = null
+    if (isPrivateId(newId)) {
+      try {
+        transcript = await this.within(this.findTranscript(newId, e.configDirs))
+      } catch {
+        transcript = undefined
+      }
+    }
+    const verdict = privateRebindVerdict({ newId, known: e.ids, transcript, slug: e.slug })
+    if (verdict === 'unsure') {
+      if (!e.unsure.has(newId)) console.warn('[stoke] could not tell whether a private chat moved to a saved conversation; looking again')
+      e.unsure.add(newId)
+      return verdict
+    }
+    e.unsure.delete(newId)
     if (verdict === 'adopt' && !e.ids.includes(newId)) {
       e.ids.push(newId)
       await this.writeMarker(e).catch((err) => console.error('[stoke] could not update a private chat marker', err))
     } else if (verdict === 'foreign' && !e.foreign) {
       e.foreign = true
-      this.onState({ ptyId, leak: e.leak, foreign: true })
+      if (e.ptyId && !e.finishing) this.onState({ ptyId: e.ptyId, leak: e.leak, foreign: true })
     }
     return verdict
   }
@@ -248,6 +298,10 @@ export class PrivateChats {
     this.byPty.delete(ptyId)
     this.byId.delete(e.id)
     if (!this.byPty.size) this.disarm()
+    // A rebind still looking up a `/clear`'s id, and any id no look could
+    // place yet: each is settled before the targets are listed.
+    if (e.pending.size) await Promise.allSettled([...e.pending])
+    for (const id of [...e.unsure]) await this.settle(e, id)
     return this.cleanup(e)
   }
 
@@ -293,7 +347,9 @@ export class PrivateChats {
         createdAt: marker.createdAt,
         leak: false,
         foreign: false,
-        finishing: true
+        finishing: true,
+        unsure: new Set(),
+        pending: new Set()
       })
       swept += 1
     }
@@ -341,6 +397,8 @@ export class PrivateChats {
     this.scanning = true
     try {
       for (const e of [...this.byPty.values()]) {
+        // An id an earlier look could not place: looked at again.
+        for (const id of [...e.unsure]) if (!e.finishing) await this.settle(e, id)
         if (e.leak || !e.ptyId) continue
         if (await this.hasTranscript(e)) {
           e.leak = true
@@ -366,7 +424,13 @@ export class PrivateChats {
 
   /* ----------------------------------------------------------- cleanup */
 
-  /** Every target, each only once its parent resolves inside an allowed base. Returns how many were removed. */
+  /**
+   * Every target, each only once its parent resolves inside an allowed base.
+   * Returns how many were removed. The marker goes last, and only when nothing
+   * failed: a folder a process still holds (Windows refuses to remove one), a
+   * permission, a tree too big for the deadline — each is left for the next
+   * boot's sweep to try again, which it can only do while the marker names it.
+   */
   private async cleanup(e: Entry): Promise<number> {
     const realRoot = this.realRoot ?? (await this.ensureRoot().catch(() => this.root))
     const tmpRoots = this.tmpRoots()
@@ -378,21 +442,30 @@ export class PrivateChats {
       tmpRoots,
       join
     })
+    let failed = 0
     for (const cfg of e.configDirs) {
       for (const dir of ID_NAMED_DIRS) {
         let names: string[] = []
         try {
           names = await this.within(readdir(join(cfg, dir)))
-        } catch {
+        } catch (err) {
+          if (!isAbsence(err)) failed += 1
           continue
         }
         for (const n of idFileMatches(names, e.ids)) targets.push({ path: join(cfg, dir, n), within: cfg })
       }
     }
-    const bases = await this.realBases([realRoot, ...e.configDirs, ...tmpRoots])
+    const { bases, unread } = await this.realBases([realRoot, ...e.configDirs, ...tmpRoots])
+    failed += unread
     let removed = 0
     for (const t of targets) {
-      if (await this.removeContained(t.path, bases)) removed += 1
+      const r = await this.removeContained(t.path, bases)
+      if (r === 'removed') removed += 1
+      else if (r === 'failed') failed += 1
+    }
+    if (failed) {
+      console.warn(`[stoke] ${failed} of a private chat's files could not be removed now; the next start tries again`)
+      return removed
     }
     // Last: while the marker exists, a crash in the middle is finished by the next sweep.
     try {
@@ -403,41 +476,44 @@ export class PrivateChats {
     return removed
   }
 
-  private async realBases(paths: readonly string[]): Promise<string[]> {
-    const out: string[] = []
+  /** The bases' realpaths, and how many exist but could not be resolved (their targets wait for the next sweep). */
+  private async realBases(paths: readonly string[]): Promise<{ bases: string[]; unread: number }> {
+    const bases: string[] = []
+    let unread = 0
     for (const p of new Set(paths)) {
       try {
-        out.push(await this.within(realpath(p)))
-      } catch {
-        /* a base that is not there holds nothing to remove */
+        bases.push(await this.within(realpath(p)))
+      } catch (err) {
+        // A base that is not there holds nothing to remove.
+        if (!isAbsence(err)) unread += 1
       }
     }
-    return out
+    return { bases, unread }
   }
 
   /** Remove `path` when it exists and its parent resolves inside one of `bases`. */
-  private async removeContained(path: string, bases: readonly string[]): Promise<boolean> {
+  private async removeContained(path: string, bases: readonly string[]): Promise<Removal> {
     try {
       await this.within(lstat(path))
-    } catch {
-      return false
+    } catch (err) {
+      return isAbsence(err) ? 'absent' : 'failed'
     }
     let parent: string
     try {
       parent = await this.within(realpath(dirname(path)))
-    } catch {
-      return false
+    } catch (err) {
+      return isAbsence(err) ? 'absent' : 'failed'
     }
     if (!cleanupAllowed(parent, bases, this.platform)) {
       console.warn(`[stoke] a private chat file outside Stoke's reach was left alone: ${path}`)
-      return false
+      return 'refused'
     }
     try {
       await this.within(rm(path, { recursive: true, force: true }))
-      return true
+      return 'removed'
     } catch (err) {
       console.error('[stoke] could not remove a private chat file', err)
-      return false
+      return 'failed'
     }
   }
 
@@ -463,6 +539,48 @@ export class PrivateChats {
       if (timer) clearTimeout(timer)
     })
   }
+}
+
+/** The error a missing path gives: anything else (a permission, the deadline) means "could not tell". */
+function isAbsence(err: unknown): boolean {
+  const code = (err as NodeJS.ErrnoException | null)?.code
+  return code === 'ENOENT' || code === 'ENOTDIR'
+}
+
+/**
+ * Where a transcript for `id` is under any of these config dirs; null only
+ * when every `projects` folder was listed and none holds one. Rejects when it
+ * cannot tell — a folder it could not list, a stat that failed for any reason
+ * but absence — which `PrivateChats.settle` reads as `unsure`.
+ * `findSessionFile` (projects.ts) answers null for both on purpose, for lists
+ * that may be briefly wrong rather than late (gotcha 40); here null deletes.
+ */
+export async function findTranscriptStrict(id: string, configDirs: readonly string[]): Promise<string | null> {
+  for (const cfg of new Set(configDirs)) {
+    const root = join(cfg, 'projects')
+    let names: string[]
+    try {
+      names = await readdir(root)
+    } catch (err) {
+      if (isAbsence(err)) continue
+      throw err
+    }
+    const hits = await Promise.all(
+      names.map(async (n) => {
+        const file = join(root, n, `${id}.jsonl`)
+        try {
+          await lstat(file)
+          return file
+        } catch (err) {
+          if (isAbsence(err)) return null
+          throw err
+        }
+      })
+    )
+    const hit = hits.find((h) => h !== null)
+    if (hit) return hit
+  }
+  return null
 }
 
 /** Regular files and links under `dir`, at any depth, up to `max`. */
