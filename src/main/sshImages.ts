@@ -19,7 +19,7 @@ import {
   parseFilenamesPlist,
   parseUriList
 } from '@shared/imageUpload'
-import { inspectUploadFile, sendFile, sendImage } from './sshUpload.ts'
+import { UploadHolds, inspectUploadFile, sendFile, sendImage } from './sshUpload.ts'
 
 /**
  * The IPC half of images and files into an SSH tab: prepare (read, check,
@@ -51,12 +51,13 @@ interface Held {
    * checks it again then), so a queue of big files is never all in memory.
    */
   file: { path: string; label: string; size: number } | null
-  /** Set while a send is in flight: the claim (gotcha 20) and Cancel's handle. */
-  abort: AbortController | null
-  expiry: ReturnType<typeof setTimeout> | null
 }
 
-/** A held image no one sends or cancels is dropped after this. */
+/**
+ * A held upload no one sends or cancels is dropped after this — but never
+ * while any send is in flight, which a queue may be waiting behind
+ * (`UploadHolds`).
+ */
 const HELD_MS = 10 * 60_000
 /** The thumbnail's longest side, in pixels: shown at half that, so it is sharp at 2x. */
 const THUMB_PX = 96
@@ -163,19 +164,7 @@ export function registerSshImageHandlers(deps: {
   /** Only Stoke's own window may send files to a machine. */
   isAppWindow: (sender: WebContents) => boolean
 }): void {
-  const held = new Map<string, Held>()
-  const drop = (id: string): void => {
-    const h = held.get(id)
-    if (!h) return
-    if (h.expiry) clearTimeout(h.expiry)
-    held.delete(id)
-  }
-  const keep = (id: string, h: Held): void => {
-    if (h.expiry) clearTimeout(h.expiry)
-    h.expiry = setTimeout(() => {
-      if (!held.get(id)?.abort) held.delete(id)
-    }, HELD_MS)
-  }
+  const held = new UploadHolds<Held>(HELD_MS)
 
   ipcMain.handle(CH.sshImagePrepare, (e, hostId: unknown, source: unknown): ImagePrepared => {
     if (!deps.isAppWindow(e.sender)) return { ok: false, reason: 'not-allowed', message: 'Not from this window.' }
@@ -212,9 +201,7 @@ export function registerSshImageHandlers(deps: {
     }
 
     const uploadId = randomUUID()
-    const h: Held = { hostId: host.id, name, bytes, file: null, abort: null, expiry: null }
-    held.set(uploadId, h)
-    keep(uploadId, h)
+    held.add(uploadId, { hostId: host.id, name, bytes, file: null })
     return { ok: true, uploadId, name, bytes: bytes.byteLength, thumb: thumbnailOf(bytes) }
   })
 
@@ -230,9 +217,7 @@ export function registerSshImageHandlers(deps: {
     const name = droppedFileName(label, randomBytes(3).toString('hex'))
     if (!isSafeFarName(name)) return { ok: false, reason: 'not-allowed', message: `Stoke could not name ${label} safely.` }
     const uploadId = randomUUID()
-    const h: Held = { hostId: host.id, name, bytes: null, file: { path: check.path, label, size: check.size }, abort: null, expiry: null }
-    held.set(uploadId, h)
-    keep(uploadId, h)
+    held.add(uploadId, { hostId: host.id, name, bytes: null, file: { path: check.path, label, size: check.size } })
     return { ok: true, uploadId, name, bytes: check.size, thumb: null, file: label }
   }
 
@@ -277,17 +262,15 @@ export function registerSshImageHandlers(deps: {
     // Try again — that would only ask main for it again, and again.
     if (!h) return { ok: false, reason: 'not-allowed', message: 'That is no longer waiting to be sent. Paste or drop it again.', detail: '' }
     // Claimed before the first await (gotcha 20): a second press is refused, not a second send.
-    if (h.abort) return { ok: false, reason: 'failed', message: 'That is already being sent.', detail: '' }
+    if (held.sending(id)) return { ok: false, reason: 'failed', message: 'That is already being sent.', detail: '' }
     const host = deps.getSettings().hosts.find((x) => x.id === h.hostId)
     const refusal = hostRefusal(host)
     if (refusal || !host) {
-      drop(id)
+      held.drop(id)
       return { ok: false, reason: 'not-allowed', message: refusal ?? '', detail: '' }
     }
-    const ac = new AbortController()
-    h.abort = ac
-    if (h.expiry) clearTimeout(h.expiry)
-    h.expiry = null
+    const ac = held.begin(id)
+    if (!ac) return { ok: false, reason: 'failed', message: 'That is already being sent.', detail: '' }
     try {
       const opts = { signal: ac.signal, onProgress: progressTo(e.sender, id, h.file ? h.file.size : (h.bytes?.byteLength ?? 0)) }
       const r = h.file
@@ -295,22 +278,18 @@ export function registerSshImageHandlers(deps: {
         : h.bytes
           ? await sendImage(host, h.name, h.bytes, opts)
           : ({ ok: false, reason: 'not-allowed', message: 'Nothing is held to send.', detail: '' } as const)
-      if (r.ok || r.reason === 'cancelled' || r.reason === 'not-allowed' || r.reason === 'not-file') drop(id)
-      else if (held.get(id) === h) {
-        // Kept for Try again, unless a Cancel dropped it meanwhile.
-        h.abort = null
-        keep(id, h)
-      }
+      // Kept for Try again on a failure, unless a Cancel let it go meanwhile.
+      const done = r.ok || r.reason === 'cancelled' || r.reason === 'not-allowed' || r.reason === 'not-file'
+      held.end(id, ac, !done)
       return r
     } catch (err) {
-      drop(id)
+      held.end(id, ac, false)
       return { ok: false, reason: 'failed', message: 'It was not sent.', detail: err instanceof Error ? err.message : String(err) }
     }
   })
 
   ipcMain.handle(CH.sshImageCancel, (e, uploadId: unknown): void => {
     if (!deps.isAppWindow(e.sender) || typeof uploadId !== 'string') return
-    held.get(uploadId)?.abort?.abort()
-    drop(uploadId)
+    held.cancel(uploadId)
   })
 }

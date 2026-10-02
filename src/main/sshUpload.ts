@@ -433,3 +433,134 @@ export async function sendFile(
     await f.close()
   }
 }
+
+/* ------------------------------------------------ what main holds to send */
+
+/** The timer half of `UploadHolds`, so verify:ssh can run its clock. */
+export interface HoldTimers {
+  set(fn: () => void, ms: number): unknown
+  clear(handle: unknown): void
+}
+
+const realTimers: HoldTimers = {
+  set: (fn, ms) => setTimeout(fn, ms),
+  clear: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>)
+}
+
+interface HoldEntry<T> {
+  value: T
+  /** Set while it is being sent: the claim (gotcha 20) and Cancel's handle. */
+  abort: AbortController | null
+  expiry: unknown
+}
+
+/**
+ * The images and files main holds between "prepare" and "send", by the id it
+ * handed the renderer (sshImages.ts), and when one is let go unasked.
+ *
+ * A hold nobody sends lapses after `ms` — the window that made it reloaded or
+ * forgot it. But never while ANY send is in flight: a tab's queue sends one
+ * at a time, and a file may take half an hour (`fileUploadTimeoutMs`), so a
+ * paste of several copied files, or an image pasted behind a 100 MB file,
+ * waits behind it for longer than `ms` while nothing about it is abandoned.
+ * Letting it go then (as the first cut did, on a timer started at the press)
+ * ended its job on "no longer waiting to be sent" — and a job ends without
+ * typing anything, so the paths of the files it HAD already sent were lost.
+ * The one being sent is never let go by the clock either; a failed send
+ * keeps it again, for Try again, on a fresh `ms`.
+ */
+export class UploadHolds<T> {
+  private readonly entries = new Map<string, HoldEntry<T>>()
+  private readonly ms: number
+  private readonly timers: HoldTimers
+
+  constructor(ms: number, timers: HoldTimers = realTimers) {
+    this.ms = ms
+    this.timers = timers
+  }
+
+  add(id: string, value: T): void {
+    this.drop(id)
+    const e: HoldEntry<T> = { value, abort: null, expiry: null }
+    this.entries.set(id, e)
+    this.arm(id, e)
+  }
+
+  get(id: string): T | undefined {
+    return this.entries.get(id)?.value
+  }
+
+  /** Whether `id` is being sent right now. */
+  sending(id: string): boolean {
+    return !!this.entries.get(id)?.abort
+  }
+
+  /**
+   * Claim `id` for a send, before the caller's first await (gotcha 20): its
+   * AbortController, or null when it is not held or is already being sent.
+   */
+  begin(id: string): AbortController | null {
+    const e = this.entries.get(id)
+    if (!e || e.abort) return null
+    this.disarm(e)
+    e.abort = new AbortController()
+    return e.abort
+  }
+
+  /**
+   * The send `begin` claimed ended. `keep` (a failure Try again may answer)
+   * holds it again on a fresh clock; otherwise it is let go. Either way only
+   * if it is still that send's: a Cancel meanwhile already let it go.
+   */
+  end(id: string, claim: AbortController, keep: boolean): void {
+    const e = this.entries.get(id)
+    if (!e || e.abort !== claim) return
+    if (!keep) {
+      this.drop(id)
+      return
+    }
+    e.abort = null
+    this.arm(id, e)
+  }
+
+  /** Let `id` go, stopping its send if one is in flight. */
+  cancel(id: string): void {
+    this.entries.get(id)?.abort?.abort()
+    this.drop(id)
+  }
+
+  drop(id: string): void {
+    const e = this.entries.get(id)
+    if (!e) return
+    this.disarm(e)
+    this.entries.delete(id)
+  }
+
+  get size(): number {
+    return this.entries.size
+  }
+
+  private anySending(): boolean {
+    for (const e of this.entries.values()) if (e.abort) return true
+    return false
+  }
+
+  private disarm(e: HoldEntry<T>): void {
+    if (e.expiry !== null) this.timers.clear(e.expiry)
+    e.expiry = null
+  }
+
+  private arm(id: string, e: HoldEntry<T>): void {
+    this.disarm(e)
+    e.expiry = this.timers.set(() => {
+      e.expiry = null
+      if (this.entries.get(id) !== e || e.abort) return
+      // A queue waits behind a send in flight; nothing about this hold is abandoned yet.
+      if (this.anySending()) {
+        this.arm(id, e)
+        return
+      }
+      this.entries.delete(id)
+    }, this.ms)
+  }
+}

@@ -56,7 +56,9 @@ import {
   spawnWithInput,
   type InputRunOpts,
   type InputRunResult,
-  type UploadInput
+  type UploadInput,
+  UploadHolds,
+  type HoldTimers
 } from '../src/main/sshUpload.ts'
 import {
   MAX_FILE_BYTES,
@@ -2198,6 +2200,63 @@ console.log('\nan image sent to the machine: the queue a tab’s pastes and drop
     await tick()
     same('files held after the pane went are let go, not left in main', t.released.map((id) => id.split('#')[0]).sort(), ['x.txt', 'y.txt'])
   }
+}
+
+console.log('\nwhat main holds to send: let go unasked only while nothing is sending')
+
+{
+  /*
+   * `UploadHolds` (sshUpload.ts) on a clock this suite runs. The first cut let
+   * a hold go HELD_MS after the press whatever else was happening, so a paste
+   * of several copied files, or an image pasted behind a 100 MB file, was let
+   * go while it waited its turn, and its job ended on "no longer waiting"
+   * without typing the paths it HAD sent.
+   */
+  const pending: { fn: () => void; ms: number; live: boolean }[] = []
+  const timers: HoldTimers = {
+    set: (fn, ms) => {
+      const t = { fn, ms, live: true }
+      pending.push(t)
+      return t
+    },
+    clear: (t) => {
+      ;(t as { live: boolean }).live = false
+    }
+  }
+  /** The clock runs past every timer armed so far (not the ones they arm). */
+  const lapse = (): void => {
+    for (const t of pending.splice(0)) {
+      if (!t.live) continue
+      t.live = false
+      t.fn()
+    }
+  }
+  const HELD = 10 * 60_000
+  const holds = new UploadHolds<string>(HELD, timers)
+  holds.add('A', 'a 100 MB file')
+  holds.add('B', 'an image pasted behind it')
+  holds.add('C', 'the second of two copied files')
+  same('each hold is armed for its time', pending.map((t) => t.ms), [HELD, HELD, HELD])
+  const a = holds.begin('A')
+  same('a claim is one send: a second claim is refused', [a instanceof AbortController, holds.begin('A'), holds.sending('A')], [true, null, true])
+  lapse()
+  same('nothing waiting behind a send in flight is let go, nor the send itself', [holds.get('A'), holds.get('B'), holds.get('C')], ['a 100 MB file', 'an image pasted behind it', 'the second of two copied files'])
+  lapse()
+  same('…however long that send takes', holds.size, 3)
+  if (a) holds.end('A', a, false)
+  same('a sent upload is let go at once', holds.get('A'), undefined)
+  const b = holds.begin('B')
+  if (b) holds.end('B', b, true)
+  same('a failed send is held again, for Try again', [holds.get('B'), holds.sending('B')], ['an image pasted behind it', false])
+  lapse()
+  same('once nothing is sending, a hold no one sends is let go', [holds.get('B'), holds.get('C'), holds.size], [undefined, undefined, 0])
+  holds.add('D', 'd')
+  const d = holds.begin('D')
+  holds.cancel('D')
+  same('Cancel stops the send and lets it go', [d?.signal.aborted, holds.get('D')], [true, undefined])
+  if (d) holds.end('D', d, true)
+  same('a send that ends after its Cancel is not held again', holds.get('D'), undefined)
+  same('nothing is left armed', pending.filter((t) => t.live).length, 0)
 }
 
 /* ------------------------------------------------------------------------ */
