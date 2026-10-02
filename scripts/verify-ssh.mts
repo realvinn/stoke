@@ -1233,6 +1233,56 @@ console.log('\nan image sent to the machine: the argv')
   const cmd = args[args.length - 1] ?? ''
   check('the command is one sh -c with no quote inside', cmd.startsWith("sh -c '") && cmd.endsWith("'") && !cmd.slice(7, -1).includes("'"), cmd.slice(0, 40))
   check('the size is in the body', cmd.includes('[ $n -eq 1234 ]'), '')
+  // A file copy, not a session: what scp sets for its own ssh (scp.c's do_cmd).
+  for (const opt of ['ClearAllForwardings=yes', 'PermitLocalCommand=no', 'ForwardAgent=no']) {
+    const i = args.indexOf(opt)
+    check(`the upload: ${opt} is a -o before the destination`, i > 0 && args[i - 1] === '-o' && i < at, args.join(' '))
+  }
+  check('the upload: -x (no X11) before the destination', args.indexOf('-x') > -1 && args.indexOf('-x') < at, args.join(' '))
+  /*
+   * ssh's own parser over a config that sets every one of those the other way,
+   * the shape of a real dev host: a LocalForward with ExitOnForwardFailure (with
+   * the tab holding the port, every image failed "Could not request local
+   * forwarding."), a LocalCommand (it ran once per image), agent and X11
+   * forwarding, RequestTTY force and a RemoteCommand. `-G` resolves without
+   * connecting.
+   */
+  {
+    const dir = await mkdtemp(join(tmpdir(), 'stoke-upload-g-'))
+    const cfg = join(dir, 'config')
+    await writeFile(
+      cfg,
+      [
+        'Host vps',
+        '  HostName 127.0.0.1',
+        '  LocalForward 127.0.0.1:23999 127.0.0.1:22',
+        '  RemoteForward 23998 127.0.0.1:22',
+        '  DynamicForward 23997',
+        '  ExitOnForwardFailure yes',
+        '  PermitLocalCommand yes',
+        '  LocalCommand echo ran',
+        '  ForwardAgent yes',
+        '  ForwardX11 yes',
+        '  RequestTTY force',
+        '  RemoteCommand echo nope',
+        ''
+      ].join('\n')
+    )
+    await lockDown([
+      { path: dir, dir: true },
+      { path: cfg, dir: false }
+    ])
+    const g = await execFileAsync(exe, ['-F', cfg, '-G', ...args.slice(0, at + 1)], { encoding: 'utf8', timeout: 15000 }).catch(
+      (e: { stdout?: string; message?: string }) => ({ stdout: e.stdout ?? `failed: ${e.message ?? ''}` })
+    )
+    await rm(dir, { recursive: true, force: true })
+    const out = g.stdout
+    check('ssh -G: the host config’s forwardings are cleared (no local/remote/dynamic forward)', /^clearallforwardings yes$/m.test(out) && !/^(localforward|remoteforward|dynamicforward) /m.test(out), out.split('\n').filter((l) => /^(clearallforwardings|localforward|remoteforward|dynamicforward) /.test(l)).join('; '))
+    check('ssh -G: its LocalCommand is not run', /^permitlocalcommand no$/m.test(out), '')
+    check('ssh -G: no agent and no X11 handed to the far side', /^forwardagent no$/m.test(out) && /^forwardx11 no$/m.test(out), '')
+    check('ssh -G: no tty, whatever RequestTTY says', /^requesttty (false|no)$/m.test(out), (/^requesttty .*$/m.exec(out) ?? [''])[0])
+    check('ssh -G: its RemoteCommand is dropped', !/^remotecommand /m.test(out), (/^remotecommand .*$/m.exec(out) ?? [''])[0])
+  }
   same('a leading-dash alias sends nothing', buildUploadArgs(host({ alias: '-oProxyCommand=x' }), 'a.png', 3), null)
   same('an empty alias sends nothing', buildUploadArgs(host({ alias: ' ' }), 'a.png', 3), null)
 }

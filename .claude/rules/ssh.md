@@ -498,3 +498,17 @@ OpenSSH server on the far side.
 > then B (hashes A, B, no `.part`); Cancel on A with B waiting published nothing of A and sent B; a
 > two-screenshot drop with a `.txt`, the password host, the menu's Paste image and the opt-out (the
 > stub got `^V`, nothing sent) behaved as before.
+> - **The upload inherited the host's whole config, forwardings included.** A dev host's
+>   `LocalForward` with `ExitOnForwardFailure yes` is common, and its tab already holds the port, so
+>   EVERY image to it failed: measured with the shipped argv, exit 255, "bind [127.0.0.1]:23999:
+>   Address already in use … Could not request local forwarding." A `LocalCommand` ran once per
+>   image too. scp clears exactly these for its own ssh (scp.c's `do_cmd`), and an upload is a file
+>   copy: `ClearAllForwardings=yes`, `PermitLocalCommand=no`, `ForwardAgent=no`, `-x`. verify:ssh
+>   holds each in the argv and through real `ssh -G` over a config setting all of them the other way
+>   (each mutated out: 2 checks red); in the built app a tab holding the forward then sent its image
+>   (hash identical) with the host's `LocalCommand` run only by the tab.
+> - **Riding the user's own ControlMaster, measured** (it was listed as not proven): an alias with
+>   `PubkeyAuthentication no` and `ControlMaster auto` failed the upload argv with "Permission denied
+>   (publickey)." while no master ran, and with a master open on its `ControlPath` the same argv
+>   exited 0 and the file arrived sha256-identical (the master was a plain `ssh -M -N`, not a tab;
+>   that a tab's own ssh becomes the master under `ControlMaster auto` is read from ssh, not driven).

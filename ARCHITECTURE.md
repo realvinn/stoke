@@ -1393,7 +1393,8 @@ src/main/         Electron main process
                     "End session". No electron import; the runner is injectable
   sshUpload.ts      sends an image's bytes to a host on stdin over a second BatchMode ssh
                     (`buildUploadArgs`/`buildUploadBody` in ssh.ts: -T, RemoteCommand=none,
-                    ControlMaster=no, a `sh -c` that writes ~/.cache/stoke/paste/NAME via
+                    ControlMaster=no and scp's own ClearAllForwardings/PermitLocalCommand=no/
+                    ForwardAgent=no/-x, a `sh -c` that writes ~/.cache/stoke/paste/NAME via
                     .part + size check) and reads back the far path. `spawnWithInput`
                     listens for stdin's EPIPE. No electron import. Gotcha 146
   sshImages.ts      the IPC half: prepare (main reads the clipboard itself, or takes a

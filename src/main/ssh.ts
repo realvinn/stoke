@@ -684,7 +684,7 @@ export function buildUploadBody(name: string, size: number): string | null {
 /**
  * The argv that sends an image to `host` (bytes on stdin), or null.
  *
- * `batchArgs`' shape, with four differences, each for this job:
+ * `batchArgs`' shape, with these differences, each for this job:
  *
  * - **`-T`**: never a pty. A user's `RequestTTY force` would otherwise give
  *   the far `cat` a terminal, which rewrites CR/LF and eats ^D in the bytes.
@@ -695,6 +695,14 @@ export function buildUploadBody(name: string, size: number): string | null {
  *   with `ControlMaster auto` in its config gets its images with no key — but
  *   this connection never becomes a master itself, so no persisted master is
  *   ever left behind by Stoke.
+ * - **What scp sets for its own ssh** (scp.c's `do_cmd`), because this
+ *   connection is a file copy too, not a session: `ClearAllForwardings=yes`,
+ *   `PermitLocalCommand=no`, `ForwardAgent=no`, `-x`. Measured against a host
+ *   whose config has `LocalForward` and `ExitOnForwardFailure yes` while its
+ *   tab held the port: without the first, every image failed (exit 255,
+ *   "Could not request local forwarding."); without the second, the host's
+ *   `LocalCommand` ran once per image. An upload has no use for the agent or
+ *   X11 on the far side, so they are not handed there.
  * - It is not a probe: nothing here decides `keyEnrolled` (gotcha 75), and the
  *   tab's own connection and command are untouched (gotcha 19, 126).
  */
@@ -706,6 +714,7 @@ export function buildUploadArgs(host: SshHost, name: string, size: number): stri
   if (body.includes("'")) return null
   return [
     '-T',
+    '-x',
     '-o',
     'BatchMode=yes',
     '-o',
@@ -714,6 +723,12 @@ export function buildUploadArgs(host: SshHost, name: string, size: number): stri
     'ControlMaster=no',
     '-o',
     'RemoteCommand=none',
+    '-o',
+    'ClearAllForwardings=yes',
+    '-o',
+    'PermitLocalCommand=no',
+    '-o',
+    'ForwardAgent=no',
     '-e',
     'none',
     alias,
