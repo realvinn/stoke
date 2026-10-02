@@ -37,6 +37,12 @@ export interface FinderDeps {
   keepRemote(host: SshHost, sessionId: string, read: Extract<RemoteRead, { ok: true }>): string | null
   search(req: Omit<FindWorkerRequest, 'id'>): Promise<FindHostAnswer>
   now(): number
+  /**
+   * Run `fn` once after `ms`. Main passes an unref'd timer; it is what drops a
+   * "Just this once" copy when its time is up rather than at the next search,
+   * which may never come.
+   */
+  later(fn: () => void, ms: number): void
 }
 
 interface RemoteCopy {
@@ -161,13 +167,25 @@ export class ConversationFinder {
         ? { at, kept: true, remotePath: read.remotePath, source: { kind: 'file', file } }
         : { at, kept: false, remotePath: read.remotePath, source: { kind: 'text', key: `${key}\0${at}`, text: read.jsonl } }
       this.copies.set(key, copy)
+      /*
+       * A "Just this once" copy is the conversation itself, held in main. The
+       * prune above runs only when another search comes, and after the bar
+       * closes none may: without this the copy stayed for the life of the app.
+       * Dropped at its time, and only if it is still the copy held (a newer
+       * fetch for the same key is not this one's to drop).
+       */
+      if (!copy.kept) {
+        this.deps.later(() => {
+          if (this.copies.get(key) === copy) this.copies.delete(key)
+        }, REMOTE_FRESH_MS)
+      }
       return { ok: true, copy }
     })().finally(() => this.inFlight.delete(flightKey))
     this.inFlight.set(flightKey, run)
     return run
   }
 
-  /** Drop every copy held in memory, as the bar closing or quitting does. */
+  /** Drop every copy held in memory, as quitting does. */
   forget(): void {
     this.copies.clear()
   }

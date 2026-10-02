@@ -37,6 +37,7 @@ import { TranscriptFindHost } from '../src/main/transcriptFindHost.ts'
 import { ConversationFinder, REMOTE_FRESH_MS, type FinderDeps } from '../src/main/findInConversation.ts'
 import {
   barKey,
+  consentAfterSend,
   findOwner,
   findTargetOf,
   paletteFindMatch,
@@ -311,6 +312,7 @@ const SID = '3f2a6c1e-8a1b-4c2d-9e0f-123456789abc'
 const host = (over: Partial<SshHost> = {}): SshHost => ({ id: 'host-1', label: 'web1', alias: 'web1', command: '', ...over })
 function harness(opts: { host?: SshHost | null; local?: string | null; read?: () => Promise<unknown>; answer?: unknown } = {}) {
   const calls = { allow: [] as string[], read: 0, keep: 0, search: [] as unknown[] }
+  const timers: { fn: () => void; ms: number }[] = []
   let clock = 1_000_000
   const localFile = join(scratch, 'local.jsonl')
   writeFileSync(localFile, jsonl)
@@ -330,9 +332,15 @@ function harness(opts: { host?: SshHost | null; local?: string | null; read?: ()
       calls.search.push(req.source.kind)
       return (opts.answer ?? { ok: true, value: { hits: [], messages: [], total: 0, truncated: false, partial: false } }) as never
     },
-    now: () => clock
+    now: () => clock,
+    later: (fn, ms) => {
+      timers.push({ fn, ms })
+    }
   }
-  return { finder: new ConversationFinder(deps), calls, tick: (ms: number) => (clock += ms) }
+  const fire = (): void => {
+    for (const t of timers.splice(0)) t.fn()
+  }
+  return { finder: new ConversationFinder(deps), calls, timers, fire, tick: (ms: number) => (clock += ms) }
 }
 const ask = (over: Record<string, unknown> = {}) => ({ sessionId: SID, hostId: null, query: 'INV', includeTools: true, ...over })
 const reason = (r: TranscriptFindResult): string => (r.ok ? `ok:${r.source.kind}` : r.reason)
@@ -365,6 +373,27 @@ const reason = (r: TranscriptFindResult): string => (r.ok ? `ok:${r.source.kind}
   h.tick(REMOTE_FRESH_MS)
   await h.finder.find(ask({ consent: 'once', query: 'INV-8' }))
   check('an older copy is fetched again', h.calls.read, 2)
+}
+{
+  // The bar closed after one "Just this once" search: no second search comes
+  // to prune the copy, so its own timer must drop it.
+  const h = harness({ host: host() })
+  await h.finder.find(ask({ consent: 'once' }))
+  check('a "Just this once" copy is set to be dropped at its time', h.timers.map((t) => t.ms), [REMOTE_FRESH_MS])
+  h.fire()
+  await h.finder.find(ask({ consent: 'once', query: 'INV-' }))
+  check('and once dropped it is gone from memory: the next search copies again', h.calls.read, 2)
+  const kept = harness({ host: host({ transcriptFind: true }) })
+  await kept.finder.find(ask())
+  check('a kept copy (on disk already) sets no such timer', kept.timers.length, 0)
+  const twice = harness({ host: host() })
+  await twice.finder.find(ask({ consent: 'once' }))
+  twice.tick(REMOTE_FRESH_MS)
+  await twice.finder.find(ask({ consent: 'once', query: 'INV-' }))
+  // The first copy's timer fires late, after a newer copy took its place.
+  twice.timers[0].fn()
+  await twice.finder.find(ask({ consent: 'once', query: 'INV-8' }))
+  check('an old timer never drops the newer copy that replaced its own', twice.calls.read, 2)
 }
 {
   const h = harness({ host: host() })
@@ -471,6 +500,9 @@ console.log('\na key pressed inside the bar never reaches the terminal')
   check('Alt too (Alt+C on the input is the bar\'s own toggle, handled there)', barKey(k2('c', { alt: true }), true), 'chord')
   check('typing on a control appends', typedInto('INV', '-'), 'INV-')
   check('Backspace takes the last character, an emoji whole', typedInto('a\u{1F525}', 'Backspace'), 'a')
+  check('"Just this once" is sent with every search the bar makes', consentAfterSend('once'), 'once')
+  check('"Allow for this host" is sent once: unticking it in Settings must hold', consentAfterSend('always'), null)
+  check('no answer stays no answer', consentAfterSend(null), null)
 }
 
 console.log('\nthe words')
@@ -498,6 +530,11 @@ console.log('\nthe wires a pure suite cannot otherwise see (gotcha 31)')
     'every key in the bar is decided on its root, a button included, not only on the input',
     /className="term-find"[\s\S]*?onKeyDown=\{onRootKeyDown\}/.test(bar) &&
       /const onRootKeyDown = [\s\S]*?barKey\(e, e\.target === inputRef\.current\)[\s\S]*?if \(what === 'chord'\) return\s+e\.stopPropagation\(\)[\s\S]*?close\(\)[\s\S]*?typedInto\(/.test(bar),
+    true
+  )
+  check(
+    'each conversation search sends the host answer and then drops "always"',
+    /const consent = consentRef\.current\s+consentRef\.current = consentAfterSend\(consent\)/.test(bar),
     true
   )
   check(

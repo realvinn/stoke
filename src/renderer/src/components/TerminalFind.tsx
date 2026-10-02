@@ -7,6 +7,7 @@ import type { Tab } from '../types'
 import { relativeTime, shortPath } from '../lib/format'
 import {
   barKey,
+  consentAfterSend,
   conversationCountLabel,
   roleLabel,
   screenCountLabel,
@@ -167,6 +168,7 @@ export function TerminalFind({ tab, term, search, colors, initialQuery, openSeq,
     const timer = window.setTimeout(() => {
       const t = tabRef.current
       const consent = consentRef.current
+      consentRef.current = consentAfterSend(consent)
       const refresh = refreshRef.current
       refreshRef.current = false
       void window.stoke.transcript

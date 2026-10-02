@@ -3,7 +3,7 @@
  * count line says, how a hit is labelled. Pure, and imports only `src/shared`
  * by relative `.ts` path (gotcha 78), so `verify:find` runs it as it ships.
  */
-import type { FindRole, TranscriptFindResult } from '../../../shared/transcriptFind.ts'
+import type { FindConsent, FindRole, TranscriptFindResult } from '../../../shared/transcriptFind.ts'
 
 /* ------------------------------------------------- a key pressed in the bar */
 
@@ -42,6 +42,17 @@ export function barKey(e: { key: string; ctrlKey: boolean; metaKey: boolean; alt
 /** The query after a `type` key pressed on one of the bar's controls. */
 export function typedInto(query: string, key: string): string {
   return key === 'Backspace' ? [...query].slice(0, -1).join('') : query + key
+}
+
+/**
+ * The host answer to send with the NEXT search, given the one just sent.
+ * "Just this once" holds for the bar's life: every search re-copies under it.
+ * "Allow for this host" is recorded by main on the request that carries it, so
+ * it is sent once and then dropped — kept, it re-ticked the host on the next
+ * letter typed after the user unticked it in Settings with the bar still open.
+ */
+export function consentAfterSend(sent: FindConsent | null): FindConsent | null {
+  return sent === 'once' ? 'once' : null
 }
 
 /* --------------------------------------------------------- who takes Cmd+F */

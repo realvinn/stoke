@@ -379,7 +379,10 @@ function finder(): ConversationFinder {
       findWorker ??= new TranscriptFindHost({ workerPath: transcriptFindWorkerPath })
       return findWorker.find(req)
     },
-    now: () => Date.now()
+    now: () => Date.now(),
+    later: (fn, ms) => {
+      setTimeout(fn, ms).unref()
+    }
   })
   return conversationFinder
 }
