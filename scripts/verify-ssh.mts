@@ -59,7 +59,7 @@ import {
   uploadFailureKind,
   uploadTimeoutMs
 } from '../src/shared/imageUpload.ts'
-import { ImageJobs, type DroppedImageFile, type ImagePhase } from '../src/shared/imageJobs.ts'
+import { ImageJobs, pathTakesFocus, type DroppedImageFile, type ImagePhase } from '../src/shared/imageJobs.ts'
 import type { ImagePrepared, ImageSent, ImageSource } from '../src/shared/api.ts'
 import {
   isPersistableCommand,
@@ -68,7 +68,7 @@ import {
   persistRefusal
 } from '../src/shared/sshPersist.ts'
 import { chmod, readFile, symlink } from 'node:fs/promises'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import type { SshHost } from '../src/shared/types.ts'
 
 const execFileAsync = promisify(execFile)
@@ -1763,6 +1763,42 @@ console.log('\nan image sent to the machine: the queue a tab’s pastes and drop
       [`huge.png is ${formatBytes(MAX_IMAGE_BYTES + 1)}; Stoke sends images up to ${formatBytes(MAX_IMAGE_BYTES)}.`, 'Only images are sent; left out: notes.txt.']
     )
   }
+}
+
+console.log('\nan image sent to the machine: the path typed, and where the keyboard goes')
+{
+  /*
+   * Typing the far path took the keyboard to the terminal unconditionally. An
+   * upload takes seconds over a slow link, and Find in a conversation (merged
+   * beside it, 2026-10-02) is opened in that time: the focus left the find
+   * input mid-query and the rest of the query went into Claude's prompt after
+   * the path. `pathTakesFocus` decides, with the terminal's element and the
+   * strip's own as the places it may come from.
+   */
+  // A DOM-like node: `contains` is true for itself and its descendants.
+  const node = (name: string, kids: unknown[] = []): { name: string; contains(n: never): boolean } => {
+    const self = { name, contains: (n: never): boolean => n === (self as unknown) || kids.includes(n) }
+    return self
+  }
+  const body = { name: 'body' }
+  const textarea = { name: 'xterm-helper-textarea' }
+  const tryAgain = { name: 'Try again' }
+  const findInput = { name: 'find input' }
+  const term = node('xterm', [textarea])
+  const strip = node('image-strip', [tryAgain])
+  same('nothing focused: the terminal takes it', pathTakesFocus(null, body, [term, strip]), true)
+  same('focus on <body>: the terminal takes it', pathTakesFocus(body, body, [term, strip]), true)
+  same('focus already in the terminal stays there', pathTakesFocus(textarea, body, [term, strip]), true)
+  same('focus on the strip’s own button goes back to the terminal', pathTakesFocus(tryAgain, body, [term, strip]), true)
+  same('focus in the find bar’s input is left where it is', pathTakesFocus(findInput, body, [term, strip]), false)
+  same('a missing element (the strip gone, the terminal disposed) is no owner', pathTakesFocus(findInput, body, [null, undefined]), false)
+  const hook = readFileSync(new URL('../src/renderer/src/components/ImageSendStrip.tsx', import.meta.url), 'utf8')
+  same(
+    'the hook asks it before term.focus(), with the terminal and the strip as owners',
+    /term\.paste\(text\)\s+(?:\/\/[^\n]*\n\s+)*if \(pathTakesFocus\(document\.activeElement, document\.body, \[term\.element, stripRef\.current\]\)\) term\.focus\(\)/.test(hook),
+    true
+  )
+  same('every strip root carries the ref', (hook.match(/className="image-strip"[^>]*ref=\{act\.ref\}/g) ?? []).length, 4)
 }
 
 /* ------------------------------------------------------------------------ */

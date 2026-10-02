@@ -285,3 +285,24 @@ export class ImageJobs {
     }
   }
 }
+
+/**
+ * Whether typing the far path also takes the keyboard to the terminal.
+ *
+ * Only when the keyboard is nowhere in particular (`<body>`, or nothing), or
+ * already in the terminal or on the image strip's own buttons (`owners`: the
+ * terminal's element and the strip's). Anywhere else it is somebody else's:
+ * an upload takes seconds over a slow link, and the find bar is opened in that
+ * time — the path was typed and `term.focus()` pulled the keyboard out of the
+ * find input mid-query, so the rest of the query landed in Claude's prompt
+ * after the path (found in review, 2026-10-02, the find bar and the image strip
+ * merged into one pane). Same for a rename field or any other input.
+ */
+export function pathTakesFocus(
+  active: unknown,
+  body: unknown,
+  owners: ReadonlyArray<{ contains(node: never): boolean } | null | undefined>
+): boolean {
+  if (!active || active === body) return true
+  return owners.some((o) => !!o && o.contains(active as never))
+}

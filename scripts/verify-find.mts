@@ -553,6 +553,30 @@ console.log('\na private chat: the screen only, said plainly')
   check('App gives the palette the row\'s words for the tab in front', /findHint=\{paletteFindHint\(activeTab\?\.kind === 'session' \? findConversation\(activeTab\) : 'none'\)\}/.test(app), true)
 }
 
+/*
+ * The find bar floats top-right and grows with its hits; the image strip (SSH
+ * images), the exit card and the dictation strip float along the pane's foot,
+ * at the same z-index and later in the pane, so they covered the bar's last
+ * hits. While the bar is open the tallest of them is its floor.
+ */
+console.log('\nthe bar stops above what floats along the pane\'s foot')
+{
+  const tv = read('src/renderer/src/components/TerminalView.tsx')
+  const css = read('src/renderer/src/styles/app.css')
+  check(
+    'TerminalView measures the image strip, the exit card and the dictation strip',
+    /const FIND_FLOOR_SELECTOR = ':scope > \.image-strip, :scope > \.term-exit, :scope > \.voice-strip'/.test(tv),
+    true
+  )
+  check(
+    'while the bar is open, into --find-floor, kept by a ResizeObserver',
+    /if \(!pane \|\| !findOpen\) return[\s\S]*?pane\.style\.setProperty\('--find-floor'[\s\S]*?new ResizeObserver\(set\)[\s\S]*?\}, \[findOpen, floatsKey\]\)/.test(tv),
+    true
+  )
+  const rule = /\n\.term-find \{[^}]*\}/.exec(css)?.[0] ?? ''
+  check('and the bar\'s max-height leaves it', /max-height: calc\(100% - 2 \* var\(--strip-inset, var\(--space-12\)\) - var\(--find-floor, 0px\)\)/.test(rule), true)
+}
+
 /* --------------------------------------------------------------- the wires */
 
 console.log('\nthe wires a pure suite cannot otherwise see (gotcha 31)')
