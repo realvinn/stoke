@@ -1453,8 +1453,10 @@ src/main/         Electron main process
                     `sh -c` that writes ~/.cache/stoke/paste/NAME via .part + size check) and
                     reads back the far path. `spawnWithInput` writes 256 KB chunks (progress,
                     a stall limit) and listens for stdin's EPIPE; `inspectUploadFile`/
-                    `openUploadFile` check a file at the drop and again at the open. No
-                    electron import. Gotchas 146, 152
+                    `openUploadFile` check a file at the drop and again at the open;
+                    `UploadHolds` is what main holds between prepare and send (a hold
+                    lapses after 10 min, never while any send is in flight). No electron
+                    import. Gotchas 146, 152
   sshImages.ts      the IPC half: prepare (main reads the clipboard itself, or takes a
                     dropped image's bytes; checks magic bytes and 25 MB, names the file,
                     makes a thumbnail, holds it by id), prepare a FILE by the path the

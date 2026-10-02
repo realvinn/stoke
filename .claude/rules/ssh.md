@@ -596,3 +596,27 @@ Rig trap for whoever reruns it: count the pasteboard's items from a SECOND proce
 paste. Two early JXA `writeObjects` of two URLs each reported success and a fresh process then
 listed one item (cause not found; later writes of three, through an `NSMutableArray`, all held).
 And save and restore the owner's pasteboard around it (every item, every type) — it is theirs.
+
+> **Checked against the code on 2026-10-02 (review of the branch).** Three defects, each fixed:
+> - **A hold lapsed while it waited its turn.** Main let a held upload go `HELD_MS` (10 min) after
+>   the press whatever else was happening, which was safe while every send was an image capped at
+>   two minutes. A file may take 30. Copied files are all held at the press and sent one at a time,
+>   and a pasted image waits behind a dropped file, so on a slow link the ones still waiting were
+>   let go; their send answered `not-allowed` ("no longer waiting"), which ends the job WITHOUT
+>   typing, so the paths of files that job had already sent were lost too. The holding is
+>   `UploadHolds` (sshUpload.ts) now: a hold no one sends still lapses, but never while any send is
+>   in flight. verify:ssh runs it on a fake clock; without the re-arm, 3 checks go red. Not driven
+>   in the app (ten minutes a run). Drops were never affected: a drop's files are prepared only
+>   when their turn comes.
+> - **"huge.bin is 100.0 MB; Stoke sends files up to 100.0 MB."** is what a 100 MB + 1 byte drop
+>   said in the built app: `formatBytes` rounds any size just past a cap to the cap's own figure.
+>   Every cap refusal goes through `tooLargeSentence` ("is over 100.0 MB"); the suite had asserted
+>   the contradictory sentence in three places.
+> - **The strip said "Reading image…" while main read copied files**, and on Try again showed the
+>   failed try's last percentage until the new ssh took a chunk (the retry keeps the upload id).
+>   Driven: a 100 MB file through a 2 MB/s ProxyCommand, the proxy killed at 13% ("The file was not
+>   sent." with ssh's `client_loop: send disconnect: Broken pipe`), Try again started with no figure,
+>   then 0%, and arrived sha256-identical with no `.part`.
+> Re-proven on 127.0.0.1:2301 in the fixed build: the three-file drop (one bracketed paste of three
+> far paths, hashes identical, 0600 in 0700), the folder sentence with nothing sent or typed, an
+> exactly-100 MiB file sent, and a local tab still typing the local paths.
