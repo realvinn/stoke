@@ -46,7 +46,10 @@ import {
   tabsToClose,
   openableFolder,
   folderMenuEntry,
-  revealLabel
+  revealLabel,
+  profileClosePlan,
+  profileCloseLabel,
+  profileCloseNote
 } from '../src/renderer/src/lib/tabs.ts'
 
 let failures = 0
@@ -1449,6 +1452,89 @@ console.log('\nfolderMenuEntry: the tab menu\u2019s folder item, hidden or disab
   check('macOS says Finder', revealLabel('darwin'), 'Reveal in Finder')
   check('Windows says Explorer', revealLabel('win32'), 'Show in Explorer')
   check('Linux says Open folder', revealLabel('linux'), 'Open folder')
+}
+
+console.log('\nprofileClosePlan: a profile chip closes its own local sessions, never a running turn')
+{
+  // Folders resolve to profiles the way profileIdForCwd would.
+  const owner = (cwd: string): string | null =>
+    cwd.startsWith('/w/') ? 'Work' : cwd.startsWith('/p/') ? 'personal' : null
+  type P = Parameters<typeof profileClosePlan>[0][number]
+  const tab = (id: string, cwd: string, more: Partial<P> = {}): P => ({
+    id,
+    kind: 'session',
+    status: 'running',
+    ptyId: `pty-${id}`,
+    cwd,
+    hostId: null,
+    ...more
+  })
+  const strip: P[] = [
+    tab('w1', '/w/api'),
+    tab('p1', '/p/blog'),
+    tab('w2', '/w/web', { status: 'paused', ptyId: '' }),
+    tab('w3', '/w/app'),
+    tab('w4', '/w/old', { status: 'exited' }),
+    tab('ssh', 'work-box', { hostId: 'host-1' }),
+    tab('key', 'work-box', { hostId: 'host-1', enrollHostId: 'host-1' }),
+    tab('new', '', { kind: 'new' }),
+    tab('rem', '/w/api', { kind: 'remote' }),
+    tab('inst', '/w/api', { installing: ['codex'] }),
+    tab('login', '/w/api', { accountLogin: 'claude-work' }),
+    tab('loose', '/tmp/x'),
+    tab('w5', '/w/cli')
+  ]
+  const live = {
+    'pty-w3': { busy: true },
+    'pty-w4': { busy: true },
+    'pty-w1': { busy: false },
+    'pty-w5': { busy: null }
+  }
+  const plan = profileClosePlan(strip, 'work', owner, live)
+  check(
+    'closes the profile\u2019s local sessions, paused and exited included, in strip order',
+    plan.close,
+    ['w1', 'w2', 'w4', 'w5']
+  )
+  check('leaves a tab whose registry says a turn is running', plan.busy, ['w3'])
+  check(
+    'an exited tab is never busy, whatever its last registry reading said',
+    plan.close.includes('w4') && !plan.busy.includes('w4'),
+    true
+  )
+  check('no reading closes, as requestCloseTab does', plan.close.includes('w5'), true)
+  check(
+    'never an SSH tab, an Add-key tab, a New tab, a remote tab, an install or a sign-in',
+    [...plan.close, ...plan.busy].filter((id) => ['ssh', 'key', 'new', 'rem', 'inst', 'login'].includes(id)),
+    []
+  )
+  check('never another profile\u2019s tab, nor a folder in no profile', [...plan.close, ...plan.busy].filter((id) => id === 'p1' || id === 'loose'), [])
+  check('the profile id is compared case-folded', profileClosePlan(strip, 'Personal', owner, live), { close: ['p1'], busy: [] })
+  check('a profile with no tabs open closes nothing', profileClosePlan(strip, 'study', owner, live), { close: [], busy: [] })
+  // An SSH tab whose alias happens to resolve to the profile is still not its.
+  const aliasOwner = (cwd: string): string | null => (cwd === 'work-box' ? 'work' : owner(cwd))
+  const viaAlias = profileClosePlan(strip, 'work', aliasOwner, live)
+  check(
+    'an SSH or Add-key tab is not the profile\u2019s even when its alias resolves to it',
+    [...viaAlias.close, ...viaAlias.busy].filter((id) => id === 'ssh' || id === 'key'),
+    []
+  )
+
+  check('the label counts', profileCloseLabel(3), 'Close 3 tabs')
+  check('in the singular for one', profileCloseLabel(1), 'Close 1 tab')
+  check('and says 0 rather than vanishing', profileCloseLabel(0), 'Close 0 tabs')
+  check('no note when everything closes', profileCloseNote({ close: ['a'], busy: [] }, 'Work'), null)
+  check(
+    'one tab left open is named and explained',
+    profileCloseNote({ close: ['a'], busy: ['b'] }, 'Work'),
+    '1 session is in the middle of a turn, so it stays open. Close it from its tab to be asked first.'
+  )
+  check(
+    'and several',
+    profileCloseNote({ close: [], busy: ['b', 'c'] }, 'Work'),
+    '2 sessions are in the middle of a turn, so they stay open. Close them from their tabs to be asked first.'
+  )
+  check('a profile with nothing open says so', profileCloseNote({ close: [], busy: [] }, 'Work'), 'No sessions in Work are open.')
 }
 
 /*

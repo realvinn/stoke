@@ -13,6 +13,7 @@
 import { cliFor, cliIdOf, DEFAULT_CLI, isClaudeCode } from '../../../shared/codingClis.ts'
 import type { CodingCliId } from '../../../shared/codingClis.ts'
 import { agentTagText } from '../../../shared/agents.ts'
+import { foldGroup } from '../../../shared/paths.ts'
 
 /**
  * Which tab id to select once `closedId` is gone, or null when the list empties.
@@ -1209,4 +1210,72 @@ export function revealLabel(platform: string): string {
   if (platform === 'darwin') return 'Reveal in Finder'
   if (platform === 'win32') return 'Show in Explorer'
   return 'Open folder'
+}
+
+/* ----------------------------------------------- a profile's tabs, closed */
+
+/** The fields of a tab a profile close reads. */
+export interface ProfileTab extends FolderTab {
+  id: string
+  status: string
+  ptyId: string
+  installing?: readonly string[]
+  accountLogin?: string
+}
+
+/**
+ * The tabs a sidebar profile chip's "Close N tabs" acts on, split into the ones
+ * it closes and the ones it leaves open because a turn is running in them.
+ *
+ * A tab is the profile's when it is a local session (never an SSH tab, whose
+ * `cwd` is an alias, gotcha 18; never an install or a sign-in, which run no
+ * session of the profile's) whose folder `owner` resolves to this profile —
+ * App passes `profileIdForCwd` bound to the projects, roots and platform, the
+ * same resolver the follow-the-tab effect uses. A folder in no profile is no
+ * profile's. Paused and exited tabs close like any other: there is no process
+ * to lose.
+ *
+ * `busy` is the registry's stated busy/shell/waiting (`live[ptyId].busy ===
+ * true`, the threshold `requestCloseTab` and `closeTabsSide` read). A bulk
+ * close never SIGHUPs a running turn (gotchas 82, 90): those tabs stay, and
+ * the menu says how many and why rather than skipping them in silence. Ids in
+ * strip order.
+ */
+export function profileClosePlan(
+  tabs: readonly ProfileTab[],
+  profileId: string,
+  owner: (cwd: string) => string | null,
+  live: Readonly<Record<string, { busy: boolean | null } | undefined>>
+): { close: string[]; busy: string[] } {
+  const close: string[] = []
+  const busy: string[] = []
+  const want = foldGroup(profileId)
+  for (const t of tabs) {
+    if (t.kind !== 'session' || t.hostId || t.enrollHostId || t.installing?.length || t.accountLogin) continue
+    const id = owner(t.cwd)
+    if (!id || foldGroup(id) !== want) continue
+    if (t.status === 'running' && live[t.ptyId]?.busy === true) busy.push(t.id)
+    else close.push(t.id)
+  }
+  return { close, busy }
+}
+
+/** "Close 3 tabs", "Close 1 tab". Unique within the menu, as `ContextMenu` keys items by label. */
+export function profileCloseLabel(count: number): string {
+  return `Close ${count} tab${count === 1 ? '' : 's'}`
+}
+
+/**
+ * The profile menu's footer: why some of the profile's tabs stay open, or that
+ * it has none open at all. Null when every tab it names will close.
+ */
+export function profileCloseNote(plan: { close: readonly string[]; busy: readonly string[] }, label: string): string | null {
+  const n = plan.busy.length
+  if (n > 0) {
+    return n === 1
+      ? '1 session is in the middle of a turn, so it stays open. Close it from its tab to be asked first.'
+      : `${n} sessions are in the middle of a turn, so they stay open. Close them from their tabs to be asked first.`
+  }
+  if (plan.close.length === 0) return `No sessions in ${label} are open.`
+  return null
 }

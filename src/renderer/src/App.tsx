@@ -126,6 +126,7 @@ import {
   closeAsksDetach,
   tabLabel,
   tabsToClose,
+  profileClosePlan,
   type CloseSide,
   type PendingOrigin,
   type RelaunchPlan
@@ -3470,6 +3471,30 @@ export function App(): React.JSX.Element {
   )
 
   /*
+   * A sidebar profile chip's "Close N tabs": the profile's local session tabs,
+   * resolved with the same `profileIdForCwd` the follow-the-tab effect uses.
+   * `profileTabsNow` counts for the menu from this render; the close re-plans
+   * from the refs at the click (gotcha 127), so a tab that went busy while the
+   * menu was up is still left standing (gotchas 82, 90).
+   */
+  const profileOwner = useCallback(
+    (cwd: string): string | null =>
+      settings ? profileIdForCwd(cwd, projects, settings.projectRoots, availableProfiles, platform) : null,
+    [settings, projects, availableProfiles, platform]
+  )
+  const profileTabsNow = useCallback(
+    (profileId: string) => profileClosePlan(tabs, profileId, profileOwner, live),
+    [tabs, live, profileOwner]
+  )
+  const closeProfileTabs = useCallback(
+    (profileId: string): void => {
+      const plan = profileClosePlan(tabsRef.current, profileId, profileOwner, liveRef.current)
+      for (const id of plan.close) closeTab(id)
+    },
+    [closeTab, profileOwner]
+  )
+
+  /*
    * Show a folder in the file manager — the tab menu's folder item and the
    * status bar's path. Main answers '' or a sentence (`revealProblem`); it used
    * to be thrown away, so a deleted folder did nothing and said nothing.
@@ -5447,6 +5472,9 @@ export function App(): React.JSX.Element {
                 profiles={availableProfiles}
                 activeProfile={activeProfile?.id ?? null}
                 onSelectProfile={(id) => void patchSettings({ activeProfile: id })}
+                profileTabs={profileTabsNow}
+                onCloseProfileTabs={closeProfileTabs}
+                onEditProfiles={() => openSettings('profiles')}
                 projectHints={query.trim() ? allProjectHints : projectHints}
                 chatSearch={chatSearch}
                 onOpenChat={openChat}

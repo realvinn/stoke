@@ -7,7 +7,9 @@ import { foldGroup } from '@shared/profiles'
 import { Highlight } from './Highlight'
 import { IconChevron, IconFolder, IconPin, IconPlus, IconSearch } from './Icons'
 import { ProjectMetaPicker } from './ProjectMetaPicker'
+import { ContextMenu } from './ContextMenu'
 import { baseName, relativeTime } from '../lib/format'
+import { profileCloseLabel, profileCloseNote } from '../lib/tabs'
 import {
   capSessions,
   indexPending,
@@ -86,6 +88,16 @@ interface Props {
   activeProfile: string | null
   onSelectProfile: (id: string | null) => void
   /**
+   * The tabs a profile chip's right-click "Close N tabs" would close, and the
+   * ones it leaves open because a turn is running (`profileClosePlan`). Read
+   * at render, so the count follows the strip while the menu is open; the
+   * close itself re-reads the strip at the click.
+   */
+  profileTabs?: (profileId: string) => { close: string[]; busy: string[] }
+  onCloseProfileTabs?: (profileId: string) => void
+  /** Settings › Profiles, from the chip menu. */
+  onEditProfiles?: () => void
+  /**
    * The parent folder that tells a project apart from another with the same
    * name, keyed by path (QA L14). Absent for a name no other project shares.
    */
@@ -131,6 +143,9 @@ export function Sidebar({
   profiles,
   activeProfile,
   onSelectProfile,
+  profileTabs,
+  onCloseProfileTabs,
+  onEditProfiles,
   projectHints = {},
   chatSearch,
   onOpenChat,
@@ -140,6 +155,14 @@ export function Sidebar({
   /* One picker open at a time, keyed by path — two open popovers in a scrolling
      list is a way to change the wrong folder without noticing. */
   const [pickerPath, setPickerPath] = useState<string | null>(null)
+  /*
+   * The profile chip's right-click menu: where, and WHICH profile by id only —
+   * its label, groups and tab counts are read from the current render, so a
+   * profile renamed or a tab closed while the menu is up shows at once.
+   */
+  const [profileMenu, setProfileMenu] = useState<{ x: number; y: number; id: string } | null>(null)
+  const menuProfile = profileMenu ? profiles.find((p) => foldGroup(p.id) === foldGroup(profileMenu.id)) : undefined
+  const menuPlan = menuProfile && profileTabs ? profileTabs(menuProfile.id) : null
 
   /*
    * Only profiles that actually have projects on this machine, so the row never
@@ -573,6 +596,19 @@ export function Sidebar({
                   className="profile-chip"
                   aria-pressed={on}
                   onClick={() => onSelectProfile(on ? null : p.id)}
+                  /*
+                   * Close this profile's tabs, or edit profiles. Not on All,
+                   * which is every folder: "close every tab" is not a profile's
+                   * to offer. The Menu key fires this on a focused chip too.
+                   */
+                  onContextMenu={
+                    profileTabs && onCloseProfileTabs
+                      ? (e) => {
+                          e.preventDefault()
+                          setProfileMenu({ x: e.clientX, y: e.clientY, id: p.id })
+                        }
+                      : undefined
+                  }
                   title={`${p.label} — ${p.groups.join(', ')}`}
                   style={
                     {
@@ -790,6 +826,23 @@ export function Sidebar({
         )}
       </div>
 
+      {profileMenu && menuProfile && menuPlan && (
+        <ContextMenu
+          x={profileMenu.x}
+          y={profileMenu.y}
+          header={{ title: menuProfile.label, subtitle: menuProfile.groups.join(', ') || undefined }}
+          items={[
+            {
+              label: profileCloseLabel(menuPlan.close.length),
+              disabled: menuPlan.close.length === 0,
+              onSelect: () => onCloseProfileTabs?.(menuProfile.id)
+            },
+            ...(onEditProfiles ? [{ label: 'Edit profiles…', separated: true, onSelect: onEditProfiles }] : [])
+          ]}
+          footer={profileCloseNote(menuPlan, menuProfile.label) ?? undefined}
+          onClose={() => setProfileMenu(null)}
+        />
+      )}
     </nav>
   )
 }
