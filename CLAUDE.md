@@ -499,6 +499,8 @@ rule file named on the group line.
   `settingsRef`: the ref is the last RENDER's, and the push lands after the await (`startAccountLogin`).
 - **138.** Give a new Settings row a `data-setting` mark AND a `SETTING_ROWS` entry (a new control in one: its label as a
   keyword) and a `fallback` if it is drawn only sometimes; open Settings by id only through `resolveSettingsTarget`.
+- **150.** A new tab kind needs every reader of `tab.cwd` taught it: a private chat's folder is never opened, git-read or a
+  profile's (`openableFolder`, `folderChip`, `profileCwd`); an async finish takes focus only from nowhere (`pathTakesFocus`).
 
 **Packaging and signing** — `.claude/rules/release.md`
 - **7.** Pick architectures with the `--x64`/`--arm64` CLI flags and never add an `arch:` list to

@@ -28,6 +28,10 @@ paths:
   - "src/renderer/src/lib/settingsJump.ts"
   - "src/shared/settingsIndex.ts"
   - "scripts/verify-settings-search.mts"
+  - "src/renderer/src/components/TopBar.tsx"
+  - "src/renderer/src/components/ImageSendStrip.tsx"
+  - "src/renderer/src/components/TerminalFind.tsx"
+  - "src/shared/topBar.ts"
 ---
 
 # React state traps
@@ -575,3 +579,60 @@ the search box focused.
 >   already on show went to the top, and a search pick there snapped to 0 and smooth-scrolled back
 >   (driven on the previous build: 600 → 0, and 900 → 0 → 698). Keyed on the page id now, and `go`
 >   keeps the object for the same place: 600 stays 600, 900 → 698 directly.
+
+## 150. A new tab kind is invisible to every surface built beside it, and an async finish that takes focus takes it from whatever the user went to
+
+**Found 2026-10-02 driving the merge of five features built in parallel** (find in a conversation,
+SSH images, the title bar's folder/git/shortcuts, private chat, the tab and profile menus) against a
+stub `claude` and a throwaway loopback sshd. `npm run check` was green; each feature's own suite
+was green; every defect below sat in the seam between two of them, where neither suite looks.
+
+**A private chat's `cwd` is a folder, and it is not a place.** It is Stoke's own scratch under
+`<userData>/private/<id>`, deleted with the chat (gotcha 148). Three surfaces built the same day
+read `tab.cwd` as "the folder this session works in" and none had heard of `private`:
+
+- The title bar's folder chip drew `…/<uuid>` with "Open folder", and the git chip ran `git
+  status` there (on a home kept in git it would have walked up into that repo). At 940 px the uuid
+  chip also took the room the tab's own title needed ("Pr…").
+- The tab menu's "Reveal in Finder" and the status bar's path button opened it.
+- **The profile chip's "Close N tabs" deleted it unasked.** `profileIdForCwd` resolves a cwd by the
+  longest project or scan root containing it, and userData is under one more often than not
+  (`groupForCwd`'s own comment records a home folder registered as a project). Driven: with
+  userData under a scan root, the chip said "Close 2 tabs" for a normal tab and a private chat
+  holding a file; pressing it closed the chat with no "Delete this private chat?", file and all.
+  `closeTabsSide` already skipped running private chats — the private feature fixed its own
+  close paths, and the profile close arrived from another branch an hour later.
+
+One rule per question, each asked by every surface: `openableFolder`/`folderMenuEntry` (a private
+chat has no folder to open; the item is disabled with `PRIVATE_FOLDER_TEXT`), `folderChip`'s
+`private` branch ("Private chat", never openable; TopBar's `local` excludes it from git), and
+`profileCwd` (no SSH, Add-key or private tab is any profile's), which BOTH the follow-the-tab
+effect and `profileClosePlan` read. And Find: a private chat asked main for its transcript and drew
+"Claude has not written this conversation to disk yet." under a Conversation chip that could never
+find anything — `findConversation` answers `private`, and the bar says `PRIVATE_FIND_TEXT` and
+searches the screen only; the palette's row says "The screen" (`paletteFindHint`).
+
+**Two floating surfaces in one pane.** The image strip (SSH images) and the find bar were built in
+parallel; each was right alone:
+
+- **Focus.** A sent image's path is typed, then `term.focus()`. An upload takes seconds, the find
+  bar gets opened in that time, and the focus left its input mid-query. A/B in the built app
+  (upload throttled to ~30 KB/s by a scratch ProxyCommand): before, focus went to
+  `xterm-helper-textarea` and the next two keys reached the far `claude` as `h`, `a` after the path;
+  after, focus stayed in the input and the query read `alpha`. `pathTakesFocus`: only from
+  nowhere (`<body>`), the terminal itself, or the strip's own buttons.
+- **Overlap.** Same z-index, the strip later in the pane: at 940×620 with the restore bar up, a
+  failed upload's strip covered the bottom 27 px of the bar's hit list, which no scroll could
+  bring out. While the bar is open TerminalView sets `--find-floor` from the tallest of the image
+  strip, the exit card and the dictation strip (ResizeObserver), and the bar's `max-height` leaves
+  it: after, 18 px clear.
+
+And one wire: the folder chip's Open called `projects.reveal` and dropped its answer, while the
+menu-additions branch had just made that answer the only sign a folder had gone (`revealFolder`).
+
+The general rule: **when a feature adds a kind of tab, grep every reader of `tab.cwd`, `tab.hostId`
+and `tab.status` for the new field before calling it done — a surface that does not know the kind
+treats it as the commonest one** — and **an async completion takes focus only from nowhere or from
+itself.** Every check above is held by verify:tabs, verify:topbar, verify:find and verify:ssh, each
+mutated back to red (15 mutations, 1–3 checks each). Not driven: Windows and Linux, a real
+`claude`, a real clipboard paste (drops only, so the owner's clipboard was never touched).
