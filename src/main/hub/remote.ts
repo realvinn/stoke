@@ -504,6 +504,19 @@ export class HubRemote {
     this.statusMarks.set(mark, Math.max(high ?? 0, status.at))
     if (!newerStatus(this.statuses[device], status)) return
     this.statuses[device] = status
+    /*
+     * A chats relay that machine refused as not sharing, or that was lost, is
+     * only as fresh as the status it ended under. A NEWER status saying it
+     * shares is the machine saying so again — redaction back on, the tick
+     * back on, back up — and the renderer asks the search on screen again on
+     * exactly this status (`chatSharersStep`). So the failed peer goes now,
+     * and that search reaches it afresh instead of being answered from the old
+     * refusal for `CHATS_RETRY_MS`: redaction turned off and on again within
+     * that window left the open search with no group for that computer until
+     * its owner typed again. A Deny is kept: it stands until the search ends.
+     */
+    const peer = this.chatPeers.get(device)
+    if (status.chats === true && peer && (peer.state === 'not-sharing' || peer.state === 'error')) this.dropPeer(peer, 'it says it shares again')
     this.emit()
   }
 
@@ -1787,7 +1800,8 @@ export class HubRemote {
           },
           onClose: (reason) => {
             if (p.channel === channel) p.channel = null
-            if (current()) this.peerEnded(p, 'error', reason)
+            // In this computer's words, naming the other: the channel's reason ("the relay closed") is a diagnostic.
+            if (current()) this.peerEnded(p, 'error', `Lost the connection to ${p.label}: ${reason}`)
           }
         }
       })
