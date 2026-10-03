@@ -389,7 +389,8 @@ sessions that fit the hub's 24 KiB cap before it is sealed and sent.
 
 CHAT HISTORY across the owner's computers (spec 2026-10-03 §3) rides the same relays. A host's
 tick (`hub.shareChats`, default off, turned on only by `HubService.setShareChats` after a password
-confirmed there, `noteChatConsent`) puts `chats: true` in its status while it is in the vault, chat history is on and its
+confirmed there, `noteChatConsent`; a Cancel or a sign-out drops a check still in flight,
+`cancelVerify`) puts `chats: true` in its status while it is in the vault, chat history is on and its
 redaction is on (`chatsSharingEffective`; redaction off is a PAUSE the view reports as `chatsBlocked`,
 since raw rows are never searched from elsewhere). A guest's `searchChats` reads offline and not-sharing from
 presence and opens ONE relay per sharing machine (`attach {kind:'chats'}`), kept while searches come

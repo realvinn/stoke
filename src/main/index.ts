@@ -4451,6 +4451,8 @@ function registerIpc(): void {
   ipcMain.handle(CH.hubInstallKey, async (_e, keyId: unknown) => (await hubService()).installKey(str(keyId)))
   // "Confirm it's you": the password is handed on and never kept, logged or echoed back.
   ipcMain.handle(CH.hubVerifyPassword, async (_e, password: unknown) => (await hubService()).verifyPassword(str(password)))
+  // Its sheet went without using the yes: nothing in flight or unspent may confirm the chats tick now.
+  ipcMain.handle(CH.hubCancelVerify, () => hubClient?.cancelVerify())
   // "Other machines" (hub/remote.ts). Every argument is re-checked there.
   // Read by the window at boot: never STARTS the hub client (a Stoke with no hub set up loads none of it).
   ipcMain.handle(CH.hubRemoteView, () => hubClient?.remoteView() ?? emptyRemoteView())

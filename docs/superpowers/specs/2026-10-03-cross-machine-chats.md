@@ -110,6 +110,8 @@ In `src/main/chatIndex/` (parse/scan/store/sources, whatever holds `cleanText` a
   - Removing a device ends its grant (`chainChanged`).
   - Remove beside a device ends its live chats relays at once (`revokeChatGrant`), refused as `revoked`.
   - Turning the switch off closes every chats relay.
+  - A password check that comes back after its sheet was cancelled, or after sign-out, records no consent
+    (`HubService.cancelVerify`, called by `ConfirmPasswordSheet` whenever it goes without using its yes).
 - **Serving:** only on the relay instance of the remote server, never the phone's (`RemoteServer` backs
   both; gotcha 111's per-call deps).
 - **Guest side:**

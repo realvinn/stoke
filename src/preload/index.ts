@@ -262,6 +262,7 @@ const api: StokeApi = {
     unshareKey: (keyId) => ipcRenderer.invoke(CH.hubUnshareKey, keyId),
     installKey: (keyId) => ipcRenderer.invoke(CH.hubInstallKey, keyId),
     verifyPassword: (password) => ipcRenderer.invoke(CH.hubVerifyPassword, password),
+    cancelVerify: () => ipcRenderer.invoke(CH.hubCancelVerify),
     remote: {
       view: () => ipcRenderer.invoke(CH.hubRemoteView),
       onChange: (cb) => on<[Parameters<typeof cb>[0]]>(CH.hubRemoteChanged, cb),

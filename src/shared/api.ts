@@ -941,6 +941,12 @@ export interface StokeApi {
      * is the one caller and says what each result means.
      */
     verifyPassword(password: string): Promise<HubVerifyResult>
+    /**
+     * The sheet that asked went without using a yes (Cancel, Escape, closed
+     * under it): a check still in flight confirms nothing when it lands, and a
+     * confirmation not yet spent is dropped. `ConfirmPasswordSheet` calls it.
+     */
+    cancelVerify(): Promise<void>
     /** "Other machines" (src/main/hub/remote.ts). */
     remote: {
       view(): Promise<HubRemoteView>

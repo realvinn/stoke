@@ -1323,6 +1323,23 @@ try {
     A.set({ chatIndexOptions: { ...A.settings().chatIndexOptions, redact: true } } as Partial<Settings>)
     check('...back on, the same confirmation turns it on (a refusal spends nothing)', (await A.svc.setShareChats(true, [dId])).ok, true)
     await A.svc.setShareChats(false)
+
+    // "Confirm it's you" cancelled while the hub was checking (review of db1ae51): before, the late yes still
+    // let the tick go on, unasked, for five minutes.
+    let release: () => void = () => undefined
+    A.intercept = async (url) => (v1(url) === '/v1/auth/verify' ? (await new Promise<void>((r) => (release = r)), json({ ok: true })) : null)
+    const nA = A.seen.length
+    const late = A.svc.verifyPassword(PASSWORD)
+    const inFlight = await until('A’s check is in flight', () => A.seen.slice(nA).includes('POST /v1/auth/verify'))
+    A.svc.cancelVerify()
+    release()
+    check('a check cancelled in flight comes back cancelled, and confirms nothing', [inFlight, (await late).kind, (await A.svc.setShareChats(true, [dId])).ok, A.settings().hub.shareChats], [true, 'cancelled', false, false])
+    A.intercept = null
+    await A.svc.verifyPassword(PASSWORD)
+    A.svc.cancelVerify()
+    check('a yes left unused when the sheet goes is dropped too', (await A.svc.setShareChats(true, [dId])).ok, false)
+    check('and the next check confirms as before', [(await A.svc.verifyPassword(PASSWORD)).kind, (await A.svc.setShareChats(true, [dId])).ok], ['ok', true])
+    await A.svc.setShareChats(false)
     A.set({ chatIndex: 'off' } as Partial<Settings>)
   }
   {
@@ -1352,7 +1369,18 @@ try {
   // they came back on at the next sign-in, to any account, for whichever device holds those ids there.
   // The chats tick and its grants likewise (spec 2026-10-03).
   C.set({ hub: { ...C.settings().hub, shareSessions: true, grants: { [A.svc.view().device.id]: { mode: 'full', label: 'Mac', at: 1 } }, shareChats: true, chatGrants: { [A.svc.view().device.id]: 'always' } } } as Partial<Settings>)
+  // A password check in flight across the sign-out (review of db1ae51): its late yes must confirm nothing.
+  let releaseC: () => void = () => undefined
+  C.intercept = async (url) => (v1(url) === '/v1/auth/verify' ? (await new Promise<void>((r) => (releaseC = r)), json({ ok: true })) : null)
+  const nC = C.seen.length
+  const lateC = C.svc.verifyPassword(PASSWORD)
+  const cInFlight = await until('C’s check is in flight', () => C.seen.slice(nC).includes('POST /v1/auth/verify'))
   check('C signs out', (await C.svc.signOut()).ok, true)
+  releaseC()
+  const lateCKind = (await lateC).kind
+  C.intercept = null
+  const afterC = await C.svc.setShareChats(true)
+  check('a password check that lands after the sign-out confirms nothing', [cInFlight, lateCKind, !afterC.ok && /password/.test(afterC.message)], [true, 'not-signed-in', true])
   check('and its hub files are gone; what it synced stays', [existsSync(join(C.userData, 'hub-device.json')), existsSync(join(C.userData, 'hub-state.json')), C.settings().providers.anthropicApiKey, C.svc.view().phase], [false, false, CANARY_KEY, 'signed-out'])
   check('and so are its Always grants and its "share my sessions" tick', [C.settings().hub.grants, C.settings().hub.shareSessions], [{}, false])
   check('and its chats tick and chats grants', [C.settings().hub.shareChats, C.settings().hub.chatGrants], [false, {}])

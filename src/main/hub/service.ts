@@ -347,6 +347,13 @@ export class HubService {
    * `CHAT_CONSENT_MS`. Memory only.
    */
   private chatConsentAt: number | null
+  /**
+   * Bumped whenever a consent must not be given any more: the sheet that
+   * asked was cancelled (`cancelVerify`) or the account signed out. A check
+   * in flight across a bump records nothing when its `ok` lands — the
+   * password was right, but whoever asked has gone.
+   */
+  private consentGen: number
   /** `settings.chatIndex` as last seen, so switching chat history off ends every chats relay at once. */
   private chatIndexWas: Settings['chatIndex']
   /** `settings.chatIndexOptions.redact` as last seen: off pauses sharing, and ends every chats relay at once. */
@@ -413,6 +420,7 @@ export class HubService {
         })
       : null
     this.chatConsentAt = null
+    this.consentGen = 0
     this.chatIndexWas = deps.getSettings().chatIndex
     this.chatRedactWas = deps.getSettings().chatIndexOptions.redact
   }
@@ -968,7 +976,8 @@ export class HubService {
       this.revokeReport = null
       this.vkCache.clear()
       // Every standing this computer gave its other devices goes with the account: sessions and chat history alike.
-      this.chatConsentAt = null
+      // A password check still in flight gives none either (`consentGen`).
+      this.dropChatConsent()
       await this.commitHub({ email: '', deviceId: '', token: '', grants: {}, shareSessions: false, shareChats: false, chatGrants: {} })
       return { ok: true }
     })
@@ -999,9 +1008,12 @@ export class HubService {
     if (!this.signedIn() || this.revoked) return { kind: 'not-signed-in' }
     if (typeof password !== 'string' || password.length === 0) return { kind: 'wrong' }
     this.verifying = true
+    // Whose check this is: a Cancel or a sign-out while it is in flight bumps it, and its yes then gives nothing.
+    const gen = this.consentGen
     try {
       const res = await this.req('POST', '/v1/auth/verify', { password })
       if (res.ok !== true) return { kind: 'unreachable', message: 'The hub answered, but not with a yes or a no. Check that the address is your hub.' }
+      if (gen !== this.consentGen) return this.signedIn() && !this.revoked ? { kind: 'cancelled' } : { kind: 'not-signed-in' }
       // The one consent the chats tick takes (spec 2026-10-03 §2): typed HERE, and the hub said yes.
       this.noteChatConsent()
       return { kind: 'ok' }
@@ -2865,6 +2877,23 @@ export class HubService {
    */
   private noteChatConsent(): void {
     this.chatConsentAt = this.now()
+  }
+
+  /** No consent stands, and none a check in flight brings back will (`consentGen`). */
+  private dropChatConsent(): void {
+    this.consentGen++
+    this.chatConsentAt = null
+  }
+
+  /**
+   * "Confirm it's you" was cancelled, or went without its yes being used:
+   * a password check still in flight records nothing when it lands, and a
+   * consent not yet spent goes. Before this, a check that came back `ok`
+   * after the sheet was cancelled still let the tick go on, unasked, for
+   * `CHAT_CONSENT_MS` — to any later `setShareChats(true)`.
+   */
+  cancelVerify(): void {
+    this.dropChatConsent()
   }
 
   /**
