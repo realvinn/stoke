@@ -94,7 +94,8 @@ import { toast } from './lib/toasts'
 import { reconnectAfterEnroll } from '@shared/sshAuth'
 import { RemoteTerminal } from './components/RemoteTerminal'
 import { useHubRemote } from './lib/hubRemote'
-import type { OtherMachineView, RemoteSessionSummary } from '@shared/hub/remote'
+import type { OtherMachineView, RemoteChatHit, RemoteChatsResult, RemoteSessionSummary } from '@shared/hub/remote'
+import { chatsSearchAgain, remoteChatGroups, type RemoteChatGroup } from '@shared/remoteChatsView'
 import { WorklogPrompt } from './components/WorklogPrompt'
 import { baseName, ipcErrorMessage } from './lib/format'
 import {
@@ -1075,9 +1076,10 @@ export function App(): React.JSX.Element {
   }, [query, chatIndexOn, chatPassEnded, chatImportsKey])
 
   // Switched off, or the index deleted: the viewer shows nothing main would still hand over.
+  // A chat from another computer is not this index's, and stays.
   const chatIndexChats = chatStatus?.chats ?? null
   useEffect(() => {
-    if (!chatIndexOn || chatIndexChats === 0) setChatView(null)
+    if (!chatIndexOn || chatIndexChats === 0) setChatView((cur) => (cur?.kind === 'remote' ? cur : null))
   }, [chatIndexOn, chatIndexChats])
 
   // The index's status: pushed by main while a pass runs, read once when it matters.
@@ -1157,6 +1159,60 @@ export function App(): React.JSX.Element {
   }, [hubRemote.guests])
   const activeTabIdRef = useRef<string | null>(activeTabId)
   activeTabIdRef.current = activeTabId
+
+  /*
+   * Chat history on the owner's OTHER computers (spec 2026-10-03 §4), searched
+   * live beside this computer's own: debounced longer than the local search,
+   * since each one crosses the hub relay, and numbered the same way so a slow
+   * answer never lands over a newer query. Main keeps one chats relay per
+   * computer while searches come and closes it after idle; clearing the box
+   * closes them now (`endChatSearch`). Asked whether or not chat history is
+   * on HERE: it is the other computer's index being read.
+   */
+  const [remoteChats, setRemoteChats] = useState<RemoteChatsResult[]>([])
+  const remoteChatsRef = useRef<RemoteChatsResult[]>([])
+  remoteChatsRef.current = remoteChats
+  const remoteChatRequest = useRef(0)
+  const remoteChatsAsked = useRef(false)
+  /*
+   * A computer that was asking its owner (or had failed) has answered: the
+   * search on screen is asked again (`chatsSearchAgain`). A relay that merely
+   * closed for idleness is no cue, or a query left in the box would keep every
+   * relay open for ever.
+   */
+  const peersSeen = useRef<ReadonlySet<string>>(new Set())
+  const [remoteChatsCue, setRemoteChatsCue] = useState(0)
+  useEffect(() => {
+    const r = chatsSearchAgain(peersSeen.current, hubRemote.chatPeers, remoteChatsRef.current)
+    peersSeen.current = r.seen
+    if (r.again) setRemoteChatsCue((n) => n + 1)
+  }, [hubRemote.chatPeers])
+  const remoteChatsOn = hubRemote.available
+  useEffect(() => {
+    const q = query.trim()
+    const req = ++remoteChatRequest.current
+    if (!remoteChatsOn || q.length < CHAT_SEARCH_MIN_CHARS) {
+      setRemoteChats([])
+      if (!q && remoteChatsAsked.current) {
+        remoteChatsAsked.current = false
+        window.stoke.hub.remote.endChatSearch()
+      }
+      return
+    }
+    const t = window.setTimeout(() => {
+      remoteChatsAsked.current = true
+      window.stoke.hub.remote.searchChats(q).then(
+        (results) => {
+          if (req === remoteChatRequest.current) setRemoteChats(results)
+        },
+        () => {
+          if (req === remoteChatRequest.current) setRemoteChats([])
+        }
+      )
+    }, 350)
+    return () => window.clearTimeout(t)
+  }, [query, remoteChatsOn, remoteChatsCue])
+  const remoteChatGroupsShown = useMemo(() => remoteChatGroups(remoteChats, query), [remoteChats, query])
 
   /*
    * The appearance a session should be launched with, read at call time.
@@ -5260,11 +5316,19 @@ export function App(): React.JSX.Element {
       .finally(() => remoteOpening.current.delete(key))
   }, [])
 
+  /** A hit from another computer: always the read-only viewer. Continuing it there is v2, never a copy here. */
+  const openRemoteChat = useCallback(
+    (group: RemoteChatGroup, hit: RemoteChatHit): void => {
+      setChatView({ kind: 'remote', device: group.device, computer: group.computer, hit, query })
+    },
+    [query]
+  )
+
   const openChat = useCallback(
     (hit: ChatSearchHit): void => {
       const action = chatOpenAction(hit, { installed: installedAgentIds, resumable: resumableClis() })
       if (action.kind === 'view') {
-        setChatView({ hit, query, note: action.note })
+        setChatView({ kind: 'local', hit, query, note: action.note })
         return
       }
       if (action.kind === 'claude') {
@@ -5815,6 +5879,8 @@ export function App(): React.JSX.Element {
                 projectHints={query.trim() ? allProjectHints : projectHints}
                 chatSearch={chatSearch}
                 onOpenChat={openChat}
+                remoteChats={remoteChatGroupsShown}
+                onOpenRemoteChat={openRemoteChat}
                 onSetUpChats={() => openSettings('chats')}
                 otherMachines={<OtherMachines view={hubRemote} onOpen={openRemoteSession} />}
               />

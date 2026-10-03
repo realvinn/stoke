@@ -8495,6 +8495,28 @@ button.color-field-swatch[aria-expanded='true'] {
   white-space: nowrap;
 }
 
+/* "On <computer>": another computer's hits, a group of their own under "In conversations" (spec 2026-10-03 §4). */
+.chat-remote-head {
+  padding-top: var(--space-8);
+}
+
+/* The other devices listed in "Confirm it's you" before chat history is shared (AccountSyncSettings' ShareChats). */
+.share-chats-devices {
+  display: grid;
+  gap: var(--space-8);
+}
+
+.share-chats-devices .mono {
+  font-size: var(--fs-xs);
+}
+
+/* "On <computer> · <folder>" over a chat read from another computer (ChatViewer). */
+.chat-view-where {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
 /* "Set up chat history…", inline in a note; a text button with a declared box (gotcha 47). */
 .session-more.chat-setup {
   display: inline;

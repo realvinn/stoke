@@ -1,7 +1,9 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { DEFAULT_HUB_URL, emptyHubView, type HubLocalKeyView, type HubResult, type HubView } from '@shared/hub/client'
 import { sameHubUrl } from '@shared/hub/edge'
 import type { RemoteBarMode } from '@shared/ui'
+import { SHARE_CHATS_LABEL, SHARE_CHATS_STOPPED, shareChatsRow } from '@shared/remoteChatsView'
+import { ConfirmPasswordSheet } from './ConfirmPasswordSheet'
 import { FieldHint } from './FieldHint'
 import { useHubRemote } from '../lib/hubRemote'
 import { Spinner } from './Spinner'
@@ -98,9 +100,13 @@ interface AccountSyncProps {
   /** How a live remote link is drawn on THIS screen (`remoteBar`, a top-level setting, not the hub's). */
   remoteBar: RemoteBarMode
   onRemoteBar: (mode: RemoteBarMode) => void
+  /** `settings.chatIndex === 'on'`: sharing chat history needs chat history. */
+  chatIndexOn: boolean
+  /** Settings › Chat history, for the shared-chats row's "Turn on Chat history first." */
+  onOpenChatHistory?: () => void
 }
 
-export function AccountSyncSettings({ remoteBar, onRemoteBar }: AccountSyncProps): React.JSX.Element {
+export function AccountSyncSettings({ remoteBar, onRemoteBar, chatIndexOn, onOpenChatHistory }: AccountSyncProps): React.JSX.Element {
   const [view, setView] = useState<HubView>(emptyHubView())
   const [loaded, setLoaded] = useState(false)
   const [now, setNow] = useState(Date.now())
@@ -152,10 +158,16 @@ export function AccountSyncSettings({ remoteBar, onRemoteBar }: AccountSyncProps
           {view.notes.length > 0 && <Conflicts view={view} />}
           <SshKeys view={view} />
           <Devices view={view} />
-          <OtherMachinesSettings remoteBar={remoteBar} onRemoteBar={onRemoteBar} />
+          <OtherMachinesSettings
+            remoteBar={remoteBar}
+            onRemoteBar={onRemoteBar}
+            chats={<ShareChats view={view} chatIndexOn={chatIndexOn} onOpenChatHistory={onOpenChatHistory} />}
+          />
           <RecoveryKit view={view} />
         </>
       )}
+      {/* Drawn in every phase, so search always lands on it; outside the vault it says what is missing. */}
+      {view.phase !== 'active' && <ShareChats view={view} chatIndexOn={chatIndexOn} onOpenChatHistory={onOpenChatHistory} />}
       {view.phase !== 'off' && (view.phase !== 'signed-out' || (view.device !== null && view.email !== '')) && <SignOut view={view} />}
     </>
   )
@@ -905,7 +917,11 @@ const REMOTE_BAR_CHOICES: { id: RemoteBarMode; label: string; hint: string }[] =
   { id: 'bar', label: 'Full bar', hint: 'A strip above the terminal, always open' }
 ]
 
-function OtherMachinesSettings({ remoteBar, onRemoteBar }: AccountSyncProps): React.JSX.Element {
+function OtherMachinesSettings({
+  remoteBar,
+  onRemoteBar,
+  chats
+}: Pick<AccountSyncProps, 'remoteBar' | 'onRemoteBar'> & { chats: React.ReactNode }): React.JSX.Element {
   const remote = useHubRemote()
   const { busy, note, run } = useRun()
   return (
@@ -944,6 +960,7 @@ function OtherMachinesSettings({ remoteBar, onRemoteBar }: AccountSyncProps): Re
           ))}
         </>
       )}
+      {chats}
       <div className="field" data-setting="account.remote-bar">
         <span className="field-label">Show a live remote link as</span>
         <div className="segmented" role="group" aria-label="Show a live remote link as" style={{ alignSelf: 'flex-start' }}>
@@ -970,6 +987,144 @@ function OtherMachinesSettings({ remoteBar, onRemoteBar }: AccountSyncProps): Re
         </div>
       )}
       <Status note={note} />
+    </div>
+  )
+}
+
+/*
+ * "Let my other computers search this computer's chat history" (spec
+ * 2026-10-03 §4): a tick of its own beside the sessions one, with grants of
+ * its own — a session grant never opens chats, nor a chats grant a session.
+ *
+ * Turning it ON asks for the hub password typed HERE (ConfirmPasswordSheet:
+ * the hub's yes to `verifyPassword` is main's only consent for it), with the
+ * vault's other devices listed and ticked; the ticked ones get "Always" in the
+ * same step and the rest ask first. Off is instant, needs nothing, and closes
+ * every search from another computer. Main alone writes `hub.shareChats` and
+ * `hub.chatGrants` (gotcha 57); this draws its view (`shareChatsRow`).
+ *
+ * The sheet stands over Settings, which already keeps the shell inert (gotcha
+ * 88); the sheet makes the rest of the app, Settings included, inert while it
+ * is up, and focus comes back to the tick when it goes.
+ */
+function ShareChats({ view, chatIndexOn, onOpenChatHistory }: { view: HubView; chatIndexOn: boolean; onOpenChatHistory?: () => void }): React.JSX.Element {
+  const remote = useHubRemote()
+  const { busy, note, setNote, run } = useRun()
+  const [confirming, setConfirming] = useState(false)
+  const [ticked, setTicked] = useState<ReadonlySet<string>>(new Set())
+  const tickRef = useRef<HTMLInputElement>(null)
+  const hintId = useId()
+  const others = view.devices.filter((d) => !d.me)
+  const row = shareChatsRow({ phase: view.phase, chatIndexOn, sharing: remote.sharingChats, grants: remote.chatGrants.map((g) => g.label) })
+
+  const closeSheet = (): void => {
+    setConfirming(false)
+    // After the sheet's own cleanup has let the rest of the app out of `inert`.
+    requestAnimationFrame(() => tickRef.current?.focus())
+  }
+  const onTick = (on: boolean): void => {
+    if (!on) {
+      run('chats-off', () => window.stoke.hub.remote.setShareChats(false), () => ({ text: SHARE_CHATS_STOPPED }))
+      return
+    }
+    if (row.blocked || confirming) return
+    setNote(null)
+    setTicked(new Set(others.map((d) => d.id)))
+    setConfirming(true)
+  }
+  const toggle = (id: string, on: boolean): void =>
+    setTicked((cur) => {
+      const next = new Set(cur)
+      if (on) next.add(id)
+      else next.delete(id)
+      return next
+    })
+
+  return (
+    <div className="field" data-hub="share-chats" data-setting="account.share-chats">
+      <label className="check-row">
+        <input
+          ref={tickRef}
+          type="checkbox"
+          checked={row.checked}
+          disabled={!row.enabled || busy !== null || confirming}
+          aria-describedby={hintId}
+          data-hub="share-chats-tick"
+          onChange={(e) => onTick(e.target.checked)}
+        />
+        <span>
+          <span>{SHARE_CHATS_LABEL}</span>
+          <span className="field-hint" id={hintId} data-hub="share-chats-hint">
+            {row.hint}
+          </span>
+        </span>
+      </label>
+      {!chatIndexOn && view.phase === 'active' && onOpenChatHistory && (
+        <div className="btn-row">
+          <button className="btn" onClick={onOpenChatHistory}>
+            Open Chat history…
+          </button>
+        </div>
+      )}
+      {row.checked && remote.chatGrants.length > 0 && (
+        <>
+          <span className="field-hint">Search and read chats here without asking:</span>
+          {remote.chatGrants.map((g) => (
+            <div key={g.device} className="settings-item-card" data-hub="chat-grant" style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-8)' }}>
+              <span style={{ flex: 1, minWidth: 0 }}>
+                <strong>{g.label}</strong>{' '}
+                <span className="field-hint mono" title="The first bytes of its signing key">
+                  {g.fingerprint}
+                </span>
+              </span>
+              <button
+                className="btn"
+                disabled={busy !== null}
+                aria-busy={busy === `chat-grant-${g.device}` || undefined}
+                onClick={() => run(`chat-grant-${g.device}`, () => window.stoke.hub.remote.removeChatGrant(g.device))}
+              >
+                <Busy on={busy === `chat-grant-${g.device}`} idle="Remove" working="Removing…" />
+              </button>
+            </div>
+          ))}
+        </>
+      )}
+      <Status note={note} />
+      {confirming && (
+        <ConfirmPasswordSheet
+          confirmLabel="Turn on"
+          onCancel={closeSheet}
+          onConfirmed={() => {
+            const devices = others.filter((d) => ticked.has(d.id)).map((d) => d.id)
+            closeSheet()
+            run('chats-on', () => window.stoke.hub.remote.setShareChats(true, devices))
+          }}
+        >
+          <p>
+            Your other computers will search and read, but not change, the chats on this one. Secrets are redacted and folders
+            show by name; nothing is copied to them.
+          </p>
+          {others.length > 0 ? (
+            <div className="share-chats-devices" role="group" aria-label="Let these in without asking">
+              <span>Let these in without asking — the rest ask here first:</span>
+              {others.map((d) => (
+                <label key={d.id} className="check-row" data-hub="share-chats-device">
+                  <input type="checkbox" checked={ticked.has(d.id)} onChange={(e) => toggle(d.id, e.target.checked)} />
+                  <span>
+                    <strong>{d.label}</strong>
+                    <span className="mono" title="The first bytes of its signing key">
+                      {platformName(d.platform)} · {d.fingerprint}
+                    </span>
+                  </span>
+                </label>
+              ))}
+            </div>
+          ) : (
+            <p>No other computer is in your vault yet. Each one you add asks here before it searches.</p>
+          )}
+          <p>Type your Stoke Hub password to turn it on. Your hub checks it; Stoke does not keep it.</p>
+        </ConfirmPasswordSheet>
+      )}
     </div>
   )
 }

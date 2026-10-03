@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { verifyPasswordSentence, type HubVerifyResult } from '@shared/hub/client'
 import { useFloatingLayer } from '../lib/floatingLayers'
@@ -25,13 +25,20 @@ import { Spinner } from './Spinner'
  *     />
  *   )}
  *
- * - From inside the Settings sheet (Settings › Account & sync) nothing else is
- *   needed: `settingsOpen` is already in App's `overlayOpen`, so the shell is
- *   inert (gotcha 88) and the docked browser is off the window (gotcha 14).
+ * - From inside the Settings sheet (Settings › Account & sync, its first
+ *   home) nothing else is needed: `settingsOpen` is already in App's
+ *   `overlayOpen`, so the shell is inert (gotcha 88) and the docked browser is
+ *   off the window (gotcha 14).
  * - Anywhere else, add its open state to App's `overlayOpen` (and the file to
- *   `OVERLAY_COVERED` in scripts/verify-layers.mts), so the shell behind it goes
- *   inert like behind BusyDialog. It registers itself with `useFloatingLayer`
- *   regardless, so the browser never paints over it.
+ *   `OVERLAY_COVERED` in scripts/verify-layers.mts), so the browser hides
+ *   behind it like behind BusyDialog. It registers itself with
+ *   `useFloatingLayer` regardless, so the browser never paints over it.
+ *
+ * Wherever it is mounted, it makes the whole app under `#root` inert while it
+ * is up — the Settings sheet it stands on included, which App's own lock (the
+ * shell's three rows) does not cover — so no click, Tab or screen reader walks
+ * out of it into the sheet behind. It is drawn outside `#root`, so it stays
+ * live. The caller puts focus back where it was when the sheet goes.
  *
  * It is drawn into <body> through a portal, one step above the Settings sheet
  * (`.confirm-scrim`/`.confirm-modal`, BusyDialog's classes): inside the sheet's
@@ -91,6 +98,15 @@ export function ConfirmPasswordSheet({
   const errorId = useId()
 
   useFloatingLayer(dialogRef, true)
+
+  // Everything behind it is inert while it is up (gotcha 88): a LAYOUT effect, so the
+  // field's focus on mount (a passive effect) runs after it, never into the sheet behind.
+  useLayoutEffect(() => {
+    const root = document.getElementById('root')
+    if (!root || root.hasAttribute('inert')) return
+    root.setAttribute('inert', '')
+    return () => root.removeAttribute('inert')
+  }, [])
 
   const forget = useCallback((): void => {
     if (fieldRef.current) fieldRef.current.value = ''

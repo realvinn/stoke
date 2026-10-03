@@ -1288,7 +1288,12 @@ export function SettingsSheet({
 
             {loc.page === 'voice' && <VoiceSettings settings={settings} onPatch={onPatch} />}
             {loc.page === 'account' && (
-              <AccountSyncSettings remoteBar={settings.remoteBar} onRemoteBar={(remoteBar) => onPatch({ remoteBar })} />
+              <AccountSyncSettings
+                remoteBar={settings.remoteBar}
+                onRemoteBar={(remoteBar) => onPatch({ remoteBar })}
+                chatIndexOn={settings.chatIndex === 'on'}
+                onOpenChatHistory={() => go({ page: 'chats' }, { id: 'chats.enabled', fallback: null }, true)}
+              />
             )}
 
             {loc.page === 'backup' && <BackupSettings />}

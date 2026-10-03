@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { Project, ProjectMeta, SessionIndexEntry, SessionMeta } from '@shared/types'
-import { chatOriginBadge, type ChatSearchHit } from '@shared/chatIndex'
+import { chatOriginBadge, isChatOrigin, type ChatSearchHit } from '@shared/chatIndex'
+import type { RemoteChatHit } from '@shared/hub/remote'
+import type { RemoteChatGroup } from '@shared/remoteChatsView'
 import { ContextBar } from './ContextMeter'
 import type { ResolvedProfile } from '@shared/profiles'
 import { foldGroup } from '@shared/profiles'
@@ -119,6 +121,14 @@ interface Props {
   onOpenChat?: (hit: ChatSearchHit) => void
   /** Settings › Chat history, from the group's "set up" line. */
   onSetUpChats?: () => void
+  /**
+   * Chat history on the owner's OTHER computers (spec 2026-10-03 §4): one
+   * "On <computer>" group each, its hits or one line saying why there are
+   * none (`remoteChatGroups`), listed after this computer's and never merged
+   * with them by score.
+   */
+  remoteChats?: RemoteChatGroup[]
+  onOpenRemoteChat?: (group: RemoteChatGroup, hit: RemoteChatHit) => void
   /** The "Other machines" group (OtherMachines.tsx), shown above the projects while browsing. */
   otherMachines?: React.ReactNode
 }
@@ -159,6 +169,8 @@ export function Sidebar({
   chatSearch,
   onOpenChat,
   onSetUpChats,
+  remoteChats,
+  onOpenRemoteChat,
   otherMachines
 }: Props): React.JSX.Element {
   /* One picker open at a time, keyed by path — two open popovers in a scrolling
@@ -245,6 +257,15 @@ export function Sidebar({
     const shown = new Set((hits ?? []).flatMap((h) => h.sessions.map((x) => x.session.id)))
     return chatSearch.hits.filter((h) => !(h.source === 'claude' && shown.has(h.nativeId)))
   }, [searching, chatSearch, hits])
+
+  /* Other computers' groups, only while a query is up; their hits count as matches too. */
+  const remoteGroups = searching ? (remoteChats ?? []) : []
+  const remoteHits = remoteGroups.reduce((n, g) => n + g.hits.length, 0)
+  /* This computer's part of "In conversations"; with indexing off, the set-up line only where nothing else matched. */
+  const localChats =
+    searching && chatSearch && chatSearch.state !== 'short' && (chatSearch.state !== 'off' || ((hits?.length ?? 0) === 0 && remoteHits === 0))
+      ? chatSearch
+      : null
 
   /* No session has been looked at yet — including the frame before App's effect starts the fetch. */
   const pending = indexPending(sessionIndex, sessionIndexLoading, sessionIndexError)
@@ -762,6 +783,7 @@ export function Sidebar({
           hits.length === 0 &&
           !pending &&
           chatRows.length === 0 &&
+          remoteHits === 0 &&
           chatSearch?.state !== 'searching' && (
             <div className="empty">
               <h3>Nothing matches</h3>
@@ -780,11 +802,10 @@ export function Sidebar({
 
         {hits?.map(renderHit)}
 
-        {/* With indexing off, the set-up line is offered only where nothing else matched. */}
-        {searching && chatSearch && chatSearch.state !== 'short' && (chatSearch.state !== 'off' || (hits?.length ?? 0) === 0) && (
+        {(localChats !== null || remoteGroups.length > 0) && (
           <section className="chat-hits" aria-label="In conversations">
             <div className="sidebar-group">In conversations</div>
-            {chatSearch.state === 'off' ? (
+            {localChats === null ? null : localChats.state === 'off' ? (
               <p className="sidebar-note">
                 Search inside every AI chat on this computer, not only titles.{' '}
                 {onSetUpChats && (
@@ -793,13 +814,13 @@ export function Sidebar({
                   </button>
                 )}
               </p>
-            ) : chatSearch.state === 'searching' && chatRows.length === 0 ? (
+            ) : localChats.state === 'searching' && chatRows.length === 0 ? (
               <p className="sidebar-note" aria-live="polite">
                 Searching conversations…
               </p>
-            ) : chatSearch.state === 'error' ? (
+            ) : localChats.state === 'error' ? (
               <p className="sidebar-note" role="status">
-                Conversations could not be searched: {chatSearch.error}
+                Conversations could not be searched: {localChats.error}
               </p>
             ) : chatRows.length === 0 ? (
               <p className="sidebar-note">No conversation says &ldquo;{query.trim()}&rdquo;.</p>
@@ -830,6 +851,41 @@ export function Sidebar({
                 })}
               </div>
             )}
+            {remoteGroups.map((g) => (
+              <div key={g.device} className="chat-remote" data-chat-remote={g.state} aria-label={`On ${g.computer}`} role="group">
+                <div className="sidebar-group chat-remote-head">On {g.computer}</div>
+                {g.line !== null ? (
+                  <p className="sidebar-note" role={g.failed ? 'status' : undefined}>
+                    {g.line}
+                  </p>
+                ) : (
+                  <div className="sessions">
+                    {g.hits.map((h) => {
+                      const at = snippet(h.snippet, h.ranges)
+                      const label = h.title ?? 'Untitled chat'
+                      return (
+                        <button
+                          key={`${h.source}:${h.nativeId}`}
+                          className="session chat-hit"
+                          onClick={() => onOpenRemoteChat?.(g, h)}
+                          title={`${label}\nOn ${g.computer}${h.folder ? ` · ${h.folder}` : ''}`}
+                        >
+                          <span className="session-title">{label}</span>
+                          <span className="session-snippet">
+                            <Highlight text={at.text} ranges={at.ranges} />
+                          </span>
+                          <span className="session-meta chat-hit-meta">
+                            <span className="pill chat-badge">{isChatOrigin(h.source) ? chatOriginBadge(h.source) : h.source}</span>
+                            <span className="chat-hit-age">{relativeTime(h.updatedMs)}</span>
+                            {h.folder && <span className="truncate">{h.folder}</span>}
+                          </span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+            ))}
           </section>
         )}
 

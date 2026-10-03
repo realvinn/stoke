@@ -1684,7 +1684,9 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     registered with `useFloatingLayer`; Tab trapped, Escape its Cancel. The
                     field is uncontrolled, so the password is never React state or a DOM
                     attribute, and is emptied on the press and on close. Mounted only while
-                    open; outside Settings, its open state belongs in App's `overlayOpen`
+                    open, it makes everything under `#root` inert (the Settings sheet it
+                    stands on too, gotcha 88); outside Settings, its open state belongs in
+                    App's `overlayOpen` as well. First home: AccountSyncSettings' ShareChats
   src/components/OtherMachines.tsx  the sidebar's "Other machines" group: the owner's other
                     signed-in desktops online now and, where their owner shares them, their
                     sessions; a click opens one as a remote tab. A group, never an overlay
@@ -1752,7 +1754,10 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
   src/components/ChatViewer.tsx  the read-only chat viewer: a `.body-row` column beside the main
                     one, never an overlay (gotcha 14) — messages in order with who and when, the
                     query's words marked (`highlightRanges`), copy per message and Copy all, and
-                    why it is not a live session (`chatOpenAction`'s note)
+                    why it is not a live session (`chatOpenAction`'s note). A `remote` target is
+                    a chat on another of the owner's computers, read over the hub relay
+                    (`hub.remote.openChat`) under "On <Computer> · <folder>", held in its state
+                    only, never resumed from here
   src/components/SettingsSheet.tsx  the Settings dialog: a search box over the menu (results
                     replace the tree in the same column; Enter jumps to the row and focuses its
                     control, Escape clears, Cmd+F comes back), the menu as a WAI-ARIA tree (one
@@ -1772,7 +1777,10 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     file or print, a group typed back), joining by the code or the Kit, what syncs,
                     SSH keys (share one, install by a press), conflict notes, devices (rename,
                     remove with the Kit), Other machines (the share tick, the devices always
-                    allowed, Disconnect), a new Kit, sign-out. Draws main's `HubView` and
+                    allowed, Disconnect), sharing chat history (ShareChats: on through
+                    ConfirmPasswordSheet with the other devices ticked, Remove per device, off
+                    at once; drawn in every phase, `shareChatsRow` says why it is blocked), a
+                    new Kit, sign-out. Draws main's `HubView` and
                     `HubRemoteView` and presses `window.stoke.hub`; never writes `settings.hub`,
                     never sees a key
   src/components/SpeechServiceSettings.tsx  Settings → Voice's speech service: the provider
@@ -1923,6 +1931,11 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     the status and refusal words the panel shows. Gotcha 124
   remotePhone.ts    the phone contract's pure pieces: status mapping and sort, the ended
                     ring, `submitFrames` (typed, never bracketed for Claude: gotcha 86)
+  remoteChatsView.ts  what the renderer says about chat history across computers (spec
+                    2026-10-03 §4): the Settings row (`shareChatsRow`, `shareChatsBlock`), the
+                    sidebar's "On <computer>" groups (`remoteChatGroups`, never merged by
+                    score), the viewer's "On <Computer> · <folder>", and when a waiting search
+                    is asked again (`chatsSearchAgain`, never on an idle close). verify:hub-relay
   phoneUi.ts        the phone UI's decisions: sections, answer-option parsing, the resize
                     policy, the queued-send state, connect input, transcript folding.
                     verify:phone-ui
