@@ -371,17 +371,23 @@ function relayRemote(): RemoteServer {
  * covers only rows cleaned by today's rules (a prefix search over raw text
  * would confirm a secret one character at a time, however the snippets were
  * redacted), and an open re-reads the tool's file with redaction forced, or
- * serves the index's copy only if that was cleaned (gotcha 156). verify:remote
- * holds this wiring by its text.
+ * serves the index's copy only if that was cleaned (gotcha 156). And nothing
+ * is served while that setting is OFF: chats stored then are raw, so the
+ * cleaned search would not find them and a guest would be told they are not
+ * here (`chatsShareBlock`; HubRemote stops advertising and refuses first).
+ * Hidden folders go to the index too, so a hidden chat is left out before
+ * its limit and takes no place in the answer. verify:remote holds this
+ * wiring by its text.
  */
 function chatIndexForGuests(): ChatIndexAccess {
   return {
     indexOn: () => getSettings().chatIndex === 'on',
+    redactOn: () => getSettings().chatIndexOptions.redact,
     hidden: (cwd) => {
       const rules = pathRulesFor(process.platform)
       return getSettings().hiddenProjects.some((p) => isInside(p, cwd, rules))
     },
-    search: (q, limit) => chatHost().searchCleaned(q, limit),
+    search: (q, limit) => chatHost().searchCleaned(q, limit, getSettings().hiddenProjects),
     open: (source, nativeId) => chatHost().openCleaned(source, nativeId, chatEnv(), getSettings().chatIndexOptions.caps.fileMb),
     redact: redactSecrets
   }
@@ -4382,8 +4388,10 @@ function registerIpc(): void {
           sessionStatus: (ptyId) => remoteSessionStatusFor(ptyId),
           // The relay server's `sized` hook (relayRemote) makes this machine's tab follow a guest's resize.
           followsResize: true,
-          // Chat history is shared only while it is on here (and the tick, and the vault: hub/remote.ts).
-          chatIndexOn: () => getSettings().chatIndex === 'on'
+          // Chat history is shared only while it is on here (and the tick, and the vault: hub/remote.ts),
+          // and only while its redaction is: rows stored with it off are never searched from elsewhere (gotcha 156).
+          chatIndexOn: () => getSettings().chatIndex === 'on',
+          chatRedactOn: () => getSettings().chatIndexOptions.redact
         }
       })
       await svc.start()

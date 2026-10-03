@@ -25,6 +25,8 @@ import type { Settings } from '../src/shared/types.ts'
 import { hydrateSettings } from '../src/main/settingsSchema.ts'
 import { HubFiles } from '../src/main/hub/files.ts'
 import { HubService } from '../src/main/hub/service.ts'
+import type { RemoteMachineDeps } from '../src/main/hub/remote.ts'
+import { CHATS_REDACTION_BLOCK, type HubRemoteView } from '../src/shared/hub/remote.ts'
 import { installReceivedKey, listKeyPairs, planInstall, privateKeyHasPassphrase, readKeyForShare, sshFingerprint } from '../src/main/hub/sshKeys.ts'
 import {
   generateDeviceKeys,
@@ -574,7 +576,7 @@ interface Box {
 const json = (body: unknown, status = 200): Response => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
 const v1 = (url: URL): string => url.pathname.replace(/^.*?\/v1\//, '/v1/')
 
-function device(name: string, initial: Partial<Settings>): Box {
+function device(name: string, initial: Partial<Settings>, remote?: RemoteMachineDeps): Box {
   const userData = join(TMP, `ud-${name}`)
   mkdirSync(userData, { recursive: true })
   const ssh = { dir: join(TMP, `home-${name}`, '.ssh'), config: join(TMP, `home-${name}`, '.ssh', 'config'), home: join(TMP, `home-${name}`) }
@@ -604,6 +606,7 @@ function device(name: string, initial: Partial<Settings>): Box {
     ssh,
     exec: fakeSshG(),
     presence: null,
+    remote,
     pairPollMs: 40,
     waitPollMs: 40,
     fetch: (async (input: string | URL | Request, init?: RequestInit) => {
@@ -1310,7 +1313,38 @@ try {
     await A.svc.setShareChats(true, [dId])
     check('Remove takes one device’s chats Always', [(await A.svc.revokeChatGrant(dId)).ok, A.settings().hub.chatGrants, A.settings().hub.shareChats], [true, {}, true])
     await A.svc.setShareChats(false)
+
+    // Redaction off (review of db1ae51): chats stored then are raw, another computer's search covers only
+    // cleaned ones (gotcha 156), so sharing would answer "nothing here" for a chat that is. It waits instead.
+    A.set({ chatIndexOptions: { ...A.settings().chatIndexOptions, redact: false } } as Partial<Settings>)
+    await A.svc.verifyPassword(PASSWORD)
+    const noRedact = await A.svc.setShareChats(true, [dId])
+    check('not while “Leave out anything that looks like an API key” is off: refused with the row’s own reason', [noRedact.ok, !noRedact.ok && noRedact.message, A.settings().hub.shareChats], [false, CHATS_REDACTION_BLOCK, false])
+    A.set({ chatIndexOptions: { ...A.settings().chatIndexOptions, redact: true } } as Partial<Settings>)
+    check('...back on, the same confirmation turns it on (a refusal spends nothing)', (await A.svc.setShareChats(true, [dId])).ok, true)
+    await A.svc.setShareChats(false)
     A.set({ chatIndex: 'off' } as Partial<Settings>)
+  }
+  {
+    // Redaction switched in Settings re-judges chat sharing at once (`onSettingsChanged` -> `chatSharingChanged`,
+    // which ends every chats relay when it pauses): seen here as the view it pushes.
+    const views: HubRemoteView[] = []
+    const R: Box = device('redact-hook', { chatIndex: 'on' } as Partial<Settings>, {
+      sessions: async () => [],
+      request: async () => ({ status: 404, body: null }),
+      socket: () => undefined,
+      emit: (v) => views.push(v),
+      frame: () => undefined,
+      chatIndexOn: () => R.settings().chatIndex === 'on',
+      chatRedactOn: () => R.settings().chatIndexOptions.redact
+    })
+    extras.push(R)
+    await R.svc.start()
+    const n0 = views.length
+    R.set({ uiScale: 1.1 } as Partial<Settings>)
+    const unrelated = views.length - n0
+    R.set({ chatIndexOptions: { ...R.settings().chatIndexOptions, redact: false } } as Partial<Settings>)
+    check('redaction switched off re-judges chat sharing at once; an unrelated setting does not', [unrelated, views.length - n0 > unrelated], [0, true])
   }
 
   /* ------------------------------------------ sign out */

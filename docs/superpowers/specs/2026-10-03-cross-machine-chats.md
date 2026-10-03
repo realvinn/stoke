@@ -76,8 +76,13 @@ In `src/main/chatIndex/` (parse/scan/store/sources, whatever holds `cleanText` a
   - `hub.chatGrants: Record<deviceId, 'always'>`;
   - "Allow once" lives in memory.
 
-  Hydrate and clamp them; `LOCAL_KEYS` includes them. They are effective only while the chat index is on
-  and the device is in the vault.
+  Hydrate and clamp them; `LOCAL_KEYS` includes them. They are effective only while the chat index is on,
+  its "Leave out anything that looks like an API key" is on, and the device is in the vault
+  (`chatsShareBlock`). Redaction off is a PAUSE (review of db1ae51): chats stored then are raw, a guest
+  searches only cleaned rows (gotcha 156), and it was told "Nothing on <Computer> says …" for a chat that
+  is there while the host's row said On. So: no `chats: true`, every chats relay and question ended, the
+  tick refused while it is off (`CHATS_REDACTION_BLOCK`), and the view's `chatsBlocked: 'redaction-off'`
+  for the row's "Paused: …" (`CHATS_PAUSED_SENTENCE`).
 - **Presence:** the sealed `RemoteStatus` gains `chats: true` while sharing is effective (no hub change).
 - **Attach:** a guest opens `{ kind: 'chats' }` only to a computer advertising it. It gets its own scope
   (`RelayScope`), which allows exactly:
@@ -86,13 +91,24 @@ In `src/main/chatIndex/` (parse/scan/store/sources, whatever holds `cleanText` a
     host's own `ChatStore` search, redacted;
   - `GET /api/chats/open?source=&id=`: the chat as the viewer needs it (`viewer.ts`'s `openChat`), redacted,
     at most 4 MiB, never through `/api/transcript` (unredacted).
-- **On every request the host re-checks** `shareChats`, the chat index, the guest's place in the chain (by id
-  AND key, gotcha 140) and the grant.
+- **On every request the host re-checks** `shareChats`, the chat index and its redaction, the guest's place
+  in the chain (by id AND key, gotcha 140) and the grant — before the handler runs and again after its
+  await, refusing (never silently dropping) what it read.
+- **A hidden folder's chat takes no place in an answer:** the index leaves it out before its limit, and
+  `sharedChats` asks for `CHAT_HITS_MAX` and cuts to the guest's limit only after its own filters (with the
+  limit first, `limit=1` answering nothing where `limit=2` answered one said a hidden chat ranked first).
+  Folder names and the tools' ids go through the secret patterns too; a chat whose id they would change is
+  not sent.
+- **Refusal codes** (`ChatsRefusalCode`, shared/hub/remote.ts, documented there): `not-sharing`,
+  `history-off`, `redaction-off`, `denied`, `no-answer`, `revoked`, `busy`, `not-a-device`, `not-in-vault`,
+  `disconnected`. The host sends the code with a fallback sentence for an older guest; the guest words the
+  code itself (`chatsRefusalSentence`), and its results and peers carry it (`code`) for the renderer.
 - **Grants:**
   - A guest with no grant raises a question on the host: Allow once / Always / Deny, the existing question
     machinery under a chats prompt.
   - The devices ticked when the switch is turned on are granted `always` at once.
   - Removing a device ends its grant (`chainChanged`).
+  - Remove beside a device ends its live chats relays at once (`revokeChatGrant`), refused as `revoked`.
   - Turning the switch off closes every chats relay.
 - **Serving:** only on the relay instance of the remote server, never the phone's (`RemoteServer` backs
   both; gotcha 111's per-call deps).
@@ -109,8 +125,11 @@ In `src/main/chatIndex/` (parse/scan/store/sources, whatever holds `cleanText` a
 - **Settings › Account & sync**, beside "Share sessions" as a separate tick:
   - The row reads "Let my other computers search this computer's chat history".
   - When off: "Off. Other computers can't see chats on this one."
-  - It is disabled with the reason when chat history is off ("Turn on Chat history first.") or the device
+  - It is disabled with the reason when chat history is off ("Turn on Chat history first."), its redaction
+    is off ("Turn on “Leave out anything that looks like an API key” in Chat history first.") or the device
     is not signed in ("Sign in to Stoke Hub first.").
+  - On while redaction is off: "Paused: turn on “Leave out anything that looks like an API key” in Chat
+    history to share it." (`chatsBlocked === 'redaction-off'`).
   - Turning it on opens `ConfirmPasswordSheet`, then a list of the other active devices (name + fingerprint),
     ticked, then "Turn on".
   - When on: "On. <devices> can search and read, but not change, chats on this computer. Secrets are

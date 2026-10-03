@@ -192,13 +192,49 @@ export type RelayInnerFrame =
   | { t: 'pong' }
 
 /**
- * Why a host refused, for a guest to act on without reading the sentence:
- * `not-sharing` (the tick is off, or chat history is), `denied` (the owner
- * said no, or nobody answered in time), `not-a-device` (the host's chain does
- * not hold the guest), `busy` (it is already asking about the same thing).
+ * Why a host refused, for a guest to act on — and to SAY in its own words —
+ * without reading the host's sentence, which is only a fallback for a guest
+ * older than the code: a host writes "this computer" meaning itself, and a
+ * guest that showed it would mean the wrong machine.
+ *
+ * `not-sharing` (the tick is off), `history-off` (chat history is off there),
+ * `redaction-off` (its "Leave out anything that looks like an API key" is
+ * off, so sharing is paused: gotcha 156), `denied` (the owner said no),
+ * `no-answer` (nobody answered in time), `revoked` (the owner took this
+ * device's grant back), `busy` (it is already asking about the same thing),
+ * `not-a-device` (the host's chain does not hold the guest), `not-in-vault`
+ * (the host itself is out of the vault), `disconnected` (the owner pressed
+ * Disconnect there). What a chats guest makes of each, and says, is
+ * `ChatsRefusalCode` in remote.ts.
  */
-export type RelayRefusalCode = 'not-sharing' | 'denied' | 'not-a-device' | 'busy'
-const REFUSAL_CODES: readonly string[] = ['not-sharing', 'denied', 'not-a-device', 'busy']
+export type RelayRefusalCode =
+  | 'not-sharing'
+  | 'history-off'
+  | 'redaction-off'
+  | 'denied'
+  | 'no-answer'
+  | 'revoked'
+  | 'busy'
+  | 'not-a-device'
+  | 'not-in-vault'
+  | 'disconnected'
+const REFUSAL_CODES: readonly RelayRefusalCode[] = [
+  'not-sharing',
+  'history-off',
+  'redaction-off',
+  'denied',
+  'no-answer',
+  'revoked',
+  'busy',
+  'not-a-device',
+  'not-in-vault',
+  'disconnected'
+]
+
+/** A refusal code this build knows; anything else is dropped from a frame, never trusted. */
+export function isRelayRefusalCode(v: unknown): v is RelayRefusalCode {
+  return typeof v === 'string' && (REFUSAL_CODES as readonly string[]).includes(v)
+}
 
 /**
  * The most UTF-16 units of frame text one `part` carries. A unit is at most
@@ -247,9 +283,7 @@ export function parseRelayInner(text: string): RelayInnerFrame | null {
     case 'refused':
       if (typeof v.reason !== 'string') return null
       // An unknown code is dropped, not trusted: the guest then reads a plain refusal.
-      return typeof v.code === 'string' && REFUSAL_CODES.includes(v.code)
-        ? { t: 'refused', reason: v.reason, code: v.code as RelayRefusalCode }
-        : { t: 'refused', reason: v.reason }
+      return isRelayRefusalCode(v.code) ? { t: 'refused', reason: v.reason, code: v.code } : { t: 'refused', reason: v.reason }
     case 'status':
       return isRecord(v.status) ? { t: 'status', status: v.status } : null
     case 'req':

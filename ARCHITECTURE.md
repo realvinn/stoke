@@ -389,8 +389,9 @@ sessions that fit the hub's 24 KiB cap before it is sealed and sent.
 
 CHAT HISTORY across the owner's computers (spec 2026-10-03 §3) rides the same relays. A host's
 tick (`hub.shareChats`, default off, turned on only by `HubService.setShareChats` after a password
-confirmed there, `noteChatConsent`) puts `chats: true` in its status while chat history is on and it
-is in the vault (`chatsSharingEffective`). A guest's `searchChats` reads offline and not-sharing from
+confirmed there, `noteChatConsent`) puts `chats: true` in its status while it is in the vault, chat history is on and its
+redaction is on (`chatsSharingEffective`; redaction off is a PAUSE the view reports as `chatsBlocked`,
+since raw rows are never searched from elsewhere). A guest's `searchChats` reads offline and not-sharing from
 presence and opens ONE relay per sharing machine (`attach {kind:'chats'}`), kept while searches come
 and closed after two idle minutes; results are per computer, never merged (`RemoteChatsResult`:
 ok / offline / not-sharing / waiting / denied / error), and `openRemoteChat` reads one chat. The host
@@ -398,12 +399,16 @@ judges a chats relay by its own rule (`chatsAttachDecision`), question (`kind: '
 (`hub.chatGrants`) and Allow once list — a session grant never opens chats and a chats grant never a
 session — and its scope is exactly `GET /api/chats/search` and `GET /api/chats/open`, which only the
 relay instance of the phone server answers (`serveChats`, `chatsRouteFor`). Every request re-checks
-the tick, chat history, the guest by its pinned key and the grant; the tick off ends every chats
-relay and drops every chats grant, and `chainChanged` drops a removed device's. What leaves is
+the tick, chat history and its redaction, the guest by its pinned key and the grant, before and after
+the handler's await; the tick off (or a pause) ends every chats relay and question, the tick off drops
+every chats grant, Remove ends that device's relays at once, and `chainChanged` drops a removed
+device's. Every refusal carries a `ChatsRefusalCode` the GUEST words itself
+(`chatsRefusalSentence`), never the host's sentence about itself. What leaves is
 `hub/chatShare.ts`'s, over the index's CLEANED reads whatever the local redaction setting says
 (`searchCleaned` finds only rows cleaned by today's rules, `openCleaned` re-reads with redaction
-forced): redacted again with the index's own patterns, a folder by its last segment, nothing from a
-hidden folder.
+forced): redacted again with the index's own patterns (titles, snippets, messages, folder names,
+ids), a folder by its last segment, nothing from a hidden folder — left out before the limit, in the
+store and again in `sharedChats`, so a hidden chat takes no place in the answer.
 
 ## Remote access
 

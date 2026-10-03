@@ -740,3 +740,22 @@ Driven end to end the same day: a headless host with a real index over a scratch
 chat with an `sk-ant-api03-…` key, a local hub, and the built app as the guest — the sidebar's
 "On Studio" hit and the viewer showed `QUOKKA_KEY=[redacted]`, and the key's canary was in no
 byte of the guest's page.
+
+> **Checked against the code on 2026-10-03 (review of db1ae51)** — two consequences of the rule
+> above that the first cut missed, both reasoned from the code and each held by a suite case shown
+> red by mutating its fix back:
+> - **The cleaned-only search makes redaction a precondition of sharing, not a detail.** With "Leave
+>   out anything that looks like an API key" OFF, every chat is stored at `redact_level` 0, so
+>   `searchCleaned` finds nothing at all — and the guest was told "Nothing on Studio says …" while
+>   Studio's row still said On. Sharing is now effective only while redaction is on
+>   (`chatsShareBlock`, `chatsSharingEffective`): no `chats: true`, every chats relay and question
+>   ended when it goes off (`HubService.onSettingsChanged` → `chatSharingChanged`), `sharedChats`
+>   answers 503 `redaction-off`, the tick refuses to go on (`CHATS_REDACTION_BLOCK`), and the view
+>   says why (`chatsBlocked`). verify:hub-relay, verify:hub-client, verify:remote.
+> - **A filter after a limit turns the count into the same oracle.** `sharedChats` passed the
+>   guest's `limit` to the index and dropped hidden folders afterwards, so `limit=1` answered nothing
+>   where `limit=2` answered one hit: a hidden chat matched, and ranked first. The store leaves hidden
+>   folders out before its limit (`search`'s `skip`, `skipFolders`, handed `hiddenProjects` through
+>   `searchCleaned`), and `sharedChats` asks for `CHAT_HITS_MAX` and cuts to the guest's limit only
+>   after its own filters. Over-fetching alone would still leak at the 50th place. verify:chat-sources
+>   (store and worker), verify:hub-relay.

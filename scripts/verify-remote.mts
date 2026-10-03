@@ -567,6 +567,17 @@ check('every other path is not a chats path at all, on either instance', [chatsR
     [/search:\s*\([^)]*\)\s*=>\s*chatHost\(\)\.searchCleaned\(/.test(seam), /open:\s*\([^)]*\)\s*=>\s*chatHost\(\)\.openCleaned\(/.test(seam), /chatHost\(\)\.(search|open)\(/.test(seam)],
     [true, true, false]
   )
+  // Review of db1ae51: nothing is served while this computer's redaction is off (chats stored then are raw,
+  // the cleaned search finds none, and a guest was told they are not here), and the owner's hidden folders
+  // go to the index so a hidden chat takes no place before its limit.
+  check(
+    'the seam reads redaction per call and hands the index the hidden folders',
+    [/redactOn:\s*\(\)\s*=>\s*getSettings\(\)\.chatIndexOptions\.redact\b/.test(seam), /searchCleaned\(\s*q\s*,\s*limit\s*,\s*getSettings\(\)\.hiddenProjects\s*\)/.test(seam)],
+    [true, true]
+  )
+  // And HubRemote is told the same, so a redaction-off host advertises nothing and refuses every chats relay.
+  const hubDeps = main.slice(main.indexOf('chatIndexOn: () =>'), main.indexOf('await svc.start()', main.indexOf('chatIndexOn: () =>')))
+  check('the hub service’s machine deps read redaction per call too', /chatRedactOn:\s*\(\)\s*=>\s*getSettings\(\)\.chatIndexOptions\.redact\b/.test(hubDeps), true)
   const server = readFileSync(join(import.meta.dirname, '../src/main/remote/server.ts'), 'utf8')
   check('and the server asks chatsRouteFor which instance it is from that alone', /chatsRouteFor\(this\.relayChats \? 'relay' : 'phone'/.test(server), true)
 }

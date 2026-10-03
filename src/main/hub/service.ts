@@ -104,7 +104,7 @@ import {
   type VaultWrap
 } from '../../shared/hub/protocol.ts'
 import { keyFingerprint, RELAY_MAX_FRAME_BYTES, type HubGrant } from '../../shared/hub/relay.ts'
-import { emptyRemoteView, isAttachAnswer, type HubRemoteView, type RemoteChatOpen, type RemoteChatsResult } from '../../shared/hub/remote.ts'
+import { CHATS_REDACTION_BLOCK, emptyRemoteView, isAttachAnswer, type HubRemoteView, type RemoteChatOpen, type RemoteChatsResult } from '../../shared/hub/remote.ts'
 import { applySyncedSettings, heldChangesFor, runsCode, sshKeyPayloadProblem, type SshKeyPayload, type SyncableHost } from '../../shared/hub/settings.ts'
 import type { SecretBackend } from '../secrets.ts'
 import type { ExecRun } from '../sshEnroll.ts'
@@ -349,6 +349,8 @@ export class HubService {
   private chatConsentAt: number | null
   /** `settings.chatIndex` as last seen, so switching chat history off ends every chats relay at once. */
   private chatIndexWas: Settings['chatIndex']
+  /** `settings.chatIndexOptions.redact` as last seen: off pauses sharing, and ends every chats relay at once. */
+  private chatRedactWas: boolean
 
   constructor(deps: HubServiceDeps) {
     this.deps = deps
@@ -412,6 +414,7 @@ export class HubService {
       : null
     this.chatConsentAt = null
     this.chatIndexWas = deps.getSettings().chatIndex
+    this.chatRedactWas = deps.getSettings().chatIndexOptions.redact
   }
 
   /* ======================================================== plumbing */
@@ -2094,10 +2097,12 @@ export class HubService {
   }
 
   private onSettingsChanged(): void {
-    // Chat history switched off (or on) in Settings: the chats tick's force moves with it, at once.
+    // Chat history, or its redaction, switched off (or on) in Settings: the chats tick's force moves with it, at once.
     const chatIndex = this.settings().chatIndex
-    if (chatIndex !== this.chatIndexWas) {
+    const redact = this.settings().chatIndexOptions.redact
+    if (chatIndex !== this.chatIndexWas || redact !== this.chatRedactWas) {
       this.chatIndexWas = chatIndex
+      this.chatRedactWas = redact
       this.remote?.chatSharingChanged()
     }
     if (this.applying || !this.isActiveIn(this.verdict)) return
@@ -2866,10 +2871,12 @@ export class HubService {
    * "Let my other computers search this computer's chat history". Off is
    * instant and needs no password: every chats relay closes and every chats
    * grant goes. On needs a password confirmed here just now
-   * (`noteChatConsent`, spent by this call), chat history on, and this device
-   * in the vault; the devices ticked on the sheet (other ACTIVE devices of the
-   * verified chain only) get "Always" at once. The renderer cannot write
-   * `hub` itself (`commitSettings` keeps main's copy), so this is the only way on.
+   * (`noteChatConsent`, spent by this call), chat history on with its
+   * redaction on (`CHATS_REDACTION_BLOCK`: rows stored with it off cannot be
+   * searched from elsewhere, gotcha 156), and this device in the vault; the
+   * devices ticked on the sheet (other ACTIVE devices of the verified chain
+   * only) get "Always" at once. The renderer cannot write `hub` itself
+   * (`commitSettings` keeps main's copy), so this is the only way on.
    */
   async setShareChats(on: boolean, devices: readonly unknown[] = []): Promise<HubResult> {
     if (!on) {
@@ -2885,6 +2892,7 @@ export class HubService {
       return { ok: false, message: 'Confirm it’s you first: type your hub password on this computer.' }
     }
     if (this.settings().chatIndex !== 'on') return { ok: false, message: 'Turn on Chat history first.' }
+    if (!this.settings().chatIndexOptions.redact) return { ok: false, message: CHATS_REDACTION_BLOCK }
     const ctx = this.remoteContext()
     if (!ctx) return { ok: false, message: 'Sign in to Stoke Hub first.' }
     // Spent before the first await (gotcha 20): a second press needs the password again.
@@ -2913,7 +2921,7 @@ export class HubService {
 
   /** One chat from another computer, read-only (`HubRemote.openRemoteChat`). */
   openRemoteChat(device: string, source: string, nativeId: string): Promise<RemoteChatOpen> {
-    if (!this.remote) return Promise.resolve({ ok: false, state: 'error', message: 'Other machines are not available here.' })
+    if (!this.remote) return Promise.resolve({ ok: false, state: 'error', message: 'Other machines are not available here.', code: null })
     return this.remote.openRemoteChat(device, source, nativeId)
   }
 
