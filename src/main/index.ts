@@ -371,8 +371,8 @@ function relayRemote(): RemoteServer {
  * covers only rows cleaned by today's rules (a prefix search over raw text
  * would confirm a secret one character at a time, however the snippets were
  * redacted), and an open re-reads the tool's file with redaction forced, or
- * serves the index's copy only if that was cleaned. verify:remote holds this
- * wiring by its text.
+ * serves the index's copy only if that was cleaned (gotcha 156). verify:remote
+ * holds this wiring by its text.
  */
 function chatIndexForGuests(): ChatIndexAccess {
   return {

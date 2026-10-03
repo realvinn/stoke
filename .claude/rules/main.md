@@ -710,3 +710,33 @@ whose home is not trusted, and Windows.
 >
 > And the strip's disclosure was an ellipsis: the SSH offer's one-line style cut "Anthropic still
 > receives what you send" first (661 px of text in 622 px with the docked browser open). It wraps.
+
+## 156. A search over raw rows answers yes or no for any prefix of a secret, however its snippets are redacted
+
+**Found 2026-10-03, joining the three halves of cross-machine chats (spec 2026-10-03).** The relay's
+`/api/chats/search` route lets another of the owner's computers search this one's chat index. The
+obvious wiring is the index's own `search`, with every snippet, title and message passed through
+`redactSecrets` on the way out — and the snippets come out clean. It still leaks: the index's
+local `search`/`open` follow THIS computer's "Leave out anything that looks like an API key"
+setting, so with it off (or for a chat stored before it went on, or under an older rule set) the
+FTS rows hold the key as typed. A query for `sk-ant-api03-a` either finds a chat or does not, and
+the guest walks the key one character at a time from hit counts alone (reasoned from the route's
+shape; no such walk was run); a snippet can also start part-way through a key, where no pattern
+recognises what is left of it. The phone and a local
+viewer never had this exposure, since they are the owner on their own computer.
+
+The rule: **what leaves the computer is searched and read only through the index's CLEANED
+reads** — `ChatIndexHost.searchCleaned` (rows whose `redact_level` is today's `REDACTION_VERSION`
+only; a raw row is left out, never redacted on the way out) and `openCleaned` (the tool's file
+re-read with redaction forced, the stored copy only if it was cleaned) — whatever the local setting
+says. `chatIndexForGuests` (index.ts) hands `sharedChats` those two and nothing else, and
+`chatShare.ts` still runs `redactSecrets` over every string as a second belt. A raw row becomes
+searchable from elsewhere once a pass with redaction on cleans it in place (`recleanStale`).
+
+Held by `verify:chat-sources` (the cleaned-only filter, the level that only drops on a write, the
+in-place clean; each mutated red by the builder) and `verify:remote` (the seam's text: `searchCleaned`
+and `openCleaned`, never `chatHost().search(`/`.open(`; mutated to `search` and it went red).
+Driven end to end the same day: a headless host with a real index over a scratch HOME holding a
+chat with an `sk-ant-api03-…` key, a local hub, and the built app as the guest — the sidebar's
+"On Studio" hit and the viewer showed `QUOKKA_KEY=[redacted]`, and the key's canary was in no
+byte of the guest's page.

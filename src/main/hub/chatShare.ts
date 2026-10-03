@@ -10,7 +10,7 @@
  *   redaction forced (`ChatIndexHost.searchCleaned`/`openCleaned`, spec §1),
  *   whatever the local redaction setting says. A search over raw stored text
  *   would answer yes or no for any prefix of a secret however its snippets
- *   were redacted afterwards, so that is the guarantee; the index's secret
+ *   were redacted afterwards (gotcha 156), so that is the guarantee; the index's secret
  *   patterns (`redact`, chatIndex/parse.ts `redactSecrets`) then run again
  *   over every title, snippet and message as a second belt, and a snippet
  *   whose text that changes gets its highlight ranges recomputed;
