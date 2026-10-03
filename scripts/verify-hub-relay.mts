@@ -2019,6 +2019,50 @@ console.log('\nchat history: redaction off pauses sharing; a Remove, a grant tak
   for (const mm of [hostM, guestM]) mm.remote.reset()
 }
 
+console.log('\nchat history: a pause undone inside the retry wait is searched afresh (re-drive of 62b4ae6)')
+{
+  // A retry wait far longer than the case, so only a newer status can bring A back: the waits above use 50 ms,
+  // which hid it. Driven end to end, redaction turned off and on again within CHATS_RETRY_MS left the
+  // sidebar's open search answered from the old refusal — no group for A — until the owner typed again.
+  const T = { idleMs: 60_000, waitMs: 400, retryMs: 60_000, requestMs: 2000 }
+  const hostM = machine(A, { chatsTiming: T })
+  const guestM = machine(B, { chatsTiming: T })
+  hostM.chats = [{ chatId: 9, source: 'claude', nativeId: 'p-9', title: 'Paused notes', cwd: '/Users/owner/dev/stoke', text: 'the platypus plan' }]
+  hostM.shareChats = true
+  hostM.chatGrants = { [B.id]: 'always' }
+  for (const mm of [hostM, guestM]) {
+    mm.remote.onOnline([A.id, B.id])
+    mm.remote.presenceOpened()
+  }
+  await until(() => last(guestM).machines[0]?.status?.chats)
+  const byA = (rs: RemoteChatsResult[]): RemoteChatsResult | undefined => rs.find((r) => r.device === A.id)
+  check('(B searches A under Always)', byA(await guestM.remote.searchChats('platypus'))?.state, 'ok')
+  hostM.redactOn = false
+  hostM.remote.chatSharingChanged()
+  await until(() => last(guestM).chatPeers[0]?.state === 'not-sharing' && last(guestM).machines[0]?.status?.chats === false)
+  const relaysBefore = relays.size
+  hostM.redactOn = true
+  hostM.remote.chatSharingChanged()
+  await until(() => last(guestM).machines[0]?.status?.chats === true)
+  check('A says it shares again: the refused peer goes with the newer status, not after the retry wait', last(guestM).chatPeers.length, 0)
+  const back = await guestM.remote.searchChats('platypus')
+  check('and the search asked again on that status reaches A afresh: its hit, over a new relay', [byA(back)?.state, byA(back)?.hits.length, relays.size > relaysBefore], ['ok', 1, true])
+  // A Deny is not a status's to undo: it stands until the search ends, whatever A says next.
+  hostM.chatGrants = {}
+  hostM.remote.chatSharingChanged()
+  guestM.remote.endChatSearch()
+  void guestM.remote.searchChats('platypus')
+  const ask = await until(() => last(hostM).asks.find((a) => a.kind === 'chats'))
+  if (ask) await hostM.remote.answer(ask.id, 'deny')
+  await until(() => last(guestM).chatPeers[0]?.state === 'denied')
+  const atBefore = last(guestM).machines[0]?.status?.at ?? 0
+  hostM.remote.chatSharingChanged() // a forced publish: a newer status, still saying chats
+  await until(() => (last(guestM).machines[0]?.status?.at ?? 0) > atBefore && last(guestM).machines[0]?.status?.chats === true)
+  await tick(30)
+  check('a Deny stands through a newer status from A', [last(guestM).chatPeers[0]?.state, byA(await guestM.remote.searchChats('platypus'))?.state, last(hostM).asks.length], ['denied', 'denied', 0])
+  for (const mm of [hostM, guestM]) mm.remote.reset()
+}
+
 console.log('\nchat history across computers: what the renderer says (spec 2026-10-03 §4)')
 {
   check('a name list reads as a sentence', [namesList([]), namesList(['Studio']), namesList(['Studio', 'Laptop']), namesList(['Studio', 'Laptop', 'NUC'])], ['', 'Studio', 'Studio and Laptop', 'Studio, Laptop and NUC'])
