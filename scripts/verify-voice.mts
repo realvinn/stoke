@@ -60,6 +60,20 @@ import {
 } from '../src/shared/micDevice.ts'
 import { createSignalWatch, levelFromSamples, smoothLevel } from '../src/shared/voiceLevel.ts'
 import {
+  clampHoldMs,
+  clampVoice,
+  DEFAULT_HOLD_MS,
+  HOLD_MS_MAX,
+  HOLD_MS_MIN,
+  HOLD_PRESETS,
+  holdChoices,
+  holdLabel,
+  LEGACY_DEFAULT_HOLD_MS,
+  VOICE_DEFAULTS,
+  VOICE_FORMAT
+} from '../src/shared/voiceSettings.ts'
+import { hydrateSettings } from '../src/main/settingsSchema.ts'
+import {
   CLI_OWNS_SPACE,
   claudeVoiceEnabled,
   isMicAccess,
@@ -133,19 +147,46 @@ console.log('\na tap types a space; only a hold records')
   check('and ends idle', hold.state, SPACE_IDLE)
 }
 {
-  // A key-repeat delay shorter than a long threshold: the repeat is the OS
-  // saying the key is held, so it starts before the timer.
+  /*
+   * A key-repeat delay shorter than the threshold. The repeat used to start the
+   * recorder at once ("the OS saying the key is held"), which capped every
+   * threshold at the OS repeat delay — 500ms on the owner's Mac, measured with
+   * NSEvent.keyRepeatDelay — so the longer holds asked for on 2026-10-04 would
+   * have done nothing. The threshold is the user's now: early repeats are
+   * taken and start nothing, and the timer starts it.
+   */
   const early = run(
     [
       [0, down()],
-      [225, down(true)],
-      [260, { type: 'opened' }],
-      [900, up()]
+      [500, down(true)],
+      [583, down(true)],
+      [700, { type: 'timer' }],
+      [760, { type: 'opened' }],
+      [1400, up()]
     ],
-    600
+    700
   )
-  check('a repeat while pending proves a hold and starts at once', early.outs, ['arm-timer', 'start', 'pass', 'finish'])
-  check('the repeat itself is taken', early.takes[1], true)
+  check('repeats before the threshold start nothing; the timer does', early.outs, ['arm-timer', 'swallow', 'swallow', 'start', 'pass', 'finish'])
+  check('and each early repeat is still taken (gotcha 79)', early.takes.slice(1, 3), [true, true])
+  const released = run(
+    [
+      [0, down()],
+      [500, down(true)],
+      [650, up()]
+    ],
+    700
+  )
+  check('a release after a repeat but before the threshold is a space, never a recording', released.outs, ['arm-timer', 'swallow', 'type-space'])
+  const stalled = run(
+    [
+      [0, down()],
+      [720, down(true)],
+      [760, { type: 'opened' }],
+      [1400, up()]
+    ],
+    700
+  )
+  check('a repeat once the threshold has passed starts it (the timer is late)', stalled.outs, ['arm-timer', 'start', 'pass', 'finish'])
 }
 {
   const held = run([
@@ -234,6 +275,52 @@ console.log('\na tap types a space; only a hold records')
   check('the previous rule started on the first press (pinned as history)', before({ code: 'Space', repeat: false }), 'start')
   const older = (e: { code: string; repeat: boolean }): string => (e.code !== 'Space' || e.repeat ? 'pass' : 'start')
   check('the rule before it passed repeats on to the pty (pinned as history)', older({ code: 'Space', repeat: true }), 'pass')
+}
+
+console.log('\nhow long a hold is: the default, the range, and the one-time move off 250')
+/*
+ * The owner, 2026-10-04: "I think we need to increase the hold duration before
+ * activation". The default went from 250 to 500 and the ceiling from 800 to
+ * 1500 — but every settings file already holds 250 EXPLICITLY (hydrate writes
+ * the whole block on the first save of anything), so a new default alone would
+ * have reached nobody. A block from before format 2 has its exact 250 moved to
+ * the new default once; from then on a 250 is a choice and stays.
+ */
+{
+  check('the default is 500', [DEFAULT_HOLD_MS, VOICE_DEFAULTS.holdMs], [500, 500])
+  check('the range is 150 to 1500', [HOLD_MS_MIN, HOLD_MS_MAX], [150, 1500])
+  check('a fresh machine gets the default and this format', [hydrateSettings({}).voice.holdMs, hydrateSettings({}).voice.format], [500, VOICE_FORMAT])
+  check('clamped: under the floor, over the ceiling, rounded', [clampHoldMs(20), clampHoldMs(5000), clampHoldMs(1499.6), clampHoldMs(1200)], [150, 1500, 1500, 1200])
+  check('a 1500 set by hand survives hydrate (the old ceiling cut it to 800)', hydrateSettings({ voice: { holdMs: 1500, format: 2 } }).voice.holdMs, 1500)
+  check('anything but a number is the default', [clampHoldMs('300'), clampHoldMs(null), clampHoldMs(Number.NaN)], [500, 500, 500])
+
+  const legacy = hydrateSettings({ voice: { sttUrl: 'http://x:1', holdMs: LEGACY_DEFAULT_HOLD_MS } }).voice
+  check('a file from before format 2 holding the old default 250 moves to 500, and is marked', [legacy.holdMs, legacy.format], [500, 2])
+  check('and keeps everything else it held', legacy.sttUrl, 'http://x:1')
+  const chosen = hydrateSettings({ voice: { holdMs: 250, format: 2 } }).voice
+  check('a 250 in a format-2 block was picked in Settings, and stays', [chosen.holdMs, chosen.format], [250, 2])
+  check('a format-1 value that is not exactly 250 was somebody’s choice: kept', [hydrateSettings({ voice: { holdMs: 300 } }).voice.holdMs, hydrateSettings({ voice: { holdMs: 800 } }).voice.holdMs], [300, 800])
+  check('a newer format’s 250 is kept too', hydrateSettings({ voice: { holdMs: 250, format: 7 } }).voice.holdMs, 250)
+  check('a junk format reads as 1, so its 250 is moved', [hydrateSettings({ voice: { holdMs: 250, format: 'two' } }).voice.holdMs, hydrateSettings({ voice: { holdMs: 250, format: 1.5 } }).voice.holdMs], [500, 500])
+  /*
+   * Once, and stable (gotcha 116): the migrated block written back and read
+   * again is the same block, and a 250 picked AFTER the move — a patch over the
+   * hydrated settings, which is what setSettings does — survives every later read.
+   */
+  const once = hydrateSettings({ voice: { holdMs: 250 } })
+  const twice = hydrateSettings(JSON.parse(JSON.stringify(once)))
+  check('a second hydrate of the moved block changes nothing', twice.voice, once.voice)
+  const picked = hydrateSettings({ ...once, voice: { ...once.voice, holdMs: 250 } })
+  const reread = hydrateSettings(JSON.parse(JSON.stringify(picked)))
+  check('250 picked after the move is kept, and kept on every later read', [picked.voice.holdMs, reread.voice.holdMs, hydrateSettings(reread).voice.holdMs], [250, 250, 250])
+  check('clampVoice alone carries the move, so every reader of a voice block gets it', clampVoice({ holdMs: 250 }).holdMs, 500)
+
+  check('the presets the owner asked for', HOLD_PRESETS.map((p) => p.ms), [250, 350, 500, 700, 1000, 1500])
+  ok('every preset is inside the range', HOLD_PRESETS.every((p) => p.ms >= HOLD_MS_MIN && p.ms <= HOLD_MS_MAX))
+  check('the default is one of them, and says so', holdLabel(DEFAULT_HOLD_MS), '500 ms — a firm press (default)')
+  check('a second reads as seconds, with words for what it feels like', [holdLabel(1000), holdLabel(1500)], ['1 s — a full second', '1.5 s — only a long, sure hold'])
+  check('a hand-set value is listed as itself, in order', [holdLabel(420), holdChoices(420)], ['420 ms', [250, 350, 420, 500, 700, 1000, 1500]])
+  check('a preset is not listed twice', holdChoices(700), [250, 350, 500, 700, 1000, 1500])
 }
 
 console.log('\nthe recording-volume line')
@@ -993,6 +1080,10 @@ console.log('\nthe wire: TerminalView and the phone really route through these')
   ok('and no longer starts on the first press', !/e\.code === 'Space' && !e\.repeat\) void begin\(e\)/.test(phone))
   ok('the phone’s composer carries the level line', /onLevel: \(level\) =>[\s\S]{0,80}levelFill\.style\.transform/.test(phone))
   ok('Settings → Voice offers the microphone picker', /<MicPicker voice=\{voice\} patchVoice=\{patchVoice\}/.test(settingsUi))
+  ok(
+    'the hold select lists holdChoices with holdLabel’s words, not its own numbers',
+    /holdChoices\(voice\.holdMs\)/.test(micUi) && /\{holdLabel\(ms\)\}/.test(micUi) && !/HOLD_PRESETS = \[/.test(micUi)
+  )
   /*
    * Settings' Test meter claims per press. A shared placeholder claim let Test,
    * Stop, Test during a slow open install both streams and orphan one, lit

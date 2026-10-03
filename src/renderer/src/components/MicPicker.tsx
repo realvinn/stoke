@@ -4,7 +4,7 @@ import { audioInputs, isVirtualCapture, labelsHidden, noSignalLine, pickDevice, 
 import { listDevices, revealDeviceNames, testMicrophone } from '@shared/voice'
 import { createSignalWatch } from '@shared/voiceLevel'
 import { microphoneError } from '@shared/voiceRoute'
-import { HOLD_MS_MAX, HOLD_MS_MIN } from '@shared/voiceSettings'
+import { holdChoices, holdLabel, HOLD_MS_MAX, HOLD_MS_MIN } from '@shared/voiceSettings'
 
 /*
  * Which microphone Stoke's dictation records from, how long a hold is, and a
@@ -28,8 +28,6 @@ function defaultName(devices: readonly MicDevice[]): string {
   const alias = devices.find((d) => d.kind === 'audioinput' && d.deviceId === 'default')
   return alias?.label.replace(/^Default\s*-\s*/i, '') ?? ''
 }
-
-const HOLD_PRESETS = [150, 250, 400, 600, 800]
 
 export function MicPicker({
   voice,
@@ -160,9 +158,7 @@ export function MicPicker({
   const chosen = inputs.find((d) => d.deviceId === resolved)
   const chosenName = saved ? chosen?.label || voice.micLabel : defaultName(list)
   const virtual = !!chosenName && isVirtualCapture(chosenName)
-  const holdOptions = HOLD_PRESETS.includes(voice.holdMs)
-    ? HOLD_PRESETS
-    : [...HOLD_PRESETS, voice.holdMs].sort((a, b) => a - b)
+  const holdOptions = holdChoices(voice.holdMs)
 
   return (
     <>
@@ -276,14 +272,14 @@ export function MicPicker({
         >
           {holdOptions.map((ms) => (
             <option key={ms} value={ms}>
-              {ms} ms{ms === 250 ? ' (default)' : ''}
+              {holdLabel(ms)}
             </option>
           ))}
         </select>
         <span className="field-hint">
           Once dictation is on in a tab, a quicker press types an ordinary space and never opens the
-          microphone; a longer one records until you let go. Between {HOLD_MS_MIN} and {HOLD_MS_MAX}{' '}
-          ms.
+          microphone; a longer one records until you let go. The keyboard’s own repeat never starts
+          it sooner. Between {HOLD_MS_MIN} and {HOLD_MS_MAX} ms.
         </span>
       </div>
     </>

@@ -1125,8 +1125,9 @@ export interface VoiceSettings {
   /**
    * How long Space must stay down, in ms, before Stoke's dictation opens the
    * microphone; a shorter press types an ordinary space (`spaceHold`,
-   * voiceRoute.ts). 250 by default, clamped to 150–800 — below 150 a quick tap
-   * starts recording, above 800 the wait reads as broken.
+   * voiceRoute.ts). 500 by default (250 before format 2), clamped to
+   * 150–1500 — below 150 a quick tap starts recording, and past a second and
+   * a half the wait reads as broken.
    */
   holdMs: number
   /**
@@ -1148,6 +1149,14 @@ export interface VoiceSettings {
    * shared/micDevice.ts). `''` with a null id.
    */
   micLabel: string
+  /**
+   * The shape this block was written in (`VOICE_FORMAT`, voiceSettings.ts).
+   * Absent in every file from before it, which reads as 1. Always this build's
+   * number once hydrated, so the upgrade it keys — a stored `holdMs` of 250,
+   * the old default hydrate wrote into every file, becomes the new default —
+   * runs once per file, and a 250 chosen afterwards is kept.
+   */
+  format: number
 }
 
 export interface Settings {

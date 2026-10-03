@@ -114,8 +114,11 @@ export function spaceOwner(tab: DictationTab, claudeVoice: boolean): SpaceOwner 
  * clip away as under 1 KB — and a person dictating into a shell prompt had to
  * disarm, type the space, and re-arm. Now the first keydown only arms a timer
  * (`pending`); the strip says "Keep holding…", and the recorder starts when the
- * timer fires or an auto-repeat arrives, whichever is first — a repeat is the
- * OS saying the key is held. A release while still pending types the space.
+ * timer fires — or when an auto-repeat arrives once the threshold has passed,
+ * should the timer be late. An earlier repeat used to start it at once ("the
+ * OS saying the key is held"), which capped every threshold at the OS repeat
+ * delay and made a longer hold setting do nothing (2026-10-04). A release
+ * while still pending types the space.
  *
  * What must survive from gotcha 79: EVERY repeat of Space is taken, in every
  * phase. A repeat that reaches xterm reaches the pty, and the repeat stream is
@@ -210,9 +213,18 @@ export function spaceHold(state: SpaceHoldState, event: SpaceHoldEvent, now: num
         if (event.repeat) return step(state, 'swallow', true)
         return step({ phase: 'pending', since: now }, 'arm-timer', true, holdMs)
       }
-      // A repeat is the OS saying the key is held: that is a hold, whatever
-      // the timer says.
-      if (state.phase === 'pending' && event.repeat) return step({ phase: 'starting' }, 'start', true)
+      /*
+       * A repeat while pending is taken (gotcha 79) and starts nothing until
+       * the threshold has passed: the threshold is the user's, and it is now
+       * longer than the OS repeat delay (500ms by default on macOS, measured
+       * with NSEvent.keyRepeatDelay on 2026-10-04), so a repeat that started
+       * the recorder would cut every hold setting past that delay back to it.
+       * Past the threshold a repeat does start — the timer is late (a stalled
+       * loop), and the key being held that long is the hold.
+       */
+      if (state.phase === 'pending' && event.repeat && now - state.since >= holdMs) {
+        return step({ phase: 'starting' }, 'start', true)
+      }
       return step(state, 'swallow', true)
     case 'keyup':
       if (event.code !== 'Space' || event.composing) return step(state, 'pass')

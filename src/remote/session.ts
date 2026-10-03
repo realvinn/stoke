@@ -1027,9 +1027,10 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
    *
    * The same hold rule as the desktop terminal (`spaceHold`, voiceRoute.ts): a
    * tap types a space into the composer and never opens the microphone; only
-   * a press held past DEFAULT_HOLD_MS, or one the keyboard starts repeating,
-   * records. Every repeat is taken (gotcha 79). The phone has no Settings of
-   * its own, so it keeps the default threshold.
+   * a press held past DEFAULT_HOLD_MS (500ms since 2026-10-04) records, and
+   * the keyboard's own repeat never starts it sooner. Every repeat is taken
+   * (gotcha 79). The phone has no Settings of its own, so it keeps the default
+   * threshold.
    */
   let voiceOn = false
   const VOICE_HINT = 'Voice mode: hold space to speak · tap for a space · esc to leave'

@@ -20,13 +20,49 @@ export const DEFAULT_STT_URL = 'http://127.0.0.1:17890'
 
 /**
  * How long a Space press must last before Stoke's dictation records, and the
- * range a hand-edited value is held to. 250ms sits above a typing tap (measured
- * taps run 50–150ms) and well under the OS key-repeat delay a hold also proves
- * itself by (`spaceHold`, voiceRoute.ts).
+ * range a hand-edited value is held to.
+ *
+ * 500ms since 2026-10-04, from the owner: "I think we need to increase the hold
+ * duration before activation". 250 sat above a typing tap (measured taps run
+ * 50–150ms) but under a deliberate pause on the space bar, so a thinking pause
+ * mid-sentence opened the microphone. A hold is ALSO proved by the first OS
+ * key-repeat (`spaceHold`, voiceRoute.ts), which on macOS's default delay
+ * arrives before 500ms — so the setting matters most where the repeat delay is
+ * long or turned off. The ceiling went from 800 to 1500 for the same reason.
  */
-export const DEFAULT_HOLD_MS = 250
+export const DEFAULT_HOLD_MS = 500
 export const HOLD_MS_MIN = 150
-export const HOLD_MS_MAX = 800
+export const HOLD_MS_MAX = 1500
+
+/**
+ * The default before 2026-10-04. Every settings file from then holds it
+ * EXPLICITLY — `hydrateSettings` writes the whole repaired block on the first
+ * save of any field — so a new default alone would never reach anyone who had
+ * ever saved a setting. `clampVoice` moves a stored 250 to `DEFAULT_HOLD_MS`
+ * once, on a block from before `VOICE_FORMAT` 2.
+ */
+export const LEGACY_DEFAULT_HOLD_MS = 250
+
+/**
+ * The shape the `voice` block is stored in, written into it (`format`) so a
+ * file from an earlier build can be told apart on its first read here — the
+ * agents block's `AGENTS_FORMAT` pattern.
+ *
+ *   1  (no number) `holdMs` 250 was the default, and since hydrate writes every
+ *      field, a stored 250 is the default nobody chose rather than a choice.
+ *   2  The default is 500; a 250 stored from now on was picked in Settings and
+ *      is kept.
+ *
+ * A file an older build rewrote loses the number (its clampVoice names no such
+ * key) and a 250 in it is upgraded again — right for a file only that build
+ * touched, and the price of a downgrade for a 250 picked on purpose here.
+ */
+export const VOICE_FORMAT = 2
+
+/** The format a stored `voice.format` names; anything but a whole number ≥ 1 is 1. */
+export function voiceFormatOf(raw: unknown): number {
+  return typeof raw === 'number' && Number.isInteger(raw) && raw >= 1 ? raw : 1
+}
 
 export const VOICE_DEFAULTS: VoiceSettings = {
   sttUrl: DEFAULT_STT_URL,
@@ -36,13 +72,52 @@ export const VOICE_DEFAULTS: VoiceSettings = {
   keys: {},
   holdMs: DEFAULT_HOLD_MS,
   micDeviceId: null,
-  micLabel: ''
+  micLabel: '',
+  format: VOICE_FORMAT
 }
 
 /** A hold threshold from anything: a finite number, rounded and clamped, else the default. */
 export function clampHoldMs(v: unknown): number {
   if (typeof v !== 'number' || !Number.isFinite(v)) return DEFAULT_HOLD_MS
   return Math.min(HOLD_MS_MAX, Math.max(HOLD_MS_MIN, Math.round(v)))
+}
+
+/**
+ * Settings → Voice's choices for the hold, each with words for what it feels
+ * like under the thumb. A value set by hand that is not one of them is still
+ * listed, as plain milliseconds (`holdChoices`), so the select never shows a
+ * value it cannot name.
+ */
+export const HOLD_PRESETS: readonly { ms: number; feel: string }[] = [
+  { ms: 250, feel: 'quick — a pause on Space can start it' },
+  { ms: 350, feel: 'brisk' },
+  { ms: 500, feel: 'a firm press' },
+  { ms: 700, feel: 'deliberate' },
+  { ms: 1000, feel: 'a full second' },
+  { ms: 1500, feel: 'only a long, sure hold' }
+]
+
+/** One choice's label: "500 ms — a firm press (default)", or "420 ms" for a hand-set value. */
+export function holdLabel(ms: number): string {
+  const preset = HOLD_PRESETS.find((p) => p.ms === ms)
+  const amount = ms >= 1000 ? `${ms / 1000} s` : `${ms} ms`
+  return `${amount}${preset ? ` — ${preset.feel}` : ''}${ms === DEFAULT_HOLD_MS ? ' (default)' : ''}`
+}
+
+/** The values the select lists: the presets, plus the saved one when it is none of them, in order. */
+export function holdChoices(current: number): number[] {
+  const presets = HOLD_PRESETS.map((p) => p.ms)
+  return presets.includes(current) ? presets : [...presets, current].sort((a, b) => a - b)
+}
+
+/**
+ * A stored threshold, brought from format `from` up to `VOICE_FORMAT`: a
+ * format-1 block's exact 250 is the old default and becomes the new one; any
+ * other value — and any 250 in a format-2 block — is the user's, clamped.
+ */
+export function upgradeHoldMs(raw: unknown, from: number): number {
+  if (from < 2 && raw === LEGACY_DEFAULT_HOLD_MS) return DEFAULT_HOLD_MS
+  return clampHoldMs(raw)
 }
 
 /**
@@ -94,9 +169,12 @@ export function clampVoice(raw: unknown, legacySttUrl?: unknown): VoiceSettings 
     model: cleanModel(r.model),
     baseUrl: typeof r.baseUrl === 'string' ? r.baseUrl.trim() : '',
     keys: clampSttKeys(r.keys),
-    holdMs: clampHoldMs(r.holdMs),
+    holdMs: upgradeHoldMs(r.holdMs, voiceFormatOf(r.format)),
     micDeviceId,
-    micLabel
+    micLabel,
+    // Upgraded above, so this build's number whatever was read: a second
+    // hydrate of the result changes nothing (gotcha 116).
+    format: VOICE_FORMAT
   }
 }
 
