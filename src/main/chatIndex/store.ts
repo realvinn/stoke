@@ -38,14 +38,19 @@ import {
   type ChatSourceId,
   type ChatSourceStatus
 } from '../../shared/chatIndex.ts'
-import { planTrim, type ChatMessage, type ChatMeta } from './parse.ts'
+import { cleanText, planTrim, REDACTION_VERSION, redactSecrets, type ChatMessage, type ChatMeta } from './parse.ts'
 
 export const STORE_FILE = 'index.sqlite'
 /*
  * 2: imports — the `import_file` table and `chat.import_id`. A version-1 store
  * gains the column in place (`migrate`); nothing in it is rewritten.
+ * 3: `chat.redact_level` — which redaction rules a chat's stored text was
+ * cleaned with (`REDACTION_VERSION`, 0 for none). An older store gains it at
+ * 0, so every chat in it counts as not cleaned until a pass with redaction on
+ * cleans it again (`recleanStale`): its text was cleaned, if at all, by fewer
+ * rules than the ones in force now.
  */
-const SCHEMA_VERSION = '2'
+const SCHEMA_VERSION = '3'
 
 /** Where a source's file (or row) was read up to, so the next pass reads only what is new. */
 export interface FileRow {
@@ -91,6 +96,8 @@ export interface StoredChat {
   truncated: boolean
   /** The file (or `<db>#<id>` row) it was read from; null for an import. */
   locator: string | null
+  /** Which redaction rules its stored text was cleaned with (`REDACTION_VERSION`; 0 for none). */
+  redactLevel: number
 }
 
 /** What an import did, written when it ends — stopped part-way too, when `added + updated + empty` is short of `admitted`. */
@@ -117,6 +124,7 @@ CREATE TABLE IF NOT EXISTS chat (
   subagent INTEGER NOT NULL DEFAULT 0,
   dedupe_key TEXT,
   import_id INTEGER,
+  redact_level INTEGER NOT NULL DEFAULT 0,
   UNIQUE(source, native_id)
 );
 CREATE INDEX IF NOT EXISTS chat_updated ON chat(updated_ms);
@@ -138,6 +146,10 @@ CREATE TRIGGER IF NOT EXISTS message_ai AFTER INSERT ON message BEGIN
 END;
 CREATE TRIGGER IF NOT EXISTS message_ad AFTER DELETE ON message BEGIN
   INSERT INTO message_fts(message_fts, rowid, text) VALUES ('delete', old.id, old.text);
+END;
+CREATE TRIGGER IF NOT EXISTS message_au AFTER UPDATE OF text ON message BEGIN
+  INSERT INTO message_fts(message_fts, rowid, text) VALUES ('delete', old.id, old.text);
+  INSERT INTO message_fts(rowid, text) VALUES (new.id, new.text);
 END;
 CREATE TABLE IF NOT EXISTS source_file (
   locator TEXT PRIMARY KEY,
@@ -223,7 +235,9 @@ export class ChatStore {
   private migrate(): void {
     const cols = (this.db.prepare('PRAGMA table_info(chat)').all() as { name?: unknown }[]).map((c) => c.name)
     if (!cols.includes('import_id')) this.db.exec('ALTER TABLE chat ADD COLUMN import_id INTEGER')
+    if (!cols.includes('redact_level')) this.db.exec('ALTER TABLE chat ADD COLUMN redact_level INTEGER NOT NULL DEFAULT 0')
     this.db.exec('CREATE INDEX IF NOT EXISTS chat_import ON chat(import_id)')
+    this.db.exec('CREATE INDEX IF NOT EXISTS chat_redact ON chat(redact_level)')
     this.q('INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run('schema', SCHEMA_VERSION)
   }
 
@@ -307,18 +321,24 @@ export class ChatStore {
    * session was started in and is resumed from (`foldClaudeLine`). A `whole`
    * read — the file from byte 0, or a whole document or row — says what the
    * chat's first ones are, so it wins.
+   *
+   * `redact` says whether this write's text was cleaned with redaction on.
+   * The chat's level only ever goes DOWN here (`MIN`): a field this write does
+   * not replace (an append's messages before it, a title the read did not
+   * carry) keeps whatever it was stored with. Only `recleanChat` raises it.
    */
   upsertChat(
     source: ChatOrigin,
     nativeId: string,
     meta: ChatMeta,
-    flags: { subagent: boolean; dedupeKey: string | null; whole: boolean }
+    flags: { subagent: boolean; dedupeKey: string | null; whole: boolean; redact: boolean }
   ): number {
     const first = (col: string): string => (flags.whole ? `COALESCE(excluded.${col}, chat.${col})` : `COALESCE(chat.${col}, excluded.${col})`)
     this.q(
-      `INSERT INTO chat(source, native_id, title, first_prompt, cwd, git_branch, model, created_ms, updated_ms, subagent, dedupe_key)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO chat(source, native_id, title, first_prompt, cwd, git_branch, model, created_ms, updated_ms, subagent, dedupe_key, redact_level)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(source, native_id) DO UPDATE SET
+         redact_level = MIN(chat.redact_level, excluded.redact_level),
          title = COALESCE(excluded.title, chat.title),
          first_prompt = ${first('first_prompt')},
          cwd = ${first('cwd')},
@@ -339,7 +359,8 @@ export class ChatStore {
       meta.createdMs === null ? null : Math.round(meta.createdMs),
       meta.updatedMs === null ? null : Math.round(meta.updatedMs),
       flags.subagent ? 1 : 0,
-      flags.dedupeKey
+      flags.dedupeKey,
+      flags.redact ? REDACTION_VERSION : 0
     )
     const id = this.chatId(source, nativeId)
     if (id === null) throw new Error('chat row vanished after upsert')
@@ -424,6 +445,67 @@ export class ChatStore {
 
   markTruncated(chatId: number): void {
     this.q('UPDATE chat SET truncated = 1 WHERE id = ?').run(chatId)
+  }
+
+  /* -------------------------------------------------------- redaction */
+
+  /**
+   * Chats whose stored text was not cleaned with the rules in force now
+   * (`REDACTION_VERSION`): written while redaction was off, or by an older
+   * rule set. Oldest id first, so a pass that stops part-way carries on.
+   */
+  staleChatIds(limit: number): number[] {
+    return (this.q('SELECT id FROM chat WHERE redact_level < ? ORDER BY id LIMIT CAST(? AS INTEGER)').all(REDACTION_VERSION, limit) as { id: unknown }[]).map((r) =>
+      num(r.id)
+    )
+  }
+
+  /** How many chats `staleChatIds` would name: what a cleaned-only search leaves out. */
+  staleCount(): number {
+    const r = this.q('SELECT COUNT(*) AS n FROM chat WHERE redact_level < ?').get(REDACTION_VERSION) as { n?: unknown } | undefined
+    return num(r?.n)
+  }
+
+  /**
+   * Clean one chat's stored text again with redaction on and the rules in
+   * force now — every message, its title (and the title's search row) and its
+   * first prompt — and mark it cleaned. In one transaction: a chat is cleaned
+   * whole or not at all, so its level never claims more than its text holds.
+   *
+   * The text is cleaned in place, not re-read from its tool: an import has no
+   * tool to re-read, and a chat its tool has since deleted is still here.
+   * `cleanText` is idempotent on stored text with no byte cap (the cap's
+   * ` …` would be added again), and a message `[redacted]` made longer stays
+   * longer — the chat's text cap is the pass's to keep, not this.
+   */
+  recleanChat(chatId: number): boolean {
+    const clean = (t: string): string => cleanText(t, { redact: true, maxBytes: Infinity })
+    return this.tx(() => {
+      const c = this.q('SELECT title, first_prompt FROM chat WHERE id = CAST(? AS INTEGER)').get(chatId) as { title?: unknown; first_prompt?: unknown } | undefined
+      if (!c) return false
+      const rows = this.q('SELECT id, text, bytes FROM message WHERE chat_id = ? AND ord >= 0').all(chatId) as { id: unknown; text: unknown; bytes: unknown }[]
+      const upd = this.q('UPDATE message SET text = ?, bytes = ? WHERE id = CAST(? AS INTEGER)')
+      let delta = 0
+      for (const r of rows) {
+        const text = String(r.text)
+        const next = clean(text)
+        if (next === text) continue
+        const b = Buffer.byteLength(next, 'utf8')
+        delta += b - num(r.bytes)
+        upd.run(next, b, num(r.id))
+      }
+      const title = strOrNull(c.title)
+      const first = strOrNull(c.first_prompt)
+      this.q('UPDATE chat SET title = ?, first_prompt = ?, text_bytes = text_bytes + ?, redact_level = ? WHERE id = CAST(? AS INTEGER)').run(
+        title === null ? null : clean(title) || null,
+        first === null ? null : clean(first) || null,
+        delta,
+        REDACTION_VERSION,
+        chatId
+      )
+      this.setTitleRow(chatId)
+      return true
+    })
   }
 
   deleteChat(chatId: number): void {
@@ -675,19 +757,33 @@ export class ChatStore {
    * more often than that could fill every row and hide every other chat;
    * `verify:chat-sources` holds it with 600 matching messages in one chat and
    * one in another. The snippet is then asked for only each chat's winner.
+   *
+   * `redact: 'force'` is for what leaves this computer (another computer
+   * searching it, spec 2026-10-03 §1): only chats whose stored text was
+   * cleaned with the rules in force now are searched at all, whatever the
+   * local setting says — a chat stored while redaction was off is left out,
+   * not cleaned on the way out. A snippet is a window of 20 tokens that can
+   * start inside a key (`live_51H…` with no `sk_` before it), so redacting the
+   * window would miss what the stored text's own cleaning catches; and a raw
+   * row that merely MATCHED would answer "is `sk_live_51H` in a chat here?"
+   * one prefix at a time. The filter is inside the grouping, before the
+   * limit, so stale chats cannot take a cleaned one's place. Titles and first
+   * prompts are cleaned once more on the way out, which costs nothing.
    */
-  search(query: string, limit = 50): ChatSearchHit[] {
+  search(query: string, limit = 50, opts: { redact?: 'force' } = {}): ChatSearchHit[] {
     const match = ftsQuery(query)
     if (!match) return []
+    const force = opts.redact === 'force'
     const best = this.q(
       // MATERIALIZED: flattened into the aggregate, bm25() has no FTS context and errors.
       `WITH h AS MATERIALIZED (SELECT rowid AS mid, bm25(message_fts) AS r FROM message_fts WHERE message_fts MATCH ?)
        SELECT m.chat_id AS chat_id, h.mid AS mid, m.role AS role, MIN(h.r) AS best
-       FROM h JOIN message m ON m.id = h.mid
+       FROM h JOIN message m ON m.id = h.mid JOIN chat c ON c.id = m.chat_id
+       WHERE c.redact_level >= ?
        GROUP BY m.chat_id
        ORDER BY best
        LIMIT ?`
-    ).all(match, limit) as { chat_id: unknown; mid: unknown; role: unknown }[]
+    ).all(match, force ? REDACTION_VERSION : -1, limit) as { chat_id: unknown; mid: unknown; role: unknown }[]
     /*
      * `CAST(? AS INTEGER)`, and it is load-bearing (gotcha 125): node:sqlite
      * binds every JS number as a REAL, and FTS5 silently ignores `rowid = <a
@@ -707,12 +803,14 @@ export class ChatStore {
       if (!c || !isChatOrigin(c.source)) continue
       const snip = snipQ.get(match, num(r.mid)) as { snip?: unknown } | undefined
       const role = r.role === 'user' || r.role === 'assistant' || r.role === 'title' ? r.role : 'assistant'
+      const title = strOrNull(c.title)
+      const firstPrompt = strOrNull(c.first_prompt)
       out.push({
         chatId,
         source: c.source,
         nativeId: String(c.native_id),
-        title: strOrNull(c.title),
-        firstPrompt: strOrNull(c.first_prompt),
+        title: force && title !== null ? redactSecrets(title) : title,
+        firstPrompt: force && firstPrompt !== null ? redactSecrets(firstPrompt) : firstPrompt,
         cwd: strOrNull(c.cwd),
         updatedMs: numOrNull(c.updated_ms),
         subagent: num(c.subagent) === 1,
@@ -734,7 +832,7 @@ export class ChatStore {
   chat(chatId: number): StoredChat | null {
     const r = this.q(
       `SELECT c.id AS id, c.source AS source, c.native_id AS native_id, c.title AS title, c.cwd AS cwd, c.created_ms AS created_ms,
-              c.updated_ms AS updated_ms, c.subagent AS subagent, c.truncated AS truncated,
+              c.updated_ms AS updated_ms, c.subagent AS subagent, c.truncated AS truncated, c.redact_level AS redact_level,
               (SELECT f.locator FROM source_file f WHERE f.chat_id = c.id ORDER BY f.mtime_ms DESC LIMIT 1) AS locator
        FROM chat c WHERE c.id = CAST(? AS INTEGER)`
     ).get(chatId) as Record<string, unknown> | undefined
@@ -749,7 +847,8 @@ export class ChatStore {
       updatedMs: numOrNull(r.updated_ms),
       subagent: num(r.subagent) === 1,
       truncated: num(r.truncated) === 1,
-      locator: strOrNull(r.locator)
+      locator: strOrNull(r.locator),
+      redactLevel: num(r.redact_level)
     }
   }
 

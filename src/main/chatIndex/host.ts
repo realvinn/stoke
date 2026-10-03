@@ -16,6 +16,7 @@ import type {
   ChatImportResult,
   ChatIndexOptions,
   ChatIndexStatus,
+  ChatOrigin,
   ChatPassSummary,
   ChatSearchHit,
   ChatTranscript
@@ -121,6 +122,31 @@ export class ChatIndexHost {
 
   search(query: string, limit: number): Promise<ChatSearchHit[]> {
     return this.request('search', { query, limit })
+  }
+
+  /**
+   * Search for ANOTHER computer (spec 2026-10-03 §1; the `/api/chats/search`
+   * relay route): only chats whose stored text was cleaned with the rules in
+   * force now are searched, whatever this computer's own redaction setting
+   * says, and titles and first prompts are cleaned again on the way out. A
+   * chat stored while redaction was off is not found until a pass with
+   * redaction on has cleaned it (`recleanStale`). The caller still owns the
+   * route's other rules: chat history on, hidden projects left out, a folder
+   * named by its last segment only, `chatId` (a local row id) not sent.
+   */
+  searchCleaned(query: string, limit: number): Promise<ChatSearchHit[]> {
+    return this.request('search', { query, limit, redact: 'force' })
+  }
+
+  /**
+   * One chat for ANOTHER computer, by its tool's own id (`/api/chats/open?
+   * source=&id=`): re-read from the tool with redaction on whatever the
+   * setting says, or the index's copy only if that was cleaned with the rules
+   * in force now; null otherwise, and for an id the index does not hold. The
+   * caller owns the rest, as for `searchCleaned` (and the 4 MiB cap).
+   */
+  openCleaned(source: ChatOrigin, nativeId: string, env: SourceEnv, fileMb: number): Promise<ChatTranscript | null> {
+    return this.request('openCleaned', { source, nativeId, env, fileMb })
   }
 
   get running(): boolean {

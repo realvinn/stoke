@@ -235,7 +235,7 @@ export async function importExport(store: ChatStore, plan: ImportPlan, hooks: Im
       const messages = drop.size ? fold.messages.filter((_, k) => !drop.has(k)) : fold.messages
       store.tx(() => {
         const existed = store.chatId(importKind, conv!.id) !== null
-        const chatId = store.upsertChat(importKind, conv!.id, fold.meta, { subagent: false, dedupeKey: null, whole: true })
+        const chatId = store.upsertChat(importKind, conv!.id, fold.meta, { subagent: false, dedupeKey: null, whole: true, redact })
         store.clearMessages(chatId)
         store.appendMessages(chatId, messages)
         const trimmed = store.trimChat(chatId, chatBytes)

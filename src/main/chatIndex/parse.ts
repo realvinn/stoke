@@ -67,22 +67,143 @@ const DATA_URL = /data:[\w.+-]+\/[\w.+-]+;base64,[A-Za-z0-9+/=]+/g
  * What looks like a credential. Replaced before the text is stored, when
  * `redact` is on (the default): the index is one plaintext file holding every
  * tool's chats, and a key pasted into a chat months ago should not be one
- * search away from anyone who can read it.
+ * search away from anyone who can read it. And whatever the setting says,
+ * before any of it leaves this computer (spec 2026-10-03 §1: another computer
+ * searching this one gets only cleaned text, `redact: 'force'`).
+ *
+ * Each rule is named, so `verify:chat-sources` holds one case per rule and a
+ * measurement can count per rule. Order matters in one place: the keyed rules
+ * (`password`, `api-key`) run last, so a key a shaped rule already took reads
+ * `api_key=[redacted]` and is left alone.
  */
-const SECRETS: RegExp[] = [
-  /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g,
-  /\bsk-ant-[A-Za-z0-9_-]{16,}/g,
-  /\bsk-(?:proj-|or-v1-)?[A-Za-z0-9_-]{20,}/g,
-  /\bgh[pousr]_[A-Za-z0-9]{20,}/g,
-  /\bgithub_pat_[A-Za-z0-9_]{20,}/g,
-  /\bAKIA[0-9A-Z]{16}\b/g,
-  /\bxox[abprs]-[A-Za-z0-9-]{10,}/g,
-  /\bAIza[0-9A-Za-z_-]{30,}/g
+export interface SecretRule {
+  name: string
+  re: RegExp
+  /** What a match becomes: `[redacted]`, or a function that keeps the part that is not secret (a URL's host, a key's name). */
+  to: string | ((match: string, ...groups: string[]) => string)
+}
+
+export const REDACTED = '[redacted]'
+
+/**
+ * Which rules a stored row was cleaned with. Bumped whenever a rule is added
+ * or widened: a row cleaned under an older set is cleaned again (`recleanStale`)
+ * before anything is served from it as cleaned. 1 was the first eight rules;
+ * 2 added credential URLs, keyed passwords and API keys, JWTs, Stripe, Notion,
+ * ClickUp, Cloudflare, and a private key cut before its END line.
+ */
+export const REDACTION_VERSION = 2
+
+/*
+ * A keyed value — `password=…`, `"apiKey": "…"`, `DB_PASSWORD: …` — is only a
+ * secret when it is a literal. Code says these names all day with a type, a
+ * variable or a lookup on the right (`password: string`, `password=password`,
+ * `apiKey: process.env.KEY`, `password: z.string()`), and a shell's `PWD` is a
+ * folder; none of those is redacted. A quoted value is a literal unless it is
+ * a placeholder or starts or ends with a space (`"Password: " + pw + "!"` — the
+ * quotes are two strings' ends, not one value's). An unquoted one must also
+ * not be a bare word, a constant's name, a property path, a call, a path or an
+ * escape (`\n1449`: a line of grep output, JSON-escaped), judged without the
+ * punctuation that closes it (`password: string):`). Except in a shell or
+ * `.env` assignment (`POSTGRES_PASSWORD=postgres`: a name with no lower case,
+ * then `=` and nothing between): there a bare word IS the value, unless it is
+ * a type. A colon never gets that reading — `{ PWD: cwd }` is code.
+ *
+ * The colon must follow the name directly (`password: x`, `"password": "x"`),
+ * so a ternary's `'new-password' : 'current-password'` is not a pair; `=`,
+ * `=>` and `:=` may have spaces round them. `${PASSWORD:-…}` is a shell
+ * expansion, not an assignment.
+ *
+ * Measured on a copy of a real index (8,478 messages, 2026-10-03) and on this
+ * repository's own source before this was settled: a backtick-quoted value
+ * was dropped because markdown's inline code made it take the prose between
+ * two code spans (5 of the first 14 taken).
+ */
+const TYPE_WORDS = new Set(['str', 'string', 'String', 'int', 'bool', 'boolean', 'None', 'null', 'nil', 'undefined', 'true', 'false', 'True', 'False', 'any', 'unknown', 'required', 'optional', 'Optional', 'Secret', 'SecretStr', 'bytes', 'text'])
+
+function literalSecret(value: string, quoted: boolean, min: number, assignment: boolean): boolean {
+  if (value.length < min) return false
+  // Already taken, masked, or a template / variable standing in for the value.
+  if (value.startsWith('[redacted]') || value.startsWith('[data]')) return false
+  if (/^(?:\*+|•+|x+|X+|\.{3,}|…+)$/.test(value)) return false
+  if (/^(?:\$+\{|\{\{|\$\(|<[^<>]*>$|%[\w.]+%$|\$[A-Za-z_][\w-]*$)/.test(value)) return false
+  if (/^your[-_ ]/i.test(value)) return false
+  if (quoted) return !/^\s|\s$/.test(value)
+  if (value.startsWith('\\')) return false
+  const v = value.replace(/[)\]}>:.,!?]+$/, '')
+  if (v.length < min) return false
+  // A word with no digit or symbol: a type, a keyword, a variable (`string`, `None`, `required`).
+  if (/^[A-Za-z_-]+$/.test(v)) return assignment && !TYPE_WORDS.has(v)
+  // A constant's name: `OPENROUTER_KEY_2`.
+  if (/^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/.test(v)) return false
+  // A property path, a call or an index: `process.env.X`, `req.body.password`, `z.string()`, `os.environ['X']`.
+  if (/^[A-Za-z_$][\w$]*(?:(?:\.|::|->|\?\.)[A-Za-z_$][\w$]*)+/.test(v)) return false
+  if (/^[A-Za-z_$][\w$]*[([{]/.test(v)) return false
+  // A path: a shell's `PWD=/Users/…`, a file the value is read from.
+  if (/^(?:\/|~\/|\.\.?\/|[A-Za-z]:\\)/.test(v)) return false
+  if (v.startsWith('{') || v.startsWith('[') || v.startsWith('(')) return false
+  return true
+}
+
+/**
+ * A rule for `<name> = <value>` in the ways code and config write it:
+ * `name=v`, `name: v`, `"name": "v"`, `'name' => 'v'`, `name := "v"`. The name
+ * is kept, so "password" is still searchable; only a literal value goes.
+ */
+function keyed(name: string, keyPattern: string, min: number): SecretRule {
+  const value = String.raw`(?:"([^"\n]*)"|'([^'\n]*)'|([^\s"'` + '`' + String.raw`,;&]+))`
+  return {
+    name,
+    // The lookbehind is bounded: unbounded, it re-scanned a whole identifier run at every name inside it (0.8 s for 64 KB).
+    re: new RegExp(String.raw`(?<!\$\{[A-Za-z0-9_.-]{0,64})(${keyPattern})(["']?(?::(?!=)|[ \t]*(?:=>|:=|=))[ \t]*)` + value, 'g'),
+    to: (match, key, sep, dq, sq, bare) => {
+      const quoted = dq ?? sq
+      const v = quoted ?? bare ?? ''
+      if (!literalSecret(v, quoted !== undefined, min, sep === '=' && !/[a-z]/.test(key))) return match
+      const q = dq !== undefined ? '"' : sq !== undefined ? "'" : ''
+      return `${key}${sep}${q}${REDACTED}${q}`
+    }
+  }
+}
+
+export const SECRET_RULES: readonly SecretRule[] = [
+  { name: 'private-key', re: /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g, to: REDACTED },
+  // A key cut before its END line: a message past the size cap, a first prompt, a partial paste.
+  { name: 'private-key-cut', re: /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?:\s*[A-Za-z0-9+/=]{16,})+/g, to: REDACTED },
+  { name: 'anthropic', re: /\bsk-ant-[A-Za-z0-9_-]{16,}/g, to: REDACTED },
+  { name: 'openai', re: /\bsk-(?:proj-|or-v1-)?[A-Za-z0-9_-]{20,}/g, to: REDACTED },
+  { name: 'github', re: /\bgh[pousr]_[A-Za-z0-9]{20,}/g, to: REDACTED },
+  { name: 'github-pat', re: /\bgithub_pat_[A-Za-z0-9_]{20,}/g, to: REDACTED },
+  { name: 'aws', re: /\bAKIA[0-9A-Z]{16}\b/g, to: REDACTED },
+  { name: 'slack', re: /\bxox[abprs]-[A-Za-z0-9-]{10,}/g, to: REDACTED },
+  { name: 'google', re: /\bAIza[0-9A-Za-z_-]{30,}/g, to: REDACTED },
+  // Stripe's secret and restricted keys; the publishable `pk_` is public by design.
+  { name: 'stripe', re: /\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{10,}/g, to: REDACTED },
+  // Notion's integration tokens: `secret_` (43 after it) and the newer `ntn_`.
+  { name: 'notion', re: /\b(?:secret_[A-Za-z0-9]{40,}|ntn_[A-Za-z0-9]{30,})/g, to: REDACTED },
+  // ClickUp's personal token: `pk_<user id>_<32 upper-case letters and digits>`.
+  { name: 'clickup', re: /\bpk_[0-9]{2,}_[A-Z0-9]{20,}\b/g, to: REDACTED },
+  // Cloudflare's scannable credentials (2026): cfk_ (global key), cfut_/cfat_ (tokens), cfast_ (Access service token); 40 + a checksum.
+  { name: 'cloudflare', re: /\bcf(?:k|ut|at|ast)_[A-Za-z0-9]{40,}/g, to: REDACTED },
+  { name: 'jwt', re: /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]*/g, to: REDACTED },
+  // `scheme://user:pass@host`: the scheme and host stay, the user and password go.
+  // The match starts at the `://` (the scheme is a lookbehind), so the engine scans for a literal, not a class.
+  { name: 'credential-url', re: /(?<=\b[A-Za-z][A-Za-z0-9+.-]{1,30}):\/\/[^\s:@/?#'"<>]*:[^\s@/?#'"<>]+@(?=[A-Za-z0-9[])/g, to: `://${REDACTED}@` },
+  /*
+   * `password`, `passwd`, `pwd`, and whatever is glued in front of them stays
+   * outside the match (`PGPASSWORD`, `dbPassword`, `DB_PWD`,
+   * `spring.datasource.password`): a leading `[A-Za-z0-9_.-]*` made each of
+   * these two rules cost three times all the others together, measured on a
+   * real index. A shell's `PWD=/a/path` and `OLDPWD=…` are paths, which
+   * `literalSecret` leaves.
+   */
+  keyed('password', String.raw`[Pp]ass(?:word|wd)|PASS(?:WORD|WD)|[Pp]wd|PWD`, 4),
+  keyed('api-key', String.raw`[Aa][Pp][Ii][_-]?[Kk][Ee][Yy]`, 8)
 ]
 
 export function redactSecrets(text: string): string {
   let out = text
-  for (const re of SECRETS) out = out.replace(re, '[redacted]')
+  for (const r of SECRET_RULES) out = typeof r.to === 'string' ? out.replace(r.re, r.to) : out.replace(r.re, r.to as (m: string, ...g: string[]) => string)
   return out
 }
 
