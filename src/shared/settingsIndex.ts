@@ -426,7 +426,7 @@ export const SETTING_ROWS: readonly SettingRow[] = [
   { id: 'appearance.claude-theme', page: 'appearance', label: 'Draw Claude Code in this theme’s colours', keywords: ['ansi', 'claude theme', 'terminal colours'] },
   { id: 'appearance.wallpaper', page: 'appearance', label: 'Wallpaper', keywords: ['background image', 'blur', 'dim', 'panel opacity', 'picture', 'photo'] },
   { id: 'appearance.brand', page: 'appearance', label: 'Show the Stoke mark in the title bar', keywords: ['logo', 'brand', 'title bar'] },
-  { id: 'appearance.title-bar', page: 'appearance', label: 'Title bar', keywords: ['show folder, git and text shortcuts in the title bar', 'customise on the title bar', 'reset to folder and git', 'text shortcuts', 'snippets', 'quick prompts', 'saved prompts', 'git branch', 'folder', 'toolbar', 'top bar'] },
+  { id: 'appearance.title-bar', page: 'appearance', label: 'Title bar', keywords: ['show git and text shortcuts in the title bar', 'customise on the title bar', 'reset to the default (git)', 'reset to folder and git', 'text shortcuts', 'snippets', 'quick prompts', 'saved prompts', 'git branch', 'folder', 'toolbar', 'top bar'] },
   { id: 'appearance.interface-scale', page: 'appearance', label: 'Interface scale', keywords: ['zoom', 'ui size', 'bigger', 'smaller', 'text size'] },
   { id: 'appearance.zoom-keys', page: 'appearance', label: 'Zoom keys change', keywords: ['zoom', 'keyboard shortcut', 'cmd plus', 'ctrl plus'] },
   { id: 'appearance.full-screen', page: 'appearance', label: 'Menu bar in full screen', keywords: ['fullscreen', 'menu bar', 'tabs', 'macos'] },

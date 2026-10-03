@@ -16,6 +16,7 @@ import {
   tabsFloorPx,
   topBarKeep,
   TOP_BAR_DEFAULTS,
+  DRAG_GAP_REM,
   type FitItem,
   type FitResult,
   type ShortcutDraft,
@@ -92,8 +93,8 @@ interface ChipView {
   /** Null when the compact form is the full one. */
   compact: React.ReactNode
   title: string
-  /** What a click does out of edit mode. Null for a chip that only shows. */
-  act: (() => void) | null
+  /** What a click (or Enter) does out of edit mode, given the chip. Null for a chip that only shows. */
+  act: ((el: HTMLElement) => void) | null
   disabled: boolean
   /** Its right-click menu, out of edit mode. */
   menu: MenuItem[]
@@ -110,8 +111,8 @@ const NO_FIT: FitResult = { compact: [], overflow: [], hidden: [] }
 /** An edit-mode space chip's least width (`.topbar[data-editing] .tb-chip[data-kind='spacer']`). */
 const SPACER_EDIT_REM = 6.5
 
-/** The least the folder and git chips narrow to, an ellipsis in their text (app.css, `.topbar-items .tb-chip`). */
-const SQUEEZE_REM = { folder: 4, git: 5.5 }
+/** The least the folder chip narrows to, an ellipsis in its text (app.css, `.topbar-items .tb-chip`). */
+const SQUEEZE_REM = { folder: 4 }
 
 export function TopBar({
   isMac,
@@ -224,41 +225,41 @@ export function TopBar({
         if (editing) views.push(placeholder(item, <IconBranch />, 'Git', 'Branch, changes and ahead/behind of a local tab’s folder'))
         continue
       }
-      const head = chip.head
+      /*
+       * One icon button (the owner, 2026-10-03: "move the git as a button like
+       * that git tree"), a dot when there are changes. The branch, the counts
+       * and ahead/behind are its tooltip and its click: a menu headed by the
+       * branch with the rest as lines — width the tabs and the window's drag
+       * space need more than a branch name does.
+       */
+      const [heading, ...details] = chip.title.split('\n')
+      const actions: MenuItem[] = [
+        { label: 'Look again', separated: details.length > 0, onSelect: git.refresh },
+        { label: 'Copy branch name', disabled: !git.status?.branch, onSelect: () => window.stoke.clipboard.writeText(git.status?.branch ?? '') },
+        customise
+      ]
+      const dirty = chip.changes === null ? 'unknown' : chip.changes > 0 ? 'dirty' : null
       views.push({
         item,
         full: (
           <>
-            <ChipText icon={<IconBranch />} text={head} mono />
-            {chip.changes === null ? (
-              <span className="tb-git-part" data-tone="unknown">
-                …<span className="sr-only"> changes unknown</span>
-              </span>
-            ) : chip.changes > 0 ? (
-              <span className="tb-git-part" data-tone="dirty">
-                <span className="tb-dot" aria-hidden="true" />
-                {chip.changes}
-                <span className="sr-only"> changed</span>
-              </span>
-            ) : null}
-            {chip.ahead !== null && chip.behind !== null && (chip.ahead > 0 || chip.behind > 0) && (
-              <span className="tb-git-part mono">
-                {[chip.ahead > 0 ? `↑${chip.ahead}` : '', chip.behind > 0 ? `↓${chip.behind}` : ''].filter(Boolean).join(' ')}
-              </span>
-            )}
-            {chip.worktree && <span className="tb-git-tag">{chip.worktree}</span>}
+            <IconBranch />
+            {dirty && <span className="tb-git-badge" data-tone={dirty} aria-hidden="true" />}
+            <span className="sr-only">
+              Git: {chip.head}
+              {chip.changes === null ? ', changes unknown' : chip.changes > 0 ? `, ${chip.changes} changed` : ''}
+            </span>
           </>
         ),
-        compact: <ChipText icon={<IconBranch />} text={head} mono />,
-        title: `${chip.title}\nClick to look again`,
-        act: git.refresh,
+        compact: null,
+        title: chip.title,
+        act: (el) =>
+          openMenu(el, [...details.map((d): MenuItem => ({ label: d, disabled: true, onSelect: () => {} })), ...actions], {
+            title: heading
+          }),
         disabled: false,
-        menu: [
-          { label: 'Look again', onSelect: git.refresh },
-          { label: 'Copy branch name', disabled: !git.status?.branch, onSelect: () => window.stoke.clipboard.writeText(git.status?.branch ?? '') },
-          customise
-        ],
-        key: `${head}|${chip.changes}|${chip.ahead}|${chip.behind}|${chip.worktree}`
+        menu: actions,
+        key: `${chip.head}|${dirty}`
       })
     } else if (item.kind === 'shortcut') {
       const v = shortcutVerdict(item, target)
@@ -340,8 +341,11 @@ export function TopBar({
     const trail = trailRef.current?.getBoundingClientRect().width ?? 0
     const innerGap = parseFloat(getComputedStyle(root).columnGap) || 0
     const more = width('[data-measure="more"]')
+    // The window's drag space (`.topbar-drag`), never while editing.
+    const drag = editingRef.current ? 0 : DRAG_GAP_REM * rem
     // The floor yields to the actions, never the other way (`tabsFloorPx`),
-    // and leaves the bar its own controls and, if shortcuts can spill, the "»".
+    // and leaves the bar its own controls, the drag space and, if shortcuts
+    // can spill, the "»".
     const floor = tabsFloorPx({
       natural,
       floor: TABS_FLOOR_REM * rem,
@@ -351,7 +355,8 @@ export function TopBar({
         more,
         gap: innerGap,
         shortcuts: viewsRef.current.some((v) => v.item.kind === 'shortcut'),
-        editing: editingRef.current
+        editing: editingRef.current,
+        drag
       })
     })
     bar.style.setProperty('--tabs-floor', `${floor}px`)
@@ -365,9 +370,9 @@ export function TopBar({
       full: v.item.kind === 'spacer' ? spacer : width(`[data-measure="${CSS.escape(v.item.id)}"][data-form="full"]`),
       compact: v.item.kind === 'spacer' ? spacer : width(`[data-measure="${CSS.escape(v.item.id)}"][data-form="compact"]`),
       // What the CSS lets these two narrow to, out of edit mode (`.tb-chip` min-widths).
-      ...(editingRef.current ? {} : v.item.kind === 'folder' ? { min: SQUEEZE_REM.folder * rem } : v.item.kind === 'git' ? { min: SQUEEZE_REM.git * rem } : {})
+      ...(editingRef.current ? {} : v.item.kind === 'folder' ? { min: SQUEEZE_REM.folder * rem } : {})
     }))
-    const input = { room, gap: innerGap, fixed: trail, more, items: fitItems }
+    const input = { room, gap: innerGap, fixed: trail + (drag > 0 ? drag + innerGap : 0), more, items: fitItems }
     // Editing shows every item, so only compaction applies; the list scrolls past that.
     const decided = fitTopBar(input)
     const next = editingRef.current ? { compact: decided.compact, overflow: [], hidden: [] } : decided
@@ -523,13 +528,13 @@ export function TopBar({
     }
     if (e.key === 'Enter' || e.key === ' ') {
       stop()
-      if (v.act && !v.disabled) v.act()
+      if (v.act && !v.disabled) v.act(e.currentTarget)
     }
   }
 
   const onChipClick = (e: ReactMouseEvent<HTMLElement>, v: ChipView): void => {
     if (editing) editItem(v.item, e.currentTarget)
-    else if (v.act && !v.disabled) v.act()
+    else if (v.act && !v.disabled) v.act(e.currentTarget)
   }
 
   /* --------------------------------------------------------------- drawing */
@@ -544,7 +549,7 @@ export function TopBar({
     { label: 'Git', hint: 'branch, changes', disabled: addRefusal('git', items) !== null, onSelect: () => add('git') },
     { label: 'Flexible space', disabled: addRefusal('spacer', items) !== null, onSelect: () => add('spacer') },
     { label: 'New text shortcut…', separated: true, disabled: addRefusal('shortcut', items) !== null, onSelect: () => add('shortcut') },
-    { label: 'Reset to folder and git', separated: true, onSelect: () => commit(TOP_BAR_DEFAULTS.items.map((i) => ({ ...i }))) }
+    { label: 'Reset to the default (git)', separated: true, onSelect: () => commit(TOP_BAR_DEFAULTS.items.map((i) => ({ ...i }))) }
   ]
   const moreItems: MenuItem[] = [
     ...overflowed.map(
@@ -552,7 +557,10 @@ export function TopBar({
         label: v.item.kind === 'shortcut' ? `${v.item.icon ? `${v.item.icon} ` : ''}${v.item.label}` : v.item.kind,
         hint: v.disabled ? 'not here' : v.item.kind === 'shortcut' && v.item.send ? 'sends' : 'types',
         disabled: v.disabled || !v.act,
-        onSelect: () => v.act?.()
+        onSelect: () => {
+          const el = listRef.current
+          if (el) v.act?.(el)
+        }
       })
     ),
     { ...customise, separated: overflowed.length > 0 }
@@ -565,6 +573,8 @@ export function TopBar({
 
   return (
     <div className="topbar" ref={rootRef} data-editing={editing || undefined} data-compact={fit.compact.length > 0 || undefined}>
+      {/* Nothing but somewhere to grab the window, which nothing else on the bar may take (`DRAG_GAP_REM`). */}
+      {!editing && <div className="topbar-drag" aria-hidden="true" />}
       <div
         className="topbar-items"
         ref={listRef}
@@ -649,7 +659,7 @@ export function TopBar({
         ) : (
           <button
             className="icon-btn tb-pencil"
-            title="Customise the title bar: folder, git and text shortcuts"
+            title="Customise the title bar: git, text shortcuts, folder"
             onMouseDown={(e) => e.preventDefault()}
             onClick={() => onEditing(true)}
           >

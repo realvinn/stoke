@@ -71,19 +71,28 @@ export interface TopBarSettings {
 }
 
 /**
- * On, with the folder and its git state, so the owner sees the bar the first
- * time Stoke starts with it (2026-10-02). Fixed ids: a default is not "added",
- * so nothing is minted for it — ids are minted only when an item is added, in
- * the renderer, never in hydrate (gotcha 116: hydrate is not idempotent, and a
- * random id there would make every import preview a change).
+ * On, with git alone — one icon button. The folder chip was a default too
+ * (2026-10-02) until the owner asked for it gone (2026-10-03): "we already
+ * have the right click and the bottom left for that", and the title bar's
+ * width is wanted for the tabs and for grabbing the window. It is one Add
+ * away. Fixed ids: a default is not "added", so nothing is minted for it — ids
+ * are minted only when an item is added, in the renderer, never in hydrate
+ * (gotcha 116: hydrate is not idempotent, and a random id there would make
+ * every import preview a change).
  */
 export const TOP_BAR_DEFAULTS: TopBarSettings = {
   enabled: true,
-  items: [
-    { id: 'folder', kind: 'folder', style: 'path' },
-    { id: 'git', kind: 'git' }
-  ]
+  items: [{ id: 'git', kind: 'git' }]
 }
+
+/**
+ * Empty title bar kept beside the tabs for grabbing the window (rem, so it
+ * follows Interface scale), whatever the tabs and the items would take: with
+ * a few tabs open the bar had nowhere left to drag (the owner, 2026-10-03).
+ * Counted like the bar's own controls (`topBarKeep`), so the tab strip's floor
+ * yields to it and the items fit beside it.
+ */
+export const DRAG_GAP_REM = 3
 
 export const TOP_BAR_MAX_ITEMS = 24
 export const SHORTCUT_LABEL_MAX = 24
@@ -413,14 +422,23 @@ export function tabsFloorPx(input: { natural: number; floor: number; avail: numb
 
 /**
  * The least the bar itself must keep (`tabsFloorPx`'s `keep`): its trailing
- * controls, plus the "»" and its gap whenever a shortcut could be moved into
- * it — out of edit mode, with a shortcut on the bar. Kept to the trail alone,
- * the "»" that appears once every shortcut has moved drew over the Find
- * button at 940px and Interface scale 1.6 (driven, 2026-10-02).
+ * controls, the window's drag space and its gap (`DRAG_GAP_REM`, 0 while
+ * editing, when the list scrolls instead), plus the "»" and its gap whenever a
+ * shortcut could be moved into it — out of edit mode, with a shortcut on the
+ * bar. Kept to the trail alone, the "»" that appears once every shortcut has
+ * moved drew over the Find button at 940px and Interface scale 1.6 (driven,
+ * 2026-10-02).
  */
-export function topBarKeep(input: { trail: number; more: number; gap: number; shortcuts: boolean; editing: boolean }): number {
-  const { trail, more, gap, shortcuts, editing } = input
-  return trail + (shortcuts && !editing ? more + gap : 0)
+export function topBarKeep(input: {
+  trail: number
+  more: number
+  gap: number
+  shortcuts: boolean
+  editing: boolean
+  drag?: number
+}): number {
+  const { trail, more, gap, shortcuts, editing, drag = 0 } = input
+  return trail + (drag > 0 && !editing ? drag + gap : 0) + (shortcuts && !editing ? more + gap : 0)
 }
 
 export interface FitItem {
@@ -469,6 +487,9 @@ export interface FitResult {
  * is the widest thing on the bar and its name says nearly as much; git's
  * changes and ahead/behind say what nothing else does. The tab strip never
  * gives more than its floor — that is already taken out of `room` by the caller.
+ * Since 2026-10-03 TopBar draws git as one icon, the same in both forms and
+ * with no `min`, so its compact and squeeze steps change nothing; the rule is
+ * kept general for whatever a chip passes.
  */
 export function fitTopBar(input: FitInput): FitResult {
   const { room, gap, fixed, more, items } = input

@@ -29,6 +29,7 @@ import {
   shortcutVerdict,
   tabsFloorPx,
   topBarKeep,
+  DRAG_GAP_REM,
   TOP_BAR_DEFAULTS,
   TOP_BAR_MAX_ITEMS,
   type FitItem,
@@ -53,14 +54,12 @@ const kinds = (items: readonly TopBarItem[]): string[] => items.map((i) => `${i.
 
 /* ------------------------------------------------------- default and repair */
 
-console.log('the default: on, with the folder and its git state')
+console.log('the default: on, with git alone')
 {
+  // Git alone since 2026-10-03: the owner asked for the folder chip gone (it is one Add away).
   check('TOP_BAR_DEFAULTS', TOP_BAR_DEFAULTS, {
     enabled: true,
-    items: [
-      { id: 'folder', kind: 'folder', style: 'path' },
-      { id: 'git', kind: 'git' }
-    ]
+    items: [{ id: 'git', kind: 'git' }]
   })
   check('a missing block is the default', clampTopBar(undefined), TOP_BAR_DEFAULTS)
   check('junk is the default', [clampTopBar(7), clampTopBar('x'), clampTopBar([])], [TOP_BAR_DEFAULTS, TOP_BAR_DEFAULTS, TOP_BAR_DEFAULTS])
@@ -431,6 +430,22 @@ console.log('\nthe tab strip’s floor yields to the actions')
     topBarKeep({ trail: 45, more: 45, gap: 6, shortcuts: false, editing: false }),
     topBarKeep({ trail: 140, more: 45, gap: 6, shortcuts: true, editing: true })
   ], [45, 140])
+  /*
+   * And the window's drag space with its gap (the owner, 2026-10-03: with a few
+   * tabs open there was nowhere left to grab the window). The tab strip's floor
+   * yields to it like any control on the bar — never while editing, when the
+   * list scrolls instead.
+   */
+  const drag = DRAG_GAP_REM * 16
+  check('the drag space is kept beside the trail', topBarKeep({ trail: 45, more: 45, gap: 6, shortcuts: false, editing: false, drag }), 45 + drag + 6)
+  check('  with the "»" as well', topBarKeep({ trail: 45, more: 45, gap: 6, shortcuts: true, editing: false, drag }), 45 + drag + 6 + 51)
+  check('  but not while editing', topBarKeep({ trail: 140, more: 45, gap: 6, shortcuts: true, editing: true, drag }), 140)
+  check(
+    'so a strip of many tabs stops short of it: the floor leaves the drag space free',
+    tabsFloorPx({ natural: 2000, floor: rem16, avail: 400, keep: topBarKeep({ trail: 45, more: 45, gap: 6, shortcuts: false, editing: false, drag }) }),
+    400 - (45 + drag + 6)
+  )
+  check('DRAG_GAP_REM is a real space (≥ 2rem)', DRAG_GAP_REM >= 2, true)
 }
 
 console.log(failures ? `\n${failures} FAILED` : '\nall pass')

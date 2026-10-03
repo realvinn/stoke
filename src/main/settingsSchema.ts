@@ -140,7 +140,7 @@ export const DEFAULT_SETTINGS: Settings = {
   hideStatusLine: true,
   showBrand: true,
   remoteBar: 'fab',
-  // On, with the folder and its git state (shared/topBar.ts).
+  // On, with git alone (shared/topBar.ts).
   topBar: clampTopBar(null),
   /*
    * 'ask', not 'auto', and not 'off'.

@@ -854,7 +854,7 @@ export function SettingsSheet({
                       onChange={(e) => onPatch({ topBar: { ...settings.topBar, enabled: e.target.checked } })}
                     />
                     <span>
-                      <span className="field-label">Show folder, git and text shortcuts in the title bar</span>
+                      <span className="field-label">Show git and text shortcuts in the title bar</span>
                       <FieldHint>
                         Between the tabs and the buttons on the right. A shortcut types its text into the session in
                         front; one marked to send presses Enter too.
@@ -872,7 +872,7 @@ export function SettingsSheet({
                         onPatch({ topBar: { enabled: true, items: TOP_BAR_DEFAULTS.items.map((i) => ({ ...i })) } })
                       }
                     >
-                      Reset to folder and git
+                      Reset to the default (git)
                     </button>
                   </div>
                 </div>
