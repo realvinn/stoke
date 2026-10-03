@@ -444,6 +444,11 @@ composite, because the view is native.
 - Reduced motion rests the toast fully shown (gotcha 72). Measured: opacity 1 from 51 ms, with
   `--force-prefers-reduced-motion`.
 
+**And one launch race (found by the second drive):** `useWindowActive` read `document.hasFocus()` at the
+first render and then only listened for focus and blur. A focus that landed between the two fired nothing
+it could hear, so in 3 launches out of 5 every toast stayed paused until the window lost focus and got it
+back, once for more than 90 s. It reads again once the listeners are attached.
+
 Not proven: Windows and Linux, and the remote button's step-up. That button renders only while another
 machine is attached through a hub, so the `:has()` rule was checked against injected DOM only.
 

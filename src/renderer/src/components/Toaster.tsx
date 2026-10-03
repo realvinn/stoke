@@ -14,6 +14,11 @@ function useWindowActive(): boolean {
     window.addEventListener('focus', update)
     window.addEventListener('blur', update)
     document.addEventListener('visibilitychange', update)
+    // Read again now the listeners are on: a focus that landed between the
+    // first render and this effect fires no event this could hear, and the
+    // stale `false` paused every toast until the window lost focus and got it
+    // back (measured: 3 launches of 5, a toast up for 90 s).
+    update()
     return () => {
       window.removeEventListener('focus', update)
       window.removeEventListener('blur', update)

@@ -3631,7 +3631,10 @@ export function App(): React.JSX.Element {
             permissionMode: now.permissionMode,
             model: now.model,
             effort: now.effort,
-            focus: now.id === sourceTabId,
+            // In front only if it is in front now — put there above when the
+            // Add-key tab closed, or left there — never taken from wherever
+            // the user went while the key was being checked.
+            focus: activeTabIdRef.current === now.id,
             remoteSession: now.remoteSession
           })
           // Refused (the banner says why): its old pty is gone, so it is ended,
