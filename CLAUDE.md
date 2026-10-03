@@ -572,6 +572,8 @@ rule file named on the group line.
   typecheck AND build and dies only when the suite runs.
 - **113.** Rehearse a suite's off-platform branch before an OS's CI runs it (`selectingDrag`), fail a
   missing reading, and keep both `verify` jobs step-identical: `displayRoute` reads the runner.
+- **157.** Build every secret-shaped test fixture from pieces at run time (`fake()`, `SLACK_HOOKS`): GitHub's
+  push protection refuses a push whose history holds one whole, documented placeholders included.
 
 ## Standing traps when driving the app
 

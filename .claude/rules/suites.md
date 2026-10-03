@@ -210,3 +210,23 @@ Three rules:
    Neither gate should reach it: both relax the knob first, and `verify:targets` holds that.
 3. **Grep the image, not the workflow, for what a runner has.** "ci.yml installs xvfb" was true
    and irrelevant: the route asks PATH, and PATH belongs to the image.
+
+## 157. A secret-shaped test fixture written out whole is a leaked secret to GitHub, and the push is refused
+
+**Found 2026-10-04, pushing redaction rule set 4.** `verify:chat-sources` proves each redaction rule
+by feeding it a fake secret of the provider's shape, and GitHub's push protection scans every pushed
+commit for those shapes. A Slack webhook URL in the suite, Slack's documented all-zero placeholder
+(`T0000…/B0000…/XXXX…` under its hooks host; not spelled out here for the same reason), was refused
+as a "Slack Incoming Webhook URL" (GH013).
+Every commit in the push is scanned, so editing the file at HEAD was not enough. The literal had to
+leave the history of the seven unpushed commits that carried it. That was a `git filter-branch
+--tree-filter` over `origin/windows-install..HEAD`, run behind a backup branch, and its result
+differed from the backup by that one file.
+
+The rule: **build every secret-shaped fixture from pieces at run time.** Use `fake(prefix, n)` for
+the body, and split the provider's own marker (`SLACK_HOOKS = 'hooks.' + 'slack.com/services/'`) so
+no line holds a whole provider shape. This applies to test ids, placeholders and "obviously fake"
+values alike. The scanner reads shapes, not intent. A suite that needs the literal form (a placeholder
+the rule must leave alone) assembles it the same way. If a push is refused anyway, never use the
+"allow this secret" link: rewrite the unpushed commits.
+
