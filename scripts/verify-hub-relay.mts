@@ -1698,7 +1698,9 @@ console.log('\nchat history between two machines: ask, allow, search, open; ever
     mm.remote.presenceOpened()
   }
   await until(() => last(idleGuest).machines[0]?.status?.chats)
-  check('(a fresh pair: B searches A under Always)', byDevice(await idleGuest.remote.searchChats('relay'), A.id)?.state, 'ok')
+  const fresh = await idleGuest.remote.searchChats('relay')
+  check('(a fresh pair: B searches A under Always)', byDevice(fresh, A.id)?.state, 'ok')
+  check('a peer the search itself opened, already answered ok, asks for no second search', [last(idleGuest).chatPeers.map((p) => p.state), chatsSearchAgain(new Set(), last(idleGuest).chatPeers, fresh).again], [['open'], false])
   await until(() => last(idleGuest).chatPeers.length === 0 && last(idleHost).guests.length === 0, 2000)
   check('left idle, B closes its chats relay and A stops showing it', [last(idleGuest).chatPeers.length, last(idleHost).guests.length], [0, 0])
   check('and a relay closed for idleness asks for no search: a query left in the box keeps nothing open', chatsSearchAgain(new Set([`${A.id}:open`]), last(idleGuest).chatPeers, [{ device: A.id, label: 'Studio', platform: 'darwin', state: 'waiting', message: null, hits: [] }]).again, false)
