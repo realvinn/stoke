@@ -132,7 +132,6 @@ export function SshKeyPrompt({
   const from = prompt ? [prompt.user, prompt.host].filter((s) => s !== '').join('@').slice(0, MAX_FROM) : ''
 
   const enrolled = host.keyEnrolled === true
-  const finishedOk = progress?.stage === 'done' && progress.ok !== false
 
   /*
    * The line, in three pieces, so the painted text and the `title` are the same
@@ -196,21 +195,19 @@ export function SshKeyPrompt({
         </button>
       ) : (
         /*
-          Hidden once the key is in and verified: there is nothing left to press,
-          and an enabled "Try again" over a working key is an invitation to
-          authenticate again for no reason.
+          Never over a working key: a verified `done` never reaches this strip —
+          App clears it and says so in a toast — so whatever progress is shown
+          here is a run still going or one that did not work.
         */
-        !finishedOk && (
-          <button
-            className="btn"
-            data-variant="primary"
-            disabled={busy}
-            aria-label={`${enrolled || progress ? 'Try adding a key to' : 'Add a key to'} ${subject}`}
-            onClick={onEnroll}
-          >
-            {busy ? 'Adding…' : enrolled || progress ? 'Try again' : 'Add a key'}
-          </button>
-        )
+        <button
+          className="btn"
+          data-variant="primary"
+          disabled={busy}
+          aria-label={`${enrolled || progress ? 'Try adding a key to' : 'Add a key to'} ${subject}`}
+          onClick={onEnroll}
+        >
+          {busy ? 'Adding…' : enrolled || progress ? 'Try again' : 'Add a key'}
+        </button>
       )}
 
       {/*
@@ -219,11 +216,9 @@ export function SshKeyPrompt({
         answer, and a control that quietly recorded one would be the reason
         nobody could work out why they were never asked again.
       */}
-      {!finishedOk && (
-        <button className="btn" aria-label={`Do not add a key to ${subject} now`} onClick={onDismiss}>
-          Not now
-        </button>
-      )}
+      <button className="btn" aria-label={`Do not add a key to ${subject} now`} onClick={onDismiss}>
+        Not now
+      </button>
 
       {/*
         ONE press. `WorklogPrompt`'s two-press Reject is right there and is the
@@ -235,7 +230,7 @@ export function SshKeyPrompt({
         off while an enrollment runs: refusing a host Stoke is mid-install on
         would leave the two states disagreeing about what just happened.
       */}
-      {prompt && !finishedOk && (
+      {prompt && (
         <button
           className="btn"
           data-variant="ghost"

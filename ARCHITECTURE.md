@@ -1659,7 +1659,12 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
   src/components/SshKeyPrompt.tsx  "E2E box asked for a password. Set up key login?" — a
                     `.main-col` row, never an overlay (gotcha 14). Add a key opens the
                     "Add key to …" tab (App's `startSshEnroll`); the strip then reports
-                    main's stages and never takes a password itself (gotcha 109)
+                    main's stages and never takes a password itself (gotcha 109). A proven key
+                    is not drawn here: App clears the strip and says so in a toast
+  src/components/Toaster.tsx  `toast()`'s notices, bottom-right of `.main-col`: a check, a title,
+                    a line, gone after 5 s (held while pointed at, focused, behind an overlay
+                    or in a background window). Above the pane's foot floats, under every
+                    scrim; plain keys stop on the card. Gotcha 154
   src/components/Launcher.tsx  a New tab's page, one top-aligned column: where it runs
                     (FolderSwitcher), Start split with the other agents, the launch chips
                     (resolved, THIS launch only, "Make default"), the conversation list.
@@ -1770,6 +1775,8 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
   src/lib/pressBurst.ts  the window's one record of the Enter/Space burst in progress,
                     registered first from main.tsx; the agent picker and a launcher armed by
                     the splash or picker closing ask it `activationAllowed`. Gotcha 88
+  src/lib/toasts.ts  the toast store (`toast`, `dismissToast`, `useToasts`; at most three) and
+                    the floor the pane in front sets for it (`setToastFloor`). Gotcha 154
   src/lib/floatingLayers.ts  every open popover, menu and picker (`useFloatingLayer`), and
                     whether one lies over `.browser-hole` (`useBrowserCovered`), which App
                     hides the docked browser for. verify:layers. Gotcha 14

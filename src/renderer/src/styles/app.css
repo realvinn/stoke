@@ -171,6 +171,8 @@ button {
   --z-backdrop: 300;
   --z-modal: 400;
   --z-toast: 500;
+  /* The remote button's face (`.remote-fab-face`); the toaster steps over it. */
+  --remote-fab-h: 1.625rem;
   --z-tooltip: 600;
 
   --dur-fast: 120ms;
@@ -4596,7 +4598,7 @@ mark.hit {
   align-items: center;
   gap: var(--space-4);
   max-width: 100%;
-  height: 1.625rem;
+  height: var(--remote-fab-h);
   padding: 0 var(--space-8) 0 var(--space-8);
   border: 1px solid var(--border);
   border-radius: var(--r-full);
@@ -8745,4 +8747,125 @@ button.color-field-swatch[aria-expanded='true'] {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   user-select: text;
+}
+
+/* ---------------------------------------------------------------- toasts */
+
+/*
+ * `toast()`'s notices (lib/toasts.ts), bottom-right of `.main-col` — the column
+ * the docked browser never covers (gotcha 14), so they need no floating-layer
+ * registration and never hide the browser.
+ *
+ * Lifted clear of what shares the corner rather than drawn over it: the pane in
+ * front's floats (`--toast-floor`, measured from the column's foot to the top
+ * of its exit card, image strip or dictation strip by TerminalView) and the
+ * remote button. Measured before: the toast covered the exit card's Start again
+ * and Close tab, and resting the pointer where they were paused it there.
+ *
+ * Two steps under the remote button (`--z-sticky` - 1), whose panel opens
+ * upward over this corner, and so under every scrim: a toast over an overlay
+ * is inert with the rest of the shell (gotcha 88), and a click on it reached
+ * the backdrop instead.
+ */
+.toaster {
+  position: absolute;
+  right: var(--space-16);
+  bottom: max(var(--space-12), calc(var(--toast-floor, 0px) + var(--space-8)));
+  z-index: calc(var(--z-sticky) - 2);
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-8);
+  width: min(22rem, calc(100% - var(--space-32)));
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  pointer-events: none;
+}
+
+.main-col:has(.remote-fab[data-placement='main']) > .toaster {
+  bottom: max(
+    calc(var(--space-12) + var(--remote-fab-h) + var(--space-8)),
+    calc(var(--toast-floor, 0px) + var(--space-8))
+  );
+}
+
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-8);
+  padding: var(--space-12) var(--space-8) var(--space-12) var(--space-12);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--bg-elevated);
+  color: var(--text);
+  box-shadow: var(--shadow-lg);
+  pointer-events: auto;
+  animation: toast-in var(--dur-slow) var(--ease);
+  transition:
+    opacity var(--dur) var(--ease),
+    translate var(--dur) var(--ease);
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    translate: 0 0.5rem;
+  }
+}
+
+/* Going: the toast is removed `LEAVE_MS` later whether or not this ran. */
+.toast[data-leaving] {
+  opacity: 0;
+  translate: 0 0.25rem;
+}
+
+.toast-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 1.25rem;
+  height: 1.25rem;
+  margin-top: 0.0625rem;
+  border-radius: var(--r-full);
+  background: color-mix(in srgb, var(--success) 18%, transparent);
+  color: var(--success);
+}
+
+.toast[data-tone='error'] .toast-icon {
+  background: color-mix(in srgb, var(--danger) 18%, transparent);
+  color: var(--danger);
+}
+
+.toast-icon svg {
+  width: 0.8125rem;
+  height: 0.8125rem;
+  stroke-width: 2.25;
+}
+
+.toast-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.toast-title {
+  margin: 0;
+  font-size: var(--fs-md);
+  font-weight: 600;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.toast-description {
+  margin: var(--space-4) 0 0;
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+/* Full strength at rest: at 0.6 the × fell under 3:1 on the light themes. */
+.toast-close {
+  flex: none;
+  margin: calc(var(--space-4) * -1) 0;
 }

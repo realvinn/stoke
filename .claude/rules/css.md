@@ -27,6 +27,8 @@ paths:
   - "src/renderer/src/components/ProjectMetaPicker.tsx"
   - "src/renderer/src/components/ColorPicker.tsx"
   - "scripts/verify-layers.mts"
+  - "src/renderer/src/components/Toaster.tsx"
+  - "src/renderer/src/lib/toasts.ts"
 ---
 
 # CSS and layout traps
@@ -405,3 +407,43 @@ The rule: **never show-then-focus through `visibility`** — anything that un-hi
 `visibility` and focuses in the same task fails for exactly the users who asked for less
 motion. Position it off-screen, give it `opacity: 0`, or do not hide it; then focus. And prove
 focus under `--force-prefers-reduced-motion`, not only the look (72).
+
+## 154. A toast drawn over the corner it shares covers the buttons there, and one drawn over a scrim can be seen and not pressed
+
+**Built 2026-10-03 from the owner's "we really don't need the bar on top telling us that we added it, just
+have a sonner like notification".** A proven SSH key used to leave the key strip up, saying Done. It is now a
+toast (`toast()` in lib/toasts.ts, drawn by `Toaster`): bottom-right of `.main-col`, a check icon, gone after
+5 s. The rule behind it: **a notice is a toast; a question, something with buttons that must be answered,
+stays a strip in the flow.** A toast leaves by itself, and an answer nobody gave is not an answer.
+
+**Why `.main-col`.** Gotcha 14: it is the column the docked browser never covers, so the toast needs no
+`useFloatingLayer` and never hides the browser. Driven with the browser open: the toast at x 572–924 against
+the browser view at x 921. That is also why a 1-px overlap at the edge does not matter: the screenshot is a
+composite, because the view is native.
+
+**Three defects the first cut had, each measured in the built app:**
+- **It sat on top of the pane's foot.** At `--z-toast` it covered the exit card's Start again and Close tab
+  (`elementFromPoint` hit `.toast-description`) and the image strip's Cancel. Pointing at where those buttons
+  were held the toast up, so the clock never ran out. The pane in front now reports its floats
+  (`setToastFloor`, measured from the column's foot to the top of `.term-exit`/`.image-strip`/`.voice-strip`,
+  the same list as `--find-floor`), and the toaster sits `--space-8` above the higher of that and the remote
+  button (`--remote-fab-h`, through `:has()`).
+- **It sat over the Settings scrim and was inert there.** The shell is inert while an overlay is up (gotcha
+  88), so a click on its × reached the backdrop and closed Settings, and hover could not pause it. It is now
+  two steps under the remote button (`--z-sticky` - 2), so under every scrim. `paused` (the shell's `inert`,
+  or the window hidden or unfocused) holds its clock, so a toast raised behind Settings is still there to read
+  when Settings closes.
+- **Enter on its focused × typed `\r` into the terminal behind.** App types an unclaimed key on a focused
+  BUTTON through to the pty (`typeThroughKey`). Measured: a draft was submitted, and the button never ran.
+  The card stops plain keys, as RemoteFab does, and Escape inside it dismisses it.
+
+**Also:**
+- The `<ol>` is always in the DOM with `aria-live="polite"`, so the live region exists before its text
+  changes. The `<li>` has no role.
+- The × is full strength: at 0.6 it fell to 2.85:1 on the light themes.
+- Reduced motion rests the toast fully shown (gotcha 72). Measured: opacity 1 from 51 ms, with
+  `--force-prefers-reduced-motion`.
+
+Not proven: Windows and Linux, and the remote button's step-up. That button renders only while another
+machine is attached through a hub, so the `:has()` rule was checked against injected DOM only.
+

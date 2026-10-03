@@ -77,6 +77,13 @@ export const IconClose = (p: SVGProps<SVGSVGElement>): React.JSX.Element => (
   </Base>
 )
 
+/** An exclamation mark: something went wrong (a toast's error tone). Distinct from Close's ×. */
+export const IconAlert = (p: SVGProps<SVGSVGElement>): React.JSX.Element => (
+  <Base {...p}>
+    <path d="M8 3.5v5.5M8 12v.5" />
+  </Base>
+)
+
 export const IconSearch = (p: SVGProps<SVGSVGElement>): React.JSX.Element => (
   <Base {...p}>
     <circle cx="7.2" cy="7.2" r="3.9" />

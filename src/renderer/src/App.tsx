@@ -89,6 +89,9 @@ import {
   privateCloseAsks
 } from '@shared/privateChat'
 import { HubJoinPrompt } from './components/HubJoinPrompt'
+import { Toaster } from './components/Toaster'
+import { toast } from './lib/toasts'
+import { reconnectAfterEnroll } from '@shared/sshAuth'
 import { RemoteTerminal } from './components/RemoteTerminal'
 import { useHubRemote } from './lib/hubRemote'
 import type { OtherMachineView, RemoteSessionSummary } from '@shared/hub/remote'
@@ -96,6 +99,7 @@ import { WorklogPrompt } from './components/WorklogPrompt'
 import { baseName, ipcErrorMessage } from './lib/format'
 import {
   attachExit,
+  exitOf,
   forgetPty,
   initPtyBus,
   noteInput,
@@ -642,14 +646,16 @@ export function App(): React.JSX.Element {
    * disabled button cannot open a second tab asking for the same password. The
    * state is honesty: an install takes as long as it takes the user to type a
    * password, and a button that looks pressable is what invites the second
-   * press. Held from the press until main reports `done` or `failed` — after
-   * the tab's process exits and the probe has run — and released at once if
-   * the start itself is refused.
+   * press. Held from the press until main reports `done` or `failed` — once
+   * the probe has run, after the tab printed its result or exited (gotcha 144)
+   * — and released at once if the start itself is refused.
    */
   const sshEnrollingRef = useRef<string | null>(null)
   const [sshEnrolling, setSshEnrolling] = useState<string | null>(null)
-  /** The tab whose password prompt the running enrollment answers, if any. */
+  /** The tab the running enrollment is for (`startSshEnroll`'s source), if any. */
   const enrollSourceRef = useRef<string | null>(null)
+  /** Each host's last named source, for a Try again on its failed "Add key" tab. */
+  const lastEnrollSourceRef = useRef(new Map<string, string>())
 
   const [paletteOpen, setPaletteOpen] = useState(false)
   // A popover, menu or picker is open over the docked browser. Not part of
@@ -1515,7 +1521,7 @@ export function App(): React.JSX.Element {
       /*
        * Progress belongs to the enrollment that is still running, and to
        * nothing else. Without the guard a new question would arrive under the
-       * last run's "Done"; with a blanket reset, a prompt arriving while an
+       * last run's failure; with a blanket reset, a prompt arriving while an
        * install is mid-flight (the remote asks for the password it is waiting
        * for) would blank the progress the user is watching.
        */
@@ -1526,7 +1532,17 @@ export function App(): React.JSX.Element {
       }
     })
     const offSshEnroll = window.stoke.ssh.onEnrollEvent((e) => {
-      setSshEnroll(e)
+      if (e.stage === 'done' && e.ok === true) {
+        /*
+         * A proven key is news, not a question: the strip goes, and
+         * `enrollFinished` says so in a toast. Only this host's — an offer for
+         * another machine that arrived meanwhile stays up.
+         */
+        setSshOffer((cur) => (cur && cur.hostId === e.hostId ? null : cur))
+        setSshEnroll((cur) => (cur && cur.hostId !== e.hostId ? cur : null))
+      } else {
+        setSshEnroll(e)
+      }
       if (e.stage === 'done' || e.stage === 'failed') void enrollFinishedRef.current?.(e)
     })
 
@@ -3359,7 +3375,7 @@ export function App(): React.JSX.Element {
    * nor anything the far end printed — can pick the destination.
    *
    * The guard is claimed before the IPC call (gotchas 20, 51) and held until
-   * main reports `done`/`failed` after the tab exits (`enrollFinished`); a
+   * main reports `done`/`failed` once its probe has run (`enrollFinished`); a
    * refused start releases it at once. The tab is transient: `toStored` never
    * saves it, so a restart cannot bring back an `ssh-copy-id`.
    */
@@ -3370,6 +3386,7 @@ export function App(): React.JSX.Element {
       if (!host) return
       sshEnrollingRef.current = hostId
       enrollSourceRef.current = sourceTabId
+      if (sourceTabId) lastEnrollSourceRef.current.set(hostId, sourceTabId)
       setSshEnrolling(hostId)
       // Said at once rather than waiting for main's own 'starting': the button
       // going quiet for a second is what a second press is made of.
@@ -3512,61 +3529,129 @@ export function App(): React.JSX.Element {
   )
 
   /**
-   * Main has proved (or failed to prove) the enrollment, after its tab exited.
+   * Main has proved (or failed to prove) the enrollment: after the "Add key"
+   * tab printed that the install ran to its end, or after it exited (gotcha
+   * 144).
    *
-   * On a verified success the "Add key" tab has done its job and is closed, and
-   * the tabs on that host that asked for the password are reconnected — but
-   * only a tab with nothing to lose: one that never got in and still sits at
-   * ssh's own `password:`, or the one that raised the offer if its ssh has
-   * already given up. "Never got in" is main's to answer (`awaitingPassword`),
-   * from a watch over the session's whole life rather than the end of its
-   * output: a logged-in shell that has since run `su` or `ssh other` ends in
-   * the very same prompt shape, and killing it to "help" would lose whatever
-   * runs there. On failure everything stays: the enroll tab holds ssh's words.
+   * On a verified success the strip has already gone (the event listener) and
+   * a toast says so; the "Add key" tab has done its job and is closed, and the
+   * tabs on that host that asked for the password are reconnected — but only a
+   * tab with nothing to lose (`reconnectAfterEnroll`): one that never got in
+   * and still sits at ssh's own `password:`, one that ended at that prompt,
+   * or the one that raised the offer if its ssh has already given up. "Never
+   * got in" is main's to answer (`awaitingPassword`), from a watch over the
+   * session's whole life rather than the end of its output: a logged-in shell
+   * that has since run `su` or `ssh other` ends in the very same prompt shape,
+   * and killing it to "help" would lose whatever runs there. On failure
+   * everything stays: the enroll tab holds ssh's words and the strip the
+   * reason.
    */
   const enrollFinished = useCallback(
     async (e: SshEnrollEvent): Promise<void> => {
-      if (sshEnrollingRef.current !== e.hostId) return
-      const sourceTabId = enrollSourceRef.current
-      sshEnrollingRef.current = null
-      enrollSourceRef.current = null
-      setSshEnrolling(null)
+      // Not this window's run (a reload since the press): say it worked, touch no tab.
+      const ours = sshEnrollingRef.current === e.hostId
+      const sourceTabId = ours ? enrollSourceRef.current : null
+      if (ours) {
+        sshEnrollingRef.current = null
+        enrollSourceRef.current = null
+        setSshEnrolling(null)
+      }
       if (e.stage !== 'done' || e.ok !== true) return
 
-      for (const t of tabsRef.current) if (t.enrollHostId === e.hostId) closeTab(t.id)
-
       const host = settingsRef.current?.hosts.find((h) => h.id === e.hostId)
-      if (!host) return
-      const candidates = tabsRef.current.filter(
-        (t) => t.kind === 'session' && t.hostId === e.hostId && !t.enrollHostId
-      )
-      for (const t of candidates) {
-        let reconnect = false
-        if (t.status === 'exited') reconnect = t.id === sourceTabId
-        else if (t.status === 'running') reconnect = await window.stoke.ssh.awaitingPassword(t.ptyId)
-        if (!reconnect || !claimStart(t.id)) continue
+      const label = host ? host.label.trim() || host.alias.trim() : 'that machine'
+      if (!ours || !host) {
+        toast({ tone: 'success', title: `Key added to ${label}`, description: 'No password next time.' })
+        return
+      }
+
+      // The "Add key" tab is done. If it was in front, the tab that asked goes
+      // there — not whichever neighbour closing it would leave.
+      const enrollTabs = tabsRef.current.filter((t) => t.enrollHostId === e.hostId)
+      const enrollWasActive = enrollTabs.some((t) => t.id === activeTabIdRef.current)
+      for (const t of enrollTabs) closeTab(t.id)
+      if (enrollWasActive && sourceTabId && tabsRef.current.some((t) => t.id === sourceTabId)) {
+        activeTabIdRef.current = sourceTabId
+        setActiveTabId(sourceTabId)
+      }
+
+      const chosen: Tab[] = []
+      for (const t of tabsRef.current) {
+        if (t.kind !== 'session' || t.hostId !== e.hostId || t.enrollHostId) continue
+        if (t.status !== 'running' && t.status !== 'exited') continue
+        const running = t.status === 'running'
+        const ended = running ? null : exitOf(t.ptyId)
+        const verdict = reconnectAfterEnroll({
+          running,
+          awaitingPassword: running ? await window.stoke.ssh.awaitingPassword(t.ptyId) : false,
+          loggedIn: ended?.loggedIn,
+          exitCode: ended ? ended.code : t.exitCode,
+          isSource: t.id === sourceTabId
+        })
+        // Claimed now, before the toast counts it (gotcha 20).
+        if (verdict && claimStart(t.id)) chosen.push(t)
+      }
+
+      toast({
+        tone: 'success',
+        title: `Key added to ${label}`,
+        description:
+          chosen.length === 0
+            ? 'No password next time.'
+            : chosen.length === 1
+              ? 'Reconnecting without a password.'
+              : `Reconnecting ${chosen.length} tabs without a password.`
+      })
+
+      for (const t of chosen) {
         // Its exit must not flash "Session ended" over a tab being moved.
         relaunchingRef.current.add(t.id)
         try {
-          if (t.status === 'running') {
-            forgetPty(t.ptyId)
-            await window.stoke.pty.stop(t.ptyId, 3000).catch(() => true)
-            forgetPty(t.ptyId)
+          // Re-read: the awaits above may have let it exit or close since.
+          const now = tabsRef.current.find((x) => x.id === t.id)
+          if (!now) continue
+          if (now.status === 'running') {
+            // Asked again right before the kill: a password typed into it since
+            // the verdict is a login in flight, and it keeps its pty.
+            if (!(await window.stoke.ssh.awaitingPassword(now.ptyId))) continue
+            forgetPty(now.ptyId)
+            await window.stoke.pty.stop(now.ptyId, 3000).catch(() => true)
+            forgetPty(now.ptyId)
+          } else {
+            // As `reconnectNow` leaves an ended pty: main's row (the phone
+            // lists it, gotcha 84), its retained output, and a kept tab's
+            // countdown and try count, so the new pty starts a series of its own.
+            window.stoke.pty.kill(now.ptyId)
+            forgetPty(now.ptyId)
+            hostStartedAtRef.current.delete(now.ptyId)
+            hostExitSeenRef.current.delete(now.ptyId)
+            cancelReconnect(now.remoteSession)
           }
-          await startHostSession(host, t.id, {
-            permissionMode: t.permissionMode,
-            model: t.model,
-            effort: t.effort,
-            focus: t.id === sourceTabId,
-            remoteSession: t.remoteSession
+          const ok = await startHostSession(host, now.id, {
+            permissionMode: now.permissionMode,
+            model: now.model,
+            effort: now.effort,
+            focus: now.id === sourceTabId,
+            remoteSession: now.remoteSession
           })
+          // Refused (the banner says why): its old pty is gone, so it is ended,
+          // with Start again — never a tab marked running over nothing.
+          if (!ok && now.status === 'running') {
+            setTabs((list) => {
+              const next = list.map((x) =>
+                x.id === now.id ? { ...x, status: 'exited' as const, exitCode: x.exitCode ?? -1 } : x
+              )
+              tabsRef.current = next
+              return next
+            })
+          }
         } finally {
           relaunchingRef.current.delete(t.id)
           releaseStart(t.id)
         }
       }
     },
-    [closeTab, claimStart, releaseStart, startHostSession]
+    [closeTab, claimStart, releaseStart, startHostSession, cancelReconnect]
   )
   const enrollFinishedRef = useRef(enrollFinished)
   enrollFinishedRef.current = enrollFinished
@@ -3730,8 +3815,11 @@ export function App(): React.JSX.Element {
 
       if (plan.kind === 'enroll') {
         // "Try again" on a failed key install: the same enrollment, in this
-        // tab's slot. It answers no prompt now, so it has no source tab.
-        void startSshEnroll(plan.hostId, null, tab.id).finally(() => releaseStart(tab.id))
+        // tab's slot, for the tab the first try was for — which may have given
+        // up at its prompt meanwhile, and is still owed its reconnect.
+        void startSshEnroll(plan.hostId, lastEnrollSourceRef.current.get(plan.hostId) ?? null, tab.id).finally(() =>
+          releaseStart(tab.id)
+        )
         return
       }
 
@@ -5873,9 +5961,21 @@ export function App(): React.JSX.Element {
                  the flow is never the thing on top. */
               escapeDismisses={!settingsOpen && !paletteOpen && !worklogOpen && welcome === null}
               onEnroll={() => {
-                // The tab whose prompt raised the offer, so it can be
-                // reconnected once the key works.
-                const source = sshOffer ? tabs.find((t) => t.ptyId === sshOffer.ptyId) : undefined
+                /*
+                 * The tab the key is for, so it can be reconnected — and put in
+                 * front — once the key works: the one on this machine the user
+                 * is looking at when they press, else the one whose prompt
+                 * raised the offer. Not simply the offer's: main sends one per
+                 * prompt and the strip keeps the latest, so with three tabs
+                 * asking it named whichever asked last (measured, 2026-10-03).
+                 */
+                const active = tabs.find((t) => t.id === activeTabId)
+                const source =
+                  active && active.kind === 'session' && active.hostId === sshOfferHost.id && !active.enrollHostId
+                    ? active
+                    : sshOffer
+                      ? tabs.find((t) => t.ptyId === sshOffer.ptyId)
+                      : undefined
                 void startSshEnroll(sshOfferHost.id, source?.id ?? null)
               }}
               onShowTab={() => {
@@ -6123,6 +6223,7 @@ export function App(): React.JSX.Element {
             the docked browser (gotcha 14).
           */}
           {(settings?.remoteBar ?? 'fab') === 'fab' && <RemoteHostFab view={hubRemote} />}
+          <Toaster paused={shellInert} />
         </div>
 
         {/*

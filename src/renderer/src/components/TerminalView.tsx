@@ -25,6 +25,7 @@ import {
   type SpaceHoldStep
 } from '@shared/voiceRoute'
 import { attachSink, noteInput } from '../lib/ptyBus'
+import { setToastFloor } from '../lib/toasts'
 import { recentlyUsed } from '../lib/lastInput'
 import { isButtonlessMotionReport } from '../lib/mouseReport'
 import { chordLabel, matchShortcut } from '../lib/shortcuts'
@@ -1221,6 +1222,31 @@ export function TerminalView({
       pane.style.removeProperty('--find-floor')
     }
   }, [findOpen, floatsKey])
+
+  /*
+   * The same floats, for the toasts in `.main-col`'s bottom-right corner
+   * (Toaster): while this pane is the one in front, how far above the column's
+   * foot their tops reach, so a toast sits clear of Start again, Close tab and
+   * an upload's Cancel instead of over them.
+   */
+  useLayoutEffect(() => {
+    const pane = hostRef.current?.parentElement
+    if (!pane || !active) return
+    const column = pane.closest('.main-col')
+    const floats = Array.from(pane.querySelectorAll<HTMLElement>(FIND_FLOOR_SELECTOR))
+    const set = (): void => {
+      const foot = column?.getBoundingClientRect().bottom ?? 0
+      setToastFloor(Math.max(0, ...floats.map((el) => foot - el.getBoundingClientRect().top)))
+    }
+    set()
+    const ro = new ResizeObserver(set)
+    ro.observe(pane)
+    for (const el of floats) ro.observe(el)
+    return () => {
+      ro.disconnect()
+      setToastFloor(0)
+    }
+  }, [active, floatsKey])
 
   const findPalette = useMemo(() => findColors(theme, accent), [theme, accent])
 

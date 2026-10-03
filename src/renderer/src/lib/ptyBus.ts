@@ -88,6 +88,11 @@ export function attachExit(ptyId: string, sink: ExitSink): () => void {
   }
 }
 
+/** How a pty ended, once it has: main's exit report, `loggedIn` included. */
+export function exitOf(ptyId: string): { code: number; signal?: number; loggedIn?: boolean | null } | null {
+  return entries.get(ptyId)?.exit ?? null
+}
+
 /** Release a closed tab's retained output. */
 export function forgetPty(ptyId: string): void {
   entries.delete(ptyId)

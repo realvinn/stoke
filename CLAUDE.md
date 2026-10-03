@@ -473,6 +473,8 @@ rule file named on the group line.
   a `box-shadow` of its own: set outright, the frame's rule hid the drop ring on every framed pane.
 - **137.** Never show-then-focus through `visibility`: under reduced motion the global 1ms transition
   covers every property, so `focus()` meets a still-hidden element (`ColorPicker`).
+- **154.** Say news in a toast (`toast()`), ask questions in a strip; keep `Toaster` in `.main-col`, under
+  every scrim and above the pane's foot floats (`setToastFloor`), and stop plain keys on its card.
 
 **React state** — `.claude/rules/renderer.md`
 - **31.** `npm run check` cannot see a side effect inside a closure, or the wire from real input

@@ -766,8 +766,10 @@ export interface SshAuthPromptEvent {
  *
  * `installing` is the stage the enrollment tab is open in, waiting for the
  * user to type the password there; the tool's own output is in that tab, not
- * here. `done` and `failed` come from main after the tab's process exits and
- * the login probe has run.
+ * here. `done` and `failed` come from main once the login probe has run —
+ * after the tab printed that the install ran to its end, or after it exited,
+ * whichever came first (gotcha 144). A `done` with `ok: true` is not drawn on
+ * the strip: the renderer clears it and says so in a toast.
  */
 export interface SshEnrollEvent {
   hostId: string
