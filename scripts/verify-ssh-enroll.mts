@@ -28,6 +28,7 @@ import {
   SSH_AUTH_TAIL_BYTES,
   ENROLL_TAIL_CHARS,
   awaitingSshPassword,
+  reconnectAfterEnroll,
   buildRemoteInstallCommand,
   conptyScrub,
   detectSshPasswordPrompt,
@@ -541,6 +542,116 @@ ok(
     '  so a prompt of the exact ssh shape later still reads no',
     !awaitingSshPassword(replay(["v@web's password: ", '\r\n', BASH_PROMPT, 'exit\r\n', "v@web's password: "]).login)
   )
+}
+
+/*
+ * Real bytes, not a replayed shape: each pty's output exactly as node-pty
+ * delivered it, from a real sshd asking for a password (keys refused with
+ * `-o PubkeyAuthentication=no`, nothing typed). Captured 2026-10-03: macOS
+ * `/usr/bin/ssh` (OpenSSH 10.3) against the owner's Windows sshd, and Windows
+ * `ssh.exe` (OpenSSH_for_Windows 9.5p2) under ConPTY against its own sshd on
+ * localhost — the first ConPTY stream here measured rather than shaped.
+ */
+const MEASURED_MAC_PROMPT = ['\r', "User@protech-desktop's password: "]
+const MEASURED_CONPTY_PROMPT = [
+  `${ESC}[?9001h${ESC}[?1004h`,
+  `${ESC}[?25l${ESC}[2J${ESC}[m${ESC}[HWarning: Permanently added 'localhost' (ED25519) to the list of known hosts.\r\n` +
+    `${ESC}]0;C:\\Windows\\System32\\OpenSSH\\ssh.exe\u0007${ESC}[?25h`,
+  "User@localhost's password: "
+]
+/*
+ * The same Windows session, resized three times at its prompt (120x27, 100x27,
+ * 100x30) — what the key offer's own strip does to the tab in front, taking a
+ * row of the column. ConPTY repaints the whole screen from `CSI H` and parks
+ * the cursor back at the end of the prompt row with a CUP, so the unfinished
+ * line is empty. Read with the cursor moves dropped, the repainted banner
+ * joined the prompt row and settled the watch: no reconnect, ever, for the tab
+ * the user added the key from. Measured on Windows 11, 2026-10-03.
+ */
+const REPAINT_HEAD =
+  `${ESC}[HWarning: Permanently added 'localhost' (ED25519) to the list of known hosts.${ESC}[K\r\n` +
+  `User@localhost's password:${ESC}[K\r\n`
+const MEASURED_CONPTY_RESIZES = [
+  `${ESC}[?25l${ESC}[8;27;120t` + REPAINT_HEAD + `${ESC}[K\r\n`.repeat(24) + `${ESC}[K${ESC}[2;28H${ESC}[?25h`,
+  `${ESC}[?25l` + REPAINT_HEAD + `${ESC}[K\r\n`.repeat(24) + `${ESC}[K${ESC}[2;28H${ESC}[?25h`,
+  `${ESC}[?25l` + REPAINT_HEAD + `${ESC}[K\r\n`.repeat(27) + `${ESC}[K${ESC}[2;28H${ESC}[?25h`,
+]
+ok('measured on macOS: a tab at a real ssh prompt is still at it', awaiting(MEASURED_MAC_PROMPT))
+ok(
+  'measured under ConPTY: a tab at a real ssh.exe prompt is still at it',
+  awaiting(MEASURED_CONPTY_PROMPT, { conpty: true })
+)
+check(
+  '  and the offer fires once, naming the machine that asked',
+  replay(MEASURED_CONPTY_PROMPT, { conpty: true }).offers,
+  [{ kind: 'password', user: 'User', host: 'localhost' }]
+)
+{
+  const resized = [...MEASURED_CONPTY_PROMPT, ...MEASURED_CONPTY_RESIZES]
+  ok('measured under ConPTY: still at the prompt after three resizes repaint it', awaiting(resized, { conpty: true }))
+  ok('  and not settled by the repaint', !replay(resized, { conpty: true }).login.settled)
+  check('  and the offer still fires exactly once', replay(resized, { conpty: true }).offers.length, 1)
+  ok(
+    'answered (Enter at the prompt), then repainted: not at the prompt — the login is in flight',
+    !awaiting([...MEASURED_CONPTY_PROMPT, { in: '\r' }, '\r\n', ...MEASURED_CONPTY_RESIZES], { conpty: true })
+  )
+  ok(
+    'answered, then ssh asks again: at the prompt',
+    awaiting(
+      [
+        ...MEASURED_CONPTY_PROMPT,
+        { in: '\r' },
+        '\r\n',
+        'Permission denied, please try again.\r\n',
+        "User@localhost's password: "
+      ],
+      { conpty: true }
+    )
+  )
+}
+ok(
+  'POSIX: answered, and the echo of Enter finishes the prompt line: not at the prompt',
+  !awaiting(["v@web's password: ", { in: '\r' }, '\r\n'])
+)
+ok(
+  '  nor before the echo arrives',
+  !awaiting(["v@web's password: ", { in: 'hunter2\r' }])
+)
+ok(
+  '  and a wrong password, asked again: at the prompt',
+  awaiting(["v@web's password: ", { in: '\r' }, '\r\n', 'Permission denied, please try again.\r\n', "v@web's password: "])
+)
+
+console.log('\nwhich tabs a proven key reconnects')
+{
+  const base = { running: false, awaitingPassword: false, loggedIn: undefined, exitCode: null, isSource: false }
+  ok('a running tab still at ssh’s prompt: yes', reconnectAfterEnroll({ ...base, running: true, awaitingPassword: true }))
+  ok(
+    'a running tab that got in: no, even the one the key was for',
+    !reconnectAfterEnroll({ ...base, running: true, awaitingPassword: false, isSource: true })
+  )
+  ok(
+    '  and a running tab’s exit report is never read',
+    !reconnectAfterEnroll({ ...base, running: true, awaitingPassword: false, loggedIn: false, exitCode: 255 })
+  )
+  ok(
+    'an exited tab nothing ever ran in (Ctrl+C at the prompt, refused): yes',
+    reconnectAfterEnroll({ ...base, loggedIn: false, exitCode: 0 })
+  )
+  ok(
+    // "Connection closed by …" after a late answer settles the watch too.
+    'the exited tab the key was for, whose ssh gave up (255, settled): yes',
+    reconnectAfterEnroll({ ...base, isSource: true, loggedIn: true, exitCode: 255 })
+  )
+  ok(
+    'the tab the key was for, logged in and ended cleanly (exit 0): no — it keeps its last screen',
+    !reconnectAfterEnroll({ ...base, isSource: true, loggedIn: true, exitCode: 0 })
+  )
+  ok(
+    'any other exited tab with a settled watch: no, whatever its code',
+    !reconnectAfterEnroll({ ...base, loggedIn: true, exitCode: 255 })
+  )
+  ok('any other exited tab with no watch: no', !reconnectAfterEnroll({ ...base, loggedIn: null, exitCode: 1 }))
 }
 
 /*

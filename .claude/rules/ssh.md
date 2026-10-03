@@ -219,6 +219,29 @@ reports `escapechar none`.
 > that run showed: ssh 10.3 ends its log lines `\r\r\n\r`, and it prints `key fingerprint is:`
 > with a colon. The pattern for that line now takes both forms.
 
+> **Checked against the code on 2026-10-03: a resize at the prompt hid it under ConPTY.** The owner's
+> Windows tab that asked for the password was never reconnected after its key went in. The key offer's own
+> strip takes a row of `.main-col`, so the tab in front is resized at its prompt, and ConPTY answers a resize
+> by repainting the whole screen. It homes the cursor with `CSI H`, writes each row with `CSI K` and `\r\n`, then
+> parks the cursor at the end of the prompt row with a CUP (`CSI 2;28H`). The watch dropped cursor moves, so the
+> repainted banner row was joined to the unfinished prompt line, and that read as "text after the prompt", which
+> settles the watch under rule 3. Even without that, the unfinished line ended up empty, and `awaitingSshPassword`
+> required the prompt to be on it. Measured with node-pty and `ssh.exe` (OpenSSH_for_Windows 9.5p2) against the
+> desktop's own sshd on localhost, with keys refused and nothing typed. The first frames read `awaiting = true`;
+> after one `resize()` they read `settled = true, awaiting = false`.
+> The fix has three parts:
+> - The watch's scrub (`conptyScrub(…, { cursorBreaks: true })`) ends a line at a CUP/HVP. The offer's scrub is
+>   unchanged, so a prompt and a trailing CUP in one chunk still fire.
+> - The watch keeps `atPrompt`: the last line with anything on it was a prompt. A blank current line falls back
+>   to it.
+> - `answered` is set by Enter at a prompt and cleared only when ssh asks again. A repaint of an answered prompt
+>   is therefore never "at the prompt", and neither is the moment between Enter and ssh's newline.
+>
+> `verify:ssh-enroll` holds the measured streams byte for byte: macOS at a real prompt, ConPTY's first frames,
+> and three ConPTY resizes. Each rule was mutated back to red (cursor breaks 2 checks, the `atPrompt` fallback
+> 2, `answered` 1). The resize was measured on Windows and replayed through the shipped reducer. The strip's
+> resize of a real Stoke tab on Windows has not been driven in the app.
+
 ## 109. An enrollment whose password prompt has no visible terminal can never complete
 
 **ssh reads a password from its controlling terminal and from nowhere else — not stdin, not an
@@ -394,6 +417,31 @@ holds the channel open therefore still keeps that path busy until the tab is clo
 the probe (the exit path, `signal` set), which then reports the truth. On Windows there is no
 `ssh-copy-id.exe`, so the fallback, and with it the line, is always the one used. None of this has
 run on Windows; the owner's machine is the first place it will.
+
+> **Checked against the code on 2026-10-03: the reconnect after a key, and what says it worked.** Both of the
+> owner's machines still ran 0.9.99, which predates this entry: no `done` ever came, so nothing was reconnected,
+> and they opened a new tab to get in. Three more things were found driving the built app against a real
+> password sshd (OrbStack, scratch `-F` config on every ssh and ssh-copy-id argv, `~/.ssh` hashed identical):
+> - **The source was the LAST tab that prompted, not the one Add a key was pressed for.** Main sends one offer
+>   per prompt, the strip keeps the latest, and `onEnroll` took the source from it. With three tabs asking, the
+>   tab in front was reconnected without focus while another tab took the front. The source is now the tab on
+>   that host in front at the press, else the offer's. `lastEnrollSourceRef` carries it to the Add-key tab's
+>   Try again, and the source comes to the front when the Add-key tab closes.
+> - **Which tabs are reconnected** is one pure rule, `reconnectAfterEnroll` (sshAuth.ts):
+>   - a running tab, only while `awaitingPassword` holds; it is asked again right before the kill, since a
+>     password typed meanwhile is a login in flight;
+>   - an exited tab whose watch never settled (Ctrl+C at the prompt, refused, unresolvable);
+>   - the source, if it did not exit 0.
+>
+>   `loggedIn: true` at exit does NOT mean the tab got in: "Connection closed by" after a late answer, and the
+>   last "Permission denied (…)", settle it too. An exited tab is cleaned up as `reconnectNow` cleans one up. A
+>   refused restart leaves the tab ended, never marked running over a dead pty.
+> - **A proven key is a toast, not a strip** (gotcha 154). The listener clears that host's offer and progress on
+>   `done` with `ok: true`. `enrollFinished` toasts "Key added to <label>", plus "Reconnecting N tabs without a
+>   password." with the count it actually claimed. `ok: false` and `failed` stay on the strip with Try again.
+>
+> Driven before these fixes: 3 asking tabs. Two were reconnected (one at a prompt, one after Ctrl+C) and the
+> logged-in third kept its pty and `$MARK`. The toast left at 5.08 s, and hovering it held it past 8 s.
 
 ## 146. An image reaches a remote `claude` only as a path that exists THERE, and several paths only in the form its splitter reads
 

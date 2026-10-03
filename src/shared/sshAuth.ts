@@ -211,18 +211,25 @@ const PENDING_CAP = 256
  * far-side program would, and any escape sequence cut off at its end.
  *
  * Pure, so `verify:ssh-enroll` can replay a ConPTY-shaped stream on a Mac.
- * Cursor moves are dropped rather than turned into spaces or newlines: a guess
- * at layout that put a line break AFTER a prompt would hide it, and one that
- * joined a banner line to the prompt below it only costs a missed offer.
+ * For the offer, cursor moves are dropped rather than turned into spaces or
+ * newlines: a guess at layout that put a line break AFTER a prompt would hide
+ * it, and one that joined a banner line to the prompt below it only costs a
+ * missed offer. The login watch asks for `cursorBreaks`: a cursor POSITION
+ * (CUP/HVP) ends the line, because ConPTY repaints the whole screen on a
+ * resize — row by row from `CSI H` — and joined to the prompt row, the first
+ * repainted row read as text after the prompt, which settled the watch.
  */
-export function conptyScrub(chunk: string): { text: string; painting: boolean; rest: string } {
+export function conptyScrub(
+  chunk: string,
+  opts: { cursorBreaks?: boolean } = {}
+): { text: string; painting: boolean; rest: string } {
   let painting = false
   let text = chunk.replace(OSC_RE, '')
   text = text.replace(CSI_RE, (seq, params: string) => {
     if (seq.endsWith('h') && params.startsWith('?')) {
       for (const mode of params.slice(1).split(';')) if (PAINTING_MODES.has(mode)) painting = true
     }
-    return ''
+    return opts.cursorBreaks && (seq.endsWith('H') || seq.endsWith('f')) ? '\r' : ''
   })
   text = text.replace(ESC_OTHER_RE, '')
   // Whatever escape is left is incomplete: it was cut at the chunk boundary.
@@ -338,9 +345,15 @@ export function sshAuthStep(
  *      a command typed at a shell, and it catches the session that logged in
  *      by key and so never had a prompt to anchor rule 3 on.
  *
- * The session is waiting for a password only while it is not settled AND its
- * current line is a prompt. Every doubtful case settles, because the wrong
- * "yes" kills a session and the wrong "no" leaves one tab asking once more.
+ * The session is waiting for a password only while it is not settled AND a
+ * prompt is what it last showed (`atPrompt`): its current line, or — while
+ * that line is blank — the last line that had anything on it, unanswered.
+ * The second half is ConPTY's: a resize at the prompt (the key offer's own
+ * strip takes a row) repaints the screen and parks the cursor with a `CSI H`
+ * at the end of the prompt row, so the unfinished line is empty although the
+ * prompt is still what is on screen. Measured on Windows 11 (2026-10-03).
+ * Every doubtful case settles, because the wrong "yes" kills a session and
+ * the wrong "no" leaves one tab asking once more.
  */
 
 /** Questions ssh itself asks before authentication, answered with Enter. */
@@ -379,6 +392,13 @@ export interface SshLoginWatch {
   settled: boolean
   /** The current, unterminated line — scrubbed under ConPTY. */
   line: string
+  /** The last line with anything on it was a password prompt. Absent means no. */
+  atPrompt?: boolean
+  /**
+   * Enter was pressed at a prompt and ssh has not asked again: the login is in
+   * flight, and a repaint of the old prompt row is not a fresh question.
+   */
+  answered?: boolean
   /** ConPTY only: an escape sequence cut off at the end of the last chunk. */
   pending?: string
 }
@@ -414,7 +434,7 @@ export function sshLoginOutput(state: SshLoginWatch, chunk: string, opts: SshAut
   let text = chunk
   let pending = ''
   if (opts.conpty) {
-    const scrubbed = conptyScrub((state.pending ?? '') + chunk)
+    const scrubbed = conptyScrub((state.pending ?? '') + chunk, { cursorBreaks: true })
     if (scrubbed.painting) return settle(state, seen)
     text = scrubbed.text
     pending = scrubbed.rest
@@ -423,6 +443,8 @@ export function sshLoginOutput(state: SshLoginWatch, chunk: string, opts: SshAut
 
   let line = state.line
   let prompted = state.prompted
+  let atPrompt = state.atPrompt === true
+  let answered = state.answered === true
   let from = 0
   for (let i = 0; i < text.length; i++) {
     const c = text[i]
@@ -433,16 +455,27 @@ export function sshLoginOutput(state: SshLoginWatch, chunk: string, opts: SshAut
     // An answered prompt: the password is not echoed, so the line that the
     // newline finishes is the prompt itself. Set here too, not only at the end
     // of a chunk, so a prompt and what followed it arriving together still
-    // count from the prompt on.
+    // count from the prompt on. Under ConPTY it is also a repainted prompt row.
     if (promptOn(done, opts)) {
       prompted = true
+      atPrompt = true
       continue
     }
     if (prompted && !isPreAuthLine(done)) return settle(state, seen) // rule 3
+    if (done.trim() !== '') atPrompt = false
   }
   line = (line + text.slice(from)).slice(-SSH_AUTH_TAIL_BYTES)
-  if (!prompted && promptOn(line, opts)) prompted = true
+  if (line.trim() !== '') {
+    atPrompt = promptOn(line, opts) !== null
+    // A prompt still being written is ssh asking (again).
+    if (atPrompt) {
+      prompted = true
+      answered = false
+    }
+  }
   const next: SshLoginWatch = { seen, prompted, settled: false, line }
+  if (atPrompt) next.atPrompt = true
+  if (answered) next.answered = true
   if (pending) next.pending = pending
   return next
 }
@@ -456,8 +489,14 @@ export function sshLoginOutput(state: SshLoginWatch, chunk: string, opts: SshAut
 export function sshLoginInput(state: SshLoginWatch, data: string, opts: SshAuthStepOptions = {}): SshLoginWatch {
   if (state.settled || !/[\r\n]/.test(data)) return state
   const line = state.line.trim()
+  // The password, typed at ssh's prompt — on its line, or (ConPTY, after a
+  // repaint) with the cursor parked on an empty one. Answered either way:
+  // until ssh asks again, a reconnect would kill a login in flight.
+  if (state.atPrompt || promptOn(state.line, opts)) {
+    const { atPrompt: _gone, ...rest } = state
+    return { ...rest, answered: true }
+  }
   if (!line) return state // Enter pressed while it connects
-  if (promptOn(state.line, opts)) return state // the password, typed at ssh's prompt
   if (SSH_QUESTIONS.some((re) => re.test(line))) return state // "yes" to a host key, a passphrase
   return settle(state)
 }
@@ -467,7 +506,44 @@ export function sshLoginInput(state: SshLoginWatch, data: string, opts: SshAuthS
  * The gate in front of killing a tab to reconnect it — see the rules above.
  */
 export function awaitingSshPassword(state: SshLoginWatch, opts: SshAuthStepOptions = {}): boolean {
-  return !state.settled && promptOn(state.line, opts) !== null
+  if (state.settled || state.answered) return false
+  return state.line.trim() !== '' ? promptOn(state.line, opts) !== null : state.atPrompt === true
+}
+
+/** One tab on a host that has just been proven to take a key, as the renderer sees it. */
+export interface EnrollReconnectInput {
+  /** Its process is still running (else it has exited). */
+  running: boolean
+  /** Main's `awaitingSshPassword` for it — read only while it runs. */
+  awaitingPassword: boolean
+  /**
+   * Main's login watch at exit (`login.settled`); null/undefined when none ran.
+   * `false` means it never got past authentication, or never connected at all
+   * (refused, unresolvable, Ctrl+C at the prompt) — nothing ever ran there.
+   * `true` proves nothing either way: ssh's own "Connection closed by …" after
+   * an unanswered prompt, or its last "Permission denied (…)", settles the
+   * watch too (gotcha 126's note).
+   */
+  loggedIn: boolean | null | undefined
+  /** Its exit code once exited (ssh's own failures are 255); null when unknown. */
+  exitCode: number | null
+  /** The tab the key was added for: in front at the press, or whose prompt raised the offer. */
+  isSource: boolean
+}
+
+/**
+ * After a key is proven, whether a tab on that host is reconnected with it.
+ *
+ * Only a tab with nothing to lose. A running one only while it still sits at
+ * ssh's own prompt (`awaitingSshPassword`). An exited one when nothing ever ran
+ * in it (`loggedIn === false`), or when it is the tab the key was for and it
+ * did not end cleanly: its ssh gave up at the prompt (exit 255) — which reads
+ * as settled — while a session that got in and ended with exit 0 keeps its
+ * last screen.
+ */
+export function reconnectAfterEnroll(t: EnrollReconnectInput): boolean {
+  if (t.running) return t.awaitingPassword
+  return t.loggedIn === false || (t.isSource && t.exitCode !== 0)
 }
 
 /**
