@@ -33,6 +33,7 @@ import {
   type TranscriptFindResult
 } from '../src/shared/transcriptFind.ts'
 import { BlockCache, readBlocks } from '../src/main/transcriptFind.ts'
+import { CORNER_FLOATS, FOOT_FLOATS, floatInset } from '../src/shared/paneFloats.ts'
 import { TranscriptFindHost } from '../src/main/transcriptFindHost.ts'
 import { ConversationFinder, REMOTE_FRESH_MS, type FinderDeps } from '../src/main/findInConversation.ts'
 import {
@@ -555,26 +556,45 @@ console.log('\na private chat: the screen only, said plainly')
 
 /*
  * The find bar floats top-right and grows with its hits; the image strip (SSH
- * images), the exit card and the dictation strip float along the pane's foot,
- * at the same z-index and later in the pane, so they covered the bar's last
- * hits. While the bar is open the tallest of them is its floor.
+ * images) and the exit card float along the pane's foot, at the same z-index
+ * and later in the pane, so they covered the bar's last hits. While the bar is
+ * open the tallest of them is its floor.
+ *
+ * The dictation strip moved to the bar's own corner on 2026-10-04 (the owner:
+ * "top right is better, bottom left covers too much"). The rule there: the
+ * strip keeps its place — it is what says a microphone is open — and the bar
+ * starts under it (`--find-ceiling`). Both line up on `--float-right`, clear of
+ * xterm's 14px scrollbar, which both used to cover.
  */
-console.log('\nthe bar stops above what floats along the pane\'s foot')
+console.log('\nthe bar stops above the foot\'s floats, and starts under the dictation strip')
 {
   const tv = read('src/renderer/src/components/TerminalView.tsx')
   const css = read('src/renderer/src/styles/app.css')
+  check('the foot is the image strip and the exit card — the dictation strip is no longer there', FOOT_FLOATS, ':scope > .image-strip, :scope > .term-exit')
+  check('the top-right corner holds the dictation strip', CORNER_FLOATS, ':scope > .voice-strip')
+  check('an inset is the tallest float plus one gap', [floatInset([30, 52.4]), floatInset([18])], ['calc(53px + var(--space-8))', 'calc(18px + var(--space-8))'])
+  check('and nothing there is no inset at all (the property goes)', [floatInset([]), floatInset([0, 0]), floatInset([Number.NaN])], [null, null, null])
   check(
-    'TerminalView measures the image strip, the exit card and the dictation strip',
-    /const FIND_FLOOR_SELECTOR = ':scope > \.image-strip, :scope > \.term-exit, :scope > \.voice-strip'/.test(tv),
+    'while the bar is open TerminalView measures both corners, into --find-floor and --find-ceiling, kept by a ResizeObserver',
+    /if \(!pane \|\| !findOpen\) return[\s\S]*?querySelectorAll<HTMLElement>\(FOOT_FLOATS\)[\s\S]*?querySelectorAll<HTMLElement>\(CORNER_FLOATS\)[\s\S]*?put\('--find-floor', floatInset\([\s\S]*?put\('--find-ceiling', floatInset\([\s\S]*?new ResizeObserver\(set\)[\s\S]*?\}, \[findOpen, floatsKey\]\)/.test(tv),
     true
   )
-  check(
-    'while the bar is open, into --find-floor, kept by a ResizeObserver',
-    /if \(!pane \|\| !findOpen\) return[\s\S]*?pane\.style\.setProperty\('--find-floor'[\s\S]*?new ResizeObserver\(set\)[\s\S]*?\}, \[findOpen, floatsKey\]\)/.test(tv),
-    true
-  )
+  check('the toasts clear the foot\'s floats only', /setToastFloor\(Math\.max\(0, \.\.\.floats/.test(tv) && /const floats = Array\.from\(pane\.querySelectorAll<HTMLElement>\(FOOT_FLOATS\)\)\s+const set = \(\): void => \{\s+const foot = column/.test(tv), true)
+  check('no float list still names the dictation strip at the foot', /FIND_FLOOR_SELECTOR|image-strip, :scope > \.term-exit, :scope > \.voice-strip/.test(tv), false)
   const rule = /\n\.term-find \{[^}]*\}/.exec(css)?.[0] ?? ''
-  check('and the bar\'s max-height leaves it', /max-height: calc\(100% - 2 \* var\(--strip-inset, var\(--space-12\)\) - var\(--find-floor, 0px\)\)/.test(rule), true)
+  check('the bar starts under the strip', /top: calc\(var\(--strip-inset, var\(--space-12\)\) \+ var\(--find-ceiling, 0px\)\)/.test(rule), true)
+  check('and its max-height leaves both', /max-height: calc\(100% - 2 \* var\(--strip-inset, var\(--space-12\)\) - var\(--find-floor, 0px\) - var\(--find-ceiling, 0px\)\)/.test(rule), true)
+  const strip = /\n\.voice-strip \{[^}]*\}/.exec(css)?.[0] ?? ''
+  check('the strip sits top-right: top from --strip-top or the inset, right on --float-right, no bottom', /inset: var\(--strip-top, var\(--strip-inset, var\(--space-12\)\)\) var\(--float-right, [^;]*\) auto auto;/.test(strip), true)
+  check('the bar lines up with it on --float-right', /right: var\(--float-right, /.test(rule), true)
+  const pane = /\n\.term-pane \{[^}]*\}/.exec(css)?.[0] ?? ''
+  check(
+    '--float-right clears the scrollbar: the pane\'s right padding, xterm\'s own padding, 14px of scrollbar and a gap',
+    /--term-scrollbar-w: 14px;/.test(pane) && /--float-right: calc\(var\(--pane-pad-right\) \+ var\(--term-pad, 12px\) \+ var\(--term-scrollbar-w\) \+ var\(--space-4\)\);/.test(pane),
+    true
+  )
+  check('and follows the framed pane\'s padding', /:root\[data-term-frame='true'\] \.term-pane \{\s*--pane-pad-right: var\(--space-12\);/.test(css), true)
+  check('a long sentence wraps inside the strip rather than widening it', /max-width: min\(32rem, calc\(100% - /.test(strip) && /\.voice-text \{[^}]*overflow-wrap: anywhere/.test(css), true)
 }
 
 /* --------------------------------------------------------------- the wires */

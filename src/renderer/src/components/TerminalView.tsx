@@ -12,6 +12,7 @@ import { PRIVATE_ENDED_TEXT } from '@shared/privateChat'
 import { voiceSupported } from '@shared/voice'
 import { SizeClaimer, isGrid, sameGrid, type ClaimTrigger, type Grid } from '@shared/sizeClaim'
 import { CLI_OWNS_SPACE, SESSION_ENDED_WORDS, spaceOwner } from '@shared/voiceRoute'
+import { CORNER_FLOATS, FOOT_FLOATS, floatInset } from '@shared/paneFloats'
 import { attachSink, noteInput } from '../lib/ptyBus'
 import { setToastFloor } from '../lib/toasts'
 import { recentlyUsed } from '../lib/lastInput'
@@ -49,8 +50,6 @@ const MAX_OSC52_BASE64 = 200_000
  */
 const IS_MAC = window.stoke.platform === 'darwin'
 
-/** What floats along the pane's foot, under which the find bar must stop (`--find-floor`). */
-const FIND_FLOOR_SELECTOR = ':scope > .image-strip, :scope > .term-exit, :scope > .voice-strip'
 
 /**
  * The luminance class the CLI sorts a background into (gotcha 42): it asks
@@ -1179,34 +1178,42 @@ export function TerminalView({
 
   /*
    * The find bar floats top-right and grows with its hits; the image strip and
-   * the exit card float bottom-right, the dictation strip bottom-left. Same
-   * z-index, later in the pane: on a short pane they painted over the bar's
-   * last hits, which no scroll could bring out from under them. While the bar
-   * is open the tallest of them is its floor (`--find-floor`, app.css), kept
-   * with a ResizeObserver as an error's ssh line wraps or a thumbnail arrives.
+   * the exit card float bottom-right (the foot), and the dictation strip
+   * shares the bar's corner (shared/paneFloats.ts). Same z-index, later in the
+   * pane: on a short pane the foot's floats painted over the bar's last hits,
+   * which no scroll could bring out from under them. While the bar is open the
+   * tallest of them is its floor (`--find-floor`, app.css), and a dictation
+   * strip up there is its ceiling (`--find-ceiling`): the strip keeps its
+   * place and the bar starts below it. Kept with a ResizeObserver as an
+   * error's ssh line wraps, a thumbnail arrives or kept words appear.
    */
-  // Which floats are drawn: the two dictation strips are different elements.
+  // Which floats are drawn: the dictation strip's variants change its height.
   const floatsKey = `${images.strip ? 1 : 0}${tab.status === 'exited' ? 1 : 0}${dictation.stripKey}`
   useLayoutEffect(() => {
     const pane = hostRef.current?.parentElement
     if (!pane || !findOpen) return
-    const floats = Array.from(pane.querySelectorAll<HTMLElement>(FIND_FLOOR_SELECTOR))
+    const foot = Array.from(pane.querySelectorAll<HTMLElement>(FOOT_FLOATS))
+    const corner = Array.from(pane.querySelectorAll<HTMLElement>(CORNER_FLOATS))
+    const put = (name: string, value: string | null): void => {
+      if (value) pane.style.setProperty(name, value)
+      else pane.style.removeProperty(name)
+    }
     const set = (): void => {
-      const h = Math.max(0, ...floats.map((el) => el.offsetHeight))
-      if (h > 0) pane.style.setProperty('--find-floor', `calc(${h}px + var(--space-8))`)
-      else pane.style.removeProperty('--find-floor')
+      put('--find-floor', floatInset(foot.map((el) => el.offsetHeight)))
+      put('--find-ceiling', floatInset(corner.map((el) => el.offsetHeight)))
     }
     set()
     const ro = new ResizeObserver(set)
-    for (const el of floats) ro.observe(el)
+    for (const el of [...foot, ...corner]) ro.observe(el)
     return () => {
       ro.disconnect()
       pane.style.removeProperty('--find-floor')
+      pane.style.removeProperty('--find-ceiling')
     }
   }, [findOpen, floatsKey])
 
   /*
-   * The same floats, for the toasts in `.main-col`'s bottom-right corner
+   * The foot's floats, for the toasts in `.main-col`'s bottom-right corner
    * (Toaster): while this pane is the one in front, how far above the column's
    * foot their tops reach, so a toast sits clear of Start again, Close tab and
    * an upload's Cancel instead of over them.
@@ -1215,7 +1222,7 @@ export function TerminalView({
     const pane = hostRef.current?.parentElement
     if (!pane || !active) return
     const column = pane.closest('.main-col')
-    const floats = Array.from(pane.querySelectorAll<HTMLElement>(FIND_FLOOR_SELECTOR))
+    const floats = Array.from(pane.querySelectorAll<HTMLElement>(FOOT_FLOATS))
     const set = (): void => {
       const foot = column?.getBoundingClientRect().bottom ?? 0
       setToastFloor(Math.max(0, ...floats.map((el) => foot - el.getBoundingClientRect().top)))
