@@ -1559,7 +1559,8 @@ console.log('\nchat history between two machines: ask, allow, search, open; ever
   hostM.chatGrants = {}
   res = await guestM.remote.searchChats('relay')
   check('the grant gone from A’s settings: the next request is refused as denied', byDevice(res, A.id)?.state, 'denied')
-  check('and a denial stands for the rest of the search: no new question for A', [byDevice(await guestM.remote.searchChats('relay'), A.id)?.state, last(hostM).asks.length], ['denied', 0])
+  await tick(T.retryMs + 10)
+  check('and a denial stands for the rest of the search, past the retry wait: no new question for A', [byDevice(await guestM.remote.searchChats('relay'), A.id)?.state, last(hostM).asks.length], ['denied', 0])
   guestM.remote.endChatSearch()
   check('the search box closed: B holds no chats relay', last(guestM).chatPeers.length, 0)
 
@@ -1620,6 +1621,13 @@ console.log('\nchat history between two machines: ask, allow, search, open; ever
   await guestM.remote.searchChats('relay')
   await until(() => last(guestM).chatPeers[0]?.state === 'open' && last(hostM).guests.some((g) => g.kind === 'chats'))
   ok('(B is searching A under Always)', last(hostM).guests.some((g) => g.kind === 'chats'))
+  // The SESSIONS tick and a session Always are another scope: neither ends a chats search.
+  hostM.grants = { [B.id]: { mode: 'full', label: 'Laptop', at: 1 } }
+  await hostM.remote.revokeGrant(B.id)
+  hostM.sharing = false
+  hostM.remote.sharingChanged()
+  await tick(30)
+  check('the sessions tick off, and a session Always taken back, leave B’s chats search open', [last(guestM).chatPeers[0]?.state, last(hostM).guests.filter((g) => g.kind === 'chats').length, byDevice(await guestM.remote.searchChats('relay'), A.id)?.state], ['open', 1, 'ok'])
   hostM.shareChats = false
   hostM.chatGrants = {} // as HubService.setShareChats(false) commits it
   hostM.remote.chatSharingChanged()
