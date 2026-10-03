@@ -17,6 +17,7 @@ import {
   topBarKeep,
   TOP_BAR_DEFAULTS,
   DRAG_GAP_REM,
+  TABS_FLOOR_EDIT_REM,
   dragGapPx,
   type FitItem,
   type FitResult,
@@ -358,12 +359,16 @@ export function TopBar({
       editing: editingRef.current
     })
     root.style.setProperty('--topbar-drag', `${drag}px`)
+    // At 0 the strip leaves the flow, or its flex gap is 6px the bar never counted.
+    root.toggleAttribute('data-drag-gone', drag === 0)
     // The floor yields to the actions, never the other way (`tabsFloorPx`),
     // and leaves the bar its own controls, the drag space and, if shortcuts
     // can spill, the "»".
     const floor = tabsFloorPx({
       natural,
-      floor: TABS_FLOOR_REM * rem,
+      // Editing, the bar is what is being worked on: the strip keeps less, or a
+      // narrow window left the list 39px for a 60px chip, its × clipped.
+      floor: (editingRef.current ? TABS_FLOOR_EDIT_REM : TABS_FLOOR_REM) * rem,
       avail,
       keep: topBarKeep({ ...keepInput, drag })
     })

@@ -254,6 +254,25 @@ export function TitleBar({
     el?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
   }, [activeTabId, tabs.length, drag])
 
+  /*
+   * And again when the strip's visible width changes — a smaller window, a
+   * larger Interface scale, the title bar's items taking room. The effect
+   * above runs only on a new active tab, so a resize left the one in front
+   * scrolled out of sight (driven, 2026-10-03: 1440 -> 940px with ten tabs).
+   */
+  useEffect(() => {
+    const list = listRef.current
+    if (!list) return
+    let width = list.clientWidth
+    const ro = new ResizeObserver(() => {
+      if (list.clientWidth === width || drag.busy()) return
+      width = list.clientWidth
+      list.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+    })
+    ro.observe(list)
+    return () => ro.disconnect()
+  }, [drag])
+
   const menuTab = menu ? tabs.find((t) => t.id === menu.tabId) : null
   /*
    * The folder item, by the same rule the status bar's folder button reads

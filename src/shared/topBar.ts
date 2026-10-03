@@ -107,6 +107,8 @@ export const SHORTCUT_TEXT_MAX = 2000
 export const SHORTCUT_TEXT_BUDGET = 48 * 1024
 /** The least the tab strip keeps when the bar needs room (rem, so it follows Interface scale). */
 export const TABS_FLOOR_REM = 16
+/** The same while the bar is being edited: the editor needs the room more than the tabs do. */
+export const TABS_FLOOR_EDIT_REM = 8
 
 const ID_RE = /^[A-Za-z0-9_-]{1,40}$/
 

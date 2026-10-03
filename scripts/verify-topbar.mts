@@ -475,9 +475,10 @@ console.log('\nthe tab strip’s floor yields to the actions')
     check('  hands it to the floor', /topBarKeep\(\{ \.\.\.keepInput, drag \}\)/.test(src), true)
     check('  and to the fit', /fixed: trail \+ \(drag > 0 \? drag \+ innerGap : 0\)/.test(src), true)
     check('  and draws the strip', src.includes('className="topbar-drag"'), true)
-    const rule = css.match(/\.topbar-drag \{([^}]*)\}/)?.[1] ?? ''
+    const rule = css.match(/^\.topbar-drag \{([^}]*)\}/m)?.[1] ?? ''
     check('the CSS sizes it from --topbar-drag', /width: var\(--topbar-drag/.test(rule), true)
     check('  and makes it a drag region of its own', /-webkit-app-region: drag/.test(rule), true)
+    check('  and takes it out of the flow at 0, so its gap is not an overrun', /\.topbar\[data-drag-gone\] \.topbar-drag \{\s*display: none;/.test(css) && src.includes("toggleAttribute('data-drag-gone', drag === 0)"), true)
   }
 }
 

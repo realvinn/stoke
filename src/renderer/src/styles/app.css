@@ -1336,6 +1336,10 @@ body {
  * its own, later in the document than theirs, is what is meant to win there.
  * Not proven with a real OS drag: that needs a person's pointer.
  */
+.topbar[data-drag-gone] .topbar-drag {
+  display: none;
+}
+
 .topbar-drag {
   flex: 0 1 auto;
   width: var(--topbar-drag, 3rem);
