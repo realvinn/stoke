@@ -123,9 +123,10 @@ interface Props {
   onSetUpChats?: () => void
   /**
    * Chat history on the owner's OTHER computers (spec 2026-10-03 §4): one
-   * "On <computer>" group each, its hits or one line saying why there are
-   * none (`remoteChatGroups`), listed after this computer's and never merged
-   * with them by score.
+   * "On <computer>" group per computer that shares, its hits or one line
+   * saying why there are none (`remoteChatGroups`), listed after this
+   * computer's and never merged with them by score. A group answering an
+   * older query than the box holds is drawn dimmed until the new answer lands.
    */
   remoteChats?: RemoteChatGroup[]
   onOpenRemoteChat?: (group: RemoteChatGroup, hit: RemoteChatHit) => void
@@ -852,8 +853,19 @@ export function Sidebar({
               </div>
             )}
             {remoteGroups.map((g) => (
-              <div key={g.device} className="chat-remote" data-chat-remote={g.state} aria-label={`On ${g.computer}`} role="group">
-                <div className="sidebar-group chat-remote-head">On {g.computer}</div>
+              <div
+                key={g.device}
+                className="chat-remote"
+                data-chat-remote={g.state}
+                data-stale={g.stale ? '' : undefined}
+                aria-busy={g.stale || undefined}
+                aria-label={`On ${g.computer}`}
+                role="group"
+              >
+                <div className="sidebar-group chat-remote-head">
+                  On {g.computer}
+                  {g.stale && <span className="chat-remote-pending"> · searching…</span>}
+                </div>
                 {g.line !== null ? (
                   <p className="sidebar-note" role={g.failed ? 'status' : undefined}>
                     {g.line}

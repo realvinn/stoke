@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react'
 import { DEFAULT_HUB_URL, emptyHubView, type HubLocalKeyView, type HubResult, type HubView } from '@shared/hub/client'
 import { sameHubUrl } from '@shared/hub/edge'
 import type { RemoteBarMode } from '@shared/ui'
-import { SHARE_CHATS_LABEL, SHARE_CHATS_STOPPED, shareChatsRow } from '@shared/remoteChatsView'
+import { SHARE_CHATS_LABEL, SHARE_CHATS_STOPPED, sharePausedOf, shareChatsRow } from '@shared/remoteChatsView'
 import { ConfirmPasswordSheet } from './ConfirmPasswordSheet'
 import { FieldHint } from './FieldHint'
 import { useHubRemote } from '../lib/hubRemote'
@@ -102,11 +102,16 @@ interface AccountSyncProps {
   onRemoteBar: (mode: RemoteBarMode) => void
   /** `settings.chatIndex === 'on'`: sharing chat history needs chat history. */
   chatIndexOn: boolean
-  /** Settings › Chat history, for the shared-chats row's "Turn on Chat history first." */
-  onOpenChatHistory?: () => void
+  /** `settings.chatIndexOptions.redact`: and its "Leave out anything that looks like an API key". */
+  redactOn: boolean
+  /**
+   * Settings › Chat history, for the shared-chats row's "Turn on Chat history
+   * first." — on the row holding the redaction tick when that is what is missing.
+   */
+  onOpenChatHistory?: (row?: 'redact') => void
 }
 
-export function AccountSyncSettings({ remoteBar, onRemoteBar, chatIndexOn, onOpenChatHistory }: AccountSyncProps): React.JSX.Element {
+export function AccountSyncSettings({ remoteBar, onRemoteBar, chatIndexOn, redactOn, onOpenChatHistory }: AccountSyncProps): React.JSX.Element {
   const [view, setView] = useState<HubView>(emptyHubView())
   const [loaded, setLoaded] = useState(false)
   const [now, setNow] = useState(Date.now())
@@ -161,13 +166,13 @@ export function AccountSyncSettings({ remoteBar, onRemoteBar, chatIndexOn, onOpe
           <OtherMachinesSettings
             remoteBar={remoteBar}
             onRemoteBar={onRemoteBar}
-            chats={<ShareChats view={view} chatIndexOn={chatIndexOn} onOpenChatHistory={onOpenChatHistory} />}
+            chats={<ShareChats view={view} chatIndexOn={chatIndexOn} redactOn={redactOn} onOpenChatHistory={onOpenChatHistory} />}
           />
           <RecoveryKit view={view} />
         </>
       )}
       {/* Drawn in every phase, so search always lands on it; outside the vault it says what is missing. */}
-      {view.phase !== 'active' && <ShareChats view={view} chatIndexOn={chatIndexOn} onOpenChatHistory={onOpenChatHistory} />}
+      {view.phase !== 'active' && <ShareChats view={view} chatIndexOn={chatIndexOn} redactOn={redactOn} onOpenChatHistory={onOpenChatHistory} />}
       {view.phase !== 'off' && (view.phase !== 'signed-out' || (view.device !== null && view.email !== '')) && <SignOut view={view} />}
     </>
   )
@@ -1005,23 +1010,57 @@ function OtherMachinesSettings({
  *
  * The sheet stands over Settings, which already keeps the shell inert (gotcha
  * 88); the sheet makes the rest of the app, Settings included, inert while it
- * is up, and focus comes back to the tick when it goes.
+ * is up, and focus comes back to the tick when it goes — once "Turn on" is
+ * done, since the tick is disabled while it runs and a disabled control
+ * refuses focus without a word.
+ *
+ * While chat history's redaction is off the tick cannot go on, and a tick
+ * already on says main has paused it (`sharePausedOf`).
  */
-function ShareChats({ view, chatIndexOn, onOpenChatHistory }: { view: HubView; chatIndexOn: boolean; onOpenChatHistory?: () => void }): React.JSX.Element {
+function ShareChats({
+  view,
+  chatIndexOn,
+  redactOn,
+  onOpenChatHistory
+}: {
+  view: HubView
+  chatIndexOn: boolean
+  redactOn: boolean
+  onOpenChatHistory?: (row?: 'redact') => void
+}): React.JSX.Element {
   const remote = useHubRemote()
   const { busy, note, setNote, run } = useRun()
   const [confirming, setConfirming] = useState(false)
   const [ticked, setTicked] = useState<ReadonlySet<string>>(new Set())
   const tickRef = useRef<HTMLInputElement>(null)
+  const hintRef = useRef<HTMLSpanElement>(null)
+  const refocus = useRef(false)
   const hintId = useId()
   const others = view.devices.filter((d) => !d.me)
-  const row = shareChatsRow({ phase: view.phase, chatIndexOn, sharing: remote.sharingChats, grants: remote.chatGrants.map((g) => g.label) })
+  const row = shareChatsRow({
+    phase: view.phase,
+    chatIndexOn,
+    redactOn,
+    sharing: remote.sharingChats,
+    grants: remote.chatGrants.map((g) => g.label),
+    paused: sharePausedOf(remote)
+  })
 
   const closeSheet = (): void => {
     setConfirming(false)
-    // After the sheet's own cleanup has let the rest of the app out of `inert`.
-    requestAnimationFrame(() => tickRef.current?.focus())
+    refocus.current = true
   }
+  // Back to the tick once the sheet is gone AND nothing runs; the frame after lets the sheet's cleanup lift `inert`.
+  useEffect(() => {
+    if (!refocus.current || confirming || busy !== null) return
+    const id = requestAnimationFrame(() => {
+      refocus.current = false
+      const tick = tickRef.current
+      if (tick && !tick.disabled) tick.focus()
+      else hintRef.current?.focus()
+    })
+    return () => cancelAnimationFrame(id)
+  }, [confirming, busy])
   const onTick = (on: boolean): void => {
     if (!on) {
       run('chats-off', () => window.stoke.hub.remote.setShareChats(false), () => ({ text: SHARE_CHATS_STOPPED }))
@@ -1054,14 +1093,22 @@ function ShareChats({ view, chatIndexOn, onOpenChatHistory }: { view: HubView; c
         />
         <span>
           <span>{SHARE_CHATS_LABEL}</span>
-          <span className="field-hint" id={hintId} data-hub="share-chats-hint">
+          <span
+            className="field-hint"
+            id={hintId}
+            ref={hintRef}
+            tabIndex={-1}
+            data-hub="share-chats-hint"
+            data-tone={row.paused ? 'warning' : undefined}
+            data-paused={row.paused ? '' : undefined}
+          >
             {row.hint}
           </span>
         </span>
       </label>
-      {!chatIndexOn && view.phase === 'active' && onOpenChatHistory && (
+      {view.phase === 'active' && onOpenChatHistory && (!chatIndexOn || !redactOn || row.paused) && (
         <div className="btn-row">
-          <button className="btn" onClick={onOpenChatHistory}>
+          <button className="btn" onClick={() => onOpenChatHistory(chatIndexOn ? 'redact' : undefined)}>
             Open Chat history…
           </button>
         </div>

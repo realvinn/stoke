@@ -1932,10 +1932,14 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
   remotePhone.ts    the phone contract's pure pieces: status mapping and sort, the ended
                     ring, `submitFrames` (typed, never bracketed for Claude: gotcha 86)
   remoteChatsView.ts  what the renderer says about chat history across computers (spec
-                    2026-10-03 §4): the Settings row (`shareChatsRow`, `shareChatsBlock`), the
-                    sidebar's "On <computer>" groups (`remoteChatGroups`, never merged by
-                    score), the viewer's "On <Computer> · <folder>", and when a waiting search
-                    is asked again (`chatsSearchAgain`, never on an idle close). verify:hub-relay
+                    2026-10-03 §4): the Settings row (`shareChatsRow`, `shareChatsBlock`, main's
+                    pause read by `sharePausedOf`), the sidebar's "On <computer>" groups
+                    (`remoteChatGroups`, never merged by score, only for computers that share
+                    as `chatSharersStep` has seen them, dimmed when they answered an older
+                    query), the viewer's "On <Computer> · <folder>" and its errors
+                    (`remoteOpenLine`, refusals reworded by code: `chatRefusalLine`), when a
+                    failed read is read again (`remoteReadWatch`), and when a waiting search is
+                    asked again (`chatsSearchAgain`, never on an idle close). verify:hub-relay
   phoneUi.ts        the phone UI's decisions: sections, answer-option parsing, the resize
                     policy, the queued-send state, connect input, transcript folding.
                     verify:phone-ui

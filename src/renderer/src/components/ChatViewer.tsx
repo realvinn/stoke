@@ -9,8 +9,8 @@ import {
   type ChatSearchHit,
   type ChatTranscriptMessage
 } from '@shared/chatIndex'
-import type { RemoteChatHit } from '@shared/hub/remote'
-import { remoteChatWhere } from '@shared/remoteChatsView'
+import type { RemoteChatHit, RemoteChatPeerState } from '@shared/hub/remote'
+import { remoteChatWhere, remoteOpenLine, remoteReadWatch } from '@shared/remoteChatsView'
 import { Highlight } from './Highlight'
 import { IconCheck, IconClose, IconCopy } from './Icons'
 import { Spinner } from './Spinner'
@@ -67,17 +67,24 @@ function asText(messages: readonly ChatTranscriptMessage[], source: string, titl
   return lines.join('\n').trimEnd() + '\n'
 }
 
+/** What one read came to: the chat, or why not — `waiting` while the other computer's owner is still being asked. */
+interface Loaded {
+  shown: Shown | null
+  error: string | null
+  waiting: boolean
+}
+
 /** Read one chat: this computer's index, or another computer's over the hub relay. */
-async function load(target: ChatViewTarget, key: string): Promise<{ shown: Shown | null; error: string | null }> {
+async function load(target: ChatViewTarget, key: string): Promise<Loaded> {
   if (target.kind === 'local') {
     const t = await window.stoke.chats.open(target.hit.chatId)
-    if (!t) return { shown: null, error: 'This chat is no longer in the index.' }
-    return { shown: { key, title: t.title, updatedMs: t.updatedMs, messages: t.messages, partial: t.partial, fallback: t.fallback }, error: null }
+    if (!t) return { shown: null, error: 'This chat is no longer in the index.', waiting: false }
+    return { shown: { key, title: t.title, updatedMs: t.updatedMs, messages: t.messages, partial: t.partial, fallback: t.fallback }, error: null, waiting: false }
   }
   const r = await window.stoke.hub.remote.openChat(target.device, target.hit.source, target.hit.nativeId)
-  if (!r.ok) return { shown: null, error: r.message || `${target.computer} could not open this chat.` }
+  if (!r.ok) return { shown: null, error: remoteOpenLine(target.computer, r), waiting: r.state === 'waiting' }
   const c = r.chat
-  return { shown: { key, title: c.title, updatedMs: c.updatedMs, messages: c.messages, partial: c.partial, fallback: c.note }, error: null }
+  return { shown: { key, title: c.title, updatedMs: c.updatedMs, messages: c.messages, partial: c.partial, fallback: c.note }, error: null, waiting: false }
 }
 
 /**
@@ -97,34 +104,63 @@ async function load(target: ChatViewTarget, key: string): Promise<{ shown: Shown
  *
  * A chat from another computer has the same view under "On <Computer> ·
  * <folder>": that computer redacted it and names the folder only, and it is
- * held in this component's state alone — closed, it is gone from here.
+ * held in this component's state alone — closed, it is gone from here. A read
+ * that failed there (offline, still asking its owner, no answer in time) has
+ * "Try again", and reads again by itself once that computer's chats relay
+ * comes open (`peer`, `remoteReadWatch`); App mounts the viewer under a key
+ * per open, so clicking the same hit again reads it again too.
  */
-export function ChatViewer({ target, onClose }: { target: ChatViewTarget; onClose: () => void }): React.JSX.Element {
+export function ChatViewer({
+  target,
+  peer = null,
+  onClose
+}: {
+  target: ChatViewTarget
+  /** For a remote target: the state of this computer's chats relay to that one (`HubRemoteView.chatPeers`), or null for none. */
+  peer?: RemoteChatPeerState | null
+  onClose: () => void
+}): React.JSX.Element {
   const { query } = target
   const remote = target.kind === 'remote' ? target : null
   const hit = target.hit
   const key = loadKey(target)
-  const [state, setState] = useState<{ key: string; shown: Shown | null; error: string | null } | null>(null)
+  const [state, setState] = useState<({ key: string } & Loaded) | null>(null)
+  const [attempt, setAttempt] = useState(0)
   const [copied, setCopied] = useState<string | null>(null)
   const listRef = useRef<HTMLOListElement>(null)
   const scrolledFor = useRef<string | null>(null)
   const targetRef = useRef(target)
   targetRef.current = target
+  const peerRef = useRef(peer)
+  peerRef.current = peer
+  /** The relay was not open at some moment since this read began (`remoteReadWatch`). */
+  const awaited = useRef(false)
 
   // Numbered like every other load here: a slow answer for the chat before must not land on this one.
   const req = useRef(0)
   useEffect(() => {
     const n = ++req.current
+    awaited.current = remoteReadWatch(false, { failed: false, peer: peerRef.current }).awaited
     setState(null)
     load(targetRef.current, key).then(
       (r) => {
-        if (n === req.current) setState({ key, shown: r.shown, error: r.error })
+        if (n === req.current) setState({ key, ...r })
       },
       (e: unknown) => {
-        if (n === req.current) setState({ key, shown: null, error: ipcErrorMessage(e) })
+        if (n === req.current) setState({ key, shown: null, error: ipcErrorMessage(e), waiting: false })
       }
     )
-  }, [key])
+  }, [key, attempt])
+
+  // A remote read that failed reads again once its computer's relay comes open: its owner said yes, or it came up.
+  const isRemote = remote !== null
+  const failed = isRemote && state !== null && state.key === key && state.error !== null
+  useEffect(() => {
+    if (!isRemote) return
+    const w = remoteReadWatch(awaited.current, { failed, peer })
+    awaited.current = w.awaited
+    if (w.reload) setAttempt((n) => n + 1)
+  }, [isRemote, failed, peer])
 
   const t = state?.key === key ? state.shown : null
   const marks = useMemo(() => (t ? t.messages.map((m) => highlightRanges(m.text, query)) : []), [t, query])
@@ -233,9 +269,19 @@ export function ChatViewer({ target, onClose }: { target: ChatViewTarget; onClos
           <Spinner /> Reading the chat…
         </p>
       ) : state.error || !t ? (
-        <p className="chat-view-status" role="status">
-          {state.error ?? 'This chat could not be read.'}
-        </p>
+        <div>
+          <p className="chat-view-status" role="status" data-chat-error="">
+            {state.waiting && <Spinner />}
+            {state.error ?? 'This chat could not be read.'}
+          </p>
+          {remote && (
+            <div className="chat-view-retry">
+              <button className="btn" onClick={() => setAttempt((n) => n + 1)} data-chat-retry="">
+                Try again
+              </button>
+            </div>
+          )}
+        </div>
       ) : t.messages.length === 0 ? (
         <p className="chat-view-status">This chat has no text to show.</p>
       ) : (

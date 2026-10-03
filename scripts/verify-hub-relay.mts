@@ -30,6 +30,7 @@
  * reaches the network, no agent CLI runs, and nothing in ~ is read. Imports
  * are relative with `.ts` (gotcha 78).
  */
+import { readFileSync } from 'node:fs'
 import { RelayChannel, type ChannelIO } from '../src/main/hub/channel.ts'
 import {
   generateDeviceKeys,
@@ -47,7 +48,24 @@ import { redactSecrets } from '../src/main/chatIndex/parse.ts'
 import { VirtualSocket } from '../src/main/remote/socket.ts'
 import type { ChatSearchHit, ChatTranscript } from '../src/shared/chatIndex.ts'
 import { chatsRouteFor } from '../src/shared/remotePhone.ts'
-import { chatsSearchAgain, namesList, remoteChatGroups, remoteChatWhere, shareChatsBlock, shareChatsRow, SHARE_CHATS_STOPPED } from '../src/shared/remoteChatsView.ts'
+import {
+  chatRefusalCodeOf,
+  chatRefusalLine,
+  chatSharersStep,
+  chatsSearchAgain,
+  namesList,
+  NO_CHAT_SHARERS,
+  remoteChatGroups,
+  remoteChatWhere,
+  remoteOpenLine,
+  remoteReadWatch,
+  shareChatsBlock,
+  shareChatsRow,
+  sharePausedOf,
+  SHARE_CHATS_PAUSED_REDACTION,
+  SHARE_CHATS_STOPPED,
+  type ChatSharers
+} from '../src/shared/remoteChatsView.ts'
 import { b64uDecode, b64uEncode, idFromBytes } from '../src/shared/hub/codec.ts'
 import { HUB_LABELS } from '../src/shared/hub/labels.ts'
 import { HUB_LIMITS, parsePresenceClientFrame, parsePresenceServerFrame, sealedStatusProblem, type PresenceClientFrame, type SealedStatus } from '../src/shared/hub/protocol.ts'
@@ -62,6 +80,7 @@ import {
   remoteChatFrom,
   remoteChatHitFrom,
   REMOTE_CHAT_MAX_BYTES,
+  type RemoteChatPeerState,
   type RemoteChatsResult,
   holdOnce,
   onceHolds,
@@ -1509,7 +1528,11 @@ console.log('\nchat history between two machines: ask, allow, search, open; ever
   let before = relaysAt()
   let res = await guestM.remote.searchChats('relay')
   check('A not sharing: B’s search says so for A, and opens nothing', [byDevice(res, A.id)?.state, relaysAt() - before], ['not-sharing', 0])
-  check('the sidebar: “Studio isn’t sharing chat history”', remoteChatGroups(res, 'relay').find((g) => g.device === A.id)?.line, 'Studio isn’t sharing chat history')
+  // What the renderer has seen of who shares, stepped from B's real view as App steps it.
+  let sharers: ChatSharers = chatSharersStep(NO_CHAT_SHARERS, last(guestM)).next
+  check('A online, not sharing: B has seen no computer share', [[...sharers.live], [...sharers.seen]], [[], []])
+  check('so the sidebar draws no “On Studio” group at all, never an “isn’t sharing” line', remoteChatGroups({ query: 'relay', results: res }, 'relay', sharers.seen), [])
+  check('even a computer that once shared gets no group while it says it does not', remoteChatGroups({ query: 'relay', results: res }, 'relay', new Set([A.id])).map((g) => g.device), [])
   check('a query under three characters asks nobody', await guestM.remote.searchChats('re'), [])
 
   // A ticks it: its status says chats.
@@ -1517,13 +1540,27 @@ console.log('\nchat history between two machines: ask, allow, search, open; ever
   hostM.remote.chatSharingChanged()
   await until(() => last(guestM).machines[0]?.status?.chats)
   check('A shares its chat history: its status says so (and its sessions still do not show)', [last(guestM).machines[0]?.status?.chats, last(guestM).machines[0]?.status?.open], [true, false])
+  let step = chatSharersStep(sharers, last(guestM))
+  check('the renderer sees A start sharing: listed, and the search on screen is asked again', [[...step.next.live], [...step.next.seen], step.changed], [[A.id], [A.id], true])
+  sharers = step.next
+  check('the same view again moves nothing and asks nothing', [chatSharersStep(sharers, last(guestM)).next === sharers, chatSharersStep(sharers, last(guestM)).changed], [true, false])
   ok('what went over presence was sealed: no chats flag in the clear', presence.filter((p) => p.from === A.id && p.frame.t === 'status').every((p) => !JSON.stringify(p.frame).includes('"chats"')))
 
   // No grant: A asks, B waits, nothing is served before the answer.
   before = hostM.requests.length
   res = await guestM.remote.searchChats('relay')
   check('no grant: B’s search says waiting for A', byDevice(res, A.id)?.state, 'waiting')
-  check('and the sidebar says so in the spec’s words, with no hits', remoteChatGroups(res, 'relay').find((g) => g.device === A.id), { device: A.id, computer: 'Studio', state: 'waiting', failed: false, hits: [], line: 'Waiting for Studio to allow…' })
+  check('and the sidebar says so in the spec’s words, with no hits', remoteChatGroups({ query: 'relay', results: res }, 'relay', sharers.seen).find((g) => g.device === A.id), { device: A.id, computer: 'Studio', state: 'waiting', failed: false, hits: [], stale: false, line: 'Waiting for Studio to allow…' })
+  // The viewer, opened on a hit while A's owner is still being asked: it fails as waiting, and is watched.
+  const waitingOpen = await guestM.remote.openRemoteChat(A.id, 'claude', 'n-7')
+  check(
+    'an open while A is still reaching or asking fails as waiting, in main’s own words',
+    [waitingOpen.ok, !waitingOpen.ok && waitingOpen.state, !waitingOpen.ok && remoteOpenLine('Studio', waitingOpen) === waitingOpen.message && /Studio/.test(waitingOpen.message)],
+    [false, 'waiting', true]
+  )
+  let watch = remoteReadWatch(false, { failed: false, peer: last(guestM).chatPeers[0]?.state ?? null })
+  watch = remoteReadWatch(watch.awaited, { failed: true, peer: last(guestM).chatPeers[0]?.state ?? null })
+  check('the failed read waits on A’s peer: nothing read again while it is still asking', watch.reload, false)
   let cue = chatsSearchAgain(new Set(), last(guestM).chatPeers, res)
   check('while A is still asking, nothing to search again', cue.again, false)
   const ask = await until(() => last(hostM).asks[0])
@@ -1532,13 +1569,21 @@ console.log('\nchat history between two machines: ask, allow, search, open; ever
   await hostM.remote.answer(ask!.id, 'once')
   await until(() => last(guestM).chatPeers[0]?.state === 'open')
   check('Allow once: B’s chats peer opens (its cue to search again)', last(guestM).chatPeers.map((p) => [p.label, p.state]), [['Studio', 'open']])
+  check('and the viewer’s failed read is read again by itself, once', remoteReadWatch(watch.awaited, { failed: true, peer: last(guestM).chatPeers[0]?.state ?? null }).reload, true)
+  const reopened = await guestM.remote.openRemoteChat(A.id, 'claude', 'n-7')
+  check('the read again opens the chat', [reopened.ok, reopened.ok && reopened.chat.nativeId], [true, 'n-7'])
   cue = chatsSearchAgain(cue.seen, last(guestM).chatPeers, res)
   check('the renderer reads the cue: A answered, so the waiting search is asked again', cue.again, true)
   check('Allow once stored nothing, in either grant list', [hostM.chatGrants, hostM.grants], [{}, {}])
   res = await guestM.remote.searchChats('relay')
   const a = byDevice(res, A.id)
   check('once answered, the cue is spent: an open peer it has seen asks nothing more', chatsSearchAgain(cue.seen, last(guestM).chatPeers, res).again, false)
-  check('the sidebar lists A’s hit under A, never merged', remoteChatGroups(res, 'relay').filter((g) => g.device === A.id).map((g) => [g.computer, g.line, g.hits.map((h) => h.nativeId)]), [['Studio', null, ['n-7']]])
+  check('the sidebar lists A’s hit under A, never merged', remoteChatGroups({ query: 'relay', results: res }, 'relay', sharers.seen).filter((g) => g.device === A.id).map((g) => [g.computer, g.line, g.hits.map((h) => h.nativeId)]), [['Studio', null, ['n-7']]])
+  check(
+    'typed on to a new query, A’s answer is pending: dimmed, never shown as the new query’s',
+    remoteChatGroups({ query: 'relay', results: res }, 'relay notes', sharers.seen).map((g) => [g.device, g.stale]),
+    [[A.id, true]]
+  )
   check('B’s search answers A’s hit: folder by name, title, the match marked', [a?.state, a?.hits.map((h) => [h.nativeId, h.folder, h.title]), a?.hits[0] && a.hits[0].ranges.map(([x, y]) => a.hits[0].snippet.slice(x, y))], ['ok', [['n-7', 'stoke', 'Relay notes']], ['relay']])
   ok('the key in A’s chat never reached B, nor any path', !JSON.stringify(res).includes('searchcanary') && !JSON.stringify(res).includes('/Users') && !JSON.stringify(res).includes('acme'), JSON.stringify(res).slice(0, 400))
   ok('and the hub carried none of A’s chat text', !hubBytes.some((b) => b.includes(Buffer.from('Relay notes')) || b.includes(Buffer.from('searchcanary'))))
@@ -1639,13 +1684,22 @@ console.log('\nchat history between two machines: ask, allow, search, open; ever
   hostM.sharing = false
   hostM.remote.sharingChanged()
   await tick(30)
-  check('the sessions tick off, and a session Always taken back, leave B’s chats search open', [last(guestM).chatPeers[0]?.state, last(hostM).guests.filter((g) => g.kind === 'chats').length, byDevice(await guestM.remote.searchChats('relay'), A.id)?.state], ['open', 1, 'ok'])
+  const okRes = await guestM.remote.searchChats('relay')
+  check('the sessions tick off, and a session Always taken back, leave B’s chats search open', [last(guestM).chatPeers[0]?.state, last(hostM).guests.filter((g) => g.kind === 'chats').length, byDevice(okRes, A.id)?.state], ['open', 1, 'ok'])
+  sharers = chatSharersStep(sharers, last(guestM)).next
   hostM.shareChats = false
   hostM.chatGrants = {} // as HubService.setShareChats(false) commits it
   hostM.remote.chatSharingChanged()
   await until(() => last(guestM).chatPeers[0]?.state === 'not-sharing')
   check('A turns it off: B’s relay is closed by A, not at B’s next keystroke', [last(guestM).chatPeers[0]?.state, last(hostM).guests.filter((g) => g.kind === 'chats').length], ['not-sharing', 0])
   await until(() => last(guestM).machines[0]?.status?.chats === false)
+  step = chatSharersStep(sharers, last(guestM))
+  check(
+    'A seen to stop sharing mid-search: its group with hits goes at once, and the search is asked again',
+    [remoteChatGroups({ query: 'relay', results: okRes }, 'relay', sharers.seen).map((g) => g.device), remoteChatGroups({ query: 'relay', results: okRes }, 'relay', step.next.seen), step.changed],
+    [[A.id], [], true]
+  )
+  sharers = step.next
   before = relaysAt()
   await tick(T.retryMs + 10)
   res = await guestM.remote.searchChats('relay')
@@ -1680,10 +1734,21 @@ console.log('\nchat history between two machines: ask, allow, search, open; ever
   hostM.active = [...ACTIVE]
 
   // Offline: said from presence, never reached.
+  sharers = chatSharersStep(sharers, last(guestM)).next
   guestM.remote.onOnline([B.id])
+  step = chatSharersStep(sharers, last(guestM))
+  check('A goes offline while sharing: still listed as seen sharing, and the search is asked again', [[...step.next.live], [...step.next.seen], step.changed], [[], [A.id], true])
+  sharers = step.next
   before = relaysAt()
   res = await guestM.remote.searchChats('relay')
-  check('the sidebar: “Studio is offline — not searched”', remoteChatGroups(res, 'relay').find((g) => g.device === A.id)?.line, 'Studio is offline — not searched')
+  check('the sidebar: “Studio is offline — not searched”', remoteChatGroups({ query: 'relay', results: res }, 'relay', sharers.seen).find((g) => g.device === A.id)?.line, 'Studio is offline — not searched')
+  check('but no offline line for a computer this window never saw share', remoteChatGroups({ query: 'relay', results: res }, 'relay', new Set()), [])
+  const offlineOpen = await guestM.remote.openRemoteChat(A.id, 'claude', 'n-7')
+  check(
+    'opening A’s chat while it is offline has its own sentence, not the search’s',
+    [offlineOpen.ok, !offlineOpen.ok && offlineOpen.state, !offlineOpen.ok && remoteOpenLine('Studio', offlineOpen)],
+    [false, 'offline', 'Studio is offline — open it again when it’s back.']
+  )
   check('A offline: B says so for A, opens nothing, and keeps nothing', [byDevice(res, A.id)?.state, byDevice(res, A.id)?.message, relaysAt() - before, byDevice(res, A.id)?.hits], ['offline', 'Studio is offline — not searched.', 0, []])
   guestM.remote.onOnline([A.id, B.id])
 
@@ -1712,35 +1777,221 @@ console.log('\nchat history across computers: what the renderer says (spec 2026-
 {
   check('a name list reads as a sentence', [namesList([]), namesList(['Studio']), namesList(['Studio', 'Laptop']), namesList(['Studio', 'Laptop', 'NUC'])], ['', 'Studio', 'Studio and Laptop', 'Studio, Laptop and NUC'])
   check(
-    'the tick is blocked with its reason: signed out, not in the vault, chat history off',
-    [shareChatsBlock('off', true), shareChatsBlock('signed-out', true), shareChatsBlock('revoked', true), shareChatsBlock('locked', true), shareChatsBlock('new-account', true), shareChatsBlock('active', false), shareChatsBlock('active', true)],
-    ['Sign in to Stoke Hub first.', 'Sign in to Stoke Hub first.', 'Sign in to Stoke Hub first.', 'Join this computer to your vault first.', 'Join this computer to your vault first.', 'Turn on Chat history first.', null]
-  )
-  const off = shareChatsRow({ phase: 'active', chatIndexOn: true, sharing: false, grants: [] })
-  check('off: the spec’s words, and the tick may go on', [off.checked, off.enabled, off.hint], [false, true, 'Off. Other computers can’t see chats on this one.'])
-  const offBlocked = shareChatsRow({ phase: 'active', chatIndexOn: false, sharing: false, grants: [] })
-  check('off with chat history off: disabled, and says why', [offBlocked.checked, offBlocked.enabled, offBlocked.hint], [false, false, 'Turn on Chat history first.'])
-  check('off and signed out: disabled, and says why', [shareChatsRow({ phase: 'signed-out', chatIndexOn: true, sharing: false, grants: [] }).enabled, shareChatsRow({ phase: 'signed-out', chatIndexOn: true, sharing: false, grants: [] }).hint], [false, 'Sign in to Stoke Hub first.'])
-  const on = shareChatsRow({ phase: 'active', chatIndexOn: true, sharing: true, grants: ['Studio', 'Laptop'] })
-  check('on: names who can read, says it is read-only, redacted and by folder name', [on.checked, on.enabled, on.hint], [true, true, 'On. Studio and Laptop can search and read, but not change, chats on this computer. Secrets are redacted; folders show by name.'])
-  ok('on with no Always: says each computer asks first', /ask here first/.test(shareChatsRow({ phase: 'active', chatIndexOn: true, sharing: true, grants: [] }).hint))
-  const onBlocked = shareChatsRow({ phase: 'active', chatIndexOn: false, sharing: true, grants: ['Studio'] })
-  check('on while chat history is off: still untickable (off is never refused), and says nothing is shared', [onBlocked.checked, onBlocked.enabled, /nothing is shared/.test(onBlocked.hint) && /Turn on Chat history first/.test(onBlocked.hint)], [true, true, true])
-  check('off says what it did', SHARE_CHATS_STOPPED, 'Stopped. Searches from other computers were closed.')
-  const groups = remoteChatGroups(
+    'the tick is blocked with its reason: signed out, not in the vault, chat history off, its redaction off',
     [
-      { device: 'd1', label: 'Studio', platform: 'darwin', state: 'ok', message: null, hits: [] },
-      { device: 'd2', label: 'NUC', platform: 'linux', state: 'denied', message: null, hits: [] },
-      { device: 'd3', label: 'Laptop', platform: 'win32', state: 'error', message: 'Laptop did not answer in time.', hits: [] }
+      shareChatsBlock('off', true, true),
+      shareChatsBlock('signed-out', true, true),
+      shareChatsBlock('revoked', true, true),
+      shareChatsBlock('locked', true, true),
+      shareChatsBlock('new-account', true, true),
+      shareChatsBlock('active', false, true),
+      shareChatsBlock('active', false, false),
+      shareChatsBlock('active', true, false),
+      shareChatsBlock('active', true, true)
     ],
-    '  relay  '
+    [
+      'Sign in to Stoke Hub first.',
+      'Sign in to Stoke Hub first.',
+      'Sign in to Stoke Hub first.',
+      'Join this computer to your vault first.',
+      'Join this computer to your vault first.',
+      'Turn on Chat history first.',
+      'Turn on Chat history first.',
+      'Turn on ‘Leave out anything that looks like an API key’ first.',
+      null
+    ]
+  )
+  const row = (f: Partial<Parameters<typeof shareChatsRow>[0]>): ReturnType<typeof shareChatsRow> =>
+    shareChatsRow({ phase: 'active', chatIndexOn: true, redactOn: true, sharing: false, grants: [], paused: null, ...f })
+  const off = row({})
+  check('off: the spec’s words, and the tick may go on', [off.checked, off.enabled, off.hint, off.paused], [false, true, 'Off. Other computers can’t see chats on this one.', false])
+  const offBlocked = row({ chatIndexOn: false })
+  check('off with chat history off: disabled, and says why', [offBlocked.checked, offBlocked.enabled, offBlocked.hint], [false, false, 'Turn on Chat history first.'])
+  const offRaw = row({ redactOn: false })
+  check(
+    'off with chat history’s redaction off: disabled, and names the tick to turn on',
+    [offRaw.checked, offRaw.enabled, offRaw.blocked, offRaw.hint],
+    [false, false, 'Turn on ‘Leave out anything that looks like an API key’ first.', 'Turn on ‘Leave out anything that looks like an API key’ first.']
+  )
+  check('off and signed out: disabled, and says why', [row({ phase: 'signed-out' }).enabled, row({ phase: 'signed-out' }).hint], [false, 'Sign in to Stoke Hub first.'])
+  const on = row({ sharing: true, grants: ['Studio', 'Laptop'] })
+  check('on: names who can read, says it is read-only, redacted and by folder name', [on.checked, on.enabled, on.hint, on.paused], [true, true, 'On. Studio and Laptop can search and read, but not change, chats on this computer. Secrets are redacted; folders show by name.', false])
+  ok('on with no Always: says each computer asks first', /ask here first/.test(row({ sharing: true }).hint))
+  const onBlocked = row({ chatIndexOn: false, sharing: true, grants: ['Studio'] })
+  check('on while chat history is off: still untickable (off is never refused), and says nothing is shared', [onBlocked.checked, onBlocked.enabled, /nothing is shared/.test(onBlocked.hint) && /Turn on Chat history first/.test(onBlocked.hint)], [true, true, true])
+  const paused = row({ sharing: true, grants: ['Studio'], redactOn: false, paused: 'redaction-off' })
+  check(
+    'on, paused by main because redaction is off: says paused and what to turn on, and may still go off',
+    [paused.checked, paused.enabled, paused.paused, paused.hint],
+    [true, true, true, 'Paused: turn on ‘Leave out anything that looks like an API key’ in Chat history to share it.']
+  )
+  check('the paused copy, word for word', SHARE_CHATS_PAUSED_REDACTION, 'Paused: turn on ‘Leave out anything that looks like an API key’ in Chat history to share it.')
+  const onRaw = row({ sharing: true, grants: ['Studio'], redactOn: false, paused: null })
+  check('on with redaction off but main not saying paused: the row never claims a pause main has not made', [onRaw.paused, /^On\. Studio can search/.test(onRaw.hint)], [false, true])
+  check(
+    'main’s pause is read off its view by name, and nothing else counts as one (TODO(integrate))',
+    [sharePausedOf({ paused: 'redaction-off' }), sharePausedOf({}), sharePausedOf({ paused: 'other' }), sharePausedOf({ paused: true })],
+    ['redaction-off', null, null, null]
+  )
+  check('off says what it did', SHARE_CHATS_STOPPED, 'Stopped. Searches from other computers were closed.')
+
+  // Who shares, as the window has seen it.
+  const m = (id: string, chats: boolean | null): { id: string; status: { at: number; open: boolean; sessions: []; chats: boolean } | null } => ({
+    id,
+    status: chats === null ? null : { at: 1, open: false, sessions: [], chats }
+  })
+  let sh = chatSharersStep(NO_CHAT_SHARERS, { available: true, machines: [m('d1', true), m('d2', false), m('d3', null)] })
+  check('a computer saying chats is live and seen; one saying not, or nothing yet, is neither', [[...sh.next.live], [...sh.next.seen], sh.changed], [['d1'], ['d1'], true])
+  const same = chatSharersStep(sh.next, { available: true, machines: [m('d1', true), m('d2', false), m('d3', null)] })
+  check('the same machines again: the same object back, no cue', [same.next === sh.next, same.changed], [true, false])
+  sh = chatSharersStep(sh.next, { available: true, machines: [m('d2', false)] })
+  check('d1 goes offline: no longer live, still seen sharing, and the search is cued', [[...sh.next.live], [...sh.next.seen], sh.changed], [[], ['d1'], true])
+  sh = chatSharersStep(sh.next, { available: true, machines: [m('d1', null), m('d2', false)] })
+  check('d1 back with no status yet: keeps what it last said, no cue', [[...sh.next.live], [...sh.next.seen], sh.changed], [[], ['d1'], false])
+  sh = chatSharersStep(sh.next, { available: true, machines: [m('d1', false), m('d2', false)] })
+  check('d1 back saying it stopped sharing: dropped from seen (its offline line goes with it)', [[...sh.next.live], [...sh.next.seen]], [[], []])
+  sh = chatSharersStep(sh.next, { available: true, machines: [m('d1', false), m('d2', true)] })
+  check('d2 starts sharing mid-search: live, and the search is cued', [[...sh.next.live], sh.changed], [['d2'], true])
+  sh = chatSharersStep(sh.next, { available: false, machines: [] })
+  check('signed out: nothing shares', [sh.next === NO_CHAT_SHARERS, sh.changed], [true, true])
+
+  // The groups: only computers that share.
+  const r = (device: string, label: string, state: RemoteChatsResult['state'], message: string | null = null, extra: object = {}): RemoteChatsResult =>
+    ({ device, label, platform: 'darwin', state, message, hits: [], ...extra }) as RemoteChatsResult
+  const groups = remoteChatGroups(
+    {
+      query: 'relay',
+      results: [
+        r('d1', 'Studio', 'ok'),
+        r('d2', 'NUC', 'denied'),
+        r('d3', 'Laptop', 'error', 'Laptop did not answer in time.'),
+        r('d4', 'Mini', 'not-sharing', 'Mini isn’t sharing chat history.'),
+        r('d5', 'Air', 'offline', 'Air is offline — not searched.'),
+        r('d6', 'Old', 'offline', 'Old is offline — not searched.'),
+        r('d7', 'Pi', 'waiting', 'Waiting for Pi to allow it…'),
+        r('d8', 'Mac', 'ok', null, { hits: [{ source: 'claude', nativeId: 'n-1', title: 'x', folder: null, updatedMs: null, role: 'user', snippet: 'relay', ranges: [[0, 5]] }] })
+      ]
+    },
+    '  relay  ',
+    new Set(['d1', 'd2', 'd3', 'd4', 'd5', 'd7'])
   )
   check(
-    'a computer that found nothing, said no, or failed: one line each, in main’s order',
-    groups.map((g) => [g.device, g.line, g.failed]),
-    [['d1', 'Nothing on Studio says “relay”.', false], ['d2', 'NUC said no.', true], ['d3', 'Laptop did not answer in time.', true]]
+    'one line each, in main’s order: found nothing, said no, failed, offline (seen sharing), waiting — none for a computer not sharing, never seen sharing, or seen to stop',
+    groups.map((g) => [g.device, g.line, g.failed, g.stale]),
+    [
+      ['d1', 'Nothing on Studio says “relay”.', false, false],
+      ['d2', 'NUC said no.', true, false],
+      ['d3', 'Laptop did not answer in time.', true, false],
+      ['d5', 'Air is offline — not searched', false, false],
+      ['d7', 'Waiting for Pi to allow…', false, false]
+    ]
+  )
+  check(
+    'no computer shares: no group at all',
+    remoteChatGroups({ query: 'relay', results: [r('d4', 'Mini', 'not-sharing'), r('d6', 'Old', 'offline')] }, 'relay', new Set()),
+    []
+  )
+  const older = remoteChatGroups({ query: 'rel', results: [r('d1', 'Studio', 'ok'), r('d2', 'NUC', 'waiting')] }, 'relay', new Set(['d1', 'd2']))
+  check(
+    'an answer to an older query is pending under the new one, and quotes the query it answered',
+    older.map((g) => [g.device, g.stale, g.line]),
+    [['d1', true, 'Nothing on Studio says “rel”.'], ['d2', true, 'Waiting for NUC to allow…']]
+  )
+  check('the same query with other spaces is not older', remoteChatGroups({ query: 'relay', results: [r('d1', 'Studio', 'ok')] }, ' relay ', new Set(['d1']))[0]?.stale, false)
+
+  // A refusal is reworded by its code, from this side; no code (today) keeps the host's sentence.
+  const hostSaid = 'This computer’s owner took back this device’s access to its chat history.'
+  check('no code: the host’s sentence, as before', remoteChatGroups({ query: 'relay', results: [r('d2', 'NUC', 'denied', hostSaid)] }, 'relay', new Set(['d2']))[0]?.line, hostSaid)
+  check(
+    'a code: the guest’s own sentence (TODO(integrate) — the host sends codes in a parallel change)',
+    remoteChatGroups({ query: 'relay', results: [r('d2', 'NUC', 'denied', hostSaid, { code: 'revoked' })] }, 'relay', new Set(['d2']))[0]?.line,
+    'NUC took back this computer’s access to its chat history.'
+  )
+  check('an unknown code is no code', [chatRefusalCodeOf({ code: 'gone-fishing' }), chatRefusalCodeOf({}), chatRefusalCodeOf({ code: 'busy' })], [null, null, 'busy'])
+  check(
+    'every code reads from this computer’s side, naming the other',
+    (['not-sharing', 'chat-history-off', 'redaction-off', 'denied', 'revoked', 'not-a-device', 'busy'] as const).every((c) => {
+      const line = chatRefusalLine('NUC', c)
+      return line.startsWith('NUC') && !/This computer’s owner|this device/.test(line)
+    }),
+    true
+  )
+
+  // The viewer's errors.
+  check(
+    'an open says its own sentence for offline; main’s for waiting and failures; a code reworded; a fallback for nothing',
+    [
+      remoteOpenLine('Studio', { state: 'offline', message: 'Studio is offline — not searched.' }),
+      remoteOpenLine('Studio', { state: 'waiting', message: 'Waiting for Studio to allow it…' }),
+      remoteOpenLine('Studio', { state: 'error', message: 'Studio did not answer in time.' }),
+      remoteOpenLine('Studio', { state: 'denied', message: hostSaid, code: 'denied' } as { state: 'denied'; message: string }),
+      remoteOpenLine('Studio', { state: 'error', message: '' })
+    ],
+    ['Studio is offline — open it again when it’s back.', 'Waiting for Studio to allow it…', 'Studio did not answer in time.', 'Studio said no.', 'Studio could not open this chat.']
   )
   check('the viewer’s header: computer and folder name', [remoteChatWhere('Studio', 'stoke'), remoteChatWhere('Studio', null)], ['On Studio · stoke', 'On Studio'])
+
+  // When the viewer reads a failed chat again by itself.
+  const watchRun = (start: RemoteChatPeerState | null, steps: { failed: boolean; peer: RemoteChatPeerState | null }[]): boolean[] => {
+    let w = remoteReadWatch(false, { failed: false, peer: start })
+    return steps.map((st) => {
+      w = remoteReadWatch(w.awaited, st)
+      return w.reload
+    })
+  }
+  check('failed while its owner was asked, then allowed: read again', watchRun('waiting', [{ failed: true, peer: 'waiting' }, { failed: true, peer: 'open' }]), [false, true])
+  check('allowed before the failure landed: read again when it lands', watchRun('waiting', [{ failed: false, peer: 'open' }, { failed: true, peer: 'open' }]), [false, true])
+  check('failed while the relay stayed open (no answer in time): never by itself — that is “Try again”', watchRun('open', [{ failed: true, peer: 'open' }, { failed: true, peer: 'open' }]), [false, false])
+  check(
+    'the relay dropped and came back after a failure: read again',
+    watchRun('open', [{ failed: true, peer: 'open' }, { failed: true, peer: null }, { failed: true, peer: 'waiting' }, { failed: true, peer: 'open' }]),
+    [false, false, false, true]
+  )
+  check('offline, with no relay: nothing to wait on', watchRun(null, [{ failed: true, peer: null }]), [false])
+  check('a read that did not fail is never read again', watchRun('waiting', [{ failed: false, peer: 'open' }, { failed: false, peer: 'open' }]), [false, false])
+  check('denied stays denied: no read again', watchRun('waiting', [{ failed: true, peer: 'denied' }]), [false])
+}
+
+console.log('\nchat history across computers: the wire from the renderer to those rules (what no pure case sees, gotcha 31)')
+{
+  const src = (rel: string): string => readFileSync(new URL(`../src/renderer/src/${rel}`, import.meta.url), 'utf8')
+  const app = src('App.tsx')
+  const viewer = src('components/ChatViewer.tsx')
+  const sidebar = src('components/Sidebar.tsx')
+  const account = src('components/AccountSyncSettings.tsx')
+  check(
+    'App mounts the viewer under a key counted per open, from both opens, so the same hit clicked again reads again',
+    [/<ChatViewer\s+key=\{chatViewOpen\}/.test(app), (app.match(/setChatViewOpen\(\(n\) => n \+ 1\)/g) ?? []).length],
+    [true, 2]
+  )
+  check('App hands the viewer its computer’s chats peer', /<ChatViewer[\s\S]*?peer=\{chatView\.kind === 'remote' \? \(hubRemote\.chatPeers\.find/.test(app), true)
+  check(
+    'the viewer reads again on a new attempt, watches the peer, and offers “Try again” for a remote failure',
+    [/\}, \[key, attempt\]\)/.test(viewer), /remoteReadWatch\(awaited\.current, \{ failed, peer \}\)/.test(viewer), /\{remote && \([\s\S]{0,200}data-chat-retry/.test(viewer)],
+    [true, true, true]
+  )
+  check('the viewer words a remote failure through remoteOpenLine', /error: remoteOpenLine\(target\.computer, r\)/.test(viewer), true)
+  check(
+    'App keeps each answer with its query, groups by who shares, and asks again when sharing moves',
+    [
+      /setRemoteChats\(\{ query: q, results \}\)/.test(app),
+      /remoteChatGroups\(remoteChats, query, chatSharers\.seen\)/.test(app),
+      /if \(r\.changed\) setRemoteChatsCue/.test(app),
+      /const remoteChatsOn = hubRemote\.available && chatSharers\.seen\.size > 0/.test(app)
+    ],
+    [true, true, true, true]
+  )
+  check('the sidebar draws an older query’s group as pending', [/data-stale=\{g\.stale/.test(sidebar), /aria-busy=\{g\.stale/.test(sidebar)], [true, true])
+  check(
+    'the share row reads chat history’s redaction and main’s pause',
+    [/redactOn,\n\s+sharing: remote\.sharingChats/.test(account), /paused: sharePausedOf\(remote\)/.test(account)],
+    [true, true]
+  )
+  check(
+    'after the sheet, focus waits for “Turn on” to finish (a disabled tick refuses focus), never a frame that races it',
+    [/if \(!refocus\.current \|\| confirming \|\| busy !== null\) return/.test(account), /\}, \[confirming, busy\]\)/.test(account), !/setConfirming\(false\)\s*\n\s*\/\/[^\n]*\n\s*requestAnimationFrame/.test(account)],
+    [true, true, true]
+  )
 }
 
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
