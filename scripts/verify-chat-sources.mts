@@ -58,7 +58,7 @@ import {
 import { agentLaunchPlan, DEFAULT_ENDPOINT } from '../src/shared/agents.ts'
 import { isSafeResumeId, resumableClis, type CodingCliId } from '../src/shared/codingClis.ts'
 import { cleanText, cutBytes, planTrim } from '../src/main/chatIndex/parse.ts'
-import { ChatStore } from '../src/main/chatIndex/store.ts'
+import { ChatStore, skipFolders } from '../src/main/chatIndex/store.ts'
 import { mergeMeta, recleanStale, runPass, type PassHooks } from '../src/main/chatIndex/scan.ts'
 import {
   claudeRoots,
@@ -1623,6 +1623,32 @@ try {
     lv.close()
   }
 
+  section('a hidden folder’s chat takes no place before the limit (what another computer searches)')
+  {
+    // Review of db1ae51: with the limit taken in SQL and hidden folders dropped after it, limit=1 answered
+    // nothing where limit=2 answered one hit — which told another computer a hidden chat matched, and ranked first.
+    const hs = ChatStore.open(join(root, 'hidden-index'))
+    const meta = (cwd: string): Parameters<ChatStore['upsertChat']>[2] => ({ title: null, firstPrompt: null, cwd, gitBranch: null, model: null, createdMs: T0, updatedMs: T0 })
+    const add = (id: string, cwd: string, text: string): void => {
+      const c = hs.upsertChat('claude', id, meta(cwd), { subagent: false, dedupeKey: null, whole: true, redact: true })
+      hs.appendMessages(c, [{ role: 'user', text, atMs: T0 }])
+    }
+    add('hidden-1', '/Users/v/Hidden/acme', 'hidword hidword hidword')
+    add('seen-2', '/Users/v/dev/stoke', 'hidword once, among a good many other words that dilute it')
+    add('seen-3', '/Users/v/dev/other', 'hidword once more, in another longer message with plenty of other words in it')
+    const skip = skipFolders(['/Users/v/hidden'], 'darwin')
+    check('(the hidden chat ranks first when nothing is skipped)', hs.search('hidword', 1, { redact: 'force' }).map((h) => h.nativeId), ['hidden-1'])
+    check('limit=1 skipping the hidden folder answers the best visible chat', hs.search('hidword', 1, { redact: 'force', skip }).map((h) => h.nativeId), ['seen-2'])
+    check('and limit=2 answers two visible chats, the hidden one never counted', hs.search('hidword', 2, { redact: 'force', skip }).map((h) => h.nativeId), ['seen-2', 'seen-3'])
+    check('the skip is the hidden-projects rule: inside the folder, by the platform’s case rule', [
+      skipFolders([], 'darwin'),
+      skip?.('/Users/v/hidden/acme'),
+      skip?.('/Users/v/hiddenness'),
+      skipFolders(['/Users/v/hidden'], 'linux')?.('/Users/v/Hidden/acme')
+    ], [undefined, true, false, false])
+    hs.close()
+  }
+
   section('an import: cleaned with the setting it ran under, and again when redaction comes on')
   {
     const iDir = join(root, 'import-reclean-index')
@@ -1689,6 +1715,7 @@ try {
   check('a second scan while one runs is queued, not doubled', await Promise.all([host.scan({ env, options: options() }), host.scan({ env, options: options() })]).then((r) => r.filter((x) => x === null).length >= 1), true)
   check('search through the worker', (await host.search('wombat', 10)).map((h) => h.source), ['codex'])
   check('a cleaned-only search through the worker (what another computer asks)', (await host.searchCleaned('wombat', 10)).map((h) => `${h.source}:${h.nativeId}`), [`codex:${codexId}`])
+  check('...with the owner’s hidden folders handed over, a chat in one is left out', [(await host.searchCleaned('wombat', 10, ['/tmp/codex-proj'])).length, (await host.searchCleaned('wombat', 10, ['/tmp/other'])).length], [0, 1])
   {
     const opened = await host.openCleaned('codex', codexId, env, 256)
     check('...and a cleaned open by the tool’s own id', [opened?.from, opened?.messages.map((m) => m.text)], ['source', ['codex question about quokka', 'codex answer wombat']])

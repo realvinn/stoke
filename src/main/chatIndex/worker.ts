@@ -13,7 +13,7 @@ import { parentPort, workerData } from 'node:worker_threads'
 import { join } from 'node:path'
 import { rmSync } from 'node:fs'
 import { CHAT_SOURCE_IDS, emptyChatStatus, type ChatIndexStatus, type ChatPassSummary } from '../../shared/chatIndex.ts'
-import { ChatStore, STORE_FILE } from './store.ts'
+import { ChatStore, skipFolders, STORE_FILE } from './store.ts'
 import { runPass, STORE_MAX_TEXT_BYTES } from './scan.ts'
 import { detectSource, discovery } from './sources.ts'
 import { importExport } from './importer.ts'
@@ -118,7 +118,7 @@ port.on('message', async (msg: WorkerRequest) => {
       }
       case 'search': {
         const s = openStore(false)
-        reply(msg.id, s ? s.search(msg.query, msg.limit, { redact: msg.redact }) : [])
+        reply(msg.id, s ? s.search(msg.query, msg.limit, { redact: msg.redact, skip: skipFolders(msg.hidden ?? [], process.platform) }) : [])
         return
       }
       case 'status':
