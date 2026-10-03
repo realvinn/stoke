@@ -622,6 +622,91 @@ ok(
   awaiting(["v@web's password: ", { in: '\r' }, '\r\n', 'Permission denied, please try again.\r\n', "v@web's password: "])
 )
 
+console.log('\nthe watch under ConPTY repaints and cursor moves (shapes built from the measured ones)')
+{
+  /*
+   * An adversarial review's replays (2026-10-03), each built from the measured
+   * ConPTY repaint above — home, rows ended `CSI K` + `\r\n`, a CUP parking the
+   * cursor — and each wrong before the fix it pins. The dangerous direction is
+   * a TRUE that is not: a logged-in tab, or one whose password is in flight,
+   * killed for a reconnect and offered a key while `su` asks for root's.
+   */
+  const C = { conpty: true }
+  const repaint = (rows: string[], height: number, cur: [number, number]): string => {
+    const body: string[] = []
+    for (let i = 0; i < height; i++) body.push((rows[i] ?? '') + `${ESC}[K`)
+    return `${ESC}[?25l${ESC}[H` + body.join('\r\n') + `${ESC}[${cur[0]};${cur[1]}H${ESC}[?25h`
+  }
+  const HELLO = `${ESC}[?9001h${ESC}[?1004h${ESC}[?25l${ESC}[2J${ESC}[m${ESC}[H${ESC}]0;C:\\Windows\\System32\\OpenSSH\\ssh.exe\u0007${ESC}[?25h`
+  const W = "Warning: Permanently added 'localhost' (ED25519) to the list of known hosts."
+  const P = "User@localhost's password:"
+  const MP = MEASURED_CONPTY_PROMPT
+  const keyLogin = [HELLO, 'Linux web 6.1.0-25-amd64 #1 SMP Debian x86_64\r\n', '\r\n', `${ESC}[32mv@web${ESC}[m:~$ `]
+  const atShell = repaint(['Linux web 6.1.0-25-amd64 #1 SMP Debian x86_64', '', 'v@web:~$'], 27, [3, 10])
+  const answeredRepaint = repaint([W, P], 27, [3, 1])
+  const cut = answeredRepaint.indexOf(P) + P.length
+  const inFlight: Replay = [...MP, { in: 'pw\r' }, '\r\n']
+  const wrong: Replay = [...MP, { in: 'bad\r' }, '\r\n']
+  const banner = 'Authorized users only. All activity may be monitored and reported.'
+  const pq = [
+    '** WARNING: connection is not using a post-quantum key exchange algorithm.',
+    '** This session may be vulnerable to "store now, decrypt later" attacks.',
+    '** The server may need to be upgraded. See https://openssh.com/pq.html'
+  ]
+  const cases: [string, Replay, boolean][] = [
+    // A logged-in tab: never at the prompt.
+    [
+      'a key login whose shell parks the cursor with a CUP, then `su -`: no (rule 4 on the parked line)',
+      ['Linux web 6.1\r\n', 'v@web:~$ su -', `${ESC}[1;10H`, { in: '\r' }, '\r\n', 'Password: '],
+      false
+    ],
+    [
+      'a key login, Home-edited to `exec su -` (CUPs), then su asks: no',
+      [...keyLogin, 'su -', { in: `${ESC}[H` }, `${ESC}[3;10H`, { in: 'exec ' }, `exec su -${ESC}[3;15H`, { in: '\r' }, `${ESC}[3;19H\r\n`, 'Password: '],
+      false
+    ],
+    [
+      'a key login to pwsh, a prediction drawn and the cursor parked back, then a nested ssh: no',
+      [HELLO, `${ESC}[HPS C:\\Users\\v> `, 's', 's', 'h', ' ', 'o', `${ESC}[90mther${ESC}[m${ESC}[1;21H`, { in: '\r' }, `${ESC}[K\r\n`, "v@other's password: "],
+      false
+    ],
+    ['a key login, a resize, `su -` pasted: no', [...keyLogin, atShell, { in: 'su -\r' }, 'su -\r\n', 'Password: '], false],
+    [
+      'a key login, a resize, `su -` typed with Enter before its echo: no',
+      [...keyLogin, atShell, { in: 's' }, { in: 'u' }, { in: ' ' }, { in: '-' }, { in: '\r' }, 'su -\r\n', 'Password: '],
+      false
+    ],
+    ['a key login, a resize, `ssh other` pasted: no', [...keyLogin, atShell, { in: 'ssh other\r' }, 'ssh other\r\n', "v@other's password: "], false],
+    ['a password login to dash, then a resize: no', [...MP, { in: 'pw\r' }, '\r\n', '$ ', repaint([W, P, '$'], 27, [3, 3])], false],
+    // A password in flight: not at the prompt, however the repaint is chunked.
+    ['in flight, a repaint split right after the old prompt row: no', [...inFlight, answeredRepaint.slice(0, cut), answeredRepaint.slice(cut)], false],
+    ['in flight, a repaint split inside its CSI K: no', [...inFlight, answeredRepaint.slice(0, cut + 2), answeredRepaint.slice(cut + 2)], false],
+    [
+      're-asked, repainted, answered again, repainted: no',
+      [...wrong, `Permission denied, please try again.\r\n${P} `, repaint([W, P, 'Permission denied, please try again.', P], 27, [4, 28]), { in: 'pw\r' }, '\r\n', repaint([W, P, 'Permission denied, please try again.', P], 27, [5, 1])],
+      false
+    ],
+    // ssh asking again: at the prompt, however the row ends.
+    ['a re-ask as text: yes', [...wrong, `Permission denied, please try again.\r\n${P} `], true],
+    ['a re-ask ended by a CUP in the same chunk: yes', [...wrong, `Permission denied, please try again.\r\n${P}${ESC}[4;28H`], true],
+    ['a re-ask, the CUP in the next chunk: yes', [...wrong, `Permission denied, please try again.\r\n${P}`, `${ESC}[4;28H`], true],
+    ['a re-ask, then a resize: yes', [...wrong, `Permission denied, please try again.\r\n${P} `, repaint([W, P, 'Permission denied, please try again.', P], 27, [4, 28])], true],
+    ['a keyboard-interactive re-ask ended by a CUP: yes', [HELLO, '(v@web) Password:', { in: 'bad\r' }, `\r\n(v@web) Password:${ESC}[3;19H`], true],
+    // A pre-auth Banner a repaint finishes again is not text after the prompt.
+    ['a Banner above the prompt, one resize: yes', [HELLO, `${banner}\r\n`, `${P} `, repaint([banner, P], 27, [2, 28])], true],
+    ['OpenSSH’s post-quantum warning above the prompt, one resize: yes', [HELLO, pq.join('\r\n') + '\r\n', `${P} `, repaint([...pq, P], 27, [4, 28])], true],
+    ['a Banner, answered, the login prints a shell, a resize: no', [HELLO, `${banner}\r\n`, `${P} `, { in: 'pw\r' }, '\r\n', '$ ', repaint([banner, P, '$'], 27, [3, 3])], false],
+    // Answered after a resize, by the keyboard or the phone (text, then a lone Enter).
+    ['the prompt, a resize, the password and Enter: no', [...MP, ...MEASURED_CONPTY_RESIZES, { in: 'pw\r' }], false],
+    ['the same from the phone: no', [...MP, ...MEASURED_CONPTY_RESIZES, { in: 'hunter2' }, { in: '\r' }], false]
+  ]
+  for (const [name, steps, want] of cases) ok(name, awaiting(steps, C) === want)
+  ok(
+    'and a tab at a key login whose cursor is parked is never offered a key for su’s prompt',
+    replay(['Linux web 6.1\r\n', 'v@web:~$ su -', `${ESC}[1;10H`, { in: '\r' }, '\r\n', 'Password: '], C).offers.length === 0
+  )
+}
+
 console.log('\nwhich tabs a proven key reconnects')
 {
   const base = { running: false, awaitingPassword: false, loggedIn: undefined, exitCode: null, isSource: false }

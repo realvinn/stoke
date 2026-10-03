@@ -215,9 +215,10 @@ const PENDING_CAP = 256
  * newlines: a guess at layout that put a line break AFTER a prompt would hide
  * it, and one that joined a banner line to the prompt below it only costs a
  * missed offer. The login watch asks for `cursorBreaks`: a cursor POSITION
- * (CUP/HVP) ends the line, because ConPTY repaints the whole screen on a
- * resize — row by row from `CSI H` — and joined to the prompt row, the first
- * repainted row read as text after the prompt, which settled the watch.
+ * (CUP/HVP) ends the line — `\f` for home, `\v` for anywhere else — because
+ * ConPTY repaints the whole screen on a resize, row by row from `CSI H`, and
+ * joined to the prompt row the first repainted row read as text after the
+ * prompt, which settled the watch.
  */
 export function conptyScrub(
   chunk: string,
@@ -229,7 +230,9 @@ export function conptyScrub(
     if (seq.endsWith('h') && params.startsWith('?')) {
       for (const mode of params.slice(1).split(';')) if (PAINTING_MODES.has(mode)) painting = true
     }
-    return opts.cursorBreaks && (seq.endsWith('H') || seq.endsWith('f')) ? '\r' : ''
+    if (!opts.cursorBreaks || !(seq.endsWith('H') || seq.endsWith('f'))) return ''
+    // Home (a repaint starting over) and any other position, told apart for the watch.
+    return /^(?:1?(?:;1?)?)$/.test(params) ? '\f' : '\v'
   })
   text = text.replace(ESC_OTHER_RE, '')
   // Whatever escape is left is incomplete: it was cut at the chunk boundary.
@@ -343,7 +346,10 @@ export function sshAuthStep(
  *   4. Enter typed on a line that is not empty, not a password prompt and not
  *      one of ssh's own pre-auth questions (host key, passphrase, PIN). That is
  *      a command typed at a shell, and it catches the session that logged in
- *      by key and so never had a prompt to anchor rule 3 on.
+ *      by key and so never had a prompt to anchor rule 3 on. Under ConPTY the
+ *      line can be blank under a command — a shell that moves its cursor
+ *      (Home, PSReadLine's predictions) parks it with a CUP — so Enter on a
+ *      blank line a cursor move left under ordinary text counts too (`parked`).
  *
  * The session is waiting for a password only while it is not settled AND a
  * prompt is what it last showed (`atPrompt`): its current line, or — while
@@ -382,6 +388,9 @@ const PRE_AUTH_LINES: RegExp[] = [
   ...SSH_QUESTIONS
 ]
 
+/** Banner rows kept for `SshLoginWatch.preamble`; a longer banner just settles on a repaint. */
+const MAX_PREAMBLE = 64
+
 /** One session's authentication, followed for as long as it can be proved. */
 export interface SshLoginWatch {
   /** Output bytes seen. */
@@ -399,6 +408,24 @@ export interface SshLoginWatch {
    * flight, and a repaint of the old prompt row is not a fresh question.
    */
   answered?: boolean
+  /** The last line with anything on it was ordinary text: not a prompt, not ssh's own chatter. */
+  atText?: boolean
+  /**
+   * ConPTY: the last line break was a cursor position, not a newline. Enter on
+   * the blank line that leaves under text is a command (rule 4) — a shell that
+   * repositions its cursor (PSReadLine, Home) leaves exactly that.
+   */
+  parked?: boolean
+  /** Prompt lines finished since the last cursor home (a ConPTY repaint) — or ever, on POSIX. */
+  shown?: number
+  /**
+   * `shown` (+1 for an unfinished prompt line) when Enter answered: only a
+   * prompt row past it is ssh asking again, so a repaint of the answered one,
+   * even split across chunks, is not.
+   */
+  answeredAt?: number
+  /** ConPTY: lines finished before the first prompt (a Banner), which a repaint finishes again. */
+  preamble?: string[]
   /** ConPTY only: an escape sequence cut off at the end of the last chunk. */
   pending?: string
 }
@@ -445,13 +472,21 @@ export function sshLoginOutput(state: SshLoginWatch, chunk: string, opts: SshAut
   let prompted = state.prompted
   let atPrompt = state.atPrompt === true
   let answered = state.answered === true
+  let atText = state.atText === true
+  let shown = state.shown ?? 0
+  let parked = state.parked === true
+  const answeredAt = state.answeredAt ?? 0
+  const preamble = [...(state.preamble ?? [])]
   let from = 0
   for (let i = 0; i < text.length; i++) {
     const c = text[i]
-    if (c !== '\r' && c !== '\n') continue
+    const cursor = opts.conpty === true && (c === '\f' || c === '\v')
+    if (c !== '\r' && c !== '\n' && !cursor) continue
+    parked = cursor
     const done = line + text.slice(from, i)
     from = i + 1
     line = ''
+    if (cursor && c === '\f') shown = 0 // a repaint starts again from the top
     // An answered prompt: the password is not echoed, so the line that the
     // newline finishes is the prompt itself. Set here too, not only at the end
     // of a chunk, so a prompt and what followed it arriving together still
@@ -459,23 +494,38 @@ export function sshLoginOutput(state: SshLoginWatch, chunk: string, opts: SshAut
     if (promptOn(done, opts)) {
       prompted = true
       atPrompt = true
+      atText = false
+      shown++
+      if (answered && shown > answeredAt) answered = false // a NEW prompt row: ssh asking again
       continue
     }
-    if (prompted && !isPreAuthLine(done)) return settle(state, seen) // rule 3
-    if (done.trim() !== '') atPrompt = false
+    const bare = done.replace(/[ \t]+$/, '')
+    // Rule 3 — but a Banner row a ConPTY repaint finishes again is not news.
+    if (prompted && !isPreAuthLine(done) && !preamble.includes(bare)) return settle(state, seen)
+    if (opts.conpty && !prompted && bare !== '' && preamble.length < MAX_PREAMBLE) preamble.push(bare)
+    if (done.trim() !== '') {
+      atPrompt = false
+      atText = !isPreAuthLine(done)
+    }
   }
   line = (line + text.slice(from)).slice(-SSH_AUTH_TAIL_BYTES)
   if (line.trim() !== '') {
     atPrompt = promptOn(line, opts) !== null
-    // A prompt still being written is ssh asking (again).
+    atText = !atPrompt && !isPreAuthLine(line)
+    // A prompt still being written is ssh asking (again) — unless a repaint is redrawing the answered one.
     if (atPrompt) {
       prompted = true
-      answered = false
+      if (shown + 1 > answeredAt) answered = false
     }
   }
   const next: SshLoginWatch = { seen, prompted, settled: false, line }
   if (atPrompt) next.atPrompt = true
   if (answered) next.answered = true
+  if (atText) next.atText = true
+  if (parked) next.parked = true
+  if (shown) next.shown = shown
+  if (answered) next.answeredAt = answeredAt
+  if (preamble.length) next.preamble = preamble
   if (pending) next.pending = pending
   return next
 }
@@ -494,9 +544,12 @@ export function sshLoginInput(state: SshLoginWatch, data: string, opts: SshAuthS
   // until ssh asks again, a reconnect would kill a login in flight.
   if (state.atPrompt || promptOn(state.line, opts)) {
     const { atPrompt: _gone, ...rest } = state
-    return { ...rest, answered: true }
+    const answeredAt = (state.shown ?? 0) + (promptOn(state.line, opts) ? 1 : 0)
+    return { ...rest, answered: true, answeredAt }
   }
-  if (!line) return state // Enter pressed while it connects
+  // Enter while it connects — unless a cursor move blanked the line under text
+  // (ConPTY): that is a command at a shell, rule 4 as if the text were on it.
+  if (!line) return state.atText && state.parked ? settle(state) : state
   if (SSH_QUESTIONS.some((re) => re.test(line))) return state // "yes" to a host key, a passphrase
   return settle(state)
 }

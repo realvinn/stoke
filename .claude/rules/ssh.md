@@ -241,6 +241,26 @@ reports `escapechar none`.
 > and three ConPTY resizes. Each rule was mutated back to red (cursor breaks 2 checks, the `atPrompt` fallback
 > 2, `answered` 1). The resize was measured on Windows and replayed through the shipped reducer. The strip's
 > resize of a real Stoke tab on Windows has not been driven in the app.
+>
+> **The same day, an adversarial review of that fix** replayed shapes built from the measured repaint through
+> the shipped reducer and found three holes. Each is now fixed and held by `verify:ssh-enroll`; the old watch
+> fails 13 of those checks.
+> - **A regression in the dangerous direction.** Turning a CUP into a line break left the line blank when a
+>   key-login shell parked its cursor (Home, PSReadLine's prediction). Enter on that blank line then looked like
+>   "Enter while connecting", rule 4 never fired, and a later `su` or nested-ssh prompt read as ssh's own. That
+>   tab would be offered a key for root's password and killed after an enrollment. Now `conptyScrub` marks a
+>   position as `\v` and a home as `\f`. Enter on a blank line a cursor move left under ordinary text
+>   (`atText` + `parked`) settles.
+> - **A repaint split after the old prompt row cleared `answered`.** A row that only LOOKS like ssh asking
+>   again does not clear it. `shown` counts prompt rows finished since the last home, and `answeredAt` is that
+>   count when Enter answered. Only a row past it is a new question, so a re-ask ended by a CUP still counts.
+> - **A pre-auth Banner above the prompt settled the watch on the first resize.** The repaint finishes the
+>   banner row again after the prompt. OpenSSH 10.1+'s post-quantum warning does the same. Lines finished
+>   before the first prompt (`preamble`, at most 64) are exempt from rule 3, under ConPTY only.
+>
+> Still open: a command typed ahead during a POSIX key login, before any prompt is drawn (low). The 16 KB
+> budget can also be spent by about 65 repaints in one long window drag. Both read wrongly in the safe
+> direction, or need a typed-ahead `su`.
 
 ## 109. An enrollment whose password prompt has no visible terminal can never complete
 
