@@ -8500,6 +8500,21 @@ button.color-field-swatch[aria-expanded='true'] {
   padding-top: var(--space-8);
 }
 
+/* A computer's answer to an older query, kept while the new one is asked (`RemoteChatGroup.stale`): dimmed, as pending. */
+.chat-remote {
+  transition: opacity var(--dur-fast) var(--ease);
+}
+
+.chat-remote[data-stale] {
+  opacity: 0.55;
+}
+
+.chat-remote-pending {
+  font-weight: normal;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
 /* The other devices listed in "Confirm it's you" before chat history is shared (AccountSyncSettings' ShareChats). */
 .share-chats-devices {
   display: grid;
@@ -8725,6 +8740,11 @@ button.color-field-swatch[aria-expanded='true'] {
   padding: var(--space-16) var(--space-12);
   font-size: var(--fs-sm);
   color: var(--text-muted);
+}
+
+/* A chat another computer could not give: why, then "Try again" under it (ChatViewer). */
+.chat-view-retry {
+  padding: 0 var(--space-12) var(--space-16);
 }
 
 .chat-view-list {

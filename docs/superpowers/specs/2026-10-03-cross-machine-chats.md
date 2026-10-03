@@ -47,6 +47,12 @@ In `src/main/chatIndex/` (parse/scan/store/sources, whatever holds `cleanText` a
   Keep the existing patterns; measure false positives on this Mac's real index (read-only copy).
 - Turning redaction ON re-cleans text already stored (or the store refuses to serve un-cleaned rows until a
   rebuild). The remote routes below always ask for cleaned text.
+- **Rule set 3** (`REDACTION_VERSION` 3, review of db1ae51): a keyed literal is taken whole to the next
+  space (a URL query's value to its `&`/`;`/`#`, a connection string's to its `;`), a dotted value is code
+  only when every segment has a name's shape, and `Authorization:` values, AWS secret access keys, ASIA
+  ids, `glpat-`/`hf_`/`npm_`/`whsec_` tokens and keyed `client_secret`/`token` values join the list. Rows
+  cleaned under 2 count as not cleaned, so a guest finds them only once a pass re-cleans them
+  (`recleanStale`). No rule may backtrack: the suite times 64 KB worst cases.
 
 ### 2. The password check (hub + client)
 
@@ -138,13 +144,26 @@ In `src/main/chatIndex/` (parse/scan/store/sources, whatever holds `cleanText` a
     redacted; folders show by name." Each device has a Remove.
   - Turning it off is instant: "Stopped. Searches from other computers were closed."
   - A `data-setting` mark plus a `SETTING_ROWS` entry (gotcha 138).
-- **Sidebar search "In conversations":** adds an "On <computer>" group per online sharing computer,
-  grouped by computer and never merged by score. States:
-  - "<Computer> is offline — not searched"
-  - "<Computer> isn't sharing chat history"
+- **Sidebar search "In conversations":** adds an "On <computer>" group per sharing computer, grouped by
+  computer and never merged by score. **Only a computer that shares gets a group** (review of db1ae51:
+  every other device in the vault used to get "isn't sharing chat history" on every search). Which ones
+  share is what this window has seen them say (`chatSharersStep`): one seen saying `chats: true` keeps its
+  group while offline, and loses it at once when seen online saying it stopped. With no sharer, nothing is
+  asked of main at all. States:
+  - "<Computer> is offline — not searched" (only one that was sharing when last seen)
   - "Waiting for <Computer> to allow…"
+  - a refusal or failure, worded here by its code (`chatsRefusalSentence`) with this computer's name for it
+  - "Nothing on <Computer> says “<query>”."
+
+  "isn't sharing" is no longer a state the sidebar shows. Each answer keeps the query it answered: a group
+  from an older query is drawn dimmed as pending ("searching…") and quotes its own query, and a computer
+  starting or stopping sharing, or going offline or coming back while sharing, asks the search again.
 - **Opening a remote hit** shows the read-only `ChatViewer` with a header "On <Computer> · <folder name>".
-  There is no Resume button, and Copy works.
+  There is no Resume button, and Copy works. A failed read says why in the viewer's own words ("<Computer>
+  is offline — open it again when it's back."; a refusal by its code), offers "Try again", and reads again
+  by itself once that computer's chats relay comes open after not being open since the read began (its
+  owner allowed it: `remoteReadWatch`); a read that failed while the relay stayed open waits for "Try
+  again", so it never loops. Clicking the same hit again reads it again.
 
 ### Later (not v1)
 

@@ -94,8 +94,17 @@ import { toast } from './lib/toasts'
 import { reconnectAfterEnroll } from '@shared/sshAuth'
 import { RemoteTerminal } from './components/RemoteTerminal'
 import { useHubRemote } from './lib/hubRemote'
-import type { OtherMachineView, RemoteChatHit, RemoteChatsResult, RemoteSessionSummary } from '@shared/hub/remote'
-import { chatsSearchAgain, remoteChatGroups, type RemoteChatGroup } from '@shared/remoteChatsView'
+import type { OtherMachineView, RemoteChatHit, RemoteSessionSummary } from '@shared/hub/remote'
+import {
+  chatSharersStep,
+  chatsSearchAgain,
+  NO_CHAT_SHARERS,
+  NO_REMOTE_CHATS,
+  remoteChatGroups,
+  type ChatSharers,
+  type RemoteChatGroup,
+  type RemoteChatsAnswer
+} from '@shared/remoteChatsView'
 import { WorklogPrompt } from './components/WorklogPrompt'
 import { baseName, ipcErrorMessage } from './lib/format'
 import {
@@ -417,6 +426,8 @@ export function App(): React.JSX.Element {
    * another hit replaces it. Its width is this window's alone, not a setting.
    */
   const [chatView, setChatView] = useState<ChatViewTarget | null>(null)
+  /** Counts every open: the viewer's React key, so opening the same hit again reads it again. */
+  const [chatViewOpen, setChatViewOpen] = useState(0)
   const [chatViewWidth, setChatViewWidth] = useState(520)
 
   /*
@@ -1167,10 +1178,16 @@ export function App(): React.JSX.Element {
    * answer never lands over a newer query. Main keeps one chats relay per
    * computer while searches come and closes it after idle; clearing the box
    * closes them now (`endChatSearch`). Asked whether or not chat history is
-   * on HERE: it is the other computer's index being read.
+   * on HERE: it is the other computer's index being read — but only while
+   * some other computer shares, or was sharing when last seen (`ChatSharers`):
+   * a vault where none does is asked nothing and shows no group.
+   *
+   * Each answer keeps the query it answered (`RemoteChatsAnswer`), so the
+   * groups from the last query are drawn as pending under a new one rather
+   * than as its results.
    */
-  const [remoteChats, setRemoteChats] = useState<RemoteChatsResult[]>([])
-  const remoteChatsRef = useRef<RemoteChatsResult[]>([])
+  const [remoteChats, setRemoteChats] = useState<RemoteChatsAnswer>(NO_REMOTE_CHATS)
+  const remoteChatsRef = useRef<RemoteChatsAnswer>(NO_REMOTE_CHATS)
   remoteChatsRef.current = remoteChats
   const remoteChatRequest = useRef(0)
   const remoteChatsAsked = useRef(false)
@@ -1183,16 +1200,31 @@ export function App(): React.JSX.Element {
   const peersSeen = useRef<ReadonlySet<string>>(new Set())
   const [remoteChatsCue, setRemoteChatsCue] = useState(0)
   useEffect(() => {
-    const r = chatsSearchAgain(peersSeen.current, hubRemote.chatPeers, remoteChatsRef.current)
+    const r = chatsSearchAgain(peersSeen.current, hubRemote.chatPeers, remoteChatsRef.current.results)
     peersSeen.current = r.seen
     if (r.again) setRemoteChatsCue((n) => n + 1)
   }, [hubRemote.chatPeers])
-  const remoteChatsOn = hubRemote.available
+  /*
+   * Which other computers share (`chatSharersStep`). One that starts or stops
+   * sharing, or goes offline or comes back while sharing, asks the search on
+   * screen again, so its group comes or goes without waiting for a keystroke.
+   */
+  const sharersRef = useRef<ChatSharers>(NO_CHAT_SHARERS)
+  const [chatSharers, setChatSharers] = useState<ChatSharers>(NO_CHAT_SHARERS)
+  useEffect(() => {
+    const r = chatSharersStep(sharersRef.current, hubRemote)
+    if (r.next !== sharersRef.current) {
+      sharersRef.current = r.next
+      setChatSharers(r.next)
+    }
+    if (r.changed) setRemoteChatsCue((n) => n + 1)
+  }, [hubRemote])
+  const remoteChatsOn = hubRemote.available && chatSharers.seen.size > 0
   useEffect(() => {
     const q = query.trim()
     const req = ++remoteChatRequest.current
     if (!remoteChatsOn || q.length < CHAT_SEARCH_MIN_CHARS) {
-      setRemoteChats([])
+      setRemoteChats(NO_REMOTE_CHATS)
       if (!q && remoteChatsAsked.current) {
         remoteChatsAsked.current = false
         window.stoke.hub.remote.endChatSearch()
@@ -1203,16 +1235,19 @@ export function App(): React.JSX.Element {
       remoteChatsAsked.current = true
       window.stoke.hub.remote.searchChats(q).then(
         (results) => {
-          if (req === remoteChatRequest.current) setRemoteChats(results)
+          if (req === remoteChatRequest.current) setRemoteChats({ query: q, results })
         },
         () => {
-          if (req === remoteChatRequest.current) setRemoteChats([])
+          if (req === remoteChatRequest.current) setRemoteChats(NO_REMOTE_CHATS)
         }
       )
     }, 350)
     return () => window.clearTimeout(t)
   }, [query, remoteChatsOn, remoteChatsCue])
-  const remoteChatGroupsShown = useMemo(() => remoteChatGroups(remoteChats, query), [remoteChats, query])
+  const remoteChatGroupsShown = useMemo(
+    () => remoteChatGroups(remoteChats, query, chatSharers.seen),
+    [remoteChats, query, chatSharers]
+  )
 
   /*
    * The appearance a session should be launched with, read at call time.
@@ -5320,6 +5355,7 @@ export function App(): React.JSX.Element {
   const openRemoteChat = useCallback(
     (group: RemoteChatGroup, hit: RemoteChatHit): void => {
       setChatView({ kind: 'remote', device: group.device, computer: group.computer, hit, query })
+      setChatViewOpen((n) => n + 1)
     },
     [query]
   )
@@ -5329,6 +5365,7 @@ export function App(): React.JSX.Element {
       const action = chatOpenAction(hit, { installed: installedAgentIds, resumable: resumableClis() })
       if (action.kind === 'view') {
         setChatView({ kind: 'local', hit, query, note: action.note })
+        setChatViewOpen((n) => n + 1)
         return
       }
       if (action.kind === 'claude') {
@@ -6313,7 +6350,12 @@ export function App(): React.JSX.Element {
               onCommit={setChatViewWidth}
             />
             <div style={{ width: chatViewWidth, display: 'flex', flexShrink: 0, minWidth: 0 }}>
-              <ChatViewer target={chatView} onClose={() => setChatView(null)} />
+              <ChatViewer
+                key={chatViewOpen}
+                target={chatView}
+                peer={chatView.kind === 'remote' ? (hubRemote.chatPeers.find((p) => p.device === chatView.device)?.state ?? null) : null}
+                onClose={() => setChatView(null)}
+              />
             </div>
           </>
         )}

@@ -1292,7 +1292,13 @@ export function SettingsSheet({
                 remoteBar={settings.remoteBar}
                 onRemoteBar={(remoteBar) => onPatch({ remoteBar })}
                 chatIndexOn={settings.chatIndex === 'on'}
-                onOpenChatHistory={() => go({ page: 'chats' }, { id: 'chats.enabled', fallback: null }, true)}
+                redactOn={settings.chatIndexOptions.redact}
+                onOpenChatHistory={(row) =>
+                  // The redaction tick sits at the foot of "Where Stoke looks": shown, not focused — that row's first control is a source.
+                  row === 'redact'
+                    ? go({ page: 'chats' }, { id: 'chats.sources', fallback: null }, false)
+                    : go({ page: 'chats' }, { id: 'chats.enabled', fallback: null }, true)
+                }
               />
             )}
 
