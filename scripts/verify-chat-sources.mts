@@ -240,6 +240,143 @@ section('redaction: each rule takes its own shape, and leaves code and placehold
   leaves('the marker in a sentence', 'the file starts with -----BEGIN OPENSSH PRIVATE KEY----- and then the body')
 }
 
+/*
+ * Rule set 3 (security review of db1ae51). Each block below failed under 2:
+ * a dotted value was code whatever its segments, an unquoted value stopped at
+ * `&`, `;` and `,` and was judged by its head alone, and the shapes after
+ * those had no rule.
+ */
+section('redaction 3: a dotted value is code only while every segment is a name’s')
+{
+  const red = (s: string): string => cleanText(s, { redact: true })
+  const takes = (what: string, text: string, want: string): void => check(`takes ${what}`, red(text), want)
+  const leaves = (what: string, text: string): void => check(`leaves ${what}`, red(text), text)
+  takes('a key with a 12+ letters-and-digits segment', 'api_key=AbC123xYz.dEf456gHi789jKl and api_key=ab.Q7XK29PLM4ZT8W', 'api_key=[redacted] and api_key=[redacted]')
+  takes('a dotted .env value (an assignment: the value is literal)', 'DB_PASSWORD=correct.horse.battery9', 'DB_PASSWORD=[redacted]')
+  takes('a segment with digits inside a lower-case word', 'password=p4ss.Word.xyz', 'password=[redacted]')
+  takes('a dotted value in a URL query', 'https://x.io/login?password=correct.horse.staple', 'https://x.io/login?password=[redacted]')
+  for (const code of [
+    'apiKey: config.OPENROUTER_KEY_2',
+    'password=self.password,',
+    'api_key=settings.API_KEY',
+    'token: req.headers.authorization',
+    "apiKey: process.env.KEY||'dev'",
+    'password: base64.b64decode(blob)',
+    'clientSecret: keys.oauth2ClientSecret',
+    'token: this.s3Bucket.token',
+    'password: $this->password'
+  ]) {
+    leaves(`code: ${code}`, code)
+  }
+}
+
+section('redaction 3: an unquoted value runs to the next space, except in a URL query or connection string')
+{
+  const red = (s: string): string => cleanText(s, { redact: true })
+  const takes = (what: string, text: string, want: string): void => check(`takes ${what}`, red(text), want)
+  const leaves = (what: string, text: string): void => check(`leaves ${what}`, red(text), text)
+  takes('a value with a & in it, whole', 'DB_PASSWORD=Xy7&kL9#mQ2vP', 'DB_PASSWORD=[redacted]')
+  takes('a value with a ; in it, whole', 'password: a1;Zq8$Wm4!Lp', 'password: [redacted]')
+  takes('a value with a , in it, tail and all', 'api_key=9f8e7d6c,5b4a3210ffee', 'api_key=[redacted]')
+  takes('a value with a quote inside a word', "DB_PASSWORD=Xy7'kL9#mQ2vP", 'DB_PASSWORD=[redacted]')
+  takes('a URL query’s value, up to the next &', 'https://x.io/cb?user=me&password=hunter22&next=/home', 'https://x.io/cb?user=me&password=[redacted]&next=/home')
+  takes('a connection string’s, up to the next ; (a & is the value’s)', 'Server=db;User Id=sa;Password=Xy7&kL9;Encrypt=true', 'Server=db;User Id=sa;Password=[redacted];Encrypt=true')
+  takes('a query value inside a markdown link, up to the link’s end', `[![cov](https://cov.io/b.svg?token=${fake('', 20)})](https://cov.io)`, '[![cov](https://cov.io/b.svg?token=[redacted])](https://cov.io)')
+  takes('structure after the value stays', '{ user: x, password: abc123xyz, b: 2 } and export PASSWORD=abc123; npm start', '{ user: x, password: [redacted], b: 2 } and export PASSWORD=[redacted]; npm start')
+  takes('an escaped newline ends the value (JSON-escaped text)', 'cmd: \\"psql password: Zq8xWm4Lp\\nnext line\\"', 'cmd: \\"psql password: [redacted]\\nnext line\\"')
+  takes('the rest of a value 2 cut short, once the stored text is cleaned again', 'api_key=[redacted],5b4a3210ffee', 'api_key=[redacted]')
+  leaves('compact JSON’s next pair', '{"next_page_token":null},"hasMore":false}')
+  leaves('an escaped placeholder', '- `api-key: &lt;key&gt;`')
+  leaves('a keyword argument before an escaped newline', 'f(token=token,\\n    other=1)')
+  leaves('a value already taken, with structure after it', 'password=[redacted]), {"password": "[redacted]"}, ?password=[redacted]&next=1')
+}
+
+section('redaction 3: the shapes 2 had no rule for')
+{
+  const red = (s: string): string => cleanText(s, { redact: true })
+  const takes = (what: string, text: string, want: string): void => check(`takes ${what}`, red(text), want)
+  const leaves = (what: string, text: string): void => check(`leaves ${what}`, red(text), text)
+  const SG = `SG.${fake('', 22)}.${fake('', 43, 'Zy8Xw6Vu4Ts2Rq0Po9Nm7Lk5-_')}`
+  takes('a SendGrid key, alone and keyed', `key ${SG} and SENDGRID_API_KEY=${SG}`, 'key [redacted] and SENDGRID_API_KEY=[redacted]')
+  const MB = `sk.${b64url({ u: 'fixture', a: 'ck1' })}.${fake('', 22)}`
+  takes('a Mapbox token, alone and keyed', `the map uses ${MB} and MAPBOX_API_KEY=${MB}`, 'the map uses [redacted] and MAPBOX_API_KEY=[redacted]')
+  leaves('SendGrid- and Mapbox-like code', 'sg.send(msg) and SG.Mail and pk.eyJ alone')
+  takes('a Bearer header', `curl -H "Authorization: Bearer ${fake('', 32)}" https://api.x`, 'curl -H "Authorization: Bearer [redacted]" https://api.x')
+  takes('a Bearer token with an underscore in it', `Authorization: Bearer ${fake('', 12)}_${fake('', 12)}`, 'Authorization: Bearer [redacted]')
+  takes('a lower-case header, JSON-quoted', `{"authorization": "bearer ${fake('', 40)}"}`, '{"authorization": "bearer [redacted]"}')
+  takes('a Basic header', `Authorization: Basic ${Buffer.from('fixture-user:fixture-pass').toString('base64')}`, 'Authorization: Basic [redacted]')
+  for (const code of ['Authorization: Bearer YOUR_ACCESS_TOKEN_HERE', 'Authorization: Bearer $TOKEN', 'Authorization: Bearer ${token}', 'Authorization: Basic base64(user:pass)', "headers: { Authorization: 'Bearer ' + token }"]) {
+    leaves(`a header’s placeholder or code: ${code}`, code)
+  }
+  const AWS40 = fake('', 40, 'Ab3Cd5Ef7/Gh9Jk2+Mn4Pq6Rs8Tu')
+  const ASIA = 'AS' + 'IA' + fake('', 16, 'ABCDEFGHJKLMNPQRSTUVWXYZ234567')
+  takes('an AWS secret access key, by each name', `aws_secret_access_key = ${AWS40}\nAWS_SECRET_ACCESS_KEY=${AWS40}\n"SecretAccessKey": "${AWS40}"`, 'aws_secret_access_key = [redacted]\nAWS_SECRET_ACCESS_KEY=[redacted]\n"SecretAccessKey": "[redacted]"')
+  takes('...under markdown’s escaped name', `aws\\_secret\\_access\\_key=${AWS40} here`, 'aws\\_secret\\_access\\_key=[redacted] here')
+  takes('a temporary (ASIA) key id, and the secret pasted after an id', `id ${ASIA} and '${ASIA}|${AWS40}'`, "id [redacted] and '[redacted]'")
+  leaves('a secret access key name with no key', 'aws_secret_access_key = ${AWS_SECRET} and AWS_SECRET_ACCESS_KEY=')
+  takes('a GitLab token', `GITLAB ${fake('glpat-', 20)}`, 'GITLAB [redacted]')
+  takes('a Hugging Face token', `HF ${fake('hf_', 34)}`, 'HF [redacted]')
+  takes('an npm token', `NPM ${fake('npm_', 36)}`, 'NPM [redacted]')
+  takes('a Stripe webhook secret', `WH ${fake('whsec_', 32)}`, 'WH [redacted]')
+  leaves('their prefixes in code', 'glpat-short, hf_hub_download, npm_config_cache, whsec_...')
+  takes('markdown’s escaped key names', `api\\_key=9f8e7d6c5b4a3210 client\\_secret=${fake('', 24)}`, 'api\\_key=[redacted] client\\_secret=[redacted]')
+  takes('a client secret, by each name', `client_secret=${fake('', 24)} "clientSecret": "${fake('', 24)}" GOOGLE_CLIENT_SECRET=${fake('GOCSPX-', 28)}`, 'client_secret=[redacted] "clientSecret": "[redacted]" GOOGLE_CLIENT_SECRET=[redacted]')
+  takes('a token, by each name', `access_token=${fake('ya29.', 40)} "refresh_token": "${fake('1//0g', 40)}" GITHUB_TOKEN=${fake('', 40, '0123456789abcdef')} refreshToken: '${fake('', 24)}'`, 'access_token=[redacted] "refresh_token": "[redacted]" GITHUB_TOKEN=[redacted] refreshToken: \'[redacted]\'')
+  for (const code of [
+    'client_secret: str',
+    'clientSecret: process.env.GOOGLE_CLIENT_SECRET',
+    'client_secret="YOUR_CLIENT_SECRET"',
+    'token: string',
+    'max_tokens: 4096',
+    'eos_token: 2',
+    'token = await getToken()',
+    'token=${TOKEN}',
+    'accessToken: "<your-access-token>"',
+    'csrf_token: "{{ csrf_token() }}"'
+  ]) {
+    leaves(`code or a placeholder: ${code}`, code)
+  }
+}
+
+section('redaction 3: cleaning cleaned text again changes nothing')
+{
+  // `recleanChat` cleans stored text in place, so every rule's output must be a fixed point.
+  const samples = [
+    'DB_PASSWORD=Xy7&kL9#mQ2vP and api_key=9f8e7d6c,5b4a3210ffee',
+    '{ user: x, password: abc123xyz, b: 2 } and export PASSWORD=abc123; npm start',
+    'https://x.io/cb?user=me&password=hunter22&next=/home and Server=db;Password=Xy7&kL9;Encrypt=true',
+    `Authorization: Bearer ${fake('', 32)} and aws\\_secret\\_access\\_key=${fake('', 40, 'Ab3Cd5Ef7/Gh9Jk2+Mn4Pq6Rs8Tu')}`,
+    `access_token=${fake('ya29.', 40)}, refreshToken: '${fake('', 24)}' (password=p4ss.Word.xyz)`
+  ]
+  const once = samples.map((s) => cleanText(s, { redact: true, maxBytes: Infinity }))
+  check('a second clean is a fixed point', once.map((s) => cleanText(s, { redact: true, maxBytes: Infinity })), once)
+}
+
+section('redaction 3: no input makes a rule backtrack (64 KB, each under a second)')
+{
+  const K = 64 * 1024
+  const fill = (unit: string): string => unit.repeat(Math.ceil(K / unit.length)).slice(0, K)
+  // The first was 6.8 s under 2 (a trailing `[…]+$`), the next three 19–21 s under 3's first cut (an unbounded lookbehind retried per space).
+  const worst: Record<string, string> = {
+    'a value of closers that does not end the value': 'password=a' + fill(')') + 'x',
+    'a separator of spaces before an unclosed quote': 'password=' + fill(' ') + '"',
+    'spaces both sides of =': 'password' + fill(' ').slice(K / 2) + '=' + fill(' ').slice(K / 2) + '"',
+    'a query key’s spaces': '?password=' + fill(' ') + '"',
+    'a quote run inside a value': 'password=a' + fill("'b"),
+    'an escaped newline run': 'password=a' + fill('\\n'),
+    'a dotted path run': 'apiKey: ' + fill('a9b.'),
+    'a query run': 'https://x/?' + fill('token=abcdefghijkl&'),
+    'compact JSON': fill('"next_page_token":null},')
+  }
+  const slow: string[] = []
+  for (const [name, text] of Object.entries(worst)) {
+    const t0 = performance.now()
+    cleanText(text, { redact: true })
+    if (performance.now() - t0 > 1000) slow.push(name)
+  }
+  check('every worst case cleans in under a second', slow, [])
+}
+
 section('opening a hit')
 {
   const ctx = { installed: new Set<CodingCliId>(['claude', 'codex']), resumable: resumableClis() }
@@ -1603,6 +1740,31 @@ try {
     const stuck = { staleChatIds: () => [7], recleanChat: () => true } as unknown as ChatStore
     const spun = await recleanStale(stuck, { ...hooks(), cancelled: () => ++asks > 1000 })
     check('a chat the clean does not raise is tried once, not spun on', spun, 1)
+  }
+
+  section('a chat cleaned under rule set 2 is cleaned again under 3 before it is served as cleaned')
+  {
+    const vDir = join(root, 'v2-level-index')
+    const vs = ChatStore.open(vDir)
+    const meta = { title: `Keys api_key=[redacted],5b4a3210ffee`, firstPrompt: 'v2word DB_PASSWORD=Xy7&kL9#mQ2vP', cwd: '/w', gitBranch: null, model: null, createdMs: T0, updatedMs: T0 }
+    const vid = vs.upsertChat('claude', 'cleaned-v2', meta, { subagent: false, dedupeKey: null, whole: true, redact: true })
+    const SG = `SG.${fake('', 22)}.${fake('', 43)}`
+    // Exactly what rule set 2 stored: a value cut at the comma (its tail kept), a value with a & left whole, a SendGrid key left whole.
+    vs.appendMessages(vid, [{ role: 'user', text: `v2word api_key=[redacted],5b4a3210ffee DB_PASSWORD=Xy7&kL9#mQ2vP SENDGRID_API_KEY=${SG}`, atMs: T0 }])
+    vs.close()
+    const raw = new DatabaseSync(join(vDir, 'index.sqlite'))
+    raw.exec('UPDATE chat SET redact_level = 2')
+    raw.close()
+    const v3 = ChatStore.open(vDir)
+    check('a chat at level 2 counts as not cleaned under 3, and a cleaned-only search leaves it out', [v3.staleCount(), v3.search('v2word', 50, { redact: 'force' })], [1, []])
+    const gone = { home: join(root, 'v2-level-no-home'), env: {}, platform: process.platform } as SourceEnv
+    check('...and a cleaned-only open does not serve its stored copy', openChat(v3, vid, gone, { redact: 'force', fileBytes: 1 << 20 }), null)
+    check('a pass cleans it again in place', await recleanStale(v3, hooks()), 1)
+    check('...the tail 2 left, the & value and the SendGrid key are gone', v3.messages(vid).map((m) => m.text), ['v2word api_key=[redacted] DB_PASSWORD=[redacted] SENDGRID_API_KEY=[redacted]'])
+    const served = v3.search('v2word', 50, { redact: 'force' })
+    check('...and only now is it served as cleaned, title and first prompt too', [v3.staleCount(), served.map((h) => [h.title, h.firstPrompt])], [0, [['Keys api_key=[redacted]', 'v2word DB_PASSWORD=[redacted]']]])
+    check('...including its stored copy', openChat(v3, vid, gone, { redact: 'force', fileBytes: 1 << 20 })?.from, 'store')
+    v3.close()
   }
 
   section('a chat’s cleaned level only goes down on a write, and what leaves is cleaned once more')
