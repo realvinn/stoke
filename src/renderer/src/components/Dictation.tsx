@@ -377,11 +377,32 @@ export function useDictation({
       }
     }
 
+    /*
+     * Focus leaving the pane with Space down: the keyup goes to whatever has
+     * focus now, never here, so the reducer is told (`lost`). Focus moving
+     * WITHIN the pane (xterm's own textarea) is not leaving it.
+     */
+    const onLost = (): void => {
+      if (holdRef.current.phase !== 'idle') dispatch({ type: 'lost' })
+    }
+    const onFocusOut = (e: FocusEvent): void => {
+      if (!host.contains(e.relatedTarget as Node | null)) onLost()
+    }
+    const onVisibility = (): void => {
+      if (document.hidden) onLost()
+    }
+
     host.addEventListener('keydown', onKeyDown, true)
     host.addEventListener('keyup', onKeyUp, true)
+    host.addEventListener('focusout', onFocusOut)
+    window.addEventListener('blur', onLost)
+    document.addEventListener('visibilitychange', onVisibility)
     return () => {
       host.removeEventListener('keydown', onKeyDown, true)
       host.removeEventListener('keyup', onKeyUp, true)
+      host.removeEventListener('focusout', onFocusOut)
+      window.removeEventListener('blur', onLost)
+      document.removeEventListener('visibilitychange', onVisibility)
       // A press still pending when the mode or the tab changes is dropped, not
       // typed: nobody is watching this pane's strip any more.
       clearHoldTimer()

@@ -25,10 +25,11 @@ export const DEFAULT_STT_URL = 'http://127.0.0.1:17890'
  * 500ms since 2026-10-04, from the owner: "I think we need to increase the hold
  * duration before activation". 250 sat above a typing tap (measured taps run
  * 50–150ms) but under a deliberate pause on the space bar, so a thinking pause
- * mid-sentence opened the microphone. A hold is ALSO proved by the first OS
- * key-repeat (`spaceHold`, voiceRoute.ts), which on macOS's default delay
- * arrives before 500ms — so the setting matters most where the repeat delay is
- * long or turned off. The ceiling went from 800 to 1500 for the same reason.
+ * mid-sentence opened the microphone. The OS key-repeat does NOT prove a hold
+ * any more (`spaceHold`, voiceRoute.ts): macOS's default repeat delay is 500ms
+ * (measured), so a repeat that started the recorder cut every longer setting
+ * back to it. Only the threshold starts a take; the ceiling went from 800 to
+ * 1500 so a slow, deliberate hold is possible.
  */
 export const DEFAULT_HOLD_MS = 500
 export const HOLD_MS_MIN = 150

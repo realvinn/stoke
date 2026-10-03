@@ -159,6 +159,8 @@ export const SPACE_IDLE: SpaceHoldState = { phase: 'idle' }
 export type SpaceHoldEvent =
   | { type: 'keydown'; code: string; repeat: boolean; composing?: boolean }
   | { type: 'keyup'; code: string; composing?: boolean }
+  /** Focus left the pane (another control, another app, a hidden window): its Space keyup will never come here. */
+  | { type: 'lost' }
   | { type: 'timer' }
   | { type: 'opened' }
   | { type: 'failed' }
@@ -207,6 +209,24 @@ export function spaceHold(state: SpaceHoldState, event: SpaceHoldEvent, now: num
       return step(state, state.phase === 'recording' ? 'pass' : 'cancel')
     case 'failed':
       return step(SPACE_IDLE, 'pass')
+    case 'lost':
+      /*
+       * Space was down when focus went elsewhere, so the release this phase
+       * waits for will never arrive: the hold timer fired anyway and opened the
+       * microphone with no key down, and a take went on until the next press
+       * typed the whole span (found in review, 2026-10-04). A press not yet a
+       * hold is dropped — no stray space where the user went; a microphone
+       * still opening is closed; a take finishes, since the words were spoken.
+       */
+      switch (state.phase) {
+        case 'pending':
+        case 'starting':
+          return step(SPACE_IDLE, 'cancel')
+        case 'recording':
+          return step(SPACE_IDLE, 'finish')
+        default:
+          return step(state, 'pass')
+      }
     case 'keydown':
       if (event.code !== 'Space') {
         // Another key while a space is pending: it was typing, not a hold.

@@ -209,6 +209,24 @@ console.log('\na tap types a space; only a hold records')
   check('and a repeat with no press of ours before it starts nothing', spaceHold(SPACE_IDLE, down(true), 0, HOLD).output, 'swallow')
 }
 {
+  /*
+   * Focus leaving the pane with Space down (another control, another app, a
+   * hidden window): its keyup never comes here. Found in review, 2026-10-04 —
+   * the hold timer fired after a release elsewhere and opened the microphone
+   * with no key down, and a take ran on until the next press.
+   */
+  const lost: SpaceHoldEvent = { type: 'lost' }
+  check('focus lost while a press is pending drops it — no stray space, no microphone', [spaceHold({ phase: 'pending', since: 0 }, lost, 100, HOLD).output, spaceHold({ phase: 'pending', since: 0 }, lost, 100, HOLD).state], ['cancel', SPACE_IDLE])
+  check('  while the microphone is opening closes it', spaceHold({ phase: 'starting' }, lost, 100, HOLD).output, 'cancel')
+  check('  while recording finishes the take — the words were spoken', [spaceHold({ phase: 'recording' }, lost, 100, HOLD).output, spaceHold({ phase: 'recording' }, lost, 100, HOLD).state], ['finish', SPACE_IDLE])
+  check('  and idle stays idle', spaceHold(SPACE_IDLE, lost, 100, HOLD).output, 'pass')
+  check(
+    '  so a release elsewhere then the hold timer opens nothing',
+    run([[0, down()], [150, lost], [HOLD + 10, { type: 'timer' }]]).outs,
+    ['arm-timer', 'cancel', 'pass']
+  )
+}
+{
   const ime = spaceHold(SPACE_IDLE, { type: 'keydown', code: 'Space', repeat: false, composing: true }, 0, HOLD)
   check('an IME composing Space passes — it is the conversion key', [ime.output, ime.take], ['pass', false])
   const imeUp = spaceHold({ phase: 'recording' }, { type: 'keyup', code: 'Space', composing: true }, 0, HOLD)
@@ -1080,6 +1098,15 @@ console.log('\nthe wire: the panes and the phone really route through these')
   ok('the old start-on-the-first-press is gone', !/dictationKeyAction/.test(dict + term) && !/void beginRecording\(\)\s*\n\s*\}\s*\n\s*\n\s*const onKeyUp/.test(dict))
   ok('a tap types its space through the target, and TerminalView’s is term.input, as typing does', /targetRef\.current\.typeSpace\(\)/.test(dict) && /typeSpace: \(\) => termRef\.current\?\.input\(' ', true\)/.test(term))
   ok('only a step that takes the key stops it', /if \(step\.take\) \{\s*e\.preventDefault\(\)/.test(dict))
+  ok(
+    'focus leaving the pane is told to the reducer: focusout to outside the host, window blur, a hidden document',
+    /dispatch\(\{ type: 'lost' \}\)/.test(dict) &&
+      /host\.addEventListener\('focusout', onFocusOut\)/.test(dict) &&
+      /!host\.contains\(e\.relatedTarget/.test(dict) &&
+      /window\.addEventListener\('blur', onLost\)/.test(dict) &&
+      /document\.addEventListener\('visibilitychange', onVisibility\)/.test(dict) &&
+      /window\.removeEventListener\('blur', onLost\)/.test(dict)
+  )
   ok(
     'the hold timer is armed from the reducer and fires back into it',
     /case 'arm-timer':[\s\S]{0,200}setTimeout\([\s\S]{0,120}dispatch\(\{ type: 'timer' \}\)/.test(dict)
