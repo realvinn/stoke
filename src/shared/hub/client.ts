@@ -1030,6 +1030,21 @@ export function verifyPasswordSentence(r: HubVerifyResult): string | null {
   }
 }
 
+/**
+ * A password sheet going away — Cancel, Escape, a click outside, or unmounted
+ * under its caller — tells main to drop the hub's yes (`HubService.cancelVerify`)
+ * unless that yes already reached the caller (`usedYes`). Main keeps a yes as a
+ * short-lived consent, so a sheet that left without saying so — while its check
+ * was still in flight, an answer the sheet then ignores — would still let the
+ * switch go on, unasked, for minutes. Answers whether it asked; a refusal of the
+ * ask is swallowed, as the sheet has nobody left to tell.
+ */
+export function leaveVerifySheet(usedYes: boolean, cancelVerify: () => Promise<unknown>): boolean {
+  if (usedYes) return false
+  void cancelVerify().catch(() => undefined)
+  return true
+}
+
 /** The default hub (the owner's NUC behind stoke.vinn.dev). Editable in the panel. */
 export const DEFAULT_HUB_URL = 'https://stoke.vinn.dev/hub'
 
