@@ -113,6 +113,9 @@ const NO_FIT: FitResult = { compact: [], overflow: [], hidden: [] }
 /** An edit-mode space chip's least width (`.topbar[data-editing] .tb-chip[data-kind='spacer']`). */
 const SPACER_EDIT_REM = 6.5
 
+/** How soon after its menu closed a press on the chip that opened it counts as closing it. */
+const MENU_RECLOSE_MS = 400
+
 /** The least the folder chip narrows to, an ellipsis in its text (app.css, `.topbar-items .tb-chip`). */
 const SQUEEZE_REM = { folder: 4 }
 
@@ -256,7 +259,7 @@ export function TopBar({
         ),
         compact: null,
         title: chip.title,
-        act: (el) => openMenu(el, actions, { title: heading, lines: details }),
+        act: (el) => openMenu(el, actions, { title: heading, lines: details }, item.id),
         disabled: false,
         menu: actions,
         key: `${chip.head}|${dirty}`
@@ -434,7 +437,10 @@ export function TopBar({
     y: number
     items: MenuItem[]
     header?: { title: string; lines?: readonly string[] }
+    /** The chip that opened it, for a second press closing it (`openMenu`). */
+    anchor?: string
   } | null>(null)
+  const lastClosedRef = useRef<{ anchor: string; at: number } | null>(null)
   const [form, setForm] = useState<{ id: string | null; left: number; draft: ShortcutDraft; dirty: boolean; problem: string | null } | null>(null)
   const formRef = useRef<HTMLDivElement>(null)
   useFloatingLayer(formRef, form !== null)
@@ -590,9 +596,25 @@ export function TopBar({
     { ...customise, separated: overflowed.length > 0 }
   ]
 
-  const openMenu = (el: HTMLElement, list: MenuItem[], header?: { title: string; lines?: readonly string[] }): void => {
+  const openMenu = (
+    el: HTMLElement,
+    list: MenuItem[],
+    header?: { title: string; lines?: readonly string[] },
+    anchor?: string
+  ): void => {
+    /*
+     * A second press on the button that opened it closes it. The menu shuts on
+     * that press's mousedown (ContextMenu's own outside-press rule), so by the
+     * click there is nothing open to toggle: it reopened at once, replaying its
+     * entrance (found in review, 2026-10-03). Its own close just now is the tell.
+     */
+    const closed = lastClosedRef.current
+    if (anchor && closed && closed.anchor === anchor && performance.now() - closed.at < MENU_RECLOSE_MS) {
+      lastClosedRef.current = null
+      return
+    }
     const r = el.getBoundingClientRect()
-    setMenu({ x: r.left, y: r.bottom + 4, items: list, header })
+    setMenu({ x: r.left, y: r.bottom + 4, items: list, header, anchor })
   }
 
   return (
@@ -714,7 +736,18 @@ export function TopBar({
         </span>
       </div>
 
-      {menu && <ContextMenu x={menu.x} y={menu.y} header={menu.header} items={menu.items} onClose={() => setMenu(null)} />}
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          header={menu.header}
+          items={menu.items}
+          onClose={() => {
+            lastClosedRef.current = menu.anchor ? { anchor: menu.anchor, at: performance.now() } : null
+            setMenu(null)
+          }}
+        />
+      )}
 
       {form && (
         <>
