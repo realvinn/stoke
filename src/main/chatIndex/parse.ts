@@ -16,7 +16,7 @@
  * row it lands on follow one rule.
  */
 import { isUsefulPrompt, safeParse, textOf, titleOf } from '../sessionFile.ts'
-import { HIT_CLOSE, HIT_OPEN, type ChatSourceId } from '../../shared/chatIndex.ts'
+import { dropInvisible, HIT_CLOSE, HIT_OPEN, type ChatSourceId } from '../../shared/chatIndex.ts'
 
 export interface ChatMessage {
   role: 'user' | 'assistant'
@@ -106,9 +106,19 @@ export const REDACTED = '[redacted]'
  * `curl -u user:pass`), Slack webhooks, Azure account keys, Telegram bot
  * tokens and an upper-case `AUTHORIZATION:`; and leaves a value with a
  * template in it, a `YOUR…` placeholder, a credential's own name and a typed
- * array's.
+ * array's. 5 (review of 166e84f) drops invisible characters inside a word
+ * before judging (`dropInvisible`), takes a key split after its prefix by a
+ * line break or a space (`split-key`), a Telegram token in its Bot API URL, a
+ * PGP private key block, Groq, Google OAuth client secrets and access tokens,
+ * Vault tokens, Slack app and rotation tokens, Discord webhooks, Azure SAS
+ * signatures, Laravel's `APP_KEY`, `Authorization: Bot`, a cookie header's
+ * session values, `.pgpass` lines and PHP's `print_r` of a credential; the
+ * password flags of `sshpass`, `redis-cli`, `docker login`, `openssl`,
+ * `mongo` and `mysql --password=`, `vault login`, `--passphrase`; keyed
+ * `pass`/`DB_PASS`/`passphrase`, and secret names with a suffix
+ * (`SECRET_KEY_BASE`, `secret_access_key`).
  */
-export const REDACTION_VERSION = 4
+export const REDACTION_VERSION = 5
 
 /*
  * A keyed value — `password=…`, `"apiKey": "…"`, `DB_PASSWORD: …` — is only a
@@ -196,7 +206,9 @@ function secretSegment(s: string): boolean {
 }
 
 /** A credential's own name as its value: a how-to's placeholder. */
-const PLACEHOLDER_WORDS = new Set(['password', 'passwd', 'pass', 'pwd', 'secret', 'token', 'apikey', 'api_key'])
+const PLACEHOLDER_WORDS = new Set(['password', 'passwd', 'passphrase', 'pass', 'pwd', 'secret', 'token', 'apikey', 'api_key'])
+/** A snake-case name that ends in a credential's (`client_key_passphrase`, `db_password`): a how-to's placeholder too. */
+const PLACEHOLDER_NAME = /^(?:[a-z]+_)+(?:password|passwd|passphrase|pass|pwd|secret|token|api_?key)$/
 
 /** A typed array's name: what `secret: Uint8Array` declares, never a value. */
 const TYPED_ARRAY = /^(?:Big)?(?:Uint|Int|Float)(?:8|16|32|64)(?:Clamped)?Array$/
@@ -224,15 +236,18 @@ function codePath(head: string, assign: boolean): boolean {
 /**
  * `literal`: a bare word IS the value (a shell or `.env` assignment in capitals, a URL query, `mysql -p…`).
  * `assign`: written `name=value` with no space round the `=` (`codePath`).
+ * `plainIsCode`: a value of words only or digits only is prose or a count, quoted or not, unless `literal`
+ * (`pass: 'PASS'` and `{ pass: 120, fail: 3 }` are a test's; `DB_PASS=hunter` is a password).
  */
-function literalSecret(value: string, quoted: boolean, min: number, literal: boolean, assign = false): boolean {
+function literalSecret(value: string, quoted: boolean, min: number, literal: boolean, assign = false, plainIsCode = false): boolean {
   /*
    * Already taken, or a blob: the marker alone is left. Anything glued on
    * after it is the rest of a value an older rule set cut short (2 stopped at
    * `&`, `;` and `,`: `api_key=[redacted],5b4a…`), and goes too.
    */
   const marker = /^\[(?:redacted|data)\]/.exec(value)
-  if (marker) return !quoted && trimTail(value.slice(marker[0].length), CLOSING) !== ''
+  // A backslash alone after it is markdown's line break (`key=[redacted]\`), and another marker is no key either.
+  if (marker) return !quoted && trimTail(value.slice(marker[0].length).replace(/\\?\[(?:redacted|data)\]/g, ''), CLOSING + '\\') !== ''
   if (value.length < min) return false
   // Masked, or a template / variable standing in for the value.
   if (/^(?:\*+|•+|x+|X+|\.{3,}|…+)$/.test(value)) return false
@@ -241,15 +256,16 @@ function literalSecret(value: string, quoted: boolean, min: number, literal: boo
   if (value.includes('${') || value.includes('{{')) return false
   if (/^your[-_ ]/i.test(value) || /^(?:YOUR|[Yy]our)[A-Z]/.test(value)) return false
   // The name standing in for itself (`curl -u user:pass`, `-p password` in a how-to).
-  if (PLACEHOLDER_WORDS.has(value)) return false
+  if (PLACEHOLDER_WORDS.has(value) || PLACEHOLDER_NAME.test(value)) return false
+  if (plainIsCode && !literal && /^(?:[A-Za-z]+(?: [A-Za-z]+)*|[0-9]+)$/.test(quoted ? value : trimTail(value, CLOSING))) return false
   if (quoted) return !/^\s|\s$/.test(value)
   if (value.startsWith('\\')) return false
   const v = trimTail(value, CLOSING)
   if (v.length < min) return false
   // A word with no digit or symbol: a type, a keyword, a variable (`string`, `None`, `required`).
   if (/^[A-Za-z_-]+$/.test(v)) return literal && !TYPE_WORDS.has(v)
-  // A constant's name: `OPENROUTER_KEY_2`; a typed array's: `Uint8Array`.
-  if (/^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/.test(v) || TYPED_ARRAY.test(v)) return false
+  // A constant's name: `OPENROUTER_KEY_2`; a typed array's: `Uint8Array`; a number in hex (`STENCIL_PASS_DEPTH_PASS: 0x0B96`; a key's 0x… is longer).
+  if (/^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/.test(v) || TYPED_ARRAY.test(v) || /^0x[0-9A-Fa-f]{1,8}$/.test(v)) return false
   const head = PATH_HEAD.exec(v)?.[0] ?? ''
   const rest = v.slice(head.length)
   // A call, an index, a type's parameters or an operator after a name or a path: `getpass()`, `z.string().min(8)`, `os.environ['X']`, `Option<String>`, `env.X||'d'`.
@@ -258,7 +274,8 @@ function literalSecret(value: string, quoted: boolean, min: number, literal: boo
   if (!literal && rest === '' && PATH_SEP.test(head) && codePath(head, assign)) return false
   // A path: a shell's `PWD=/Users/…`, a file the value is read from.
   if (/^(?:\/|~\/|\.\.?\/|[A-Za-z]:\\)/.test(v)) return false
-  if (v.startsWith('{') || v.startsWith('[') || v.startsWith('(')) return false
+  // Structure, a placeholder's or markup's opening (`<string>}` judged without its `>}`), or a regex's alternation (`/(pass:|-pass )/`).
+  if (/^[{[(<|]/.test(v)) return false
   return true
 }
 
@@ -292,7 +309,7 @@ const VALUE =
  * `name=` with no space is judged by its last segment (`codePath`) — the
  * password rule's alone, as measured; elsewhere `api_key=config.openai` is code.
  */
-function keyed(name: string, keyPattern: string, min: number, dottedAssign = false): SecretRule {
+function keyed(name: string, keyPattern: string, min: number, opts: { dottedAssign?: boolean; plainIsCode?: boolean } = {}): SecretRule {
   return {
     name,
     // The lookbehind is bounded: unbounded, it re-scanned a whole identifier run at every name inside it (0.8 s for 64 KB).
@@ -300,7 +317,8 @@ function keyed(name: string, keyPattern: string, min: number, dottedAssign = fal
     to: (match, key, sep, edq, dq, sq, query, bare) => {
       const quoted = edq ?? dq ?? sq
       const v = quoted ?? query ?? bare ?? ''
-      if (!literalSecret(v, quoted !== undefined, min, query !== undefined || (sep === '=' && !/[a-z]/.test(key)), dottedAssign && sep === '=')) return match
+      const literal = query !== undefined || (sep === '=' && !/[a-z]/.test(key))
+      if (!literalSecret(v, quoted !== undefined, min, literal, opts.dottedAssign === true && sep === '=', opts.plainIsCode === true)) return match
       const q = edq !== undefined ? '\\"' : dq !== undefined ? '"' : sq !== undefined ? "'" : ''
       const kept = quoted === undefined ? v.slice(trimTail(v, STRUCTURE).length) : ''
       return `${key}${sep}${q}${REDACTED}${q}${kept}`
@@ -313,35 +331,54 @@ const keepName = (_m: string, name: string): string => `${name}${REDACTED}`
 
 /** The value after a command-line flag: quoted, or the run to the next space. */
 const ARG = String.raw`(?:"([^"\n]*)"|'([^'\n]*)'|([^\s"'${BT}]+))`
+/** `ARG` that is never the next flag: a bare value does not start with `-`. */
+const ARG_VALUE = String.raw`(?:"([^"\n]*)"|'([^'\n]*)'|([^\s"'${BT}-][^\s"'${BT}]*))`
+/** From a command's name to a flag of its: one line, and never past `;`, `&` or `|` into the next command. */
+const SAME_COMMAND = String.raw`[^\n;&|]{0,200}?`
 
-/** A flag's value as `[redacted]`, its quotes and the structure after it kept, when `literalSecret` says it is one. */
-function flagValue(prefix: string, dq: string | undefined, sq: string | undefined, bare: string | undefined, min: number, literal: boolean, match: string): string {
+/**
+ * A flag's value as `[redacted]`, its quotes and the structure after it kept, when `literalSecret` says it is one.
+ * `inner` is what stays inside the quotes before it (`"pass:[redacted]"`).
+ */
+function flagValue(prefix: string, dq: string | undefined, sq: string | undefined, bare: string | undefined, min: number, literal: boolean, match: string, inner = ''): string {
   const quoted = dq ?? sq
   const v = quoted ?? bare ?? ''
   if (!literalSecret(v, quoted !== undefined, min, literal)) return match
   const q = dq !== undefined ? '"' : sq !== undefined ? "'" : ''
   const kept = quoted === undefined ? v.slice(trimTail(v, STRUCTURE).length) : ''
-  return `${prefix}${q}${REDACTED}${q}${kept}`
+  return `${prefix}${q}${inner}${REDACTED}${q}${kept}`
 }
 
+/** A port map (`27017:27017`, `8080:80/tcp`): what `-p` means to docker, after a container named for its database. */
+const PORT_MAP = /^\d{1,5}(?::\d{1,5})+(?:\/[a-z]+)?$/
+
 /*
- * A secret on a command line, in the three shapes that cannot be mistaken
- * for anything else. The `--name=value` form is the keyed rules' already.
- * - `--password X`, `--token X`, `--api-key X`, and those with words before
- *   them (`--db-password`, `--github-token`): judged as a keyed value is, so
- *   `--token $GITHUB_TOKEN`, `--password <pw>` and a bare word stay.
+ * A secret on a command line, in the shapes that cannot be mistaken for
+ * anything else. The `--name=value` form is the keyed rules' already.
+ * - `--password X`, `--token X`, `--api-key X`, `--passphrase X`, and those
+ *   with words before them (`--db-password`, `--github-token`): judged as a
+ *   keyed value is, so `--token $GITHUB_TOKEN`, `--password <pw>` and a bare
+ *   word stay.
  * - `mysql -pX` (and `mysqldump`, `mysqladmin`, `mariadb`): whatever is glued
  *   to `-p` IS the password (`-p` alone, then a space, asks for it), a bare
  *   word included, as in a `.env`.
  * - `curl -u user:pass` (`--user`): the user stays, the password goes, a
  *   bare word included.
+ * - `sshpass -p X` (among its own options, before the command it runs, whose
+ *   `ssh -p 2222` is a port), `redis-cli -a X`, `docker login -p X`; the mongo
+ *   tools' `-p X` (never a port map: `docker run --name mongo -p 27017:27017`);
+ *   `mysql`'s and the mongo tools' `--password=X`: a bare word included.
+ * - `openssl … -passin pass:X` (`-passout`, `enc -pass`): `pass:` says the
+ *   password follows (`env:` and `file:` say where it is).
+ * - `vault login s.X`: a legacy Vault token (the `hvs.` shape is the vault
+ *   rule's anywhere).
  * Each looks for its command at most 200 characters back on the same line.
  */
 const COMMAND_LINE_RULES: readonly SecretRule[] = [
   {
     name: 'cli-flag',
     re: new RegExp(
-      String.raw`(?<![\w-])(--(?:[A-Za-z0-9]+-){0,4}(?:password|passwd|pass|pwd|token|secret|(?:api|secret|access|private|auth)-key|apikey))(?![\w-])([ \t]{1,4})` + ARG,
+      String.raw`(?<![\w-])(--(?:[A-Za-z0-9]+-){0,4}(?:password|passwd|passphrase|pass|pwd|token|secret|(?:api|secret|access|private|auth)-key|apikey))(?![\w-])([ \t]{1,4})` + ARG,
       'g'
     ),
     to: (m, flag, sp, dq, sq, bare) => flagValue(`${flag}${sp}`, dq, sq, bare, /pass|pwd/.test(flag) ? 4 : /token/.test(flag) ? 12 : 8, false, m)
@@ -355,13 +392,59 @@ const COMMAND_LINE_RULES: readonly SecretRule[] = [
     name: 'curl-user',
     re: new RegExp(String.raw`(\bcurl\b[^\n]{0,200}?[ \t](?:-u[ \t]{0,4}|--user(?:[ \t]{1,4}|=))["']?[^\s:"'@]*:)([^\s"'${BT}]+)`, 'g'),
     to: (m, pre, bare) => flagValue(pre, undefined, undefined, bare, 1, true, m)
-  }
+  },
+  {
+    name: 'password-flag',
+    re: new RegExp(
+      String.raw`(\bsshpass(?:[ \t]{1,4}-[A-Za-oq-z]\S{0,64}){0,3}[ \t]{1,4}-p[ \t]{0,4}|\bredis-cli\b${SAME_COMMAND}[ \t]-a[ \t]{1,4}|\bdocker[ \t]{1,4}login\b${SAME_COMMAND}[ \t]-p[ \t]{1,4}` +
+        String.raw`|\b(?:mongo|mongosh|mongodump|mongorestore|mongoexport|mongoimport)\b${SAME_COMMAND}[ \t]-p[ \t]{1,4}` +
+        String.raw`|\b(?:mysql|mysqldump|mysqladmin|mariadb|mongo|mongosh|mongodump|mongorestore|mongoexport|mongoimport)\b${SAME_COMMAND}[ \t]--password=)` +
+        ARG_VALUE,
+      'g'
+    ),
+    to: (m, pre, dq, sq, bare) => (bare !== undefined && PORT_MAP.test(bare) ? m : flagValue(pre, dq, sq, bare, 1, true, m))
+  },
+  {
+    name: 'openssl-pass',
+    re: new RegExp(String.raw`(?<![\w-])(-pass(?:in|out)?[ \t]{1,4})(?:"pass:([^"\n]*)"|'pass:([^'\n]*)'|pass:([^\s"'${BT}]+))`, 'g'),
+    to: (m, flag, dq, sq, bare) => (bare !== undefined ? flagValue(`${flag}pass:`, undefined, undefined, bare, 1, true, m) : flagValue(flag, dq, sq, undefined, 1, true, m, 'pass:'))
+  },
+  { name: 'vault-login', re: new RegExp(String.raw`(\bvault[ \t]{1,4}login\b${SAME_COMMAND}[ \t](?:token=)?)s\.[A-Za-z0-9]{24}(?![A-Za-z0-9])`, 'g'), to: keepName }
 ]
+
+/** Key material, not a word: a digit in it, or both cases. */
+const keyLike = (s: string): boolean => /[0-9]/.test(s) || (/[a-z]/.test(s) && /[A-Z]/.test(s))
+
+/*
+ * The prefixes a key is known by, for a key split after its prefix
+ * (`split-key`): Anthropic's and OpenAI's `sk-` and their sub-prefixes,
+ * GitHub's, Slack's, npm's, GitLab's, Hugging Face's and Groq's.
+ */
+const SPLIT_PREFIX = String.raw`sk-(?:ant-(?:[a-z]+\d*-)?|proj-|or-v1-|svcacct-|admin-)?|gh[pousr]_|github_pat_|xox[abprse]-|xapp-|npm_|glpat-|hf_|gsk_`
+
+/** A cookie that names a session, and its value: `sessionid`, `session`, `connect.sid`, `_myapp_session`, `next-auth.session-token`, `PHPSESSID`, `JSESSIONID`. */
+const COOKIE_SESSION = /(^|[\s;'"])((?:[\w.-]{0,64}[_.-])?[Ss]ession(?:[Ii][Dd]|[-_.]?[Tt]oken)?|connect\.sid|PHPSESSID|JSESSIONID)=([^;\s"'\\,]+)/g
 
 export const SECRET_RULES: readonly SecretRule[] = [
   { name: 'private-key', re: /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g, to: REDACTED },
   // A key cut before its END line: a message past the size cap, a first prompt, a partial paste.
   { name: 'private-key-cut', re: /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?:\s*[A-Za-z0-9+/=]{16,})+/g, to: REDACTED },
+  // An armored PGP private key, to its END line or, cut before one, to the end of the text: its armor headers and checksum line are no base64 run.
+  { name: 'pgp-private-key', re: /-----BEGIN PGP (?:PRIVATE|SECRET) KEY BLOCK-----(?:[\s\S]*?-----END PGP (?:PRIVATE|SECRET) KEY BLOCK-----|[\s\S]*)/g, to: REDACTED },
+  /*
+   * A key split after its prefix by a line break or a space: a terminal's
+   * wrap, or a stored bare `\r` that shaping made a space (review of 166e84f).
+   * `sk-ant-api03-` alone is no key to the Anthropic rule and the body alone
+   * none to any, so both halves left whole. A known prefix (`SPLIT_PREFIX`),
+   * at most 24 more token characters (key-like when over 6: `hf_hub_download`
+   * is code), 1–4 spaces or line breaks, then a key-like run of 8+, the two
+   * 20+ together: both go. AWS's `AKIA`/`ASIA` then 16 with a digit.
+   */
+  {
+    name: 'split-key',
+    re: new RegExp(String.raw`\b(?:${SPLIT_PREFIX})([A-Za-z0-9_-]{0,24})[ \t\r\n]{1,4}([A-Za-z0-9_-]{8,})|\bA[KS]IA[ \t\r\n]{1,4}(?=[A-Z]{0,15}[0-9])[0-9A-Z]{16}(?![0-9A-Za-z])`, 'g'),
+    to: (m, piece, rest) => (piece === undefined || ((piece.length <= 6 || keyLike(piece)) && keyLike(rest) && piece.length + rest.length >= 20) ? REDACTED : m)
+  },
   { name: 'anthropic', re: /\bsk-ant-[A-Za-z0-9_-]{16,}/g, to: REDACTED },
   { name: 'openai', re: /\bsk-(?:proj-|or-v1-)?[A-Za-z0-9_-]{20,}/g, to: REDACTED },
   { name: 'github', re: /\bgh[pousr]_[A-Za-z0-9]{20,}/g, to: REDACTED },
@@ -372,8 +455,15 @@ export const SECRET_RULES: readonly SecretRule[] = [
    * `id:secret`, `id secret`).
    */
   { name: 'aws', re: /\bA[KS]IA[0-9A-Z]{16}\b(?:[|:,;\s]{1,3}[A-Za-z0-9/+]{40}(?![A-Za-z0-9/+]))?/g, to: REDACTED },
-  { name: 'slack', re: /\bxox[abprs]-[A-Za-z0-9-]{10,}/g, to: REDACTED },
+  // Slack's bot, user, app-level (`xapp-`) and rotation (`xoxe-`, `xoxe.xoxp-`) tokens.
+  { name: 'slack', re: /\b(?:xox[abprse](?:\.xox[bp])?|xapp)-[A-Za-z0-9-]{10,}/g, to: REDACTED },
   { name: 'google', re: /\bAIza[0-9A-Za-z_-]{30,}/g, to: REDACTED },
+  // Google's OAuth client secret (`GOCSPX-` + 28) and access token (`ya29.` + a long base64url body).
+  { name: 'google-oauth', re: /\b(?:GOCSPX-[A-Za-z0-9_-]{24,}|ya29\.[A-Za-z0-9_-]{30,})/g, to: REDACTED },
+  // Groq: `gsk_` + 52.
+  { name: 'groq', re: /\bgsk_[A-Za-z0-9]{40,}/g, to: REDACTED },
+  // HashiCorp Vault's service, batch and recovery tokens (`hvs.`, `hvb.`, `hvr.`, 90+ after them).
+  { name: 'vault', re: /\bhv[sbr]\.[A-Za-z0-9_-]{24,}/g, to: REDACTED },
   // Stripe's secret and restricted keys; the publishable `pk_` is public by design.
   { name: 'stripe', re: /\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{10,}/g, to: REDACTED },
   // A Stripe webhook's signing secret (`whsec_` + 32 base62, or 64 hex from `stripe listen`).
@@ -395,14 +485,14 @@ export const SECRET_RULES: readonly SecretRule[] = [
   /*
    * An `Authorization` header's credentials (`Proxy-Authorization` too, any
    * case, `AUTHORIZATION` too, escaped JSON's `\"Authorization\": \"Bearer …`):
-   * a Bearer or Token value of 20+ token characters with a digit in it
-   * (a word-only `YOUR_ACCESS_TOKEN_HERE` is a placeholder), or Basic's
-   * base64 of 16+. A JWT or a shaped key the rules above took reads
+   * a Bearer, Token or Bot (Discord's) value of 20+ token characters with a
+   * digit in it (a word-only `YOUR_ACCESS_TOKEN_HERE` is a placeholder), or
+   * Basic's base64 of 16+. A JWT or a shaped key the rules above took reads
    * `[redacted]` and is not a token any more.
    */
   {
     name: 'authorization',
-    re: /((?:[Aa]uthorization|AUTHORIZATION)(?:\\?["'])?[ \t]*[:=][ \t]*(?:\\?["'])?(?:[Bb]earer|[Tt]oken|BEARER|TOKEN)[ \t]+)(?=[A-Za-z_.~+/-]*[0-9])[\w.~+/-]{20,}=*|((?:[Aa]uthorization|AUTHORIZATION)(?:\\?["'])?[ \t]*[:=][ \t]*(?:\\?["'])?(?:[Bb]asic|BASIC)[ \t]+)[A-Za-z0-9+/]{16,}={0,2}/g,
+    re: /((?:[Aa]uthorization|AUTHORIZATION)(?:\\?["'])?[ \t]*[:=][ \t]*(?:\\?["'])?(?:[Bb]earer|[Tt]oken|[Bb]ot|BEARER|TOKEN|BOT)[ \t]+)(?=[A-Za-z_.~+/-]*[0-9])[\w.~+/-]{20,}=*|((?:[Aa]uthorization|AUTHORIZATION)(?:\\?["'])?[ \t]*[:=][ \t]*(?:\\?["'])?(?:[Bb]asic|BASIC)[ \t]+)[A-Za-z0-9+/]{16,}={0,2}/g,
     to: (_m, bearer, basic) => `${bearer ?? basic}${REDACTED}`
   },
   /*
@@ -421,33 +511,94 @@ export const SECRET_RULES: readonly SecretRule[] = [
   { name: 'credential-url', re: /(?<=\b[A-Za-z][A-Za-z0-9+.-]{1,30}):\/\/[^\s:@/?#'"<>]*:[^\s@/?#'"<>]+@(?=[A-Za-z0-9[])/g, to: `://${REDACTED}@` },
   // A Slack incoming webhook: the path after `services/` is the credential. A docs placeholder (`XXXX…`, no digit) is not one.
   { name: 'slack-webhook', re: /(hooks\.slack\.com\/services\/)T[A-Z0-9]{6,}\/B[A-Z0-9]{6,}\/(?=[A-Za-z]{0,63}[0-9])(?=[0-9]{0,63}[A-Za-z])[A-Za-z0-9]{16,}/g, to: keepName },
+  // A Discord webhook: the id and the token after `webhooks/` are the credential.
+  { name: 'discord-webhook', re: /(discord(?:app)?\.com\/api\/webhooks\/)\d{17,20}\/[A-Za-z0-9_-]{60,}/g, to: keepName },
   // An Azure storage or Service Bus connection string's key (`AccountKey=`, `SharedAccessKey=`): base64 of 40+.
   { name: 'azure', re: /((?:Account|SharedAccess)Key=)[A-Za-z0-9+/]{40,}={0,2}/g, to: keepName },
-  // A Telegram bot token: the bot's id, a colon, 35 base64url characters.
-  { name: 'telegram', re: /(?<![\w:])\d{8,10}:[A-Za-z0-9_-]{35}(?![\w-])/g, to: REDACTED },
+  // An Azure SAS token's signature in a URL query (`?sv=…&sig=…`, `&amp;sig=` in HTML): URL-encoded base64 of 20+.
+  { name: 'azure-sas', re: /((?<=[?&;])sig=)[A-Za-z0-9%+/=]{20,}/g, to: keepName },
+  // Laravel's application key: `APP_KEY=base64:` + 44.
+  { name: 'laravel-key', re: /(\bAPP_KEY[ \t]*=[ \t]*["']?)base64:[A-Za-z0-9+/]{40,}={0,2}/g, to: keepName },
+  // A Telegram bot token: the bot's id, a colon, 35 base64url characters — on its own, or in its Bot API URL (`/bot<id>:<token>/getMe`).
+  { name: 'telegram', re: /(?:(?<=\/bot)|(?<![\w:]))\d{8,10}:[A-Za-z0-9_-]{35}(?![\w-])/g, to: REDACTED },
+  /*
+   * A `Cookie:` or `Set-Cookie:` header (and a headers object's `cookie:`):
+   * a cookie that names a session (`COOKIE_SESSION`), when its value is a
+   * literal of 16+. Other cookies stay: a theme, a consent flag, an id.
+   */
+  {
+    name: 'cookie',
+    re: /((?<![\w-])(?:[Ss]et-[Cc]ookie|SET-COOKIE|[Cc]ookie|COOKIE)(?:\\?["'])?[ \t]*:)([^\n]*)/g,
+    to: (_m, head, rest) => head + rest.replace(COOKIE_SESSION, (m: string, pre: string, name: string, v: string) => (literalSecret(v, false, 16, true) ? `${pre}${name}=${REDACTED}` : m))
+  },
+  /*
+   * A `.pgpass` line, `host:port:database:user:password`, whole on its own
+   * line: the password goes. The host holds a letter, a dot or `*` (a
+   * timestamp's `2024:10:03:12:30` has none), the port is 4–5 digits or `*`
+   * (`app.ts:12:5:…` is a line and a column).
+   */
+  {
+    name: 'pgpass',
+    re: /(^|\n)([ \t]{0,8}([\w.*-]{1,253}):(?:\d{4,5}|\*):[\w.*-]{1,63}:[\w.*@-]{1,63}:)(\S+)(?=\r?\n|$)/g,
+    to: (m, nl, head, host, pw) => (/[A-Za-z.*]/.test(host) && literalSecret(pw, false, 1, true) ? `${nl}${head}${REDACTED}` : m)
+  },
+  // PHP's `print_r` of a credential: `[password] => X`, `[db_pass] => X`, `[api_key] => X`, to the end of its line.
+  {
+    name: 'print-r',
+    re: /(\[(?:[\w-]{0,64}_)?(?:password|passwd|passphrase|pass|pwd|secret|api_?key|private_?key|token)\][ \t]{0,4}=>[ \t]{0,4})([^\n]+)/g,
+    to: (m, head, rest) => {
+      const v = trimTail(rest, ' \t\r')
+      if (v === 'Array' || /^(?:stdClass )?Object$/.test(v)) return m
+      return literalSecret(v, true, /token/.test(head) ? 12 : /pass|pwd/.test(head) ? 4 : 8, true) ? `${head}${REDACTED}${rest.slice(v.length)}` : m
+    }
+  },
   ...COMMAND_LINE_RULES,
   /*
-   * `password`, `passwd`, `pwd`, and whatever is glued in front of them stays
-   * outside the match (`PGPASSWORD`, `dbPassword`, `DB_PWD`,
-   * `spring.datasource.password`): a leading `[A-Za-z0-9_.-]*` made each of
-   * these two rules cost three times all the others together, measured on a
-   * real index. A shell's `PWD=/a/path` and `OLDPWD=…` are paths, which
-   * `literalSecret` leaves. The same holds for the client secret and token
-   * rules: `GOOGLE_CLIENT_SECRET`, `access_token`, `refreshToken`,
-   * `GITHUB_TOKEN` all end in the name the rule looks for.
+   * `password`, `passwd`, `passphrase`, `pwd`, and whatever is glued in front
+   * of them stays outside the match (`PGPASSWORD`, `dbPassword`, `DB_PWD`,
+   * `GPG_PASSPHRASE`, `spring.datasource.password`): a leading
+   * `[A-Za-z0-9_.-]*` made each of these two rules cost three times all the
+   * others together, measured on a real index. A shell's `PWD=/a/path` and
+   * `OLDPWD=…` are paths, which `literalSecret` leaves. The same holds for the
+   * client secret and token rules: `GOOGLE_CLIENT_SECRET`, `access_token`,
+   * `refreshToken`, `GITHUB_TOKEN` all end in the name the rule looks for.
    */
-  keyed('password', String.raw`[Pp]ass(?:word|wd)|PASS(?:WORD|WD)|[Pp]wd|PWD`, 4, true),
+  keyed('password', String.raw`[Pp]ass(?:word|wd|phrase)|PASS(?:WORD|WD|PHRASE)|[Pp]wd|PWD`, 4, { dottedAssign: true }),
+  /*
+   * `pass`, `DB_PASS`, `smtp.pass`, `"pass":`, `user=x pass=y`: the password
+   * rule's test, but only as a word of its own or after `_`, `-` or `.`
+   * (`bypass`, `compass` and `renderPass` are not one); with a colon, never
+   * straight after a word and a space (prose: "the integration pass: a/b
+   * measurements", measured in a real index's copy) nor as a bare `PASS:` (a
+   * test runner's); and a value of letters or digits only is a word or a
+   * count unless written as a shell assignment (`{ pass: 'PASS', fail: 3 }`;
+   * `DB_PASS=hunter` is one).
+   */
+  keyed(
+    'pass',
+    String.raw`(?<![A-Za-z0-9])(?<![A-Za-z0-9][ \t]{1,16})[Pp]ass|(?<=[A-Za-z0-9][ \t]{1,16})[Pp]ass(?=[ \t]{0,4}=)|(?<=[A-Za-z0-9][_.-])PASS|(?<![A-Za-z0-9])PASS(?=[ \t]{0,4}=)`,
+    4,
+    { dottedAssign: true, plainIsCode: true }
+  ),
   keyed('api-key', String.raw`[Aa][Pp][Ii]\\?[_-]?[Kk][Ee][Yy]`, 8),
   keyed('client-secret', String.raw`[Cc]lient\\?[_-]?[Ss]ecret|CLIENT\\?[_-]?SECRET`, 12),
   /*
    * `secret`, and every name that ends in it (`NEXTAUTH_SECRET`, `JWT_SECRET`,
-   * `appSecret`), `secret_key`/`SECRET_KEY`, and a private key's own name
+   * `appSecret`), with a credential's suffix (`SECRET_KEY`, `SECRET_KEY_BASE`,
+   * `secret_access_key` — R2's 64 hex, past the AWS rule's 40 — and
+   * `SECRET_TOKEN`), and a private key's own name
    * (`PRIVATE_KEY=0x…`, `privateKey: "…"`): a literal of 8+. Code says these
    * with a type or a lookup on the right (`secret: Uint8Array`,
    * `privateKey: process.env.KEY`), which `literalSecret` leaves; the PEM rules
-   * above have already taken a whole key block.
+   * above have already taken a whole key block. `SECRET_NAME`, `SECRET_ARN`
+   * and `SECRET_ID` name where a secret is, and `SECRET_VALUE` was an
+   * attribute's name in every place it was measured; none is taken.
    */
-  keyed('secret', String.raw`[Ss]ecret(?:\\?[_-]?[Kk]ey)?|SECRET(?:\\?_?KEY)?|[Pp]rivate\\?[_-]?[Kk]ey|PRIVATE\\?_?KEY`, 8),
+  keyed(
+    'secret',
+    String.raw`[Ss]ecret(?:\\?[_-]?(?:[Aa]ccess\\?[_-]?)?[Kk]ey(?:\\?[_-]?[Bb]ase)?|\\?[_-]?[Tt]oken)?|SECRET(?:\\?_?(?:ACCESS\\?_?)?KEY(?:\\?_?BASE)?|\\?_?TOKEN)?|[Pp]rivate\\?[_-]?[Kk]ey|PRIVATE\\?_?KEY`,
+    8
+  ),
   /*
    * `token`, `access_token`, `refreshToken`, `GITHUB_TOKEN`: only a literal of
    * 12+, which keeps counts, ids and code's short names out (`eos_token: 2`,
@@ -479,7 +630,8 @@ export const CUT_MARK = ' …'
  * Empty when nothing searchable is left.
  */
 export function cleanText(raw: string, opts: { redact: boolean; maxBytes?: number }): string {
-  let t = raw.replace(CONTROLS, '')
+  // Invisible characters inside a word go before any pattern judges it: a reader sees one word there, and so must the patterns.
+  let t = dropInvisible(raw.replace(CONTROLS, ''))
   if (t.includes(HIT_OPEN) || t.includes(HIT_CLOSE)) t = t.split(HIT_OPEN).join('').split(HIT_CLOSE).join('')
   t = t.replace(DATA_URL, '[data]').replace(BASE64_RUN, (run) => (looksLikeBlob(run) ? '[data]' : run))
   if (opts.redact) t = redactSecrets(t)

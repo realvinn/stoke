@@ -1544,6 +1544,13 @@ console.log('\nchat history: the host’s rules, the scope, and what may leave')
       [parseRemoteChatHits({ hits: [{ ...hit, snippet: `key ${CR}` }] })?.[0].snippet.includes('api03- Q7xK'), parseRemoteChat({ source: 'claude', nativeId: 'abc-1', messages: [{ role: 'user', text: CR, atMs: 1 }] })?.messages[0].text.includes('api03- Q7xK')],
       [true, true]
     )
+    // Review of 166e84f: an invisible character inside a word is dropped, never made a space; one that joins an emoji or a script is kept.
+    const inv = remoteChatHitFrom({ source: 'claude', nativeId: 'abc-1', title: 'T\u200bitle', firstPrompt: null, cwd: null, updatedMs: 5, role: 'user', snippet: { text: 'a\u200bb c\u00add \ufeffthe relay \u{1f469}\u200d\u{1f4bb} \u0645\u06cc\u200c\u062e', ranges: [[17, 22]] } }, 'relay')
+    check(
+      'shaping drops an invisible character inside a word, title too, keeps an emoji’s and a script’s joiner, and marks the hit afresh',
+      [inv.snippet, inv.title, inv.ranges.map(([x, y]) => inv.snippet.slice(x, y))],
+      ['ab cd the relay \u{1f469}\u200d\u{1f4bb} \u0645\u06cc\u200c\u062e', 'Title', ['relay']]
+    )
   }
   ok('and nothing of its path', !JSON.stringify(hit).includes('/Users') && !JSON.stringify(hit).includes('secret-client'))
   const parsed = parseRemoteChatHits({ hits: [hit, { ...hit, source: '../etc' }, { ...hit, nativeId: 'a\nb' }, { ...hit, role: 'system' }, ...Array.from({ length: 60 }, () => hit)] })
@@ -1778,27 +1785,44 @@ console.log('\nchat history between two machines: ask, allow, search, open; ever
      * secret pattern; the host's shaping then DELETED the `\r` after its patterns had run, and the key reached
      * B's viewer whole. Shaping makes a control a space now, and the patterns judge the shaped bytes:
      * `password=\r…` reads `password= …` once shaped, which the patterns take.
+     *
+     * Review of 166e84f: a space kept the halves apart but sent both, and split right after its prefix the
+     * second "half" was the whole body (`sk-ant-api03- <40>`). The `split-key` rule takes a known prefix, a
+     * line break or space and the run after it; and an invisible character inside a key (a zero-width
+     * space, a soft hyphen) is dropped by shaping BEFORE the patterns judge, as a reader sees one word there.
      */
     const ANT = `sk-ant-api03-${'Q7xK2mZp9L'.repeat(4)}`
     const GH = `ghp_${'Ab1Cd2Ef3G'}${'h4Ij5Kl6Mn7Op8Qr9St0Uv1Wx2Y'.slice(0, 26)}`
-    const split = (k: string, at: number): string => `${k.slice(0, at)}\r${k.slice(at)}`
+    // Built from pieces (gotcha 157), each body distinct so a half of one is never found in another.
+    const ZW = `${'gh' + 'p_'}${'Zq8Wv6Ut4S'}${'r2Qp0On8Ml6Kj4Ih2Gf0Ed8Cb6'.slice(0, 26)}`
+    const SHY = `${'np' + 'm_'}${'Yx7Wv5Ut3Sr1Qp9On7Ml5Kj3Ih1Gf9Ed7Cb5'.slice(0, 36)}`
+    const split = (k: string, at: number, by = '\r'): string => `${k.slice(0, at)}${by}${k.slice(at)}`
     hostM.chats.push({
       chatId: 9,
       source: 'claude',
       nativeId: 'n-9',
-      title: 'Keys password=\nCrTitle9pw',
+      title: `Keys password=\nCrTitle9pw ${split(SHY, 20, '\u00ad')}`,
       cwd: '/Users/owner/dev/keys',
-      text: `the keys ${split(ANT, 13)} and ${split(GH, 14)} then password=\rCrBelt9pw for crsplit`
+      text: `the keys ${split(ANT, 13)} and ${split(GH, 14)} and ${split(ZW, 14, '\u200b')} and ${split(SHY, 20, '\u00ad')} then password=\rCrBelt9pw for crsplit`
     })
     res = await guestM.remote.searchChats('crsplit')
     const crHit = byDevice(res, A.id)?.hits[0]
     const crOpen = await guestM.remote.openRemoteChat(A.id, 'claude', 'n-9')
     const seen = JSON.stringify([res, crOpen])
-    check('a key stored split by a bare CR reaches B in two halves, never whole: search and open', [crHit?.nativeId, seen.includes(ANT), seen.includes(GH), seen.includes('api03- Q7xK'), seen.includes(`${GH.slice(0, 14)} ${GH.slice(14)}`)], ['n-9', false, false, true, true])
+    check(
+      'a key stored split by a bare CR right after its prefix, or inside its body, reaches B in neither half: search and open',
+      [crHit?.nativeId, seen.includes(ANT), seen.includes(GH), seen.includes(ANT.slice(13, 25)), seen.includes(ANT.slice(-12)), seen.includes(GH.slice(4, 14)), seen.includes(GH.slice(14))],
+      ['n-9', false, false, false, false, false, false]
+    )
+    check(
+      'a key split by an invisible character (a zero-width space, a soft hyphen) reaches B in neither half: search, open and title',
+      [seen.includes(ZW.slice(4, 14)), seen.includes(ZW.slice(14)), seen.includes(SHY.slice(4, 20)), seen.includes(SHY.slice(20)), /[\u00ad\u200b]/.test(seen)],
+      [false, false, false, false, false]
+    )
     check(
       'what the patterns judged is what was sent: a value a CR kept from its name is taken once shaped, title too',
       [seen.includes('CrBelt9pw'), seen.includes('CrTitle9pw'), crHit?.snippet.includes('password= [redacted]'), crHit?.title, crOpen.ok && crOpen.chat.title],
-      [false, false, true, 'Keys password= [redacted]', 'Keys password= [redacted]']
+      [false, false, true, 'Keys password= [redacted] [redacted]', 'Keys password= [redacted] [redacted]']
     )
     check('and the hit is marked on the text that was sent', crHit && crHit.ranges.map(([x, y]) => crHit.snippet.slice(x, y)), ['crsplit'])
     hostM.chats.pop()

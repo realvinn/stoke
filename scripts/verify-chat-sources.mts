@@ -416,6 +416,122 @@ section('redaction 4: escaped JSON, keyed secrets, dotted assignments, command l
   leaves('their placeholders', `https://${SLACK_HOOKS}T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX and AccountKey=<key> and 12345678:short and AUTHORIZATION: Bearer $TOKEN`)
 }
 
+/** Discord's webhook path, built from pieces like `SLACK_HOOKS` (gotcha 157). */
+const DISCORD_HOOKS = 'discord' + '.com/api/webhooks/'
+
+section('redaction 5: an invisible character or a line break inside a key, and the shapes 4 missed')
+{
+  const red = (s: string): string => cleanText(s, { redact: true })
+  const takes = (what: string, text: string, want: string): void => check(`takes ${what}`, red(text), want)
+  const leaves = (what: string, text: string): void => check(`leaves ${what}`, red(text), text)
+
+  // Review of 166e84f: an invisible character inside a key made it two words to every pattern, and a reader one.
+  const GH = fake('gh' + 'p_', 36)
+  const invisibles: [string, string][] = [
+    ['a zero-width space', '\u200b'],
+    ['a soft hyphen', '\u00ad'],
+    ['a word joiner', '\u2060'],
+    ['a byte order mark', '\ufeff'],
+    ['a zero-width joiner between two letters', '\u200d'],
+    ['a zero-width non-joiner between two letters', '\u200c'],
+    ['a left-to-right mark between two letters', '\u200e'],
+    ['a variation selector between two letters', '\ufe0f']
+  ]
+  for (const [name, c] of invisibles) takes(`a key split by ${name}`, `key ${GH.slice(0, 14)}${c}${GH.slice(14)} here`, 'key [redacted] here')
+  takes('a keyed name split by a soft hyphen', 'pass\u00adword=Hunter22x', 'password=[redacted]')
+  leaves('an emoji’s joiner, Persian’s non-joiner and Hebrew’s right-to-left marks', 'a \u{1f469}\u200d\u{1f4bb} dev, می\u200cخواهم, and \u200fעברית\u200f')
+  check('an invisible character inside a word goes with redaction off too', cleanText('a\u200bb c\u00add', { redact: false }), 'ab cd')
+
+  // Review of 166e84f: a key split after its prefix by a line break, or the space shaping makes of a bare CR, sent both halves.
+  const ANT = fake('sk-' + 'ant-api03-', 40)
+  takes('a key split by a CR right after its prefix', `key ${ANT.slice(0, 13)}\r${ANT.slice(13)} here`, 'key [redacted] here')
+  takes('...and by the space shaping makes of the CR', `key ${ANT.slice(0, 13)} ${ANT.slice(13)} here`, 'key [redacted] here')
+  takes('a key split a few characters in', `key ${GH.slice(0, 14)}\n${GH.slice(14)} here`, 'key [redacted] here')
+  takes('an npm token split after its prefix', `NPM ${'np' + 'm_'}\n${fake('', 36)}`, 'NPM [redacted]')
+  takes('an AWS key id split after its prefix', `id ${'AK' + 'IA'}\n${fake('', 16, 'ABCDEFGHJKLMNPQRSTUVWXYZ234567')}`, 'id [redacted]')
+  for (const code of [
+    'from huggingface_hub import hf_hub_download\nmodel_checkpoint_v2_large = 1',
+    'OpenAI keys start with sk- and then a long random string',
+    'export npm_config_cache\nNPM_CONFIG_PREFIX_LOCAL_2024=1',
+    'the sk- prefixed_secret_identifiers_here',
+    'see ghp_ v2release notes',
+    'OUR ASIA ACCOUNTABILITIES REVIEW'
+  ]) {
+    leaves(`a prefix with no key after it: ${code}`, code)
+  }
+
+  // Shapes rule set 4 had no rule for.
+  takes('a Telegram bot token in its Bot API URL', `https://api.telegram.org/bot${'1234567' + '89'}:${fake('AA', 33)}/getUpdates`, 'https://api.telegram.org/bot[redacted]/getUpdates')
+  const PGP = ['-----BEGIN PGP ', 'PRIVATE KEY BLOCK-----']
+  takes('a PGP private key block', `key:\n${PGP.join('')}\n\n${fake('', 64)}\n${fake('', 40)}\n=${fake('', 4)}\n-----END PGP ${PGP[1]}\nafter`, 'key:\n[redacted]\nafter')
+  takes('...and one cut before its END line, to the end of the text', `key:\n${PGP.join('')}\nVersion: x\n\n${fake('', 64)}`, 'key:\n[redacted]')
+  leaves('a PGP public key block', `${'-----BEGIN PGP ' + 'PUBLIC KEY BLOCK-----'}\n${fake('', 40)}`)
+  takes('Groq, a Google OAuth client secret and an access token', `GROQ=${fake('gs' + 'k_', 52)} G=${fake('GOC' + 'SPX-', 28)} T=${fake('ya' + '29.', 120)}`, 'GROQ=[redacted] G=[redacted] T=[redacted]')
+  takes('Slack app-level and rotation tokens', `A=${fake('xa' + 'pp-1-', 40)} R=${fake('xo' + 'xe.xoxp-1-', 40)} E=${fake('xo' + 'xe-1-', 40)}`, 'A=[redacted] R=[redacted] E=[redacted]')
+  takes('a Discord webhook', `https://${DISCORD_HOOKS}${'1234567890' + '12345678'}/${fake('', 68)}`, `https://${DISCORD_HOOKS}[redacted]`)
+  takes('an Azure SAS signature', `https://a.blob.core.windows.net/c/b?sv=2022-11-02&sp=r&sig=${fake('', 40)}%3D&se=x`, 'https://a.blob.core.windows.net/c/b?sv=2022-11-02&sp=r&sig=[redacted]&se=x')
+  takes('Laravel’s APP_KEY', `APP_KEY=base64:${fake('', 43)}=`, 'APP_KEY=[redacted]')
+  takes('an Authorization: Bot header', `Authorization: Bot ${fake('MT', 22)}.${fake('', 6)}.${fake('', 27)}`, 'Authorization: Bot [redacted]')
+  takes(
+    'a cookie header’s session values, and only those',
+    `Cookie: theme=dark; sessionid=${fake('', 32)}; csrftoken=abc\nSet-Cookie: connect.sid=s%3A${fake('', 40)}; Path=/\ncookie: _myapp_session=${fake('', 40)}`,
+    'Cookie: theme=dark; sessionid=[redacted]; csrftoken=abc\nSet-Cookie: connect.sid=[redacted]; Path=/\ncookie: _myapp_session=[redacted]'
+  )
+  leaves('a short session cookie, and a session outside a header', `Cookie: session=abc123\nthe session=${fake('', 32)} in prose`)
+  takes('a .pgpass line', `localhost:5432:mydb:postgres:${fake('', 12)}\n*:*:*:app:Hunter22`, 'localhost:5432:mydb:postgres:[redacted]\n*:*:*:app:[redacted]')
+  leaves('lines shaped like one that are not', 'hostname:port:database:username:password\n2024:10:03:12:30\napp.ts:12:5:warning:unused\n10:4500:3:2:1')
+  takes(
+    'PHP’s print_r of a credential',
+    'Array\n(\n    [host] => db\n    [password] => Hunter22\n    [db_pass] => s3cret9\n    [api_key] => Array\n)',
+    'Array\n(\n    [host] => db\n    [password] => [redacted]\n    [db_pass] => [redacted]\n    [api_key] => Array\n)'
+  )
+  leaves('a print_r of a nested array or object', 'Array\n(\n    [password] => Array\n        (\n        )\n    [pass] => stdClass Object\n)')
+
+  // Command lines: the value IS the password, a bare word included.
+  takes('sshpass -p, quoted or glued, never the ssh port after it', "sshpass -p 'Hunter22' ssh -p 2222 me@h && sshpass -pHunter22 ssh x", "sshpass -p '[redacted]' ssh -p 2222 me@h && sshpass -p[redacted] ssh x")
+  takes('redis-cli -a', 'redis-cli -h h -p 6379 -a s3cretpass GET k', 'redis-cli -h h -p 6379 -a [redacted] GET k')
+  takes('docker login -p, never the next command’s port', 'docker login -u me -p Dckr9pass ghcr.io && docker run -p 8080:80 img', 'docker login -u me -p [redacted] ghcr.io && docker run -p 8080:80 img')
+  takes('the mongo tools’ -p and mysql’s --password=', 'mongosh -u admin -p hunter mydb; mysql --password=hunter db', 'mongosh -u admin -p [redacted] mydb; mysql --password=[redacted] db')
+  takes('openssl’s pass:, bare and quoted', "openssl enc -pass pass:hunter -in a; openssl rsa -passin 'pass:my pw' -passout pass:Xy9", "openssl enc -pass pass:[redacted] -in a; openssl rsa -passin 'pass:[redacted]' -passout pass:[redacted]")
+  takes('vault login with a legacy token, and a new-style token anywhere', `vault login s.${fake('', 24)} and ${fake('hv' + 's.', 90)}`, 'vault login [redacted] and [redacted]')
+  takes('--passphrase', 'gpg --batch --passphrase s3cretphrase -d f', 'gpg --batch --passphrase [redacted] -d f')
+  for (const code of [
+    'docker run -d --name mongo -p 27017:27017 mongo',
+    'sshpass -e ssh -p 2222 me@host',
+    'openssl rsa -passin env:KEY_PW -passout file:pw.txt',
+    'redis-cli -a $REDIS_PASSWORD ping',
+    'redis-cli ping && grep -a needle log.txt',
+    'mongosh -u admin -p --authenticationDatabase admin',
+    'vault login -method=github'
+  ]) {
+    leaves(`a command line with no password in it: ${code}`, code)
+  }
+
+  // Keyed names.
+  takes(
+    'a keyed pass, DB_PASS and a passphrase',
+    'DB_PASS=hunter smtp.pass: s3cret9 user=admin pass=Hunter22 GPG_PASSPHRASE=abc12345 passphrase: "correct horse"',
+    'DB_PASS=[redacted] smtp.pass: [redacted] user=admin pass=[redacted] GPG_PASSPHRASE=[redacted] passphrase: "[redacted]"'
+  )
+  leaves(
+    'a pass that is a word, a count, a test’s, prose or a render pass',
+    `"pass": "PASS", bypass: 'cache', renderPass: "shadow1", { pass: 120, fail: 3 }, PASS: tests/foo.ts, the integration pass: paint/layout timings, STENCIL_PASS_DEPTH_PASS: 0x0B96`
+  )
+  takes(
+    'secret names with a suffix',
+    `SECRET_KEY_BASE=${fake('', 64, '0123456789abcdef')} secret_access_key = ${fake('', 64, '0123456789abcdef')} R2_SECRET_ACCESS_KEY=${fake('', 64, '0123456789abcdef')}`,
+    'SECRET_KEY_BASE=[redacted] secret_access_key = [redacted] R2_SECRET_ACCESS_KEY=[redacted]'
+  )
+  leaves('a secret’s name, address or attribute', 'AWS_SECRET_NAME=prod/db SECRET_ARN=arn:aws:secretsmanager:x SECRET_VALUE = "secretValue"')
+  leaves('a placeholder: a credential’s snake-case name or its own, a type in angle brackets', "passphrase: 'client_key_passphrase' and passphrase: 'passphrase' and {pem: <string | Buffer>, passphrase: <string>}")
+  leaves('a regex alternation after a name', 'input.replace(/(-P |pass:|\\/p|-pass )([^ ]+)/, fn)')
+  check(
+    'a markdown line break after a marker, and a marker glued to a marker, are no key: cleaning them again changes nothing',
+    red('aws\\_secret\\_access\\_key=[redacted]\\\nnext and api_key=[redacted]\\[data] end'),
+    'aws\\_secret\\_access\\_key=[redacted]\\\nnext and api_key=[redacted]\\[data] end'
+  )
+}
+
 section('redaction 3: cleaning cleaned text again changes nothing')
 {
   // `recleanChat` cleans stored text in place, so every rule's output must be a fixed point.
@@ -424,7 +540,10 @@ section('redaction 3: cleaning cleaned text again changes nothing')
     '{ user: x, password: abc123xyz, b: 2 } and export PASSWORD=abc123; npm start',
     'https://x.io/cb?user=me&password=hunter22&next=/home and Server=db;Password=Xy7&kL9;Encrypt=true',
     `Authorization: Bearer ${fake('', 32)} and aws\\_secret\\_access\\_key=${fake('', 40, 'Ab3Cd5Ef7/Gh9Jk2+Mn4Pq6Rs8Tu')}`,
-    `access_token=${fake('ya29.', 40)}, refreshToken: '${fake('', 24)}' (password=p4ss.Word.xyz)`
+    `access_token=${fake('ya29.', 40)}, refreshToken: '${fake('', 24)}' (password=p4ss.Word.xyz)`,
+    // Rule set 5's.
+    `Cookie: a=b; sessionid=${fake('', 32)}; x=y\nlocalhost:5432:db:u:${fake('', 12)}\n    [db_pass] => s3cret9`,
+    `key ${fake('sk-' + 'ant-api03-', 40).slice(0, 13)}\r${fake('', 40)} and openssl rsa -passin 'pass:my pw' and DB_PASS=hunter \\`
   ]
   const once = samples.map((s) => cleanText(s, { redact: true, maxBytes: Infinity }))
   check('a second clean is a fixed point', once.map((s) => cleanText(s, { redact: true, maxBytes: Infinity })), once)
@@ -456,15 +575,45 @@ section('redaction 3: no input makes a rule backtrack (64 KB, each under a secon
     'webhook prefixes': fill(`${SLACK_HOOKS}TABCDEF1/BABCDEF2/`),
     'an account key run': 'AccountKey=' + fill('A'),
     'secret names glued': fill('NEXTAUTH_SECRET'),
-    'dotted assignment run': 'db_password=' + fill('a.')
+    'dotted assignment run': 'db_password=' + fill('a.'),
+    // Rule set 5's shapes, each a run of the thing it looks for.
+    'split-key prefixes and spaces': fill('sk- '),
+    'split-key prefix, piece, space': fill('ghp_Ab1Cd2 '),
+    'split-key long pieces': fill('hf_' + 'a'.repeat(30) + ' '),
+    'AWS ids and spaces': fill('AKIA '),
+    'PGP BEGIN lines, no END': fill(`${'-----BEGIN PGP ' + 'PRIVATE KEY BLOCK-----'}\n`),
+    'PEM BEGIN lines, no END': fill('-----BEGIN RSA ' + 'PRIVATE KEY-----\n'),
+    'cookie session names': 'Cookie: ' + fill('a_session=x;'),
+    'cookie headers': fill('Cookie: '),
+    'a cookie name run': 'Cookie: ;' + fill('a.'),
+    'pgpass lines': fill('a.b:5432:d:u:\n'),
+    'pgpass fields': fill('a:1234:'),
+    'a pgpass password with no line end': 'h.x:5432:d:u:' + fill('p') + ' x',
+    'print_r keys': fill('[password] => '),
+    'print_r spaces': '[password] => x' + fill(' ') + 'y',
+    'commands with no flag': fill('mongo '),
+    'mysql --password=': fill('mysql --password='),
+    'redis-cli -a, no value': fill('redis-cli -a '),
+    'sshpass options': fill('sshpass -a '),
+    'openssl -passin pass:': fill('-passin pass:'),
+    'vault login': fill('vault login '),
+    'sig= runs': '?' + fill('sig='),
+    'discord webhook prefixes': fill(`${DISCORD_HOOKS}1234567890123456789/`),
+    'telegram /bot runs': fill('/bot123456789:'),
+    'pass after spaces': 'x' + fill(' ') + 'pass: y',
+    'zero-width joiner runs': fill('a\u200d')
   }
   const slow: string[] = []
+  let slowest = 0
   for (const [name, text] of Object.entries(worst)) {
     const t0 = performance.now()
     cleanText(text, { redact: true })
-    if (performance.now() - t0 > 1000) slow.push(name)
+    const ms = performance.now() - t0
+    slowest = Math.max(slowest, ms)
+    if (ms > 1000) slow.push(name)
   }
   check('every worst case cleans in under a second', slow, [])
+  console.log(`        (the slowest of ${Object.keys(worst).length}: ${slowest.toFixed(1)} ms)`)
 }
 
 section('opening a hit')

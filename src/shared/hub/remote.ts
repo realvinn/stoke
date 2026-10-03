@@ -32,7 +32,7 @@
  * Pure (gotcha 27); imports only src/shared by relative `.ts` path (gotcha 78).
  */
 import type { UsageWindow } from '../types.ts'
-import { highlightRanges, type ChatSearchHit, type ChatTranscript } from '../chatIndex.ts'
+import { dropInvisible, highlightRanges, type ChatSearchHit, type ChatTranscript } from '../chatIndex.ts'
 import { isId, isRecord } from './codec.ts'
 import {
   CHAT_HITS_MAX,
@@ -107,9 +107,9 @@ const STATES: readonly RemoteSessionState[] = ['waiting', 'busy', 'idle', 'ended
 
 function clip(v: unknown, max: number): string {
   if (typeof v !== 'string') return ''
-  // One line, no control characters: it is drawn as a label on another machine.
+  // One line, no control characters and no invisible ones inside a word (`chatText`): it is drawn as a label on another machine.
   // eslint-disable-next-line no-control-regex
-  return [...v.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim()].slice(0, max).join('')
+  return [...dropInvisible(v).replace(/[\u0000-\u001f\u007f]+/g, ' ').trim()].slice(0, max).join('')
 }
 
 function count(v: unknown): number | null {
@@ -891,20 +891,25 @@ function cleanRanges(v: unknown, len: number): [number, number][] {
 
 /**
  * Chat text as it is drawn on another machine: every control character but
- * tab and newline becomes a SPACE, never nothing, and the whole is cut to
- * `max`. One for one, so an offset into the text still points where it did.
+ * tab and newline becomes a SPACE, never nothing, invisible format characters
+ * that sit inside a word are dropped (`dropInvisible`), and the whole is cut
+ * to `max`. A highlight is marked again on the shaped text whenever shaping
+ * moved it (`shapedSnippet`).
  *
- * Never deleted (re-review of 62b4ae6): the index keeps a bare `\r`, so a
- * stored `sk-ant-api03-\r<40 characters>` is two words to every secret
- * pattern — and deleting the `\r` here, after the host's patterns had run,
- * joined it into a whole key on the guest's screen. A space keeps the two
+ * A control is never deleted (re-review of 62b4ae6): the index keeps a bare
+ * `\r`, so a stored `sk-ant-api03-\r<40 characters>` is two words to every
+ * secret pattern — and deleting the `\r` here, after the host's patterns had
+ * run, joined it into a whole key on the guest's screen. A space keeps the two
  * halves apart, and the host judges the text only after this has shaped it
- * (`sharedChats`), so what the patterns saw is what is sent.
+ * (`sharedChats`), so what the patterns saw is what is sent. An invisible
+ * character is the other way round (review of 166e84f): a reader already sees
+ * the word it sits in as one, so it goes BEFORE the host's patterns judge,
+ * which then see the key a reader would.
  */
 export function chatText(v: unknown, max: number): string {
   if (typeof v !== 'string') return ''
   // eslint-disable-next-line no-control-regex
-  const t = v.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, ' ')
+  const t = dropInvisible(v).replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, ' ')
   return t.length > max ? t.slice(0, max) : t
 }
 

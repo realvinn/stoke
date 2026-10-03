@@ -664,6 +664,27 @@ export interface ChatSearchHit {
 export const HIT_OPEN = '\u0002'
 export const HIT_CLOSE = '\u0003'
 
+/*
+ * Invisible format characters a copy from a web page, a PDF or a chat app
+ * leaves inside a word: a zero-width space, a soft hyphen, a word joiner, a
+ * byte order mark. Drawn as nothing, they still make two words of one for
+ * every secret pattern, so a key with one in it reached another computer
+ * whole on its screen (review of 166e84f). Text is judged and stored without
+ * them (`cleanText`) and shaped without them for another computer
+ * (`chatText`). The joiners (ZWNJ, ZWJ), the direction marks and isolates, the
+ * combining grapheme joiner and the variation selectors go only BETWEEN two
+ * printable ASCII characters, where they join nothing: an emoji sequence
+ * (woman, ZWJ, laptop), Persian's ZWNJ, an Indic conjunct and right-to-left
+ * text keep theirs.
+ */
+const INVISIBLE = /[\u00ad\u180e\u200b\u2060-\u2064\ufeff]/g
+const INVISIBLE_IN_ASCII = /(?<=[!-~])[\u034f\u061c\u200c-\u200f\u202a-\u202e\u2066-\u2069\ufe00-\ufe0f]+(?=[!-~])/g
+
+/** `s` without the invisible characters that split a word for a pattern but not for a reader. */
+export function dropInvisible(s: string): string {
+  return s.replace(INVISIBLE, '').replace(INVISIBLE_IN_ASCII, '')
+}
+
 /** Marked snippet text -> the text without marks, and where the marks were. */
 export function parseMarked(marked: string): { text: string; ranges: [number, number][] } {
   let text = ''
