@@ -829,3 +829,47 @@ byte of the guest's page.
 >
 > Still open: a key split further in than 24 characters, or inside its prefix, leaves as two halves
 > (neither a key to any pattern), and `split-key` knows only the listed prefixes.
+
+> **Checked against the code on 2026-10-04 (review of 10b0840)** — the patterns stop being the guarantee
+> on the way out. A verifier's 46 fresh secret shapes (a WireGuard key, a Twilio pair, PyPI, Atlassian,
+> age, a fish `set -gx` password, …) went through rule set 5 to the guest 44 times, and no list of
+> providers ends. The owner chose live search between their own computers, so the share path carries a
+> net that knows a key by its shape alone, and the patterns stay what the LOCAL index and viewer use:
+> - **A generic net on the way out** (`redactKeyShaped`, shared/keyShaped.ts, called only by
+>   `sharedChats`): a run of `[A-Za-z0-9_+=-]` 20 or longer with a random stretch of 16+ (charged by its
+>   short pieces in both cases, by its class changes in one; a name's words and numbers, a git commit's
+>   40 hex and UUIDs left), or 32+ hex, leaves as `[redacted]`; a plain `name=` before it stays, a piece
+>   glued by `/` goes with it, a run against a snippet's cut `…` is judged as a part. It runs over the
+>   index's whole text (patterns first, so `split-key` still sees both halves) before the cut to shape,
+>   and again over the bytes sent. Measured on a read-only copy of this Mac's index as SHARED (220 chats
+>   opened, 8,309 messages; 80 searches for its most frequent words): 4.7% of messages and 0.28% of the
+>   text touched, 0.8% of snippets, no hit dropped, no search refused; of 30 random takes, 24 ids (17
+>   `toolu_` tool-use ids), 3 hashes or signatures, 2 other (a public key's piece, an encoded URL part),
+>   1 secret — and reading every take outside the id and hex buckets found secrets the patterns missed:
+>   an admin password, an OAuth code, a phone link's key, an API key named in prose, an AWS secret typed
+>   into a script. No code identifier in the repo's src or the index was taken; across 2,769 node_modules
+>   docs and typings, one (`convertIPv4MappedIPv6ToIPv4`). The fresh shapes: 18 of 46 still reach the
+>   guest — 16 are one 13-character password (under the net's 20) in 16 contexts, 1 a UUID used as a
+>   password, 1 an Azure secret cut by its `~` and `.` into short pieces.
+> - **A key-shaped search is refused** (`keyShapedQuery`, code `query-key-shaped`, worded by the guest).
+>   The net changes only what is SHOWN: the cleaned rows still hold every key no pattern knows, and a
+>   search over them answers yes or no for each prefix — this gotcha's oracle, for unknown shapes. The
+>   refusal, not the net, closes it, which is why the net needs no `REDACTION_VERSION` bump: a word of 8+
+>   with letters and digits that changes between them three times, or mixes case like a random string,
+>   or 16+ hex, or any run the net would take, is never searched. A hit whose query word is marked only
+>   inside a run the net takes is dropped (`matchedOnlyInKeys`), so a walk shorter than that finds the
+>   chat at no length either. A 7-character git short id is searchable; a longer prefix of one is not.
+> - **Rule set 6** (`REDACTION_VERSION`): the whole Default_Ignorable set in `dropInvisible`; a first
+>   prompt drops invisibles before it folds spaces (`\s` holds a BOM); `split-key` after any Unicode
+>   space, an indented line break or a quoted `> `; Telegram after `bot` with no slash or a `%3A` colon;
+>   Cline's own title, cut at 119 inside a word, judged by `toolCutTitle` (a re-clean: every Cline title
+>   ending in `…`). And the case the verifier found missing: reverting clineMeta to `firstPromptOf` now
+>   fails a 300-character dot-separated prompt ending in a token.
+>
+> Each held by a suite case shown red by mutating it back (verify:chat-sources, verify:hub-relay), but one:
+> dropping the net from the bytes-sent belt stays green, as today's shaping only splits and cuts, so it
+> takes nothing the whole-text pass has not; it stays for the day shaping joins again. Still open: a
+> walk that pairs the key's opening with a word FTS shows in the snippet instead (the opening is then
+> marked nowhere there, so `matchedOnlyInKeys` cannot judge it) confirms an unknown key's opening up to
+> the refusal — case folded, its third letter/digit change, about 11 characters of a random base62 one;
+> secrets under 20 characters that no pattern knows, which are shown anyway; and a UUID-shaped password.

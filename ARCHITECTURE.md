@@ -409,7 +409,12 @@ device's. Every refusal carries a `ChatsRefusalCode` the GUEST words itself
 (`searchCleaned` finds only rows cleaned by today's rules, `openCleaned` re-reads with redaction
 forced): redacted again with the index's own patterns (titles, snippets, messages, folder names,
 ids), a folder by its last segment, nothing from a hidden folder — left out before the limit, in the
-store and again in `sharedChats`, so a hidden chat takes no place in the answer.
+store and again in `sharedChats`, so a hidden chat takes no place in the answer. The patterns know
+keys by provider and miss most new shapes, so the share path adds a generic net
+(`shared/keyShaped.ts`): any run of token characters long and random enough to be a key leaves as
+`[redacted]`, and a search that looks like a key or a code is refused (`query-key-shaped`) before
+the index is asked, since FTS would answer any prefix of a key no pattern knows (gotcha 156). The
+local index and viewer never run it: it takes ids and hashes too.
 
 ## Remote access
 
@@ -1466,8 +1471,10 @@ src/main/         Electron main process
                     import. verify:hub-relay
   hub/chatShare.ts  what another computer may read of this one's chat history: the relay
                     instance's two routes (`answerChatsRoute`) over `sharedChats`, which redacts
-                    every string again, names a folder by its last segment and keeps hidden
-                    folders' chats here. The chat index reaches it through `chatIndexForGuests`
+                    every string again (the patterns, then shared/keyShaped.ts's net, before and
+                    after the cut to shape), refuses a key-shaped search, drops a hit matched
+                    only inside a key (`matchedOnlyInKeys`), names a folder by its last segment
+                    and keeps hidden folders' chats here. The chat index reaches it through `chatIndexForGuests`
                     in index.ts, which hands it `searchCleaned`/`openCleaned` only (verify:remote
                     holds that by text). No electron import. verify:hub-relay
   accounts.ts       an agent account's folder, `~/.stoke/accounts/<cli>-<slug>` (not userData:
@@ -2136,6 +2143,11 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     `chatOpenAction` — what pressing a hit may open (resume, or the viewer).
                     Imports (`CHAT_IMPORT_KINDS`, never a pass's source), the export reader's
                     limits (`CHAT_EXPORT_LIMITS`) and `importDisclosure`
+  keyShaped.ts      the share path's safety net, by shape alone: `redactKeyShaped` (a run of
+                    token characters 20+ long with a random stretch of 16+, or 32+ hex; git ids,
+                    UUIDs and names with numbers kept; cut ends and `/`-glued pieces judged) and
+                    `keyShapedQuery`, the looser test a guest's search is refused by. Pure and
+                    linear; only `sharedChats` calls it. verify:hub-relay
   welcome.ts        whether the first-run campfire plays, from two strings: the version whose
                     splash was last watched and the version running now. A semver comparison
                     and the clamp that repairs the stored value, together in one file because

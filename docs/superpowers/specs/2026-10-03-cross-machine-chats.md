@@ -70,6 +70,15 @@ In `src/main/chatIndex/` (parse/scan/store/sources, whatever holds `cleanText` a
   `APP_KEY`, `Authorization: Bot`, a cookie header's session values, `.pgpass` lines and PHP `print_r` join
   the list. A re-clean also redacts the cut word of a title at the first prompt's cap, and a raw first
   prompt (Cline's title, Codex's listing) is cut back to a space before it is cleaned.
+- **Rule set 6** (`REDACTION_VERSION` 6, review of 10b0840): `dropInvisible` takes Unicode's whole
+  Default_Ignorable_Code_Point set (the joiners, marks, variation selectors, fillers and tags still only
+  between two ASCII characters), and a first prompt drops them before it folds spaces; `split-key` takes
+  any Unicode space, an indented line break and a quoted reply's `> ` after a prefix; Telegram's token
+  after `bot` with no slash and with its colon as `%3A`; and Cline's own title, cut by Cline at 119
+  characters inside a word, has its cut word redacted (`toolCutTitle`; a re-clean, every Cline title
+  ending in `…`).
+- **The patterns stop there.** Five rule sets still let 44 of 46 fresh secret shapes through, and no list
+  of providers ends; what leaves is caught by shape instead, on the share path only (§3).
 
 ### 2. The password check (hub + client)
 
@@ -122,9 +131,26 @@ In `src/main/chatIndex/` (parse/scan/store/sources, whatever holds `cleanText` a
   limit first, `limit=1` answering nothing where `limit=2` answered one said a hidden chat ranked first).
   Folder names and the tools' ids go through the secret patterns too; a chat whose id they would change is
   not sent.
+- **A generic net on the way out** (shared/keyShaped.ts, review of 10b0840): after the patterns, every
+  title, snippet, message and folder name loses any run of token characters (`[A-Za-z0-9_+=-]`, so path
+  segments, URL parts, dotted names and base64 pieces are judged one by one) that is 20 or longer and
+  random by its changes of class — a stretch of 16+ that is not a name's words and numbers — or holds 32+
+  hex; a git commit's 40 hex and a UUID stay, a `name=` before a taken value stays, a piece glued by `/`
+  to a taken run goes with it, and a run against a snippet's cut `…` is judged as a part (8+). It runs
+  over the index's whole text before the cut to shape and again over the bytes sent, and never on the
+  local index or viewer: it takes ids and hashes too (`toolu_` ids, SHA-256s), which a shared view
+  accepts losing. Measured on a read-only copy of this Mac's index (220 chats, 8,309 messages): 4.7% of
+  messages touched, 0.28% of the text, 0.8% of the snippets of 80 frequent-word searches, no code.
+- **A search that looks like a key is refused** before the index is asked (`keyShapedQuery`, code
+  `query-key-shaped`): a word of 8+ with letters and digits that changes between them three times, or
+  mixes case like a random string, or 16+ hex, or any run the net would take. The cleaned rows still hold
+  every key no pattern knows, and FTS answers a prefix of one. A 7-character git short id is searchable; a
+  longer prefix of one is not. A hit whose query word is marked only inside a run the net takes is left
+  out (`matchedOnlyInKeys`).
 - **Refusal codes** (`ChatsRefusalCode`, shared/hub/remote.ts, documented there): `not-sharing`,
   `history-off`, `redaction-off`, `denied`, `no-answer`, `revoked`, `busy`, `not-a-device`, `not-in-vault`,
-  `disconnected`. The host sends the code with a fallback sentence for an older guest; the guest words the
+  `disconnected`, and per search `query-key-shaped` ("That search looks like a key or a code — search
+  <Computer> with words instead."). The host sends the code with a fallback sentence for an older guest; the guest words the
   code itself (`chatsRefusalSentence`), and its results and peers carry it (`code`) for the renderer.
 - **Grants:**
   - A guest with no grant raises a question on the host: Allow once / Always / Deny, the existing question
