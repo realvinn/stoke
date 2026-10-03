@@ -698,9 +698,27 @@ console.log('\nthe watch under ConPTY repaints and cursor moves (shapes built fr
     ['a Banner, answered, the login prints a shell, a resize: no', [HELLO, `${banner}\r\n`, `${P} `, { in: 'pw\r' }, '\r\n', '$ ', repaint([banner, P, '$'], 27, [3, 3])], false],
     // Answered after a resize, by the keyboard or the phone (text, then a lone Enter).
     ['the prompt, a resize, the password and Enter: no', [...MP, ...MEASURED_CONPTY_RESIZES, { in: 'pw\r' }], false],
-    ['the same from the phone: no', [...MP, ...MEASURED_CONPTY_RESIZES, { in: 'hunter2' }, { in: '\r' }], false]
+    ['the same from the phone: no', [...MP, ...MEASURED_CONPTY_RESIZES, { in: 'hunter2' }, { in: '\r' }], false],
+    // A repaint cuts short the row it lands on; that row counts on the OLD screen
+    // (found in review: counted on the new one, these two read as waiting).
+    ['a repaint between Enter and ssh’s newline: no — the password is in flight', [...MP, { in: 'pw\r' }, MEASURED_CONPTY_RESIZES[0], '\r\n'], false],
+    ['  the same with the newline folded into the repaint: no', [...MP, { in: 'pw\r' }, repaint([W, P], 27, [3, 1])], false],
+    [
+      'a resize at the prompt, a wrong password, a repaint in the delay, then ssh asks again: yes',
+      [
+        ...MP,
+        MEASURED_CONPTY_RESIZES[0],
+        { in: 'bad\r' },
+        '\r\n',
+        'Permission denied, please try again.\r\n',
+        repaint([W, P, 'Permission denied, please try again.'], 27, [4, 1]),
+        "User@localhost's password: "
+      ],
+      true
+    ]
   ]
   for (const [name, steps, want] of cases) ok(name, awaiting(steps, C) === want)
+  check('a repaint at the prompt leaves one prompt row counted, not two', replay([...MP, MEASURED_CONPTY_RESIZES[0]], C).login.shown, 1)
   ok(
     'and a tab at a key login whose cursor is parked is never offered a key for su’s prompt',
     replay(['Linux web 6.1\r\n', 'v@web:~$ su -', `${ESC}[1;10H`, { in: '\r' }, '\r\n', 'Password: '], C).offers.length === 0

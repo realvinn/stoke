@@ -486,7 +486,6 @@ export function sshLoginOutput(state: SshLoginWatch, chunk: string, opts: SshAut
     const done = line + text.slice(from, i)
     from = i + 1
     line = ''
-    if (cursor && c === '\f') shown = 0 // a repaint starts again from the top
     // An answered prompt: the password is not echoed, so the line that the
     // newline finishes is the prompt itself. Set here too, not only at the end
     // of a chunk, so a prompt and what followed it arriving together still
@@ -497,16 +496,25 @@ export function sshLoginOutput(state: SshLoginWatch, chunk: string, opts: SshAut
       atText = false
       shown++
       if (answered && shown > answeredAt) answered = false // a NEW prompt row: ssh asking again
-      continue
+    } else {
+      const bare = done.replace(/[ \t]+$/, '')
+      // Rule 3 — but a Banner row a ConPTY repaint finishes again is not news.
+      if (prompted && !isPreAuthLine(done) && !preamble.includes(bare)) return settle(state, seen)
+      if (opts.conpty && !prompted && bare !== '' && preamble.length < MAX_PREAMBLE) preamble.push(bare)
+      if (done.trim() !== '') {
+        atPrompt = false
+        atText = !isPreAuthLine(done)
+      }
     }
-    const bare = done.replace(/[ \t]+$/, '')
-    // Rule 3 — but a Banner row a ConPTY repaint finishes again is not news.
-    if (prompted && !isPreAuthLine(done) && !preamble.includes(bare)) return settle(state, seen)
-    if (opts.conpty && !prompted && bare !== '' && preamble.length < MAX_PREAMBLE) preamble.push(bare)
-    if (done.trim() !== '') {
-      atPrompt = false
-      atText = !isPreAuthLine(done)
-    }
+    /*
+     * A repaint starts counting again from the top — AFTER the row it cut short
+     * is counted where it stood. Reset first, and the prompt row being drawn
+     * when the repaint began counted as the repaint's own first row: one too
+     * many, so a repaint between Enter and ssh's newline read as ssh asking
+     * again — a password in flight as "at the prompt" (found in review,
+     * 2026-10-03, on the measured repaint).
+     */
+    if (cursor && c === '\f') shown = 0
   }
   line = (line + text.slice(from)).slice(-SSH_AUTH_TAIL_BYTES)
   if (line.trim() !== '') {
