@@ -164,7 +164,7 @@ import {
 } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
-import { delimiter, dirname, join } from 'node:path'
+import { delimiter, dirname, join, resolve } from 'node:path'
 import { gitBashPath } from '../src/main/statusLine.ts'
 
 let failures = 0
@@ -182,6 +182,32 @@ function ok(name: string, cond: boolean, detail = ''): void {
   if (!cond) failures++
   console.log(`  ${cond ? 'PASS' : 'FAIL'}  ${name}${cond || !detail ? '' : `\n        ${detail}`}`)
 }
+
+/*
+ * Paths, so the MCP checks hold on Windows as well as here (gotcha 113).
+ *
+ * `abs` is a POSIX-looking absolute path as the host's own `resolve` makes it,
+ * which is what every folder walk under test does first: `/a/b` elsewhere, and
+ * on Windows the current drive's `C:\a\b`, whose top is `C:\`. A '/a/b' literal
+ * can never be what a walk answers there.
+ *
+ * `projectKeyOf` is a folder as Claude Code files it in `~/.claude.json`'s
+ * `projects`: forward slashes on Windows (the CLI's `_9`; a real Windows file
+ * holds keys like `C:/Users/User/project`), the path itself elsewhere. Written
+ * out here rather than imported, so on Windows a product that stopped
+ * converting fails instead of agreeing with itself (off Windows these paths
+ * hold no backslash, so the two spellings are one and only Windows can tell).
+ * Fixtures write their keys this way too: a key spelled with backslashes is
+ * one the CLI never writes, so it can only ever test a lookup nobody makes.
+ *
+ * `scratchHome` makes a scratch folder and takes its NATIVE realpath, as main's
+ * `realpath` does: on Windows that also expands an 8.3 short name (a runner's
+ * TEMP is `C:\Users\RUNNER~1\…`), which the JS `realpathSync` keeps — and then
+ * every key a fixture writes names a folder the product never looks up.
+ */
+const abs = (p: string): string => resolve(p)
+const projectKeyOf = (p: string): string => (process.platform === 'win32' ? p.replaceAll('\\', '/') : p)
+const scratchHome = (prefix: string): string => realpathSync.native(mkdtempSync(join(tmpdir(), prefix)))
 
 const KEY = 'sk-or-v1-secret'
 const CUSTOM_KEY = 'sk-custom-secret'
@@ -2393,7 +2419,7 @@ console.log('\nMCP: what is stored — ticks and Stoke-held servers only')
 console.log('\nMCP in main: a scratch HOME, its ~/.claude.json read, owner-only files written')
 {
   // Fake every input (gotcha 74): a scratch home and userData, never the real ones.
-  const home = realpathSync(mkdtempSync(join(tmpdir(), 'stoke-verify-mcp-')))
+  const home = scratchHome('stoke-verify-mcp-')
   try {
     const project = join(home, 'work', 'app')
     mkdirSync(project, { recursive: true })
@@ -2405,7 +2431,7 @@ console.log('\nMCP in main: a scratch HOME, its ~/.claude.json read, owner-only 
           docs: { type: 'http', url: 'https://mcp.example.com/mcp', headers: { Authorization: `Bearer ${HTTP_BEARER}` } },
           'turned-off': { command: 'uvx', args: ['off'] }
         },
-        projects: { [project]: { disabledMcpServers: ['turned-off'], mcpServers: { 'local-db': { command: 'pg-mcp' } } } }
+        projects: { [projectKeyOf(project)]: { disabledMcpServers: ['turned-off'], mcpServers: { 'local-db': { command: 'pg-mcp' } } } }
       })
     )
     mkdirSync(join(home, '.codex'), { recursive: true })
@@ -2468,8 +2494,9 @@ console.log('\nMCP in main: a scratch HOME, its ~/.claude.json read, owner-only 
 
 console.log('\nMCP: every agent’s own servers, its user config and the launch folder’s (ownMcpSources)')
 {
-  check('foldersUpTo: nearest first, to the stop inclusive', foldersUpTo('/a/b/c', '/a/b'), ['/a/b/c', '/a/b'])
-  check('foldersUpTo: to the top with no stop', foldersUpTo('/a/b', null), ['/a/b', '/a', '/'])
+  // The stop is a git root, which main hands over already resolved (`gitRootOf`).
+  check('foldersUpTo: nearest first, to the stop inclusive', foldersUpTo('/a/b/c', abs('/a/b')), [abs('/a/b/c'), abs('/a/b')])
+  check('foldersUpTo: to the top with no stop', foldersUpTo('/a/b', null), [abs('/a/b'), abs('/a'), abs('/')])
   // Fake every input (gotcha 74): a scratch home with each agent's files, a repo and a subfolder in it.
   const home = realpathSync(mkdtempSync(join(tmpdir(), 'stoke-verify-mcpown-')))
   try {
@@ -2515,7 +2542,9 @@ console.log('\nMCP: every agent’s own servers, its user config and the launch 
     check('codex: config.toml and the repo’s .codex/config.toml', await own('codex'), ['node_repl', 'repo-codex'])
     check('vibe: its config.toml and the nearest .vibe/config.toml only', await own('vibe'), ['fs', 'sub-vibe'])
     check('with no folder (Settings), only the user level', [await own('opencode', null), await own('qwen', null), await own('copilot', null)], [['github'], ['docs', 'org-tool'], ['playwright']])
-    check('outside a repo OpenCode walks to the top', ownMcpSources('opencode', {}, '/h', { real: '/x/y', gitRoot: null }).filter((s) => s.path.endsWith('opencode.json') && !s.path.includes('.opencode')).map((s) => s.path).slice(-3), ['/x/y/opencode.json', '/x/opencode.json', '/opencode.json'])
+    // `real` resolved, as main hands it: a raw '/x/y' could never equal a stop on Windows, so a walk
+    // that wrongly stopped at the cwd would still reach the top there and pass.
+    check('outside a repo OpenCode walks to the top', ownMcpSources('opencode', {}, '/h', { real: abs('/x/y'), gitRoot: null }).filter((s) => s.path.endsWith('opencode.json') && !s.path.includes('.opencode')).map((s) => s.path).slice(-3), [join(abs('/x/y'), 'opencode.json'), join(abs('/x'), 'opencode.json'), join(abs('/'), 'opencode.json')])
     check('pi and claude read nothing here: Pi’s own mcp.json outranks, Claude loads its own', [ownMcpSources('pi', {}, '/h', folder), ownMcpSources('claude', {}, '/h', folder)], [[], []])
 
     // The launch: a tick of a name the folder's own config defines is skipped, never merged.
@@ -2552,19 +2581,23 @@ console.log('\nMCP: where Claude Code files a folder — its canonical git root,
     ]),
     { mcpServers: { a: { command: 'outer' }, b: { command: 'inner' }, c: { command: 'inner' } } }
   )
-  check('the chain is every folder from the top down, the top itself excluded', foldersDownTo('/a/b/c'), ['/a', '/a/b', '/a/b/c'])
+  check('the chain is every folder from the top down, the top itself excluded', foldersDownTo('/a/b/c'), [abs('/a'), abs('/a/b'), abs('/a/b/c')])
   const trustJson = { projects: { '/r': { hasTrustDialogAccepted: true }, '/u': { hasTrustDialogAccepted: false } } }
   ok('a trusted folder, or one under a trusted folder, is trusted', isTrustedFolder(trustJson, ['/r/sub', '/r']))
   ok('an untrusted or unknown one is not', !isTrustedFolder(trustJson, ['/u', '/x']) && !isTrustedFolder(null, ['/r']))
+  // As main calls it: the folder and its git root are the host's own (real) paths,
+  // the key is the CLI's spelling, and so is every key the walk hands back.
+  const trustRepo = abs('/h/repo')
   check(
     'inside a repo the trust walk stops at the repo’s own top (the CLI’s GS/WS)',
-    trustKeys('/h/repo', '/h/repo/src/deep', '/h/repo', 'darwin'),
-    ['/h/repo', '/h/repo', '/h/repo/src', '/h/repo/src/deep']
+    trustKeys(projectKeyOf(trustRepo), join(trustRepo, 'src', 'deep'), trustRepo),
+    [trustRepo, trustRepo, join(trustRepo, 'src'), join(trustRepo, 'src', 'deep')].map(projectKeyOf)
   )
-  check('outside one it goes to the top', trustKeys('/h/loose', '/h/loose', null, 'darwin'), ['/h/loose', '/h', '/h/loose'])
+  const loose = abs('/h/loose')
+  check('outside one it goes to the top', trustKeys(projectKeyOf(loose), loose, null), [loose, abs('/h'), loose].map(projectKeyOf))
 
   // Fake every input (gotcha 74): a scratch home holding a repo, a subfolder and a linked worktree.
-  const home = realpathSync(mkdtempSync(join(tmpdir(), 'stoke-verify-mcpkey-')))
+  const home = scratchHome('stoke-verify-mcpkey-')
   try {
     const repo = join(home, 'work', 'app')
     const sub = join(repo, 'src', 'deep')
@@ -2579,17 +2612,18 @@ console.log('\nMCP: where Claude Code files a folder — its canonical git root,
     const plain = join(home, 'plain', 'folder')
     mkdirSync(plain, { recursive: true })
 
-    check('a repo’s top is its own key', (await claudeProjectKey(repo)).key, repo)
-    check('a subfolder is filed under the repo’s top, not its own path', (await claudeProjectKey(sub)).key, repo)
-    check('a linked worktree is filed under the MAIN worktree’s top', (await claudeProjectKey(wt)).key, repo)
-    check('a folder in no repo is its own key', (await claudeProjectKey(plain)).key, plain)
+    const repoKey = projectKeyOf(repo)
+    check('a repo’s top is its own key', (await claudeProjectKey(repo)).key, repoKey)
+    check('a subfolder is filed under the repo’s top, not its own path', (await claudeProjectKey(sub)).key, repoKey)
+    check('a linked worktree is filed under the MAIN worktree’s top', (await claudeProjectKey(wt)).key, repoKey)
+    check('a folder in no repo is its own key', (await claudeProjectKey(plain)).key, projectKeyOf(plain))
     ok('a Windows key is written with forward slashes, as the CLI writes it', !(await claudeProjectKey(plain, 'win32')).key.includes('\\'))
 
     writeFileSync(
       join(home, '.claude.json'),
       JSON.stringify({
         mcpServers: { github: { command: 'npx', args: ['gh'] }, 'turned-off': { command: 'uvx' } },
-        projects: { [repo]: { disabledMcpServers: ['turned-off'], mcpServers: { 'local-db': { command: 'pg-mcp' } } } }
+        projects: { [repoKey]: { disabledMcpServers: ['turned-off'], mcpServers: { 'local-db': { command: 'pg-mcp' } } } }
       })
     )
     // `.mcp.json` above the repo and at its top: both read, the nearer one winning.
@@ -2622,7 +2656,7 @@ console.log('\nMCP: where Claude Code files a folder — its canonical git root,
 
     // Trusted in Claude Code, the folder's committed approval counts, as the CLI's does.
     const cfg = JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8'))
-    cfg.projects[repo].hasTrustDialogAccepted = true
+    cfg.projects[repoKey].hasTrustDialogAccepted = true
     writeFileSync(join(home, '.claude.json'), JSON.stringify(cfg))
     check(
       'trusted: every approved .mcp.json server along the chain, the nearer file’s entry winning',
@@ -2630,8 +2664,8 @@ console.log('\nMCP: where Claude Code files a folder — its canonical git root,
       [['stoke', ''], ['github', 'npx'], ['outer-tool', 'outer'], ['shared', 'from-repo'], ['repo-tool', 'repo-mcp'], ['local-db', 'pg-mcp']]
     )
     // A trusted HOME trusts a loose folder under it, and never a repo cloned there.
-    delete cfg.projects[repo].hasTrustDialogAccepted
-    cfg.projects[home] = { hasTrustDialogAccepted: true }
+    delete cfg.projects[repoKey].hasTrustDialogAccepted
+    cfg.projects[projectKeyOf(home)] = { hasTrustDialogAccepted: true }
     writeFileSync(join(home, '.claude.json'), JSON.stringify(cfg))
     check(
       'a trusted home does not trust a repo under it: the repo’s own approval still does not count',
@@ -2659,19 +2693,19 @@ console.log('\nMCP: where Claude Code files a folder — its canonical git root,
     const catEnv = { QWEN_CODE_SYSTEM_SETTINGS_PATH: join(home, 'qwen-system', 'settings.json') }
     const catalogNow = () => readMcpCatalog(new ClaudeConfigReader({}, home), catEnv, home)
     const untrusted = await catalogNow()
-    check('Settings lists a known folder’s approved .mcp.json server, with its folder', untrusted.project.map((s) => [s.name, s.folders]), [['repo-tool', [repo]]])
+    check('Settings lists a known folder’s approved .mcp.json server, with its folder', untrusted.project.map((s) => [s.name, s.folders]), [['repo-tool', [repoKey]]])
     check('and the ones Claude may not run there yet, apart', untrusted.unapproved, [
-      { name: 'outer-tool', folders: [repo] },
-      { name: 'shared', folders: [repo] }
+      { name: 'outer-tool', folders: [repoKey] },
+      { name: 'shared', folders: [repoKey] }
     ])
     mkdirSync(join(repo, '.claude'), { recursive: true })
     writeFileSync(join(repo, '.claude', 'settings.json'), JSON.stringify({ enableAllProjectMcpServers: true }))
     check('the repo’s own approval does not count while it is untrusted', (await catalogNow()).project.map((s) => s.name), ['repo-tool'])
-    cfg.projects[repo].hasTrustDialogAccepted = true
+    cfg.projects[repoKey].hasTrustDialogAccepted = true
     writeFileSync(join(home, '.claude.json'), JSON.stringify(cfg))
     const trusted = await catalogNow()
     check('once trusted, every server of its chain', [trusted.project.map((s) => [s.name, s.folders]), trusted.unapproved], [
-      [['outer-tool', [repo]], ['shared', [repo]], ['repo-tool', [repo]]],
+      [['outer-tool', [repoKey]], ['shared', [repoKey]], ['repo-tool', [repoKey]]],
       []
     ])
     check('and the catalog read no error', trusted.error, null)
@@ -2679,10 +2713,10 @@ console.log('\nMCP: where Claude Code files a folder — its canonical git root,
     const bare = join(home, 'bare')
     mkdirSync(bare, { recursive: true })
     writeFileSync(join(bare, '.mcp.json'), JSON.stringify({ mcpServers: { 'bare-tool': { command: 'bare' } } }))
-    cfg.projects[bare] = { lastSessionId: 'x' }
+    cfg.projects[projectKeyOf(bare)] = { lastSessionId: 'x' }
     writeFileSync(join(home, '.claude.json'), JSON.stringify(cfg))
     writeFileSync(join(home, '.claude', 'settings.json'), JSON.stringify({ enabledMcpjsonServers: ['repo-tool', 'bare-tool'] }))
-    check('a folder whose ~/.claude.json entry has no MCP key is still scanned', (await catalogNow()).project.find((s) => s.name === 'bare-tool')?.folders, [bare])
+    check('a folder whose ~/.claude.json entry has no MCP key is still scanned', (await catalogNow()).project.find((s) => s.name === 'bare-tool')?.folders, [projectKeyOf(bare)])
   } finally {
     rmSync(home, { recursive: true, force: true })
   }
@@ -2698,7 +2732,7 @@ console.log('\nMCP: where Claude Code files a folder — its canonical git root,
 console.log('\nMCP: a second Claude account gets the Default account’s user-scope servers (accountMcpMirror)')
 {
   const OAUTH_SECRETS = ['OAUTH-CLIENT-SECRET-7', 'OAUTH-ACCESS-TOKEN-8', 'OAUTH-REFRESH-TOKEN-9', 'oauth-client-id-10']
-  const home = realpathSync(mkdtempSync(join(tmpdir(), 'stoke-verify-account-mcp-')))
+  const home = scratchHome('stoke-verify-account-mcp-')
   try {
     const project = join(home, 'work', 'app')
     mkdirSync(project, { recursive: true })
@@ -2714,7 +2748,7 @@ console.log('\nMCP: a second Claude account gets the Default account’s user-sc
         'off-here': { command: 'uvx', args: ['off'] },
         'repo-tool': { command: 'default-repo-tool' }
       },
-      projects: { [project]: { disabledMcpServers: ['off-here'] } }
+      projects: { [projectKeyOf(project)]: { disabledMcpServers: ['off-here'] } }
     }
     writeFileSync(join(home, '.claude.json'), JSON.stringify(defaultJson))
     // The CLI's own credentials, holding the real OAuth tokens: never read by any of this.
@@ -2729,7 +2763,7 @@ console.log('\nMCP: a second Claude account gets the Default account’s user-sc
       JSON.stringify({
         oauthAccount: { emailAddress: 'work@example.com' },
         mcpServers: { linear: { type: 'http', url: 'https://account-own.example/mcp' } },
-        projects: { [project]: { mcpServers: { 'acct-local': { command: 'acct' } } } }
+        projects: { [projectKeyOf(project)]: { mcpServers: { 'acct-local': { command: 'acct' } } } }
       })
     )
     const defaultReader = new ClaudeConfigReader({}, home)
