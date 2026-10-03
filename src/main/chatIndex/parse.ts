@@ -117,9 +117,16 @@ export const REDACTED = '[redacted]'
  * `mongo` and `mysql --password=`, `vault login`, `--passphrase`; keyed
  * `pass`/`DB_PASS`/`passphrase`, and secret names with a suffix
  * (`SECRET_KEY_BASE`, `secret_access_key`). A re-clean also makes the cut tail
- * of a title the cap's length `[redacted]` (`recleanChat`).
+ * of a title the cap's length `[redacted]` (`recleanChat`). 6 (review of
+ * 10b0840) drops every default-ignorable code point inside a word
+ * (`dropInvisible`), a first prompt's too before it is cut (`\s` read a byte
+ * order mark as a space), takes a key split after its prefix by any Unicode
+ * space, an indented line break or a quoted reply's `> ` (`SPLIT_SEP`), a
+ * Telegram token after `bot` with no slash or with its colon as `%3A`, and
+ * the word Cline's own title cut (`toolCutTitle`; a re-clean, every Cline
+ * title ending in `…`).
  */
-export const REDACTION_VERSION = 5
+export const REDACTION_VERSION = 6
 
 /*
  * A keyed value — `password=…`, `"apiKey": "…"`, `DB_PASSWORD: …` — is only a
@@ -423,6 +430,17 @@ const keyLike = (s: string): boolean => /[0-9]/.test(s) || (/[a-z]/.test(s) && /
  */
 const SPLIT_PREFIX = String.raw`sk-(?:ant-(?:[a-z]+\d*-)?|proj-|or-v1-|svcacct-|admin-)?|gh[pousr]_|github_pat_|xox[abprse]-|xapp-|npm_|glpat-|hf_|gsk_`
 
+/*
+ * What may split a key after its prefix (`split-key`): any Unicode space or
+ * line break, 1–4 of them (a no-break space, U+2028/2029, an ideographic
+ * space; `\s` holds them all), or a line break and what a wrapped or quoted
+ * line starts with — its indent, a reply's `> ` (review of 10b0840: a tool's
+ * output wrapped under five spaces, and a quoted reply, both left the halves).
+ * Every count is bounded, so a run of spaces with no key after it costs a
+ * fixed number of tries.
+ */
+const SPLIT_SEP = String.raw`(?:[ \t]{0,4}\r?\n(?:[ \t\u00a0\u3000]{0,16}>){0,4}[ \t\u00a0\u3000]{0,16}|\s{1,4})`
+
 /** A cookie that names a session, and its value: `sessionid`, `session`, `connect.sid`, `_myapp_session`, `next-auth.session-token`, `PHPSESSID`, `JSESSIONID`. */
 const COOKIE_SESSION = /(^|[\s;'"])((?:[\w.-]{0,64}[_.-])?[Ss]ession(?:[Ii][Dd]|[-_.]?[Tt]oken)?|connect\.sid|PHPSESSID|JSESSIONID)=([^;\s"'\\,]+)/g
 
@@ -438,12 +456,12 @@ export const SECRET_RULES: readonly SecretRule[] = [
    * `sk-ant-api03-` alone is no key to the Anthropic rule and the body alone
    * none to any, so both halves left whole. A known prefix (`SPLIT_PREFIX`),
    * at most 24 more token characters (key-like when over 6: `hf_hub_download`
-   * is code), 1–4 spaces or line breaks, then a key-like run of 8+, the two
-   * 20+ together: both go. AWS's `AKIA`/`ASIA` then 16 with a digit.
+   * is code), a break (`SPLIT_SEP`), then a key-like run of 8+, the two 20+
+   * together: both go. AWS's `AKIA`/`ASIA` then 16 with a digit.
    */
   {
     name: 'split-key',
-    re: new RegExp(String.raw`\b(?:${SPLIT_PREFIX})([A-Za-z0-9_-]{0,24})[ \t\r\n]{1,4}([A-Za-z0-9_-]{8,})|\bA[KS]IA[ \t\r\n]{1,4}(?=[A-Z]{0,15}[0-9])[0-9A-Z]{16}(?![0-9A-Za-z])`, 'g'),
+    re: new RegExp(String.raw`\b(?:${SPLIT_PREFIX})([A-Za-z0-9_-]{0,24})${SPLIT_SEP}([A-Za-z0-9_-]{8,})|\bA[KS]IA${SPLIT_SEP}(?=[A-Z]{0,15}[0-9])[0-9A-Z]{16}(?![0-9A-Za-z])`, 'g'),
     to: (m, piece, rest) => (piece === undefined || ((piece.length <= 6 || keyLike(piece)) && keyLike(rest) && piece.length + rest.length >= 20) ? REDACTED : m)
   },
   { name: 'anthropic', re: /\bsk-ant-[A-Za-z0-9_-]{16,}/g, to: REDACTED },
@@ -520,8 +538,12 @@ export const SECRET_RULES: readonly SecretRule[] = [
   { name: 'azure-sas', re: /((?<=[?&;])sig=)[A-Za-z0-9%+/=]{20,}/g, to: keepName },
   // Laravel's application key: `APP_KEY=base64:` + 44.
   { name: 'laravel-key', re: /(\bAPP_KEY[ \t]*=[ \t]*["']?)base64:[A-Za-z0-9+/]{40,}={0,2}/g, to: keepName },
-  // A Telegram bot token: the bot's id, a colon, 35 base64url characters — on its own, or in its Bot API URL (`/bot<id>:<token>/getMe`).
-  { name: 'telegram', re: /(?:(?<=\/bot)|(?<![\w:]))\d{8,10}:[A-Za-z0-9_-]{35}(?![\w-])/g, to: REDACTED },
+  /*
+   * A Telegram bot token: the bot's id, a colon, 35 base64url characters — on
+   * its own, after `bot` (its Bot API URL's `/bot<id>:<token>/getMe`, a log's
+   * `bot<id>:<token>`), and with the colon percent-encoded (`%3A`).
+   */
+  { name: 'telegram', re: /(?:(?<=\bbot)|(?<![\w:%]))\d{8,12}(?::|%3[Aa])[A-Za-z0-9_-]{35}(?![\w-])/g, to: REDACTED },
   /*
    * A `Cookie:` or `Set-Cookie:` header (and a headers object's `cookie:`):
    * a cookie that names a session (`COOKIE_SESSION`), when its value is a
@@ -667,6 +689,35 @@ export function redactMarkedCut(text: string): string {
   return text.endsWith(CUT_MARK) ? redactCutTail(text.slice(0, -CUT_MARK.length)) + CUT_MARK : text
 }
 
+/** The `…` a tool ends a title it cut with, a space before it or none. */
+const TOOL_CUT = /[ \t]?…$/
+
+/** A title a tool cut and marked `…` (`TOOL_CUT`): the word before the mark through `redactCutTail`; anything else as it is. */
+export function redactToolCut(title: string): string {
+  const m = TOOL_CUT.exec(title)
+  return m ? redactCutTail(title.slice(0, m.index)) + title.slice(m.index) : title
+}
+
+/**
+ * A title the tool cut itself, inside a word (review of 10b0840): Cline's
+ * `metadata.title` is its prompt's first 119 characters and a `…`, cut
+ * wherever the 119th fell, and `clineMeta` took it as it was — so a key the
+ * cut ran through kept its first part, which no pattern knows, as the
+ * title. A title that ends in `…` and, without it, is the opening of
+ * `prompt` that the prompt carries on INSIDE a word, is such a cut: its last
+ * word goes the way `redactCutTail` sends it. Any other title is the tool's
+ * own words, kept.
+ */
+export function toolCutTitle(title: string, prompt: string | null): string {
+  const m = TOOL_CUT.exec(title)
+  if (!m || prompt === null) return title
+  const norm = (t: string): string => dropInvisible(t).replace(/\s+/g, ' ').trim()
+  const head = norm(title.slice(0, m.index))
+  const p = norm(prompt)
+  if (!head || p.length <= head.length || !p.startsWith(head) || p[head.length] === ' ') return title
+  return redactToolCut(title)
+}
+
 /*
  * A long run is a blob only if it mixes cases and digits the way base64 does.
  * A 200-character identifier of one case (a hash, a long snake_case name) is
@@ -735,7 +786,8 @@ export function rawFirstPromptOf(text: string): string {
 }
 
 function firstPromptCut(text: string): { text: string; inWord: boolean } {
-  const t = text.replace(/\s+/g, ' ').trim()
+  // Invisible characters first: `\s` takes a byte order mark as a space, which split a key in two words before `cleanText` could join it.
+  const t = dropInvisible(text).replace(/\s+/g, ' ').trim()
   if (t.length <= FIRST_PROMPT_MAX) return { text: t, inWord: false }
   const cut = t.slice(0, FIRST_PROMPT_MAX)
   const space = cut.lastIndexOf(' ')
@@ -953,7 +1005,9 @@ export function clineMeta(doc: unknown): ClineMeta {
   const git = md.git && typeof md.git === 'object' ? (md.git as Record<string, unknown>) : {}
   const origin = imp && typeof imp.tool === 'string' ? CLINE_ORIGINS[imp.tool] : undefined
   const originId = imp && typeof imp.sourceSessionId === 'string' ? imp.sourceSessionId : ''
-  const title = typeof md.title === 'string' && md.title.trim() ? md.title.trim() : typeof d.prompt === 'string' && d.prompt.trim() ? rawFirstPromptOf(d.prompt) : null
+  const prompt = typeof d.prompt === 'string' && d.prompt.trim() ? d.prompt : null
+  // Cline's own title is its prompt cut at 119 characters, inside a word, and a `…` (`toolCutTitle`); with none, the RAW prompt's opening stands in.
+  const title = typeof md.title === 'string' && md.title.trim() ? toolCutTitle(md.title.trim(), prompt) : prompt !== null ? rawFirstPromptOf(prompt) : null
   return {
     title,
     cwd: typeof d.cwd === 'string' && d.cwd ? d.cwd : typeof d.workspace_root === 'string' && d.workspace_root ? d.workspace_root : null,

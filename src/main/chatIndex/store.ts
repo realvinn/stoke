@@ -39,7 +39,7 @@ import {
   type ChatSourceStatus
 } from '../../shared/chatIndex.ts'
 import { isInside, pathRulesFor } from '../../shared/paths.ts'
-import { cleanText, CUT_MARK, FIRST_PROMPT_MAX, planTrim, REDACTION_VERSION, redactCutTail, redactMarkedCut, redactSecrets, type ChatMessage, type ChatMeta } from './parse.ts'
+import { cleanText, CUT_MARK, FIRST_PROMPT_MAX, planTrim, REDACTION_VERSION, redactCutTail, redactMarkedCut, redactSecrets, redactToolCut, type ChatMessage, type ChatMeta } from './parse.ts'
 
 export const STORE_FILE = 'index.sqlite'
 
@@ -505,7 +505,11 @@ export class ChatStore {
    * ran through kept 39 of an npm token's 40 characters through every rule
    * set (review of 166e84f). A cleaning that lengthened it (`password=x` →
    * `password=[redacted]`) leaves it past the cap; one that shortened it
-   * (a key before it taken) leaves it under, and is not caught.
+   * (a key before it taken) leaves it under, and is not caught. And a Cline
+   * chat's own title that ends in `…` (rule set 6): Cline cuts it at 119
+   * characters inside a word, and the raw prompt `toolCutTitle` checks it
+   * against at a pass is not at hand here, so its last word is judged as a
+   * cut one whatever (`redactToolCut`).
    */
   recleanChat(chatId: number): boolean {
     const clean = (t: string): string => redactMarkedCut(cleanText(t, { redact: true, maxBytes: Infinity }))
@@ -513,8 +517,12 @@ export class ChatStore {
     const cleanFirst = (t: string): string => atCap(t, cleanText(t, { redact: true, maxBytes: Infinity }))
     const cleanTitle = (t: string): string => (t.endsWith(CUT_MARK) ? clean(t) : atCap(t, clean(t)))
     return this.tx(() => {
-      const c = this.q('SELECT title, first_prompt FROM chat WHERE id = CAST(? AS INTEGER)').get(chatId) as { title?: unknown; first_prompt?: unknown } | undefined
+      const c = this.q('SELECT source, title, first_prompt FROM chat WHERE id = CAST(? AS INTEGER)').get(chatId) as
+        | { source?: unknown; title?: unknown; first_prompt?: unknown }
+        | undefined
       if (!c) return false
+      // Cline's own title, cut inside a word with a `…` and stored as it was before rule set 6 (`toolCutTitle`): the raw prompt is gone, so every one ending so.
+      const titleOf = (t: string): string => (c.source === 'cline' ? redactToolCut(cleanTitle(t)) : cleanTitle(t))
       const rows = this.q('SELECT id, text, bytes FROM message WHERE chat_id = ? AND ord >= 0').all(chatId) as { id: unknown; text: unknown; bytes: unknown }[]
       const upd = this.q('UPDATE message SET text = ?, bytes = ? WHERE id = CAST(? AS INTEGER)')
       let delta = 0
@@ -529,7 +537,7 @@ export class ChatStore {
       const title = strOrNull(c.title)
       const first = strOrNull(c.first_prompt)
       this.q('UPDATE chat SET title = ?, first_prompt = ?, text_bytes = text_bytes + ?, redact_level = ? WHERE id = CAST(? AS INTEGER)').run(
-        title === null ? null : cleanTitle(title) || null,
+        title === null ? null : titleOf(title) || null,
         first === null ? null : cleanFirst(first) || null,
         delta,
         REDACTION_VERSION,

@@ -532,6 +532,93 @@ section('redaction 5: an invisible character or a line break inside a key, and t
   )
 }
 
+section('redaction 6: every default-ignorable character, any break after a prefix, Telegram’s other forms, and cut prompts')
+{
+  const red = (s: string): string => cleanText(s, { redact: true })
+  const takes = (what: string, text: string, want: string): void => check(`takes ${what}`, red(text), want)
+  const leaves = (what: string, text: string): void => check(`leaves ${what}`, red(text), text)
+  // Built from pieces (gotcha 157). Deep enough that what follows a split is no key to any pattern on its own.
+  const ANT = fake('sk-' + 'ant-api03-', 60)
+  const GH = fake('gh' + 'p_', 36)
+
+  // Review of 10b0840: `dropInvisible` listed nine default-ignorable code points by hand; the rest still split a key.
+  const ignorable: [string, string][] = [
+    ['a Hangul filler', '\u3164'],
+    ['a halfwidth Hangul filler', '\uffa0'],
+    ['a Hangul choseong filler', '\u115f'],
+    ['a Mongolian variation selector', '\u180b'],
+    ['a tag character', '\u{e0020}'],
+    ['a supplementary variation selector', '\u{e0100}'],
+    ['a musical-symbol format control', '\u{1d173}'],
+    ['a Khmer inherent vowel', '\u17b4'],
+    ['a deprecated format control', '\u206a']
+  ]
+  for (const [name, c] of ignorable) takes(`a key split deep in its body by ${name}`, `key ${ANT.slice(0, 50)}${c}${ANT.slice(50)} here`, 'key [redacted] here')
+  leaves(
+    'a flag’s tag sequence, a keycap, an ideographic variation and an emoji’s joiner',
+    '\u{1f3f4}\u{e0067}\u{e0062}\u{e0065}\u{e006e}\u{e0067}\u{e007f} 1\ufe0f\u20e3 \u8fbb\u{e0100} \u{1f469}\u200d\u{1f4bb}'
+  )
+
+  // Review of 10b0840: the separator after a prefix knew only [ \t\r\n]{1,4}.
+  const seps: [string, string][] = [
+    ['a no-break space', '\u00a0'],
+    ['a line separator', '\u2028'],
+    ['a paragraph separator', '\u2029'],
+    ['an ideographic space', '\u3000'],
+    ['a line break and an indent of five', '\n     '],
+    ['a CRLF and three spaces', '\r\n   '],
+    ['a quoted reply’s line break', '\n> ']
+  ]
+  for (const [name, sep] of seps) takes(`a key split after its prefix by ${name}`, `key ${ANT.slice(0, 13)}${sep}${ANT.slice(13)} here`, 'key [redacted] here')
+  takes('a GitHub token split by a line break and an indent', `key ${GH.slice(0, 4)}\n      ${GH.slice(4)} here`, 'key [redacted] here')
+  leaves('a prefix, a no-break space and words', 'OpenAI keys start with sk-\u00a0and then a long random string')
+  leaves('a prefix at a quoted line’s end, and a word after it', 'it starts sk-\n> abcdefghijklmnopqrstuv')
+
+  // Review of 10b0840: Telegram's token with its colon percent-encoded, and after `bot` with no slash.
+  const TG = '1234567' + '89'
+  const TGT = fake('AA', 33)
+  takes('a Telegram token with its colon percent-encoded', `https://api.telegram.org/bot${TG}%3A${TGT}/getMe`, 'https://api.telegram.org/bot[redacted]/getMe')
+  takes('a Telegram token after bot, with no slash', `Bot token bot${TG}:${TGT} in a log`, 'Bot token bot[redacted] in a log')
+
+  // Review of 10b0840: a first prompt folded `\s+` (which holds a byte order mark) BEFORE anything dropped invisible characters.
+  check(
+    'a first prompt drops an invisible character before it folds spaces: one key, taken whole',
+    red(clineMeta({ prompt: `key ${ANT.slice(0, 50)}\ufeff${ANT.slice(50)} here` }).title ?? ''),
+    'key [redacted] here'
+  )
+
+  /*
+   * Review of 10b0840: reverting clineMeta's `rawFirstPromptOf` to `firstPromptOf` left every suite green,
+   * as no case had a prompt with no space before the cap. Dot-separated segments, then a token the cap cuts.
+   */
+  const NPM = fake('np' + 'm_', 36)
+  const lead = Array.from({ length: 80 }, (_, i) => `part${i}`).join('.').slice(0, 300 - 20)
+  const dotted = `${lead}.${NPM} after`
+  check('(control: the cap falls inside the token, with no space before it to cut back to)', [dotted.indexOf(' ') > 300, dotted.slice(0, 300).endsWith(NPM.slice(0, 19))], [true, true])
+  const dottedTitle = clineMeta({ prompt: dotted }).title
+  check('a Cline prompt with no space before the cap: the word the cut ran through is [redacted], none of the token stays', [dottedTitle, red(dottedTitle ?? '').includes(NPM.slice(4, 12))], ['[redacted]', false])
+
+  /*
+   * Review of 10b0840: Cline's OWN `metadata.title` is its prompt's first 119 characters and a `…`, cut inside
+   * a word, and clineMeta took it as it was: a key the cut ran through kept its opening.
+   */
+  const NPM2 = fake('np' + 'm_', 36, 'Zy8Xw6Vu4Ts2Rq0Po9Nm7Lk5')
+  const own = `${'clineown word word word word word word word word word word word word word word word word word word word'.slice(0, 119 - 25)} ${NPM2} and words after it`
+  const ownTitle = own.slice(0, 119) + '…'
+  check('(control: Cline’s title ends inside the token, which no pattern takes)', [ownTitle.includes(NPM2.slice(0, 20)), red(ownTitle) === ownTitle], [true, true])
+  const ownMeta = clineMeta({ metadata: { title: ownTitle }, prompt: own })
+  check('Cline’s own title, cut inside a word of its prompt: the cut word is [redacted]', [ownMeta.title?.endsWith(' [redacted]…'), ownMeta.title?.includes(NPM2.slice(0, 8))], [true, false])
+  check('...a space before its …, the same', clineMeta({ metadata: { title: own.slice(0, 119) + ' …' }, prompt: own }).title?.includes(NPM2.slice(0, 8)), false)
+  check(
+    '...a title cut at a space, or one that is not the prompt’s opening, is the tool’s own words',
+    [
+      clineMeta({ metadata: { title: 'clineown word longwordhere…' }, prompt: 'clineown word longwordhere and more' }).title,
+      clineMeta({ metadata: { title: 'Fix the configuration…' }, prompt: 'something else entirely' }).title
+    ],
+    ['clineown word longwordhere…', 'Fix the configuration…']
+  )
+}
+
 section('redaction 3: cleaning cleaned text again changes nothing')
 {
   // `recleanChat` cleans stored text in place, so every rule's output must be a fixed point.
@@ -601,7 +688,13 @@ section('redaction 3: no input makes a rule backtrack (64 KB, each under a secon
     'discord webhook prefixes': fill(`${DISCORD_HOOKS}1234567890123456789/`),
     'telegram /bot runs': fill('/bot123456789:'),
     'pass after spaces': 'x' + fill(' ') + 'pass: y',
-    'zero-width joiner runs': fill('a\u200d')
+    'zero-width joiner runs': fill('a\u200d'),
+    // Rule set 6's.
+    'split-key quoted line breaks, no key': fill('sk-\n> '),
+    'split-key indents, no key': fill('ghp_\n' + ' '.repeat(16)),
+    'split-key ideographic spaces': fill('sk-\u3000'),
+    'telegram %3A runs': fill('bot123456789%3A'),
+    'default-ignorable runs between letters': fill('a\u3164')
   }
   const slow: string[] = []
   let slowest = 0
@@ -2091,6 +2184,30 @@ try {
     const listedFirst = listSource('codex', { home: cHome, env: {}, platform: process.platform }, false, discovery(Date.now())).candidates[0]?.meta.firstPrompt
     const mergedFirst = mergeMeta({ title: null, firstPrompt: null, cwd: null, gitBranch: null, model: null, createdMs: null, updatedMs: null }, { firstPrompt: listedFirst ?? undefined }, true).firstPrompt
     check('Codex’s listed first message is cut back to a space before it is cleaned: no part of a key is stored', [listedFirst?.startsWith('codexcut word'), listedFirst?.includes(NPM.slice(0, 8)), mergedFirst?.includes(NPM.slice(0, 8))], [true, false, false])
+
+    // Review of 10b0840: Cline's OWN title, cut by Cline inside a key and stored by rule set 5 as it was. The raw prompt is gone.
+    const NPM2 = fake('np' + 'm_', 36, 'Zy8Xw6Vu4Ts2Rq0Po9Nm7Lk5')
+    const ownTitle = `${pad('clineown', 119 - 25)}${NPM2}`.slice(0, 119) + '…'
+    const oDir = join(root, 'cline-own-title-index')
+    const os = ChatStore.open(oDir)
+    const oid = os.upsertChat('cline', 'own-title', { title: ownTitle, firstPrompt: 'clineown a prompt', cwd: '/w', gitBranch: null, model: null, createdMs: T0, updatedMs: T0 }, { subagent: false, dedupeKey: null, whole: true, redact: true })
+    os.appendMessages(oid, [{ role: 'user', text: 'clineown a prompt', atMs: T0 }])
+    const cid2 = os.upsertChat('claude', 'own-title-claude', { title: `Claude’s title ${NPM2.slice(0, 20)}…`, firstPrompt: 'clineown other', cwd: '/w', gitBranch: null, model: null, createdMs: T0, updatedMs: T0 }, { subagent: false, dedupeKey: null, whole: true, redact: true })
+    os.appendMessages(cid2, [{ role: 'user', text: 'clineown other', atMs: T0 }])
+    os.close()
+    const oRaw = new DatabaseSync(join(oDir, 'index.sqlite'))
+    oRaw.exec('UPDATE chat SET redact_level = 5')
+    oRaw.close()
+    const o6 = ChatStore.open(oDir)
+    check('(control: stored by rule set 5, the part Cline’s cut left is searchable)', words(o6, NPM2.slice(0, 20)).sort(), ['claude:own-title-claude', 'cline:own-title'])
+    await recleanStale(o6, hooks())
+    const oTitles = Object.fromEntries(o6.search('clineown', 50, { redact: 'force' }).map((h) => [h.nativeId, h.title]))
+    check(
+      'cleaned again under 6: the word Cline’s own cut left is [redacted] and not searchable; another tool’s title ending in … is its own',
+      [oTitles['own-title']?.endsWith(' [redacted]…'), words(o6, NPM2.slice(0, 20)), oTitles['own-title-claude']],
+      [true, ['claude:own-title-claude'], `Claude’s title ${NPM2.slice(0, 20)}…`]
+    )
+    o6.close()
   }
 
   section('a chat cleaned under rule set 3 is cleaned again under 4 before it is served as cleaned')

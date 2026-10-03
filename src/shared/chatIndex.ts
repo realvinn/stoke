@@ -671,14 +671,21 @@ export const HIT_CLOSE = '\u0003'
  * every secret pattern, so a key with one in it reached another computer
  * whole on its screen (review of 166e84f). Text is judged and stored without
  * them (`cleanText`) and shaped without them for another computer
- * (`chatText`). The joiners (ZWNJ, ZWJ), the direction marks and isolates, the
- * combining grapheme joiner and the variation selectors go only BETWEEN two
- * printable ASCII characters, where they join nothing: an emoji sequence
- * (woman, ZWJ, laptop), Persian's ZWNJ, an Indic conjunct and right-to-left
- * text keep theirs.
+ * (`chatText`).
+ *
+ * The set is Unicode's whole Default_Ignorable_Code_Point property (review of
+ * 10b0840: listing nine of them by hand left a Hangul filler, a Mongolian
+ * selector, a tag character and the rest splitting a key). Those that join
+ * nothing in any script go wherever they are (`INVISIBLE`). The rest go only
+ * BETWEEN two printable ASCII characters, where they join nothing either: the
+ * joiners (ZWNJ, ZWJ), the direction marks and isolates, the combining
+ * grapheme joiner, the variation selectors, the Hangul fillers and the tag
+ * characters — so an emoji sequence (woman, ZWJ, laptop), a flag's tags,
+ * Persian's ZWNJ, an Indic conjunct, an ideographic variation and
+ * right-to-left text keep theirs.
  */
-const INVISIBLE = /[\u00ad\u180e\u200b\u2060-\u2064\ufeff]/g
-const INVISIBLE_IN_ASCII = /(?<=[!-~])[\u034f\u061c\u200c-\u200f\u202a-\u202e\u2066-\u2069\ufe00-\ufe0f]+(?=[!-~])/g
+const INVISIBLE = /[\u00ad\u180e\u200b\u2060-\u2064\u206a-\u206f\ufeff\ufff0-\ufff8]/g
+const INVISIBLE_IN_ASCII = /(?<=[!-~])\p{Default_Ignorable_Code_Point}+(?=[!-~])/gu
 
 /** `s` without the invisible characters that split a word for a pattern but not for a reader. */
 export function dropInvisible(s: string): string {
