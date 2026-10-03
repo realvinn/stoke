@@ -186,6 +186,15 @@ changes.
 > when the chain is removed. Raw `{type:'input'}` keys are NOT queued, on purpose: Esc and ctrl-c
 > must interrupt.
 
+> **Checked against the code on 2026-10-04** — the submit frame has a second sender. Another
+> machine's remote tab sends `{type:'submit', text, enter: false}` through the hub relay for its
+> DICTATION (`HubRemote.type`): the host's phone server types it exactly as above and presses no
+> Enter (`manager.submit(ptyId, msg.text, { enter: msg.enter !== false })`), so the words land in
+> the box for the owner to read and send. A guest sends it only to a host whose `ready` said
+> `typeOnly: true` — an older host ignores `enter` and would submit the words — and never under a
+> view grant (`relayFrameVerdict` refuses it at the host as well). The phone itself never sends
+> `enter: false`. `verify:hub-relay` holds the frame, the refusals and the wire.
+
 ## 87. The phone's terminal: pad the box, not xterm's parent, and resize the pty only on a width change
 
 Two audit findings with one cause each. **PX-7**: `.term-wrap` carried `padding: 6px 4px` under

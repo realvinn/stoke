@@ -593,6 +593,8 @@ rule file named on the group line.
   may not set `HOME`): the owner's `/voice` is on, so `spaceOwner` would hand Space to Claude Code.
 - **133.** Aim a chat-history sandbox's caps at synthetic chats (only `claude` on, `perSource` = their count,
   dated ahead): `claudeRoots` always reads `~/.claude/projects` too, so the owner's real chats get in.
+- **158.** Feed a driven dictation an oscillator through a page-level `getUserMedia` (`createMediaStreamDestination`):
+  Chromium's fake microphone records silence here, under the recorder's 1 KB floor, so nothing is sent.
 - **Nested backticks inside a template literal end it early**, as a SyntaxError that points at the
   wrong place. Build anything injected into a page from an array of lines.
 - **A `.settings.json` missing from `$TMPDIR/stoke/statusline/` has two causes, both found and

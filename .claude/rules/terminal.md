@@ -353,6 +353,38 @@ were run against the old file from `HEAD` to confirm they fail there.
 > object per press. Gotcha 20's 2026-09-30 note has the measurement, and `verify:voice` holds the
 > claim's shape (shown to fail against the old file).
 
+> **Checked against the code on 2026-10-04** — the owner asked for three things, and each moved a
+> rule above.
+> - **A longer hold, and the repeat no longer cuts it short.** `DEFAULT_HOLD_MS` is 500 and the
+>   range 150–1500 (voiceSettings.ts). The 2026-09-30 note's "the timer or an auto-repeat, whichever
+>   is first" would have made that do nothing: the OS key-repeat delay on the owner's Mac is 500 ms
+>   (`NSEvent.keyRepeatDelay`, measured; macOS's default, the key is unset), so a 700, 1000 or 1500
+>   setting started recording at 500. A repeat while pending is now taken and starts nothing until
+>   the threshold has passed — the timer starts it, or a repeat past the threshold if the timer is
+>   late. Every repeat is still taken in every phase. And a new default alone reaches nobody: every
+>   settings file holds `holdMs: 250` explicitly (hydrate writes the whole block on the first save of
+>   anything), so the block now carries `format` (`VOICE_FORMAT` 2) and `upgradeHoldMs` moves a
+>   format-1 block's exact 250 to 500 once; a 250 in a format-2 block was picked and stays. A file an
+>   older build rewrites loses `format`, so a 250 picked here is moved again after a downgrade.
+> - **One copy of dictation for every pane.** The hold, the recorder and the strip left
+>   TerminalView for `useDictation` (components/Dictation.tsx), which RemoteTerminal also runs; the
+>   caller's `DictationTarget` says who may arm it, how a tap's space is typed and where a
+>   transcript goes. Words a session did not take — a remote link that dropped while the speech
+>   service worked, a local session that ended — stay on the strip with why (Type it now, Copy,
+>   Discard), never dropped silently. The wire checks read the hook (`--wire` takes it fifth,
+>   RemoteTerminal sixth); against the pre-hook TerminalView 13 fail.
+> - **A remote tab is Stoke's, like an SSH tab.** A hub remote tab's `claude` runs on the other
+>   machine, whose `/voice` would record that room's microphone, and this computer's `claudeVoice`
+>   says nothing about that CLI: `spaceOwner` gives `kind: 'remote'` to Stoke whatever it says.
+>   The transcript is typed THERE by the host (`HubRemote.type`, a phone submit frame with
+>   `enter: false`: gotcha 86's typing, no Enter). Driven with two sandbox Stokes on a loopback hub:
+>   the guest's speech server got the clip and the host's session showed the words; a hub stopped
+>   mid-hold left them on the strip, and Type it now typed them once the tab reconnected; with this
+>   computer's `/voice` on, the remote tab armed while a local Claude tab showed `CLI_OWNS_SPACE`.
+> - **The strip is top-right** (it was bottom-left, over the prompt being dictated into), and the
+>   find bar starts under it (`--find-ceiling`, shared/paneFloats.ts); both clear the scrollbar on
+>   `--float-right`. Reduced motion is unchanged: `pop` rests fully shown.
+
 ## 151. Two machines on one pty: a size claim needs a person, and the pane is watched by its border box
 
 **Built 2026-10-02, from the owner's "whichever is active we force it to that screen ratio".** A hub

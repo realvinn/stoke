@@ -454,6 +454,11 @@ back, once for more than 90 s. It reads again once the listeners are attached.
 Not proven: Windows and Linux, and the remote button's step-up. That button renders only while another
 machine is attached through a hub, so the `:has()` rule was checked against injected DOM only.
 
+> **Checked against the code on 2026-10-04** — the toast floor no longer counts `.voice-strip`: the
+> dictation strip moved to the pane's top-right, so the floor is the foot's floats only
+> (`FOOT_FLOATS`, shared/paneFloats.ts — the image strip and the exit card), the same list as
+> `--find-floor`.
+
 ## 155. A title bar that fits its items to the last pixel leaves nowhere to grab the window, and a strip reserved for that must give way first
 
 **The owner, 2026-10-03: "we don't have much space to drag the window".** The title bar's drag region was

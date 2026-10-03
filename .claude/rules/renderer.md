@@ -636,3 +636,10 @@ treats it as the commonest one** — and **an async completion takes focus only 
 itself.** Every check above is held by verify:tabs, verify:topbar, verify:find and verify:ssh, each
 mutated back to red (15 mutations, 1–3 checks each). Not driven: Windows and Linux, a real
 `claude`, a real clipboard paste (drops only, so the owner's clipboard was never touched).
+
+> **Checked against the code on 2026-10-04** — the dictation strip left the pane's foot for the
+> top-right corner (the owner: "bottom left covers too much"), so `--find-floor` is now the
+> tallest of the image strip and the exit card only (`FOOT_FLOATS`, shared/paneFloats.ts), and the
+> strip is the bar's CEILING: it keeps its place and the bar starts under it (`--find-ceiling`,
+> measured the same way while the bar is open). Driven: strip 12–49 px from the pane's top, the bar
+> from 57, right edges together on `--float-right`, clear of xterm's scrollbar.

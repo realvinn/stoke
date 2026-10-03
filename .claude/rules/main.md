@@ -307,6 +307,13 @@ Phase 2 sync is per-field last-writer-wins over hydrated records, and a phantom 
 phantom WRITE on every device on every sync. Whether to make `hydrateWorklogBoards`'s default branch
 filter like its other branch is a behaviour change to the worklog panel's fresh state, left open.
 
+> **Checked against the code on 2026-10-04** — a migration inside hydrate has to be a fixed point
+> for the same reason. `voice.holdMs` moved its default from 250 to 500, and every file held 250
+> explicitly, so `clampVoice` moves a format-1 block's 250 once and writes `format: 2`
+> (`upgradeHoldMs`, `VOICE_FORMAT`); a second hydrate of the result changes nothing, and a 250
+> picked after the move survives every later read. `verify:voice` holds both; with the marker
+> dropped, the picked-250 case goes red.
+
 ## 125. node:sqlite binds a JS number as REAL, and an FTS5 table ignores a REAL rowid without a word
 
 **Chat search showed twenty hits from twenty different conversations with ONE snippet.** Found

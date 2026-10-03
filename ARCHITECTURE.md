@@ -912,6 +912,8 @@ npm run verify:find           # Find in a conversation: what a transcript gives 
                               # who takes Cmd+F with the browser docked, and the wires; a
                               # private chat searched on screen only (gotcha 150), and the bar
                               # stopping above the image strip and exit card (`--find-floor`)
+                              # and starting under the dictation strip (`--find-ceiling`), both
+                              # on `--float-right`, clear of the scrollbar (paneFloats.ts)
 npm run verify:drop           # what a dropped file types: quoting per platform, the
                               # names that cannot be typed at all, several paths read back
                               # by Claude Code's own splitter and by real shells, the far
@@ -965,9 +967,12 @@ npm run verify:agents         # the coding agents: what is stored, what the laun
                               # chain, gotcha 129), Settings' project-scope rows under the
                               # same trust gate, the ticks' hydrate, and the 0600 files
 npm run verify:voice          # who owns a held Space: Claude Code's /voice or Stoke's
-                              # dictation; `spaceHold` (a tap types a space and never
-                              # opens the microphone, a hold records, every REPEAT is
-                              # taken in every phase); the level line's dBFS maths; the
+                              # dictation (an SSH or remote tab is always Stoke's);
+                              # `spaceHold` (a tap types a space and never opens the
+                              # microphone, a hold records, every REPEAT is taken in every
+                              # phase and none starts it before the threshold); the hold's
+                              # default, range, presets and its one-time move off 250
+                              # (format 1 moved, format 2 kept); the level line's dBFS maths; the
                               # microphone pick (exact id, then label, then the default
                               # with a notice) and the virtual-cable names; what a refused
                               # microphone is called; the speech providers — each one's
@@ -980,8 +985,9 @@ npm run verify:voice          # who owns a held Space: Claude Code's /voice or S
                               # while only throttling, the free key checks — and the
                               # shipped `stt.ts` against a fake on loopback port 0
                               # (multipart bytes intact, Deepgram's raw body, 401, real
-                              # 429s, a hang); and the wire from TerminalView, the
-                              # phone, main and Settings to those rules, with the Test
+                              # 429s, a hang); and the wire from the dictation hook,
+                              # TerminalView, RemoteTerminal, the phone, main and Settings
+                              # to those rules (kept words included), with the Test
                               # meter's per-press claim (gotcha 20) — `--wire <files>`
                               # runs it against another revision (gotcha 79)
 npm run verify:campfire       # the installer's campfire: the locked alphabet that lets one
@@ -1136,7 +1142,10 @@ npm run verify:hub-relay      # "Other machines": two RelayChannels through an i
                               # idle minutes, a claim inside the other side's settle waits, its
                               # own echo does not; a remote tab's resize reaching only its own
                               # session's pty, and never a host whose `ready` lacks `sizes` (an
-                              # older Stoke, whose tab would not follow); the host's status frame
+                              # older Stoke, whose tab would not follow); dictation on a remote
+                              # tab typed by the host as a submit with no Enter, refused on a
+                              # dropped link, a watch-only grant and a host without `typeOnly`;
+                              # the host's status frame
                               # for that session only, parsed and cut on the guest, never resent
                               # unchanged. Chat history: the chats decision and its two-route
                               # scope, a session scope refusing both, hit and chat shapes (folder
@@ -1721,7 +1730,18 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     USED — focus, a key, a click, its pane resized just after a person acted —
                     last active wins (`SizeClaimer`, gotchas 87 and 151); never typing xterm's
                     own reports; whose it is and the link's state as a `RemoteFab` (default) or
-                    the full banner (`remoteBar`)
+                    the full banner (`remoteBar`). Dictation is THIS computer's (Dictation.tsx):
+                    Space is always Stoke's here (`spaceOwner`), a tab that may only watch or a
+                    host too old to type without Enter is refused (`remoteTypeVerdict`), and a
+                    transcript goes to `hub.remote.type` for the host to type with no Enter;
+                    Dictate on the button or banner, the strip under them (`--strip-top`)
+  src/components/Dictation.tsx  `useDictation`, the one copy of Stoke's dictation for a terminal
+                    pane (TerminalView and RemoteTerminal): ⇧⌘D / Ctrl+Shift+D, the held Space
+                    through `spaceHold` (keys bound on the host only while the tab is in
+                    front), the recorder, the level line and the strip, top-right. The caller's
+                    `DictationTarget` says who may arm it (`refusal`), how a tap's space is typed
+                    and how a transcript reaches the session (`deliver`); words a session did
+                    not take stay on the strip with why — Type it now, Copy, Discard. Gotcha 79
   src/components/RemoteFab.tsx  a live remote link as a small floating button: a state dot and
                     a word or two, opening on hover, keyboard focus or a click into the whole
                     sentence and its buttons; every plain key stops at it (`typeThroughKey`).
@@ -1818,7 +1838,8 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
   src/components/MicPicker.tsx  Settings → Voice's microphone for Stoke's dictation (System
                     default + the audio inputs, refreshed on devicechange, "Show device names"
                     when the browser withholds them), a Test meter that records nothing, and
-                    the Hold Space threshold. Writes settings only on a choice (gotcha 57)
+                    the Hold Space threshold (`holdChoices`/`holdLabel`: 250–1500 ms with words
+                    for what each feels like). Writes settings only on a choice (gotcha 57)
   src/components/Spinner.tsx  the busy mark for a check / refresh / look-again button. The
                     house rule it belongs to: the button keeps `disabled` (plus a ref claimed
                     before the await), carries `aria-busy="true"` so app.css leaves it at full
@@ -2045,8 +2066,9 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     name is not "missing"
   voiceRoute.ts     who owns a held Space bar in a tab — Claude Code's /voice or Stoke's
                     dictation — `spaceHold`, the reducer that makes a tap a space and only a
-                    hold a recording (desktop and phone), and the words for a refused
-                    microphone. On macOS a CLI in a
+                    hold a recording (desktop and phone; the OS key-repeat never starts it
+                    before the threshold), and the words for a refused microphone. An SSH or
+                    a remote tab is always Stoke's: its CLI is on another machine. On macOS a CLI in a
                     Stoke pty records AS Stoke (TCC's responsible process), so Stoke's one
                     Privacy switch is every CLI's. Gotcha 79
   voiceLevel.ts     the recording-volume line: `levelFromSamples` (RMS in dBFS, -60..0 ->
@@ -2068,10 +2090,12 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
   voiceSettings.ts  the `voice` settings block (Settings → Voice): VOICE_DEFAULTS,
                     DEFAULT_STT_URL, the speech provider (`provider`, `model`, `baseUrl`,
                     `keys` — one per provider, sealed as `voice.keys.*` in SECRET_PATHS),
-                    the hold threshold (`holdMs`, 150-800) and the chosen
-                    microphone (`micDeviceId` + `micLabel`), and `clampVoice`, which
-                    rebuilds it from named keys (an unknown provider is the sidecar) and
-                    migrates the speech server from the old `remote.sttUrl`. hydrate keeps
+                    the hold threshold (`holdMs`, 500 by default, 150-1500) and the chosen
+                    microphone (`micDeviceId` + `micLabel`), `format` (`VOICE_FORMAT`), and
+                    `clampVoice`, which rebuilds it from named keys (an unknown provider is the
+                    sidecar), migrates the speech server from the old `remote.sttUrl`, and
+                    moves a format-1 block's stored 250 (the old default hydrate wrote into
+                    every file) to the new default once (`upgradeHoldMs`). hydrate keeps
                     `remote.sttUrl` as a write-only mirror for one release, for older builds.
                     A new voice field needs its default AND a clampVoice line in one change
   drop.ts           what a file dropped on the terminal types: the per-platform quoting,
@@ -2079,6 +2103,11 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     Claude Code's splitter reads), the refusal for a name that cannot be
                     typed, and the image-paste key per platform (`imagePasteKeys`). Pure,
                     platform passed in, so verify:drop runs it for every OS. Gotchas 59, 146
+  paneFloats.ts     what floats over a terminal pane, by corner: the foot's (`FOOT_FLOATS`: the
+                    image strip, the exit card), which the find bar stops above and the toasts
+                    clear, and the top-right's (`CORNER_FLOATS`: the dictation strip), which
+                    keeps its place while the find bar starts under it (`floatInset`,
+                    `--find-floor`/`--find-ceiling`). verify:find
   imageJobs.ts      `ImageJobs`, one SSH tab's queue of pastes and drops: the clipboard read
                     when pressed, one send at a time in press order, a failure holding the
                     queue until Try again or Dismiss, every upload main holds let go when its

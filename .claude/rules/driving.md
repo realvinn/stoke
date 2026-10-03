@@ -243,3 +243,26 @@ writer is ~60 lines, `makeZip` in `verify:chat-sources`), and drop them with CDP
 real path (gotcha 59), where the "Import an export…" button's native dialog cannot be driven. Two
 side effects remain: the viewer's copy buttons write the real system clipboard, and Settings writes
 the sandbox's `settings.json` back in full on first change.
+
+## 158. Chromium's fake microphone records silence here, so a driven dictation never reaches the speech server
+
+**Driving a held Space in a sandbox on 2026-10-04 went Keep holding → Listening → back to idle, and
+the fake speech server never saw a request.** Nothing was wrong with dictation: the clip was dropped
+by the recorder's own floor (`blob.size < 1024`, voice.ts — a mis-tap, not speech). Measured in the
+sandbox's renderer: with `--use-fake-device-for-media-stream --use-fake-ui-for-media-stream`, a
+1.2 s MediaRecorder take of "Fake Default Audio Input" was 576 bytes of Opus and an analyser read
+peak 0 over 3 s; adding `--use-file-for-fake-audio-capture=<a 440 Hz WAV>` changed nothing (996
+bytes in 3 s, peak 0). So under ~2.5 s every driven hold is silence the recorder throws away.
+
+What worked: before arming, replace `navigator.mediaDevices.getUserMedia` IN THE PAGE with one that
+returns an oscillator through `AudioContext.createMediaStreamDestination()` (gain 0.4). That is the
+page's own object, not `window.stoke`, so gotcha 9 does not apply. A 1.4 s hold then posted a 21 KB
+WAV and the fake server's words reached the session; `window.__fakeMic` counted one call per hold and
+none per tap. The level line does not prove sound (it read `scaleX(0)` on its first frame either way):
+the speech server's request log does.
+
+Two more things the same drive needed, for two sandbox Stokes on a loopback hub:
+- Start the hub with `--data <scratch>` in its ARGV, never only `STOKE_HUB_DATA` in its environment, so
+  it can be stopped by a PID whose command line names the scratch path.
+- `createVault`'s `group` counts the Kit's four-character groups after its prefix: confirm with
+  `kit.split(/[\s-]+/)[group]`, not `[group - 1]` (the first is refused as "not group N").
