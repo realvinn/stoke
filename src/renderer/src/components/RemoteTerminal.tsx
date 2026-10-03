@@ -1,9 +1,12 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
-import type { TerminalSettings, Theme } from '@shared/types'
+import type { TerminalSettings, Theme, VoiceSettings } from '@shared/types'
 import type { RemoteBarMode } from '@shared/ui'
-import type { RemoteTabFrame, RemoteTabView } from '@shared/hub/remote'
+import { remoteTypeVerdict, type RemoteTabFrame, type RemoteTabView } from '@shared/hub/remote'
+import { voiceSupported } from '@shared/voice'
+import { CLI_OWNS_SPACE, spaceOwner } from '@shared/voiceRoute'
+import { floatInset } from '@shared/paneFloats'
 import { decideResize } from '@shared/phoneUi'
 import { isTerminalReport } from '@shared/remotePhone'
 import { SizeClaimer, isGrid, type ClaimTrigger, type Grid } from '@shared/sizeClaim'
@@ -12,6 +15,7 @@ import { recentlyUsed } from '../lib/lastInput'
 import { platformName } from '../lib/hubRemote'
 import type { Tab } from '../types'
 import { RemoteFab } from './RemoteFab'
+import { useDictation } from './Dictation'
 
 /*
  * A remote tab: another of the owner's machines' session, streamed through
@@ -31,6 +35,14 @@ import { RemoteFab } from './RemoteFab'
  * - xterm's own replies (device attributes, cursor and colour reports, focus
  *   in/out) are never typed into it (`isTerminalReport`): the terminal at the
  *   other machine answers those already.
+ * - Dictation (⇧⌘D, or Dictate on the link's button) is THIS computer's:
+ *   its microphone, its speech service, and the words typed into the session
+ *   over there by the host, as Claude Code takes typing and with no Enter
+ *   (`HubRemote.type`). Claude Code's own `/voice` would record the other
+ *   machine's microphone — the other room — so Space here is always Stoke's
+ *   (`spaceOwner`). A tab that may only watch is refused with a sentence, and
+ *   words whose link dropped while they were being transcribed stay on the
+ *   strip to type again or copy (Dictation.tsx).
  *
  * The device and the link's state are always on screen, so it can never be
  * mistaken for a local session: a small floating button by default (open on
@@ -75,10 +87,12 @@ interface Props {
   alpha: number
   /** A floating button (default) or the full banner. */
   bar: RemoteBarMode
+  /** Stoke's dictation: the hold threshold and the chosen microphone, read per press. */
+  voice: VoiceSettings
   onClose: (tabId: string) => void
 }
 
-export function RemoteTerminal({ tab, view, active, theme, fontFamily, fontSize, terminal, accent, alpha, bar, onClose }: Props): React.JSX.Element {
+export function RemoteTerminal({ tab, view, active, theme, fontFamily, fontSize, terminal, accent, alpha, bar, voice, onClose }: Props): React.JSX.Element {
   const hostRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const claimerRef = useRef<SizeClaimer | null>(null)
@@ -94,6 +108,43 @@ export function RemoteTerminal({ tab, view, active, theme, fontFamily, fontSize,
   const [grid, setGrid] = useState<Grid | null>(null)
   /** Set while the tab focuses its own terminal for a reason that is not use (a reconnect): that `focusin` claims nothing. */
   const quietFocusRef = useRef(false)
+  /** The view as of the last render, for dictation's refusal, which is asked later. */
+  const viewRef = useRef(view)
+  viewRef.current = view
+  /** Main has drawn this tab at least once: no view after that is a link gone for good (below). */
+  const seenRef = useRef(false)
+  if (view) seenRef.current = true
+
+  /*
+   * Dictation (Dictation.tsx): the hold, the recorder and the strip are the
+   * same as a local tab's. What is this tab's: Space is always Stoke's here
+   * (`spaceOwner` of a remote tab — the local /voice setting says nothing
+   * about the far CLI, and the far CLI's /voice would record the far room),
+   * whether the tab may type at all (`remoteTypeVerdict`), and that the words
+   * go through the relay for the host to type.
+   */
+  const dictation = useDictation({
+    hostRef,
+    active,
+    voice,
+    target: {
+      refusal: async () => {
+        const state = await window.stoke.audio.voiceState().catch(() => null)
+        if (spaceOwner(tab, state?.claudeVoice === true) === 'cli') return CLI_OWNS_SPACE
+        const v = viewRef.current
+        // A link still on its way may be armed: the send says so if it never opens.
+        if (!v) return seenRef.current ? remoteTypeVerdict(null) : null
+        if (v.state === 'connecting' || v.state === 'asking' || v.state === 'reconnecting') return null
+        return remoteTypeVerdict(v)
+      },
+      // Through xterm's onData, as a typed space goes: the relay's input path.
+      typeSpace: () => termRef.current?.input(' ', true),
+      deliver: async (text) => {
+        const r = await window.stoke.hub.remote.type(remoteId, text)
+        return r.ok ? null : r.message
+      }
+    }
+  })
 
   useEffect(() => {
     const host = hostRef.current
@@ -273,12 +324,36 @@ export function RemoteTerminal({ tab, view, active, theme, fontFamily, fontSize,
   }, [active, view?.state])
 
   /*
+   * The dictation strip sits under whatever this pane draws at its top: the
+   * link's button (`fab`) or its banner (`bar`). Measured rather than summed
+   * from tokens, since the banner is in the flow and the frame moves both;
+   * kept by a ResizeObserver as the pane shows, hides and resizes.
+   */
+  useLayoutEffect(() => {
+    const pane = hostRef.current?.parentElement
+    if (!pane || dictation.stripKey === 0) return
+    const above = pane.querySelector<HTMLElement>(':scope > .remote-banner, :scope > .remote-fab > .remote-fab-face')
+    if (!above) return
+    const set = (): void => {
+      const top = floatInset([above.getBoundingClientRect().bottom - pane.getBoundingClientRect().top])
+      if (top) pane.style.setProperty('--strip-top', top)
+      else pane.style.removeProperty('--strip-top')
+    }
+    set()
+    const ro = new ResizeObserver(set)
+    ro.observe(pane)
+    ro.observe(above)
+    return () => {
+      ro.disconnect()
+      pane.style.removeProperty('--strip-top')
+    }
+  }, [bar, dictation.stripKey])
+
+  /*
    * No view for a tab main once had: main dropped it (a sign-out, a revoke,
    * the hub client stopping), so the link is gone for good and only Close
    * means anything. Before the first view arrives it is still connecting.
    */
-  const seenRef = useRef(false)
-  if (view) seenRef.current = true
   const gone = !view && seenRef.current
   const state = view?.state ?? (gone ? 'lost' : 'connecting')
   const message = gone ? 'The link is gone: this computer signed out of your hub, or left it.' : (view?.message ?? null)
@@ -288,6 +363,26 @@ export function RemoteTerminal({ tab, view, active, theme, fontFamily, fontSize,
   const stateText = `${state === 'asking' && message ? message : STATE_WORDS[state]}${message && state !== 'open' && state !== 'asking' ? ` — ${message}` : ''}`
   const actions = (
     <>
+      {/*
+        Dictation's one visible door here (a remote tab has no context menu).
+        Hidden where the browser has no microphone API, so it never offers
+        what cannot work; the keyboard goes back to the terminal, where the
+        held Space is listened for.
+      */}
+      {voiceSupported() && (
+        <button
+          className="btn"
+          data-variant="ghost"
+          aria-pressed={dictation.on}
+          title="Hold Space to talk; this computer’s microphone, typed into the session over there (⇧⌘D)"
+          onClick={() => {
+            dictation.toggle()
+            termRef.current?.focus()
+          }}
+        >
+          {dictation.on ? 'Stop dictating' : 'Dictate'}
+        </button>
+      )}
       {canRetry && (
         <button className="btn" onClick={() => void window.stoke.hub.remote.retry(remoteId)}>
           Try again
@@ -338,6 +433,7 @@ export function RemoteTerminal({ tab, view, active, theme, fontFamily, fontSize,
         </RemoteFab>
       )}
       <div className="term-host remote-host" ref={hostRef} />
+      {dictation.strip}
     </div>
   )
 }

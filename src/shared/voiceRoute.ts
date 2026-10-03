@@ -33,6 +33,12 @@
  * says "no audio device is available in this environment"), which is exactly
  * the case Stoke's dictation exists for.
  *
+ * So does a REMOTE tab (another of the owner's machines' session, through the
+ * hub relay), for the same reason one step worse: its `claude` is on a machine
+ * that may well have a microphone — just not the one in front of the person
+ * talking. `/voice` there would record the other room. And the LOCAL
+ * `claudeVoice` says nothing about that far CLI's setting, so it is not asked.
+ *
  * Pure, and compiled by both tsconfigs, so no `node:` import (gotcha 27).
  */
 
@@ -94,13 +100,15 @@ export interface DictationTab {
   cliId: string
   /** Non-null for an SSH tab, whose CLI runs on another machine. */
   hostId: string | null
+  /** `'remote'` for another machine's session in a hub remote tab, whose CLI runs there. */
+  kind?: string
 }
 
 /** Who a held Space belongs to on this tab. */
 export type SpaceOwner = 'cli' | 'stoke'
 
 export function spaceOwner(tab: DictationTab, claudeVoice: boolean): SpaceOwner {
-  if (tab.hostId) return 'stoke'
+  if (tab.hostId || tab.kind === 'remote') return 'stoke'
   return tab.cliId === 'claude' && claudeVoice ? 'cli' : 'stoke'
 }
 

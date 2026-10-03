@@ -6187,6 +6187,7 @@ export function App(): React.JSX.Element {
                   accent={activeProfile?.accent ?? null}
                   alpha={termAlpha}
                   bar={settings?.remoteBar ?? 'fab'}
+                  voice={settings?.voice ?? VOICE_DEFAULTS}
                   onClose={requestCloseTab}
                 />
               ))}

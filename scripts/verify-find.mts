@@ -594,6 +594,9 @@ console.log('\nthe bar stops above the foot\'s floats, and starts under the dict
     true
   )
   check('and follows the framed pane\'s padding', /:root\[data-term-frame='true'\] \.term-pane \{\s*--pane-pad-right: var\(--space-12\);/.test(css), true)
+  // A remote tab: no find bar, but the link's button holds the corner; the strip goes under it, lined up.
+  check('on a remote tab the link’s button lines up on --float-right too', /\.remote-fab\[data-placement='pane'\] \{[^}]*right: var\(--float-right, /.test(css), true)
+  check('and the opened button’s panel draws over the strip under it', /\.remote-pane \.voice-strip \{\s*z-index: calc\(var\(--z-sticky\) - 1\);/.test(css), true)
   check('a long sentence wraps inside the strip rather than widening it', /max-width: min\(32rem, calc\(100% - /.test(strip) && /\.voice-text \{[^}]*overflow-wrap: anywhere/.test(css), true)
 }
 

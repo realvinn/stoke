@@ -443,6 +443,16 @@ check(
   'stoke'
 )
 check('a Codex tab: Stoke, whatever Claude’s setting says', spaceOwner({ cliId: 'codex', hostId: null }, true), 'stoke')
+/*
+ * A remote tab (another of the owner's machines, through the hub relay): its
+ * `claude` is over there, and its `/voice` would record THAT machine's
+ * microphone — the owner asked for exactly this case on 2026-10-04 ("if I
+ * remote to another one and want to use claude /voice it should work over the
+ * remote"). The local `claudeVoice` says nothing about the far CLI.
+ */
+check('a remote tab is Stoke’s even with this computer’s /voice on', spaceOwner({ cliId: 'claude', hostId: null, kind: 'remote' }, true), 'stoke')
+check('and with it off', spaceOwner({ cliId: 'claude', hostId: null, kind: 'remote' }, false), 'stoke')
+check('a local session tab is still asked', spaceOwner({ cliId: 'claude', hostId: null, kind: 'session' }, true), 'cli')
 ok('the refusal names /voice and how to turn it off', CLI_OWNS_SPACE.includes('/voice') && /turn it off/.test(CLI_OWNS_SPACE))
 
 console.log('\na refused microphone names the switch to change')
@@ -1034,7 +1044,7 @@ console.log('\nthe wire: the panes and the phone really route through these')
 /*
  * Regexes over the shipped source, so they can be pointed at any revision:
  *
- *   node scripts/verify-voice.mts --wire <TerminalView.tsx> <session.ts> <VoiceSettings.tsx> [MicPicker.tsx] [Dictation.tsx]
+ *   node scripts/verify-voice.mts --wire <TerminalView.tsx> <session.ts> <VoiceSettings.tsx> [MicPicker.tsx] [Dictation.tsx] [RemoteTerminal.tsx]
  *
  * reads those files instead of the working copy's (MicPicker's and
  * Dictation's only when given). That is how the checks were shown to FAIL
@@ -1046,17 +1056,19 @@ console.log('\nthe wire: the panes and the phone really route through these')
 {
   const argv = process.argv.slice(2)
   const at = argv.indexOf('--wire')
-  const given = at >= 0 ? argv.slice(at + 1, at + 6) : []
+  const given = at >= 0 ? argv.slice(at + 1, at + 7) : []
   const termPath = given[0] ?? new URL('../src/renderer/src/components/TerminalView.tsx', import.meta.url)
   const phonePath = given[1] ?? new URL('../src/remote/session.ts', import.meta.url)
   const settingsPath = given[2] ?? new URL('../src/renderer/src/components/VoiceSettings.tsx', import.meta.url)
   const micPath = given[3] ?? new URL('../src/renderer/src/components/MicPicker.tsx', import.meta.url)
   const dictPath = given[4] ?? new URL('../src/renderer/src/components/Dictation.tsx', import.meta.url)
+  const remotePath = given[5] ?? new URL('../src/renderer/src/components/RemoteTerminal.tsx', import.meta.url)
   const term = readFileSync(termPath, 'utf8')
   const phone = readFileSync(phonePath, 'utf8')
   const settingsUi = readFileSync(settingsPath, 'utf8')
   const micUi = readFileSync(micPath, 'utf8')
   const dict = readFileSync(dictPath, 'utf8')
+  const remoteTerm = readFileSync(remotePath, 'utf8')
   if (at >= 0) console.log(`  (reading ${termPath}, ${phonePath}, ${settingsPath}, ${micPath}, ${dictPath})`)
 
   ok('TerminalView arms dictation through the one hook, and draws its strip', /useDictation\(\{/.test(term) && /\{dictation\.strip\}/.test(term))
@@ -1086,6 +1098,23 @@ console.log('\nthe wire: the panes and the phone really route through these')
     /why = await targetRef\.current\.deliver\(text\)/.test(dict) && /if \(why\) keep\(text, why\)/.test(dict) && /\{kept\.text\}/.test(dict)
   )
   ok('a local tab whose session ended says so instead of typing into nothing', /tab\.status === 'exited'\) return SESSION_ENDED_WORDS/.test(term))
+  /*
+   * A remote tab (2026-10-04): the same hook, so the same hold and strip; its
+   * own target asks spaceOwner of the remote tab (always Stoke's), refuses a
+   * tab that may only watch through remoteTypeVerdict, types a tap's space
+   * through xterm's onData (the relay's input path), and hands a transcript to
+   * main's HubRemote.type — never a local paste, never the relay's raw input.
+   */
+  ok('a remote tab arms dictation through the same hook, and draws its strip', /useDictation\(\{/.test(remoteTerm) && /\{dictation\.strip\}/.test(remoteTerm))
+  ok('it asks spaceOwner of the remote tab itself', /spaceOwner\(tab, state\?\.claudeVoice === true\) === 'cli'/.test(remoteTerm))
+  ok('and refuses what remoteTypeVerdict refuses (a tab that may only watch, an older host)', /return remoteTypeVerdict\(v\)/.test(remoteTerm))
+  ok('a tap’s space goes out through onData, as typing does', /typeSpace: \(\) => termRef\.current\?\.input\(' ', true\)/.test(remoteTerm))
+  ok(
+    'a transcript goes to main’s type (the host types it, no Enter), and its refusal comes back as the kept words’ why',
+    /await window\.stoke\.hub\.remote\.type\(remoteId, text\)\s*\n\s*return r\.ok \? null : r\.message/.test(remoteTerm) && !/\.paste\(/.test(remoteTerm)
+  )
+  ok('the link’s button offers Dictate, and gives the keyboard back to the terminal', /dictation\.toggle\(\)\s*\n\s*termRef\.current\?\.focus\(\)/.test(remoteTerm))
+  ok('the strip sits under the link’s button or banner (--strip-top)', /setProperty\('--strip-top', top\)/.test(remoteTerm))
   ok('the phone’s voice mode steps the same reducer', /spaceHold\(hold, event/.test(phone) && /spaceKey\(e, 'keydown'\)/.test(phone))
   ok('and no longer starts on the first press', !/e\.code === 'Space' && !e\.repeat\) void begin\(e\)/.test(phone))
   ok('the phone’s composer carries the level line', /onLevel: \(level\) =>[\s\S]{0,80}levelFill\.style\.transform/.test(phone))

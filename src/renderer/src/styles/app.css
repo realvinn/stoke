@@ -4655,9 +4655,10 @@ mark.hit {
   pointer-events: auto;
 }
 
+/* On `--float-right` with the dictation strip under it, so the two line up and clear the scrollbar. */
 .remote-fab[data-placement='pane'] {
   top: calc(var(--space-8) + var(--space-4));
-  right: calc(var(--space-8) + var(--space-8));
+  right: var(--float-right, calc(var(--space-8) + var(--space-8)));
 }
 
 /*
