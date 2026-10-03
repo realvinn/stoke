@@ -16,8 +16,10 @@
  * does — and refuses what it says a hub refuses.
  */
 import { spawn, type ChildProcess } from 'node:child_process'
+import { subscribe, unsubscribe } from 'node:diagnostics_channel'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { request as httpRequest } from 'node:http'
+import type { Socket } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -1085,9 +1087,20 @@ let liveItemId = ''
   /* ------------------------------------------- the relay under load */
   console.log('\nthe relay under load: flow control, and liveness a silent end cannot fake')
   {
+    // The hub's own end of each relay connection, as Node accepts it, so that what the
+    // hub has READ off the guest's connection can be counted (`bytesRead`) on every
+    // platform. Collected only while this block's two sockets open.
+    const accepted: Socket[] = []
+    const onAccept = (m: unknown): void => {
+      accepted.push((m as { socket: Socket }).socket)
+    }
+    subscribe('net.server.socket', onAccept)
     const r4 = (await call('POST', '/v1/relays', { host: A.id }, { dev: C })).body?.relay as string
     const g4 = await mustOpen(`/v1/ws/relay/${r4}`, C, 'guest end')
     const h4 = await mustOpen(`/v1/ws/relay/${r4}`, A, 'host end')
+    unsubscribe('net.server.socket', onAccept)
+    const guestPort = (g4.ws as unknown as { _socket?: Socket })._socket?.localPort
+    const hubGuestEnd = accepted.filter((s) => guestPort !== undefined && s.remotePort === guestPort).pop()
     h4.ws.pause() // the host stops reading its side at all
     const FRAMES = 64
     const sent: string[] = []
@@ -1096,20 +1109,49 @@ let liveItemId = ''
       sent.push(sha256B64u(f))
       g4.ws.send(Buffer.from(f), { binary: true })
     }
-    // Let the hub take what it will: wait until the guest's own queue stops shrinking.
-    // That queue is coarse — Node hands a socket's whole backlog to libuv as ONE
-    // writev and counts all of it until the writev completes — so it says only
-    // whether the guest's write finished: with no flow control the hub reads it
-    // all and it drops to 0. The hub's own peak (below) is the exact figure.
+    // Let the hub take what it will: wait until neither the guest's own queue nor the
+    // hub's count of what it has read off the guest moves any more.
+    //
+    // The guest's queue is a POSIX-kernel signal, and a coarse one. On macOS and Linux
+    // the kernel takes a few MiB and pushes back, so the rest stays queued in the guest
+    // (macOS, 2026-10-03: the hub read 5-6 MiB, 63.0 MiB stayed queued; Linux CI has
+    // always passed the same check) — but Node hands a socket's whole backlog to libuv
+    // as ONE writev and counts all of it until the writev completes, so the figure says
+    // only whether the write finished. On Windows it says nothing at all: Winsock takes
+    // a non-blocking send whole into the kernel. Measured on Windows 11, Node 24.21
+    // (2026-10-02, again 2026-10-03): 100 ms after the 64 sends the guest's queue was
+    // 0 MiB and its socket had handed all 64 MiB to the kernel (bytesWritten), while the
+    // hub, paused, had read 6.1 MiB — 57.9 MiB sat in Windows' socket buffers, in
+    // neither process. So the hub's own read count is the figure that holds everywhere,
+    // and the hub's own peak (below) the exact one for what it queued.
     let settled = -1
+    let hubRead = -1
     for (let i = 0; i < 50; i++) {
       await new Promise((r) => setTimeout(r, 100))
-      if (g4.ws.bufferedAmount === settled) break
-      settled = g4.ws.bufferedAmount
+      const queued = g4.ws.bufferedAmount
+      const read = hubGuestEnd?.bytesRead ?? -1
+      if (queued === settled && read === hubRead) break
+      settled = queued
+      hubRead = read
     }
     const mib = (n: number): string => `${(n / 2 ** 20).toFixed(1)} MiB`
     ok('with the host not reading, the hub stops reading the guest', logLines.some((l) => l.includes('"msg":"relay held"') && l.includes(r4)))
-    ok(`so the guest's write stalls on its own side (${mib(settled)} of ${FRAMES} MiB still pending there) instead of piling up in the hub`, settled > (FRAMES / 2) * 2 ** 20, mib(settled))
+    // More than the high water: the hub holds only once that much is queued toward the
+    // host, every byte of it read off the guest, so less means this is not the guest's
+    // connection. Under half: with the pause taken out of `hold` the hub reads all 64 MiB
+    // (measured on macOS and on Windows), and the hard cap closes the relay with 1013.
+    ok(
+      `so the hub took only ${mib(hubRead)} of the ${FRAMES} MiB off the guest's connection; the rest waits outside it, not in the hub`,
+      hubGuestEnd !== undefined && hubRead > RELAY_HIGH_WATER && hubRead < (FRAMES / 2) * 2 ** 20,
+      hubGuestEnd ? mib(hubRead) : `no reading: no socket the hub accepted has the guest's port (${guestPort}) as its remote port`
+    )
+    if (WIN) {
+      console.log(
+        `  SKIP  the guest's write stalling on its own side (${mib(settled)} left in its queue): Winsock takes a non-blocking send whole into the kernel, so the guest's queue cannot show it; the hub's read count above is the proof here`
+      )
+    } else {
+      ok(`and the guest's write stalls on its own side (${mib(settled)} of ${FRAMES} MiB still pending there)`, settled > (FRAMES / 2) * 2 ** 20, mib(settled))
+    }
     check('and the relay is still open: held, not dropped', [g4.closed, h4.closed], [null, null])
     h4.ws.resume()
     await h4.until(() => h4.frames.length >= FRAMES, 30_000)
