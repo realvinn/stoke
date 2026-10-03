@@ -333,6 +333,12 @@ export const CH = {
   hubShareKey: 'hub:share-key',
   hubUnshareKey: 'hub:unshare-key',
   hubInstallKey: 'hub:install-key',
+  /**
+   * "Confirm it's you": is this the hub password? (`HubService.verifyPassword`,
+   * spec 2026-10-03 §2). The password crosses once, renderer -> main, and the
+   * answer is a `HubVerifyResult`, never anything that holds it.
+   */
+  hubVerifyPassword: 'hub:verify-password',
   /*
    * "Other machines" (src/main/hub/remote.ts, spec §6): the owner's other
    * signed-in devices and their sessions, remote tabs, and — on the host —

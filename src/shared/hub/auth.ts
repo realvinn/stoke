@@ -155,6 +155,22 @@ export const EMAIL_THROTTLE: ThrottleRule = {
  */
 export const DEVICE_THROTTLE: ThrottleRule = EMAIL_THROTTLE
 
+/**
+ * Per active device, for "confirm it's you" (`POST /v1/auth/verify`, spec
+ * 2026-10-03 §2): a counter of its own, keyed by account AND device and never
+ * shared with the sign-in counters above or the IP's, so wrong passwords typed
+ * there can never lock anyone out of signing in. Only a session signed by a
+ * device the chain lists by id and key can reach it (gotcha 140), so only that
+ * device's key can trip it. The same numbers as sign-in: 5 wrong inside 15 min
+ * locks it 15 min, doubling per repeat, capped at a day.
+ */
+export const VERIFY_THROTTLE: ThrottleRule = {
+  windowMs: 15 * 60_000,
+  maxFailures: 5,
+  lockMs: 15 * 60_000,
+  maxLockMs: 24 * 60 * 60_000
+}
+
 /** Per client IP (the edge's `x-stoke-client-ip`, else the socket's). */
 export const IP_THROTTLE: ThrottleRule = {
   windowMs: 15 * 60_000,

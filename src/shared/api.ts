@@ -38,7 +38,7 @@ import type { TranscriptFindRequest, TranscriptFindResult } from './transcriptFi
 import type { ClaudeLaunchDefaults } from './launch'
 import type { SecretStoreStatus } from './secrets'
 import type { SetupPreview } from './setupFile'
-import type { HubLocalKeyView, HubResult, HubView } from './hub/client'
+import type { HubLocalKeyView, HubResult, HubVerifyResult, HubView } from './hub/client'
 import type { AttachAnswer, HubRemoteView, RemoteTabFrame } from './hub/remote'
 import type { AccessLookup, RemoteAccessStatus } from './cfAccess'
 import type { ChatDetection, ChatImportResult, ChatIndexStatus, ChatSearchHit, ChatTranscript } from './chatIndex'
@@ -935,6 +935,12 @@ export interface StokeApi {
     shareKey(name: string): Promise<HubResult<{ keyId: string }>>
     unshareKey(keyId: string): Promise<HubResult>
     installKey(keyId: string): Promise<HubResult<{ message: string; name: string | null }>>
+    /**
+     * "Confirm it's you" (spec 2026-10-03 §2): one check of the hub password,
+     * signed by this device. Never stored or logged; `ConfirmPasswordSheet`
+     * is the one caller and says what each result means.
+     */
+    verifyPassword(password: string): Promise<HubVerifyResult>
     /** "Other machines" (src/main/hub/remote.ts). */
     remote: {
       view(): Promise<HubRemoteView>

@@ -28,7 +28,7 @@ import {
   type ConflictNote
 } from './items.ts'
 import type { PairState } from './pairing.ts'
-import type { RecoveryWrap } from './protocol.ts'
+import type { HubErrorCode, RecoveryWrap } from './protocol.ts'
 import {
   hostPayloadFor,
   isSafeSshKeyName,
@@ -950,6 +950,81 @@ export function recordCounts(records: Record<string, SyncedRecord>): HubView['co
 
 /** What every hub action answers the panel: ok (with extras), or one sentence to show. */
 export type HubResult<T extends object = object> = ({ ok: true } & T) | { ok: false; message: string }
+
+/**
+ * "Confirm it's you" (spec 2026-10-03 §2): what `HubService.verifyPassword`
+ * answers, for `ConfirmPasswordSheet` and anything else that asks the person
+ * at this computer to retype the hub password before it opens something up.
+ *
+ * - `ok`: the hub says it is the account's password.
+ * - `wrong`: it is not (the hub's 401 `wrong-password`, which never signs this
+ *   device out, unlike `unauthorized`).
+ * - `throttled`: too many wrong tries from this device, or the hub is busy;
+ *   `retryAfterMs` is the hub's.
+ * - `unreachable`: no answer, or not one a Stoke hub gives (gotcha 71), or a
+ *   hub too old to have the route; `message` says which.
+ * - `not-signed-in`: this device has no hub session, its session ended, or it
+ *   is not in the vault (the route takes only an active device).
+ * - `busy`: a check from this device is already in flight; nothing was sent
+ *   (gotcha 20). The sheet that asked is still showing that one.
+ */
+export type HubVerifyResult =
+  | { kind: 'ok' }
+  | { kind: 'wrong' }
+  | { kind: 'throttled'; retryAfterMs: number }
+  | { kind: 'unreachable'; message: string }
+  | { kind: 'not-signed-in' }
+  | { kind: 'busy' }
+
+/** What a hub without `POST /v1/auth/verify` answers (404), said so the owner knows what to update. */
+export const VERIFY_OLD_HUB = 'Your hub is older than this Stoke and cannot check a password yet. Update the hub, then try again.'
+
+/**
+ * A hub refusal of `POST /v1/auth/verify`, as a `HubVerifyResult`. `code` is
+ * the hub's (`offline` for no answer at all), `message` its sentence.
+ */
+export function verifyResultFor(code: HubErrorCode, retryAfterMs: number | undefined, message: string): HubVerifyResult {
+  switch (code) {
+    case 'wrong-password':
+      return { kind: 'wrong' }
+    case 'throttled':
+    case 'locked':
+    case 'rate-limited':
+      return { kind: 'throttled', retryAfterMs: typeof retryAfterMs === 'number' && retryAfterMs > 0 ? retryAfterMs : 60_000 }
+    case 'unauthorized':
+    case 'pending':
+      return { kind: 'not-signed-in' }
+    case 'not-found':
+      return { kind: 'unreachable', message: VERIFY_OLD_HUB }
+    default:
+      return { kind: 'unreachable', message }
+  }
+}
+
+/** "15 min" up to an hour and a half, then whole hours ("3 h"); always rounded UP, never "0 min". */
+export function retryWaitText(ms: number): string {
+  const min = Math.max(1, Math.ceil(ms / 60_000))
+  return min <= 90 ? `${min} min` : `${Math.ceil(min / 60)} h`
+}
+
+/**
+ * The one sentence a password sheet shows for a result (spec §2's three, and
+ * the row's own "Sign in" reason), or null when there is nothing to say.
+ */
+export function verifyPasswordSentence(r: HubVerifyResult): string | null {
+  switch (r.kind) {
+    case 'wrong':
+      return 'That password didn’t match.'
+    case 'throttled':
+      return `Too many tries. Try again in ${retryWaitText(r.retryAfterMs)}.`
+    case 'unreachable':
+      return 'Can’t reach your hub.'
+    case 'not-signed-in':
+      return 'Sign in to Stoke Hub first.'
+    default:
+      return null
+  }
+}
 
 /** The default hub (the owner's NUC behind stoke.vinn.dev). Editable in the panel. */
 export const DEFAULT_HUB_URL = 'https://stoke.vinn.dev/hub'

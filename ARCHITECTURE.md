@@ -1050,7 +1050,10 @@ npm run verify:hub-server     # the hub SERVER over real sockets on a temp data 
                               # a wrap planted in hub.db refused by the device, wraps never
                               # replaced and only from a member, pairs by id AND key, an active
                               # device's proven sign-in past a stranger's email lock,
-                              # revocation, size caps, the rate bucket, the edge Worker in front
+                              # "confirm it's you" (POST /v1/auth/verify: no session minted,
+                              # pending refused, its own per-device lock doubling, no sign-in
+                              # counter moved, one check in flight per device, through the
+                              # Worker), revocation, size caps, the rate bucket, the edge Worker in front
                               # of it, logs and the SQLite file free of every planted secret,
                               # graceful shutdown, and the `stoke-hub` command from source and
                               # bundled (serve, invite, backup, reset-password, health, SIGTERM)
@@ -1074,7 +1077,12 @@ npm run verify:hub-client     # the hub CLIENT: what each tier offers and what n
                               # post never lands, a re-seal interrupted half-way (owed by the
                               # revoker, carried forward by the rest), an old-epoch item a removed
                               # device forged, a feed that never ends. Twenty-three fixes mutated
-                              # back one at a time each turn it red
+                              # back one at a time each turn it red. "Confirm it's you"
+                              # (`verifyPassword`): right, wrong (still signed in), one request
+                              # for a double press, throttled with the hub's wait, no answer, a
+                              # challenge page or a bare 200 never ok, an old hub told to update,
+                              # pending and never-signed-in refused, the password kept nowhere,
+                              # and the sheet's sentences
 npm run verify:hub-relay      # "Other machines": two RelayChannels through an in-memory relay
                               # that plays the hub — forwarding, and dropping, repeating,
                               # reordering, reflecting and rewriting frames, swapping the host's
@@ -1391,7 +1399,8 @@ src/main/         Electron main process
                     the hub server imports it. verify:hub
   hub/service.ts    the hub CLIENT: sign-in, the vault and its Kit, joining (code or Kit), the
                     sync pass, SSH key share/install, rename, revoke + re-seal, presence,
-                    sign-out. One queue; claims before awaits. No electron import (dialogs are
+                    sign-out, and "confirm it's you" (`verifyPassword`, its own guard, outside
+                    the queue). One queue; claims before awaits. No electron import (dialogs are
                     injected by index.ts). verify:hub-client
   hub/files.ts      `hub-device.json` (device keys, session, the digest key) and
                     `hub-state.json` (chain, pin, anchor, records keyed by HMAC digests, cursor,
@@ -1635,6 +1644,15 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     before the relaunch pill or "Restart and install" kills a turn in flight.
                     Wait is the focused button. In `overlayOpen`, so the docked browser comes
                     off the window while it is up (gotcha 14). Gotcha 82
+  src/components/ConfirmPasswordSheet.tsx  "Confirm it's you": the hub password retyped on
+                    this computer before it opens something up to the account's other ones
+                    (spec 2026-10-03 §2). Calls `window.stoke.hub.verifyPassword` itself and
+                    `onConfirmed` only on the hub's yes; says the three sentences
+                    (`verifyPasswordSentence`). A portal into <body> above the Settings sheet,
+                    registered with `useFloatingLayer`; Tab trapped, Escape its Cancel. The
+                    field is uncontrolled, so the password is never React state or a DOM
+                    attribute, and is emptied on the press and on close. Mounted only while
+                    open; outside Settings, its open state belongs in App's `overlayOpen`
   src/components/OtherMachines.tsx  the sidebar's "Other machines" group: the owner's other
                     signed-in desktops online now and, where their owner shares them, their
                     sessions; a click opens one as a remote tab. A group, never an overlay
@@ -2287,7 +2305,9 @@ hub/              Stoke Hub, the server the owner runs on the NUC (spec:
                     thrown, never process.exit (stdout/stderr on a macOS pipe are async)
   app.ts            the HTTP routes, the auth pipeline (session, device signature, nonce,
                     active = chain id AND key), the chain/items/pairing/relay handlers,
-                    graceful close. `startHub` is what verify:hub-server drives
+                    "confirm it's you" (`authVerify`: a password check on its own
+                    per-device counter and scrypt queue, no session), graceful close.
+                    `startHub` is what verify:hub-server drives
   store.ts          the SQLite file: WAL, synchronous FULL, 0600; hashes of tokens and invites,
                     never the values; VACUUM INTO for backups
   sockets.ts        presence registry and the relay broker (in memory, frames forwarded verbatim)

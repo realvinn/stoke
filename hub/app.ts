@@ -51,7 +51,8 @@ import {
   SESSION_TOKEN_BYTES,
   SESSION_TOUCH_MS,
   SESSION_TTL_MS,
-  throttleVerdict
+  throttleVerdict,
+  VERIFY_THROTTLE
 } from '../src/shared/hub/auth.ts'
 import {
   DEVICE_CAPS,
@@ -164,6 +165,14 @@ const SCRYPT_QUEUE = 16
  */
 const PROVEN_SCRYPT_SLOTS = 1
 const PROVEN_SCRYPT_QUEUE = 4
+/**
+ * "Confirm it's you" (`authVerify`) has a scrypt slot and queue of its own, so
+ * checks from the account's devices never wait behind — or hold up — anyone's
+ * sign-in, and one check in flight per device, so its counter judges every
+ * guess (gotcha 20).
+ */
+const VERIFY_SCRYPT_SLOTS = 1
+const VERIFY_SCRYPT_QUEUE = 8
 /** Sign-in attempts in flight: one per email (so the throttle counts every guess), four per IP. */
 const LOGIN_PER_EMAIL = 1
 const LOGIN_PER_IP = 4
@@ -204,7 +213,9 @@ const DEFAULT_MESSAGE: Record<HubErrorCode, string> = {
   'edge-refused': 'The hub refused a request that did not come through its edge.',
   pending: 'This device has not joined the account yet. Approve it from a device that has.',
   offline: 'That device is not connected to the hub right now.',
-  'server-error': 'The hub hit an error. Try again.'
+  'server-error': 'The hub hit an error. Try again.',
+  'wrong-password': 'That password didn’t match.',
+  throttled: 'Too many tries. Try again later.'
 }
 
 export class HubError extends Error {
@@ -386,6 +397,15 @@ export function deviceThrottleKey(account: string, device: string): string {
   return `device:${account}:${device}`
 }
 
+/**
+ * The throttle key of one active device's password checks (`VERIFY_THROTTLE`).
+ * A prefix of its own: never an `email:`, `device:` or `ip:` row, so no wrong
+ * password typed into a check moves a sign-in counter.
+ */
+export function verifyThrottleKey(account: string, device: string): string {
+  return `verify:${account}:${device}`
+}
+
 /* ------------------------------------------------------------ the server */
 
 type Listener = 'edge' | 'lan'
@@ -433,6 +453,8 @@ class HubServer {
   private readonly buckets: RateBuckets
   private readonly scrypt = new Semaphore(SCRYPT_SLOTS, SCRYPT_QUEUE)
   private readonly provenScrypt = new Semaphore(PROVEN_SCRYPT_SLOTS, PROVEN_SCRYPT_QUEUE)
+  private readonly verifyScrypt = new Semaphore(VERIFY_SCRYPT_SLOTS, VERIFY_SCRYPT_QUEUE)
+  private readonly verifyByDevice = new InFlight(1)
   private readonly loginByEmail = new InFlight(LOGIN_PER_EMAIL)
   private readonly loginByIp = new InFlight(LOGIN_PER_IP)
   /** Strangers' refusals in the log: 20 a minute per client (`clientKey`), and 100 a minute from all of them together. */
@@ -466,6 +488,7 @@ class HubServer {
       signup: (ctx, body) => this.signup(ctx, body),
       login: (ctx, body, _p, pathV1) => this.login(ctx, body, pathV1),
       logout: (ctx) => this.logout(ctx),
+      authVerify: (ctx, body) => this.authVerify(ctx, body),
       account: (ctx) => this.account(ctx),
       invite: (ctx) => this.invite(ctx),
       chainGet: (ctx, _b, _p, pathV1) => this.chainGet(ctx, pathV1),
@@ -1094,6 +1117,53 @@ class HubServer {
     } finally {
       releaseKey()
       releaseIp()
+    }
+  }
+
+  /**
+   * "Confirm it's you" (spec 2026-10-03 §2): is `password` this account's? A
+   * device already in the vault asks before it lets the account's other
+   * devices in to something of its own (its chat history), so the person at
+   * it proves they hold the password, not merely the unlocked computer.
+   *
+   * It decides that and nothing else: no session is minted, and nothing is
+   * written but this device's own failure counter (`VERIFY_THROTTLE`, keyed by
+   * account and device). The email's, the device's sign-in and the IP's
+   * counters are never read or charged, so wrong tries here cannot lock anyone
+   * out of signing in, the owner's other devices included. Only an active
+   * device by id and key gets here (`auth: 'active'`, gotcha 140), so only
+   * that device's key can trip its counter. The lock is judged before scrypt,
+   * so a locked device costs the hub nothing; the in-flight claim is taken
+   * before the await (gotcha 20), so two guesses sent together are both
+   * counted. The password is never logged: the request log carries no body.
+   */
+  private async authVerify(ctx: Ctx, body: Record<string, unknown>): Promise<unknown> {
+    const a = ctx.auth as Authed
+    const password = body.password
+    if (typeof password !== 'string' || password.length === 0 || password.length > MAX_PASSWORD_CHARS * 4) {
+      throw new HubError('bad-request', 'Enter your password.')
+    }
+    const key = verifyThrottleKey(a.account.id, a.device)
+    const locked = throttleVerdict(this.store.throttle(key), this.now())
+    if (!locked.ok) throw new HubError('throttled', undefined, locked.retryAfterMs)
+    const release = this.verifyByDevice.claim(key)
+    if (!release) throw new HubError('rate-limited', 'This device is already checking a password.', 1000)
+    try {
+      let good: boolean
+      const slot = await this.scryptSlot(this.verifyScrypt, null)
+      try {
+        good = await verifyPassword(password, a.account.pw_hash)
+      } finally {
+        slot()
+      }
+      if (!good) {
+        this.store.saveThrottle(key, recordLoginFailure(this.store.throttle(key), this.now(), VERIFY_THROTTLE))
+        throw new HubError('wrong-password')
+      }
+      this.store.clearThrottle(key)
+      return { ok: true }
+    } finally {
+      release()
     }
   }
 

@@ -74,12 +74,14 @@ import {
   recordCounts,
   SYNC_DEBOUNCE_MS,
   valueDigest,
+  verifyResultFor,
   type HubAlarm,
   type HubHeldView,
   type HubLocalKeyView,
   type HubResult,
   type HubLocalState,
   type HubPairView,
+  type HubVerifyResult,
   type HubView,
   type LocalValue,
   type PlannedUpload,
@@ -331,6 +333,8 @@ export class HubService {
    * cancelled is the owner's to repeat, never Stoke's.
    */
   private autoJoined: boolean
+  /** A password check is in flight (`verifyPassword`), claimed before its first await (gotcha 20). */
+  private verifying: boolean
 
   constructor(deps: HubServiceDeps) {
     this.deps = deps
@@ -373,6 +377,7 @@ export class HubService {
     this.presenceKeys = new Map()
     this.waitPolls = 0
     this.autoJoined = false
+    this.verifying = false
     this.remote = deps.remote
       ? new HubRemote({
           ...deps.remote,
@@ -943,6 +948,43 @@ export class HubService {
       await this.commitHub({ email: '', deviceId: '', token: '', grants: {}, shareSessions: false })
       return { ok: true }
     })
+  }
+
+  /**
+   * "Confirm it's you" (spec 2026-10-03 §2): is `password` this account's?
+   * Asked before this computer lets the account's other devices in to
+   * something of its own (its chat history), so the switch takes the person
+   * who knows the password, not just whoever has the unlocked computer.
+   *
+   * One signed `POST /v1/auth/verify` as this device (the route takes only a
+   * device in the vault). The hub mints no session and counts wrong tries on
+   * this device's own counter, never the sign-in ones. Not an `action`: it
+   * writes no hub file and shows nothing in the panel, so it neither waits
+   * behind a sync pass nor holds one up. Its own guard is claimed before the
+   * first await (gotcha 20): a second call while one is in flight sends
+   * nothing and answers `busy`.
+   *
+   * The password is a local here and in the request body, nothing else: never
+   * logged (no `log` call can see it, and a `HubRequestError` carries the
+   * hub's sentence, not the body), never stored, never in the view. A 200 is
+   * `ok` only when it says `{ ok: true }` (gotcha 71). A hub that answers
+   * `unauthorized` ends the session as every request does (`req`).
+   */
+  async verifyPassword(password: string): Promise<HubVerifyResult> {
+    if (this.verifying) return { kind: 'busy' }
+    if (!this.signedIn() || this.revoked) return { kind: 'not-signed-in' }
+    if (typeof password !== 'string' || password.length === 0) return { kind: 'wrong' }
+    this.verifying = true
+    try {
+      const res = await this.req('POST', '/v1/auth/verify', { password })
+      return res.ok === true ? { kind: 'ok' } : { kind: 'unreachable', message: 'The hub answered, but not with a yes or a no. Check that the address is your hub.' }
+    } catch (err) {
+      if (err instanceof HubRequestError) return verifyResultFor(err.code, err.retryAfterMs, err.message)
+      if (err instanceof Stop) return { kind: 'not-signed-in' }
+      return { kind: 'unreachable', message: messageOf(err) }
+    } finally {
+      this.verifying = false
+    }
   }
 
   /* ======================================================== the chain */
