@@ -98,6 +98,8 @@ import { commitSubjects } from './activityGit.ts'
 import { manualProjectPatch, projectMetaPatch } from './projectMeta.ts'
 import { isInside, normalizePath, pathKey, pathRulesFor } from '../shared/paths.ts'
 import { ChatIndexHost } from './chatIndex/host.ts'
+import { redactSecrets } from './chatIndex/parse.ts'
+import { sharedChats, type ChatIndexAccess } from './hub/chatShare.ts'
 import type { SourceEnv } from './chatIndex/sources.ts'
 import chatWorkerPath from './chatIndex/worker.ts?modulePath'
 import { CHAT_SEARCH_MIN_CHARS, type ChatImportResult, type ChatIndexStatus } from '../shared/chatIndex.ts'
@@ -351,8 +353,41 @@ function relayRemote(): RemoteServer {
     // shared/sizeClaim.ts): the session's own tab here draws that grid until
     // someone uses it, and refits when the last remote tab leaves.
     relayServer.serveRelay({ sized: (ptyId, cols, rows, reason) => send(CH.ptySized, ptyId, cols, rows, reason) })
+    // Chat history for the owner's other computers: this instance only, never the phone's (spec 2026-10-03 §3).
+    relayServer.serveChats(sharedChats(chatIndexForGuests()))
   }
   return relayServer
+}
+
+/**
+ * THE SEAM: the chat index as another of the owner's computers reaches it,
+ * through a chats relay the host has judged (hub/remote.ts) and the relay
+ * instance's two routes (hub/chatShare.ts, which redacts every string again,
+ * names folders by their last segment and keeps hidden folders' chats here).
+ * Every field is read per call (gotcha 111).
+ *
+ * TODO(integrate): point `search` and `open` at the chat index's forced-
+ * redaction API (spec §1, built in parallel in src/main/chatIndex/): hits and
+ * chats from CLEANED text whatever `chatIndexOptions.redact` says, including
+ * rows stored while it was off and `open`'s fallback to the store's copy.
+ * Then `storedRedacted` can answer `true` (chatShare.ts refuses every search
+ * while it is false, because a search over raw text answers yes or no for any
+ * prefix of a secret, however the snippets are redacted).
+ */
+function chatIndexForGuests(): ChatIndexAccess {
+  return {
+    indexOn: () => getSettings().chatIndex === 'on',
+    storedRedacted: () => getSettings().chatIndexOptions.redact,
+    hidden: (cwd) => {
+      const rules = pathRulesFor(process.platform)
+      return getSettings().hiddenProjects.some((p) => isInside(p, cwd, rules))
+    },
+    search: (q, limit) => chatHost().search(q, limit),
+    find: (source, nativeId) => chatHost().find(source, nativeId),
+    // Redaction forced on for the re-read from the tool's own copy, whatever the setting says.
+    open: (chatId) => chatHost().open(chatId, chatEnv(), true, getSettings().chatIndexOptions.caps.fileMb),
+    redact: redactSecrets
+  }
 }
 
 /**
@@ -4349,7 +4384,9 @@ function registerIpc(): void {
           frame: (tab, frame) => send(CH.hubRemoteFrame, tab, frame),
           sessionStatus: (ptyId) => remoteSessionStatusFor(ptyId),
           // The relay server's `sized` hook (relayRemote) makes this machine's tab follow a guest's resize.
-          followsResize: true
+          followsResize: true,
+          // Chat history is shared only while it is on here (and the tick, and the vault: hub/remote.ts).
+          chatIndexOn: () => getSettings().chatIndex === 'on'
         }
       })
       await svc.start()
@@ -4421,6 +4458,19 @@ function registerIpc(): void {
   ipcMain.handle(CH.hubRemoteDrop, async () => (await hubService()).remoteDropGuests())
   ipcMain.handle(CH.hubSetSharing, async (_e, on: unknown) => (await hubService()).setSharing(on === true))
   ipcMain.handle(CH.hubRevokeGrant, async (_e, device: unknown) => (await hubService()).revokeGrant(str(device)))
+  // Chat history across computers (hub/remote.ts). A sidebar keystroke never STARTS the hub client.
+  ipcMain.handle(CH.hubSearchChats, (_e, q: unknown) => hubClient?.searchChats(str(q)) ?? [])
+  ipcMain.handle(CH.hubOpenRemoteChat, (_e, device: unknown, source: unknown, nativeId: unknown) =>
+    hubClient
+      ? hubClient.openRemoteChat(str(device), str(source), str(nativeId))
+      : { ok: false, state: 'error', message: 'Sign in to Stoke Hub first.' }
+  )
+  ipcMain.on(CH.hubEndChatSearch, () => hubClient?.endChatSearch())
+  ipcMain.handle(CH.hubSetShareChats, async (_e, on: unknown, devices: unknown) =>
+    (await hubService()).setShareChats(on === true, Array.isArray(devices) ? devices : [])
+  )
+  ipcMain.handle(CH.hubChatGrants, () => hubClient?.remoteView().chatGrants ?? [])
+  ipcMain.handle(CH.hubRemoveChatGrant, async (_e, device: unknown) => (await hubService()).revokeChatGrant(str(device)))
 
   /* -------------------------------------------------------------- profiles */
   /*

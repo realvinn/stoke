@@ -23,6 +23,7 @@ import { clampPort, clampRemoteReach, REMOTE_REACH_PREFERENCES } from '../src/sh
 import {
   advertisedRemoteToken,
   answerVerdict,
+  chatsRouteFor,
   ENDED_RETENTION_MS,
   isEndedExpired,
   isGatedRemotePath,
@@ -538,6 +539,28 @@ check('assets are public', isGatedRemotePath('/assets/app.js'), false)
 check('the manifest is public', isGatedRemotePath('/manifest.webmanifest'), false)
 check('an unmatched path falls to the public SPA shell, not to a 401', isGatedRemotePath('/session/abc'), false)
 check('the service worker is public too: a phone must load it before it has a key', isGatedRemotePath('/sw.js'), false)
+
+console.log('\nchat history is the relay’s, never the phone’s (spec 2026-10-03 §3)')
+// A phone holds only the bearer key; chat history is read by another of the owner's
+// computers through a chats relay its host judged. The phone server's instance answers
+// every /api/chats/* with the 404 of any unknown endpoint.
+check(
+  'the phone’s instance serves no chats route, whatever the method or spelling',
+  ['/api/chats/search', '/api/chats/open', '/api/chats', '/api/chats/', '/api/chats/search/'].flatMap((p) => ['GET', 'POST'].map((m) => chatsRouteFor('phone', m, p))),
+  Array(10).fill('none')
+)
+check('the relay’s instance serves exactly the two GETs', [chatsRouteFor('relay', 'GET', '/api/chats/search'), chatsRouteFor('relay', 'GET', '/api/chats/open')], ['search', 'open'])
+check('and nothing else under it, nor a write', [chatsRouteFor('relay', 'POST', '/api/chats/search'), chatsRouteFor('relay', 'GET', '/api/chats/delete'), chatsRouteFor('relay', 'GET', '/api/chats/search/x')], ['none', 'none', 'none'])
+check('every other path is not a chats path at all, on either instance', [chatsRouteFor('phone', 'GET', '/api/sessions'), chatsRouteFor('relay', 'GET', '/api/chatsearch'), chatsRouteFor('relay', 'GET', '/chats/search')], ['not-chats', 'not-chats', 'not-chats'])
+{
+  // Main wires the chats deps into the relay instance only: a `serveChats` on the phone's
+  // `remote` would make every route above answer on the phone's server.
+  const main = readFileSync(join(import.meta.dirname, '../src/main/index.ts'), 'utf8')
+  const calls = [...main.matchAll(/(\w+)\.serveChats\(/g)].map((m) => m[1])
+  check('main calls serveChats on the relay instance alone', calls, ['relayServer'])
+  const server = readFileSync(join(import.meta.dirname, '../src/main/remote/server.ts'), 'utf8')
+  check('and the server asks chatsRouteFor which instance it is from that alone', /chatsRouteFor\(this\.relayChats \? 'relay' : 'phone'/.test(server), true)
+}
 
 console.log('\nthe phone shell: static answers, caching, and the service worker')
 // A missing FILE used to get index.html with a 200: a module loader ran HTML as

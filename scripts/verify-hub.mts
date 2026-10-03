@@ -870,6 +870,20 @@ console.log('\nsettings: the local hub block')
   check('sharing sessions is off unless ticked, and the old remoteHost (default on) is not read as it', hydrateHubSettings({ remoteHost: true }).shareSessions, false)
   check('only well-formed grants survive', Object.keys(h.grants), [DA.id])
   check('an unknown field is dropped', 'extra' in h, false)
+
+  // Chat history (spec 2026-10-03 §3): its own tick and its own grants, off and empty by default.
+  check('chats: off and no grants by default', [HUB_SETTINGS_DEFAULTS.shareChats, HUB_SETTINGS_DEFAULTS.chatGrants, h.shareChats, h.chatGrants], [false, {}, false, {}])
+  const c = hydrateHubSettings({
+    shareChats: true,
+    chatGrants: { [DA.id]: 'always', [DB.id]: 'once', bad: 'always', [DC.id]: { mode: 'full' } },
+    grants: { [DA.id]: { mode: 'full', label: 'Mac', at: 5 } }
+  })
+  check('chats ticked stays ticked; only a device id holding exactly "always" is a chats grant', [c.shareChats, c.chatGrants], [true, { [DA.id]: 'always' }])
+  check('the chats tick is on only for the literal true', [hydrateHubSettings({ shareChats: 'true' }).shareChats, hydrateHubSettings({ shareChats: 1 }).shareChats], [false, false])
+  check('a session grant is never read as a chats grant, nor the other way', [hydrateHubSettings({ grants: { [DA.id]: { mode: 'full', label: 'x', at: 1 } } }).chatGrants, hydrateHubSettings({ chatGrants: { [DA.id]: 'always' } }).grants], [{}, {}])
+  const full = hydrateSettings({ hub: { shareChats: true, chatGrants: { [DA.id]: 'always' } } })
+  check('settings hydrate keeps them under hub', [full.hub.shareChats, full.hub.chatGrants], [true, { [DA.id]: 'always' }])
+  check('and they never ride a synced item: hub is machine-local', [(LOCAL_KEYS as readonly string[]).includes('hub'), JSON.stringify(t1ValuesFrom(full)).includes('chatGrants'), JSON.stringify(t1ValuesFrom(full)).includes('shareChats')], [true, false, false])
 }
 
 console.log('\nsettings: applying what arrives')

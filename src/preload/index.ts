@@ -273,7 +273,13 @@ const api: StokeApi = {
       answer: (askId, answer) => ipcRenderer.invoke(CH.hubRemoteAnswer, askId, answer),
       dropGuests: () => ipcRenderer.invoke(CH.hubRemoteDrop),
       setSharing: (share) => ipcRenderer.invoke(CH.hubSetSharing, share),
-      revokeGrant: (deviceId) => ipcRenderer.invoke(CH.hubRevokeGrant, deviceId)
+      revokeGrant: (deviceId) => ipcRenderer.invoke(CH.hubRevokeGrant, deviceId),
+      searchChats: (query) => ipcRenderer.invoke(CH.hubSearchChats, query),
+      openChat: (deviceId, source, nativeId) => ipcRenderer.invoke(CH.hubOpenRemoteChat, deviceId, source, nativeId),
+      endChatSearch: () => ipcRenderer.send(CH.hubEndChatSearch),
+      setShareChats: (on, deviceIds) => ipcRenderer.invoke(CH.hubSetShareChats, on, deviceIds),
+      chatGrants: () => ipcRenderer.invoke(CH.hubChatGrants),
+      removeChatGrant: (deviceId) => ipcRenderer.invoke(CH.hubRemoveChatGrant, deviceId)
     }
   },
 

@@ -26,6 +26,8 @@ export type WorkerRequest =
   | { id: number; op: 'removeImport'; importId: number }
   /** Every local chat and read position gone, imports kept; the next pass reads the tools again. */
   | { id: number; op: 'rebuild' }
+  /** A chat's store id by its tool and the tool's own id: another computer names a chat that way, never by store id. */
+  | { id: number; op: 'find'; source: string; nativeId: string }
 
 /** What each request resolves to. */
 export interface WorkerResults {
@@ -41,6 +43,7 @@ export interface WorkerResults {
   open: ChatTranscript | null
   removeImport: null
   rebuild: null
+  find: number | null
 }
 
 export type WorkerReply = { id: number; ok: true; value: unknown } | { id: number; ok: false; error: string }

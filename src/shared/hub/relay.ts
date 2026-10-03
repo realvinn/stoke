@@ -150,7 +150,17 @@ export type RelayMode = 'view' | 'full'
  * - `attach` (guest, the first frame after `hs3`): the session this relay is
  *   for. The host's question — "Let <device> open <session>?" — names it, and
  *   an "Allow once" answer is scoped to it (`relayScopeVerdict`, remote.ts).
+ *   `{ kind: 'chats' }` instead asks for this computer's chat history
+ *   (spec 2026-10-03 §3): its own question, its own grants (`hub.chatGrants`)
+ *   and a scope of exactly two GET routes. A session grant never opens it,
+ *   and it never opens a session. A host from before it parses no such frame
+ *   and closes the channel; a guest asks only a host whose status says
+ *   `chats: true`, which no such host sends.
  * - `ready`/`refused` (host): the answer. Nothing else is served before `ready`.
+ *   A refusal may carry a `code` (`RelayRefusalCode`) so a guest can say
+ *   which of "not sharing", "denied" and the rest it was without reading the
+ *   sentence; a host from before codes sends none, and a guest reads that as
+ *   a plain refusal.
  *   `sizes: true` says the host's own tab for the session follows a guest's
  *   resize (last active wins, shared/sizeClaim.ts). A host from before that
  *   sends no `sizes`, and its own tab keeps its old grid while the pty takes
@@ -167,9 +177,10 @@ export type RelayMode = 'view' | 'full'
  *   machine chose; a host never takes one from a guest.
  */
 export type RelayInnerFrame =
-  | { t: 'attach'; ptyId: string }
+  | { t: 'attach'; kind?: 'session'; ptyId: string }
+  | { t: 'attach'; kind: 'chats' }
   | { t: 'ready'; mode: RelayMode; host: { label: string; platform: string }; sizes?: boolean }
-  | { t: 'refused'; reason: string }
+  | { t: 'refused'; reason: string; code?: RelayRefusalCode }
   | { t: 'status'; status: unknown }
   | { t: 'req'; id: number; method: 'GET' | 'POST'; path: string; body?: unknown }
   | { t: 'res'; id: number; status: number; body: unknown }
@@ -179,6 +190,15 @@ export type RelayInnerFrame =
   | { t: 'part'; data: string; more?: true }
   | { t: 'ping' }
   | { t: 'pong' }
+
+/**
+ * Why a host refused, for a guest to act on without reading the sentence:
+ * `not-sharing` (the tick is off, or chat history is), `denied` (the owner
+ * said no, or nobody answered in time), `not-a-device` (the host's chain does
+ * not hold the guest), `busy` (it is already asking about the same thing).
+ */
+export type RelayRefusalCode = 'not-sharing' | 'denied' | 'not-a-device' | 'busy'
+const REFUSAL_CODES: readonly string[] = ['not-sharing', 'denied', 'not-a-device', 'busy']
 
 /**
  * The most UTF-16 units of frame text one `part` carries. A unit is at most
@@ -218,11 +238,18 @@ export function parseRelayInner(text: string): RelayInnerFrame | null {
   const id = (x: unknown): boolean => typeof x === 'number' && Number.isSafeInteger(x) && x >= 0
   switch (v.t) {
     case 'attach':
+      // Rebuilt from named keys: a chats attach carries no pty, a session attach no other kind.
+      if (v.kind === 'chats') return v.ptyId === undefined ? { t: 'attach', kind: 'chats' } : null
+      if (v.kind !== undefined && v.kind !== 'session') return null
       return isPtyId(v.ptyId) ? { t: 'attach', ptyId: v.ptyId } : null
     case 'ready':
       return (v.mode === 'view' || v.mode === 'full') && isRecord(v.host) ? (v as unknown as RelayInnerFrame) : null
     case 'refused':
-      return typeof v.reason === 'string' ? (v as unknown as RelayInnerFrame) : null
+      if (typeof v.reason !== 'string') return null
+      // An unknown code is dropped, not trusted: the guest then reads a plain refusal.
+      return typeof v.code === 'string' && REFUSAL_CODES.includes(v.code)
+        ? { t: 'refused', reason: v.reason, code: v.code as RelayRefusalCode }
+        : { t: 'refused', reason: v.reason }
     case 'status':
       return isRecord(v.status) ? { t: 'status', status: v.status } : null
     case 'req':
@@ -275,8 +302,57 @@ export const RELAY_ROUTES: readonly RelayRoute[] = [
   { method: 'POST', path: '/api/sessions/:ptyId/answer', needs: 'full' },
   { method: 'POST', path: '/api/projects', needs: 'full' },
   { method: 'WS', path: '/ws/events', needs: 'view' },
-  { method: 'WS', path: '/ws', needs: 'view' }
+  { method: 'WS', path: '/ws', needs: 'view' },
+  /*
+   * Chat history (spec 2026-10-03 §3), read-only: served only by the RELAY
+   * instance of the phone server (`chatsRouteFor`, remotePhone.ts) and only
+   * inside a chats scope (`relayScopeVerdict`). A session relay's scope
+   * refuses both, whatever its grant.
+   */
+  { method: 'GET', path: '/api/chats/search', needs: 'view' },
+  { method: 'GET', path: '/api/chats/open', needs: 'view' }
 ]
+
+/** The longest search a guest may send, in UTF-16 units: the local search box's own cut. */
+export const CHAT_QUERY_MAX = 200
+/** The most hits one search answers with. */
+export const CHAT_HITS_MAX = 50
+/** A chat source as a route names it (`claude`, `export-chatgpt`, …): never a path. */
+const CHAT_SOURCE_RE = /^[a-z][a-z0-9-]{0,31}$/
+/** A source's own chat id: one line, no control characters, bounded. */
+// eslint-disable-next-line no-control-regex
+const CHAT_NATIVE_RE = /^[^\u0000-\u001f\u007f]{1,200}$/
+
+export function isChatSource(v: unknown): v is string {
+  return typeof v === 'string' && CHAT_SOURCE_RE.test(v)
+}
+
+export function isChatNativeId(v: unknown): v is string {
+  return typeof v === 'string' && CHAT_NATIVE_RE.test(v)
+}
+
+/**
+ * Whether a chats route's query is one the host serves: search takes `q`
+ * (1..`CHAT_QUERY_MAX` units) and an optional `limit` (1..`CHAT_HITS_MAX`);
+ * open takes exactly `source` and `id`. Nothing else, and no key twice.
+ */
+function chatsQueryOk(path: string, query: string): boolean {
+  const params = new URLSearchParams(query)
+  const keys = [...params.keys()]
+  if (new Set(keys).size !== keys.length) return false
+  if (path === '/api/chats/search') {
+    if (keys.some((k) => k !== 'q' && k !== 'limit')) return false
+    const q = params.get('q')
+    if (q === null || q.length === 0 || q.length > CHAT_QUERY_MAX) return false
+    const limit = params.get('limit')
+    if (limit === null) return true
+    if (!/^[0-9]{1,3}$/.test(limit)) return false
+    const n = Number(limit)
+    return n >= 1 && n <= CHAT_HITS_MAX
+  }
+  if (keys.length !== 2 || !keys.includes('source') || !keys.includes('id')) return false
+  return isChatSource(params.get('source')) && isChatNativeId(params.get('id'))
+}
 
 const PTY_ID = PTY_ID_RE
 
@@ -305,6 +381,7 @@ export function relayRouteFor(method: 'GET' | 'POST' | 'WS', path: string): Rela
       if (!PTY_ID.test(params.get('ptyId') ?? '')) return null
       if (keys.some((k) => k !== 'ptyId' && k !== 'peek')) return null
     }
+    if (r.path.startsWith('/api/chats/') && !chatsQueryOk(r.path, query)) return null
     return r
   }
   return null

@@ -12,7 +12,7 @@
 import { parentPort, workerData } from 'node:worker_threads'
 import { join } from 'node:path'
 import { rmSync } from 'node:fs'
-import { CHAT_SOURCE_IDS, emptyChatStatus, type ChatIndexStatus, type ChatPassSummary } from '../../shared/chatIndex.ts'
+import { CHAT_SOURCE_IDS, emptyChatStatus, type ChatIndexStatus, type ChatOrigin, type ChatPassSummary } from '../../shared/chatIndex.ts'
 import { ChatStore, STORE_FILE } from './store.ts'
 import { runPass, STORE_MAX_TEXT_BYTES } from './scan.ts'
 import { detectSource, discovery } from './sources.ts'
@@ -190,6 +190,11 @@ port.on('message', async (msg: WorkerRequest) => {
         }
         reply(msg.id, null)
         emit(true)
+        return
+      }
+      case 'find': {
+        const s = openStore(false)
+        reply(msg.id, s ? s.chatId(msg.source as ChatOrigin, msg.nativeId) : null)
         return
       }
     }

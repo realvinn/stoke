@@ -39,9 +39,11 @@ import { addRemoteProject, browseRemoteFolder, resolveFolderBases } from './fold
 import type { PushOutcome } from './push.ts'
 import { isTailnetAddress, tailnetAddress } from './link.ts'
 import type { PhoneSocket } from './socket.ts'
+import { answerChatsRoute, type SharedChats } from '../hub/chatShare.ts'
 import {
   answerBytes,
   answerVerdict,
+  chatsRouteFor,
   isGatedRemotePath,
   mayStoreKeyCookie,
   phoneAgentChoices,
@@ -571,6 +573,13 @@ export class RemoteServer {
    * viewer must hear of the desktop's at once, not a registry pass later.
    */
   private relayHooks: RelayHooks | null = null
+  /**
+   * This computer's chat history, as another of the owner's computers reads
+   * it through a chats relay (spec 2026-10-03 §3). Set by `serveChats` on the
+   * relay instance only: the phone's server answers `/api/chats/*` with the
+   * 404 of any unknown endpoint (`chatsRouteFor`), so a phone key reads none.
+   */
+  private relayChats: SharedChats | null = null
 
   constructor(deps: RemoteDeps, onClientsChanged: () => void = () => {}) {
     this.deps = deps
@@ -746,6 +755,16 @@ export class RemoteServer {
   serveRelay(hooks?: RelayHooks): void {
     if (hooks) this.relayHooks = hooks
     this.fanOut()
+  }
+
+  /**
+   * Answer `/api/chats/search` and `/api/chats/open` (the relay instance
+   * ONLY: main calls this on `relayRemote()`, never on the phone's server).
+   * Every read goes through `chats` per call (gotcha 111), and only after
+   * `HubRemote` judged the relay's chats grant and scope.
+   */
+  serveChats(chats: SharedChats): void {
+    this.relayChats = chats
   }
 
   /**
@@ -1390,6 +1409,15 @@ export class RemoteServer {
    */
   private async api(method: string, url: URL, readJson: () => Promise<unknown>): Promise<{ status: number; body: unknown } | null> {
     const req = { method }
+    /*
+     * Chat history: only the relay instance answers (spec 2026-10-03 §3); on
+     * the phone's server every `/api/chats/*` is the plain 404 below.
+     */
+    const chats = chatsRouteFor(this.relayChats ? 'relay' : 'phone', method, url.pathname)
+    if (chats !== 'not-chats') {
+      if (chats === 'none' || !this.relayChats) return { status: 404, body: { error: 'No such endpoint or method.' } }
+      return answerChatsRoute(this.relayChats, chats, url.searchParams)
+    }
     if (url.pathname === '/api/sessions' && req.method === 'GET') {
       return { status: 200, body: await this.sessionList() }
     }

@@ -176,6 +176,11 @@ export class ChatIndexHost {
     return this.request('open', { chatId, env, redact, fileMb })
   }
 
+  /** A chat's store id by its tool and that tool's own id, or null: how another computer names one (hub/chatShare.ts). */
+  find(source: string, nativeId: string): Promise<number | null> {
+    return this.request('find', { source, nativeId })
+  }
+
   removeImport(importId: number): Promise<void> {
     return this.request('removeImport', { importId }).then(() => undefined)
   }
