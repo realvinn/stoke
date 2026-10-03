@@ -1296,8 +1296,10 @@ body {
  * Git is one square icon button (the owner, 2026-10-03), its branch and counts
  * in the tooltip and the menu a click opens. A dot says there are changes.
  * Only out of edit mode: there it is a chip with a grip and a ×, like any other.
+ * Scoped to the bar, not to `.topbar-items`, so the hidden measurer draws it
+ * square too: measured otherwise, it read 4-5px wider than it is drawn.
  */
-.topbar-items .tb-chip[data-kind='git']:not(:has(.tb-grip)) {
+.topbar:not([data-editing]) .tb-chip[data-kind='git'] {
   justify-content: center;
   width: var(--control-h);
   padding: 0;
@@ -1305,6 +1307,7 @@ body {
 
 .tb-git-badge {
   position: absolute;
+  pointer-events: none;
   top: calc(var(--space-4) + 1px);
   right: calc(var(--space-4) + 1px);
   width: 0.4375rem;
@@ -1324,14 +1327,21 @@ body {
 }
 
 /*
- * Somewhere to grab the window that the tabs and the items can never take:
- * DRAG_GAP_REM (shared/topBar.ts), which TopBar counts when it fits the bar.
- * Draggable because nothing here opts out of `.titlebar`'s drag region.
+ * Somewhere to grab the window that the tabs and the items do not take:
+ * `dragGapPx` of DRAG_GAP_REM (shared/topBar.ts), written as `--topbar-drag`,
+ * the first thing to give way on a bar that runs out — and it can still shrink
+ * if the bar overflows anyway. Its OWN `drag`, not inherited: the tab strip's
+ * scrolled-out tabs are `no-drag` boxes that can lie under it (measured: a
+ * hidden tab's box spans the strip at 940px with ten tabs), and a region of
+ * its own, later in the document than theirs, is what is meant to win there.
+ * Not proven with a real OS drag: that needs a person's pointer.
  */
 .topbar-drag {
-  flex: none;
-  width: 3rem;
+  flex: 0 1 auto;
+  width: var(--topbar-drag, 3rem);
+  min-width: 0;
   align-self: stretch;
+  -webkit-app-region: drag;
 }
 
 .tb-chip:hover:not([aria-disabled='true']) {
@@ -5080,6 +5090,18 @@ mark.hit {
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.context-menu-header[data-lines] .context-menu-title {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.context-menu-line {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 
 .context-menu-subtitle {

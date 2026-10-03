@@ -28,6 +28,8 @@ paths:
   - "src/renderer/src/components/ColorPicker.tsx"
   - "scripts/verify-layers.mts"
   - "src/renderer/src/components/Toaster.tsx"
+  - "src/renderer/src/components/TopBar.tsx"
+  - "src/shared/topBar.ts"
   - "src/renderer/src/lib/toasts.ts"
 ---
 
@@ -451,4 +453,38 @@ back, once for more than 90 s. It reads again once the listeners are attached.
 
 Not proven: Windows and Linux, and the remote button's step-up. That button renders only while another
 machine is attached through a hub, so the `:has()` rule was checked against injected DOM only.
+
+## 155. A title bar that fits its items to the last pixel leaves nowhere to grab the window, and a strip reserved for that must give way first
+
+**The owner, 2026-10-03: "we don't have much space to drag the window".** The title bar's drag region was
+whatever the tabs and the items (TopBar) left over. The strip hugs its tabs and holds `TABS_FLOOR_REM`,
+the items take the rest, and the empty space was what `fitTopBar` could not use. With a few tabs open
+that was almost nothing. At the owner's request the folder chip also left the default bar, and git
+became one icon button (gotcha 147's reader, unchanged).
+
+`DRAG_GAP_REM` (3rem) is now a `.topbar-drag` strip beside the tabs, with `-webkit-app-region: drag` of
+its own. Measured at 940px with ten tabs, a scrolled-out tab's `no-drag` box spans it. Two rules came out
+of driving it:
+
+- **It must be counted where the bar is fitted, and it must give way first.** `topBarKeep` takes it, so
+  the tab strip's floor yields to it as to the bar's own controls. Held whole, at 940px and Interface
+  scale 1.6 it took the strip to nothing (`--tabs-floor` 0px), drew the + over itself and put the pencil
+  exactly over Find. `dragGapPx` keeps all of it only while the strip still has its floor beside it, and
+  less after that. TopBar writes the result as `--topbar-drag`, and the CSS lets it shrink further if
+  the bar overflows anyway.
+- **A rule the hidden measurer cannot see makes the fit wrong.** The square-git rule was first scoped to
+  `.topbar-items`, which the measurer is outside, so git was measured 4-5px wider than drawn. It is
+  scoped to `.topbar` now.
+
+Two older measuring gaps found in the same pass:
+- `topBarKeep` missed the gap before the trail, and the bar ran 6px past its box.
+- After a resize, a child that relaxed a frame later (the sidebar toggle) was never measured again. The
+  ResizeObserver now watches every child of the bar.
+
+`verify:topbar` holds `dragGapPx`, the keep and the wire: TopBar hands the drag to both the floor and the
+fit, and the CSS sizes the strip from the variable and makes it a drag region. Each was mutated to red.
+
+Not proven: a real OS drag on the strip over a scrolled-out tab, which needs a person's pointer. Also
+open: the git menu (`ContextMenu`) takes no focus and no arrow keys, so a keyboard user reaches its items
+by Tab.
 

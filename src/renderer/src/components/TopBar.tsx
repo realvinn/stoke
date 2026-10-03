@@ -17,6 +17,7 @@ import {
   topBarKeep,
   TOP_BAR_DEFAULTS,
   DRAG_GAP_REM,
+  dragGapPx,
   type FitItem,
   type FitResult,
   type ShortcutDraft,
@@ -234,7 +235,7 @@ export function TopBar({
        */
       const [heading, ...details] = chip.title.split('\n')
       const actions: MenuItem[] = [
-        { label: 'Look again', separated: details.length > 0, onSelect: git.refresh },
+        { label: 'Look again', onSelect: git.refresh },
         { label: 'Copy branch name', disabled: !git.status?.branch, onSelect: () => window.stoke.clipboard.writeText(git.status?.branch ?? '') },
         customise
       ]
@@ -244,7 +245,8 @@ export function TopBar({
         full: (
           <>
             <IconBranch />
-            {dirty && <span className="tb-git-badge" data-tone={dirty} aria-hidden="true" />}
+            {/* Not while editing: there it sat on the chip's × and took its clicks. */}
+            {dirty && !editing && <span className="tb-git-badge" data-tone={dirty} aria-hidden="true" />}
             <span className="sr-only">
               Git: {chip.head}
               {chip.changes === null ? ', changes unknown' : chip.changes > 0 ? `, ${chip.changes} changed` : ''}
@@ -253,10 +255,7 @@ export function TopBar({
         ),
         compact: null,
         title: chip.title,
-        act: (el) =>
-          openMenu(el, [...details.map((d): MenuItem => ({ label: d, disabled: true, onSelect: () => {} })), ...actions], {
-            title: heading
-          }),
+        act: (el) => openMenu(el, actions, { title: heading, lines: details }),
         disabled: false,
         menu: actions,
         key: `${chip.head}|${dirty}`
@@ -341,8 +340,24 @@ export function TopBar({
     const trail = trailRef.current?.getBoundingClientRect().width ?? 0
     const innerGap = parseFloat(getComputedStyle(root).columnGap) || 0
     const more = width('[data-measure="more"]')
-    // The window's drag space (`.topbar-drag`), never while editing.
-    const drag = editingRef.current ? 0 : DRAG_GAP_REM * rem
+    const keepInput = {
+      trail,
+      more,
+      gap: innerGap,
+      shortcuts: viewsRef.current.some((v) => v.item.kind === 'shortcut'),
+      editing: editingRef.current
+    }
+    // The window's drag space (`.topbar-drag`): whole while the tabs keep their
+    // floor beside it, the first thing to give way after that (`dragGapPx`).
+    const drag = dragGapPx({
+      want: DRAG_GAP_REM * rem,
+      avail,
+      keep: topBarKeep(keepInput),
+      gap: innerGap,
+      tabs: Math.min(natural, TABS_FLOOR_REM * rem),
+      editing: editingRef.current
+    })
+    root.style.setProperty('--topbar-drag', `${drag}px`)
     // The floor yields to the actions, never the other way (`tabsFloorPx`),
     // and leaves the bar its own controls, the drag space and, if shortcuts
     // can spill, the "»".
@@ -350,14 +365,7 @@ export function TopBar({
       natural,
       floor: TABS_FLOOR_REM * rem,
       avail,
-      keep: topBarKeep({
-        trail,
-        more,
-        gap: innerGap,
-        shortcuts: viewsRef.current.some((v) => v.item.kind === 'shortcut'),
-        editing: editingRef.current,
-        drag
-      })
+      keep: topBarKeep({ ...keepInput, drag })
     })
     bar.style.setProperty('--tabs-floor', `${floor}px`)
     const room = avail - floor
@@ -389,7 +397,13 @@ export function TopBar({
     if (!bar) return
     const ro = new ResizeObserver(() => measure())
     ro.observe(bar)
-    for (const el of [measureRef.current, bar.querySelector('.titlebar-actions'), bar.querySelector('.tablist')]) {
+    /*
+     * Every child of the bar, not only the actions: measuring reads them all
+     * as fixed width, and a squeezed one (the sidebar toggle, mid-resize) that
+     * relaxes a frame later moves nothing the bar itself reports — the fit
+     * stayed 10px over until the next resize (driven, 2026-10-03).
+     */
+    for (const el of [measureRef.current, bar.querySelector('.tablist'), ...Array.from(bar.children)]) {
       if (el) ro.observe(el)
     }
     return () => {
@@ -410,7 +424,12 @@ export function TopBar({
     onReorder: (dragId, overId) => commit(moveTab(items, dragId, overId))
   })
 
-  const [menu, setMenu] = useState<{ x: number; y: number; items: MenuItem[]; header?: { title: string } } | null>(null)
+  const [menu, setMenu] = useState<{
+    x: number
+    y: number
+    items: MenuItem[]
+    header?: { title: string; lines?: readonly string[] }
+  } | null>(null)
   const [form, setForm] = useState<{ id: string | null; left: number; draft: ShortcutDraft; dirty: boolean; problem: string | null } | null>(null)
   const formRef = useRef<HTMLDivElement>(null)
   useFloatingLayer(formRef, form !== null)
@@ -566,7 +585,7 @@ export function TopBar({
     { ...customise, separated: overflowed.length > 0 }
   ]
 
-  const openMenu = (el: HTMLElement, list: MenuItem[], header?: { title: string }): void => {
+  const openMenu = (el: HTMLElement, list: MenuItem[], header?: { title: string; lines?: readonly string[] }): void => {
     const r = el.getBoundingClientRect()
     setMenu({ x: r.left, y: r.bottom + 4, items: list, header })
   }
@@ -593,6 +612,7 @@ export function TopBar({
               role="button"
               tabIndex={0}
               aria-disabled={(!editing && v.disabled) || undefined}
+              aria-haspopup={!editing && v.item.kind === 'git' ? 'menu' : undefined}
               title={editing ? editTitle(v.item) : v.title}
               onPointerDown={editing ? (e) => drag.onPointerDown(e, v.item.id) : undefined}
               // Out of edit mode a press leaves focus in the terminal, as a tab's does.

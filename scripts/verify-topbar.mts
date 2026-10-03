@@ -30,6 +30,7 @@ import {
   tabsFloorPx,
   topBarKeep,
   DRAG_GAP_REM,
+  dragGapPx,
   TOP_BAR_DEFAULTS,
   TOP_BAR_MAX_ITEMS,
   type FitItem,
@@ -425,27 +426,59 @@ console.log('\nthe tab strip’s floor yields to the actions')
   check('no room at all: nothing, never a negative floor', tabsFloorPx({ natural: 900, floor: rem16, avail: 20, keep: 45 }), 0)
   check('whole pixels, rounded down so it never overshoots', tabsFloorPx({ natural: 300.9, floor: 400, avail: 1000, keep: 0 }), 300)
   // The bar keeps its pencil, and the "»" with its gap once a shortcut could spill into it.
-  check('the bar keeps the "»" too when a shortcut can spill into it', topBarKeep({ trail: 45, more: 45, gap: 6, shortcuts: true, editing: false }), 96)
-  check('only its trail with no shortcuts, or while editing (no "»" then)', [
+  // The trail and the gap before it (measured missing, 2026-10-03: the bar ran 6px past its box).
+  check('the bar keeps the "»" too when a shortcut can spill into it', topBarKeep({ trail: 45, more: 45, gap: 6, shortcuts: true, editing: false }), 45 + 6 + 51)
+  check('only its trail and gap with no shortcuts, or while editing (no "»" then)', [
     topBarKeep({ trail: 45, more: 45, gap: 6, shortcuts: false, editing: false }),
     topBarKeep({ trail: 140, more: 45, gap: 6, shortcuts: true, editing: true })
-  ], [45, 140])
+  ], [51, 146])
   /*
    * And the window's drag space with its gap (the owner, 2026-10-03: with a few
    * tabs open there was nowhere left to grab the window). The tab strip's floor
    * yields to it like any control on the bar — never while editing, when the
    * list scrolls instead.
    */
-  const drag = DRAG_GAP_REM * 16
-  check('the drag space is kept beside the trail', topBarKeep({ trail: 45, more: 45, gap: 6, shortcuts: false, editing: false, drag }), 45 + drag + 6)
-  check('  with the "»" as well', topBarKeep({ trail: 45, more: 45, gap: 6, shortcuts: true, editing: false, drag }), 45 + drag + 6 + 51)
-  check('  but not while editing', topBarKeep({ trail: 140, more: 45, gap: 6, shortcuts: true, editing: true, drag }), 140)
-  check(
-    'so a strip of many tabs stops short of it: the floor leaves the drag space free',
-    tabsFloorPx({ natural: 2000, floor: rem16, avail: 400, keep: topBarKeep({ trail: 45, more: 45, gap: 6, shortcuts: false, editing: false, drag }) }),
-    400 - (45 + drag + 6)
-  )
+  const want = DRAG_GAP_REM * 16
+  check('the drag space is kept beside the trail', topBarKeep({ trail: 45, more: 45, gap: 6, shortcuts: false, editing: false, drag: want }), 51 + want + 6)
+  check('  with the "»" as well', topBarKeep({ trail: 45, more: 45, gap: 6, shortcuts: true, editing: false, drag: want }), 51 + want + 6 + 51)
+  check('  but not while editing', topBarKeep({ trail: 140, more: 45, gap: 6, shortcuts: true, editing: true, drag: want }), 146)
   check('DRAG_GAP_REM is a real space (≥ 2rem)', DRAG_GAP_REM >= 2, true)
+  /*
+   * How much of it is kept: all while the tab strip still has its floor beside
+   * it, then it gives way FIRST — held whole, at 940px and Interface scale 1.6
+   * it took the strip to nothing and the pencil over Find (driven, 2026-10-03).
+   */
+  const keep = topBarKeep({ trail: 45, more: 45, gap: 6, shortcuts: false, editing: false })
+  check('a roomy bar keeps all of it', dragGapPx({ want, avail: 1200, keep, gap: 6, tabs: 256, editing: false }), want)
+  check(
+    'a tight bar gives it up before the tabs give up their floor',
+    dragGapPx({ want, avail: 51 + 6 + 256 + 20, keep, gap: 6, tabs: 256, editing: false }),
+    20
+  )
+  check('no room at all: none, never negative', dragGapPx({ want, avail: 200, keep, gap: 6, tabs: 256, editing: false }), 0)
+  check('none while editing', dragGapPx({ want, avail: 1200, keep, gap: 6, tabs: 256, editing: true }), 0)
+  {
+    const avail = 51 + 6 + 256 + 20
+    const drag = dragGapPx({ want, avail, keep, gap: 6, tabs: 256, editing: false })
+    check(
+      'so the tab strip keeps its whole floor beside what is left of it',
+      tabsFloorPx({ natural: 2000, floor: 256, avail, keep: topBarKeep({ trail: 45, more: 45, gap: 6, shortcuts: false, editing: false, drag }) }),
+      256
+    )
+  }
+  {
+    // The wire, which no pure check reaches: TopBar must hand the drag to both
+    // the floor and the fit, and the CSS must draw what TopBar decided.
+    const src = readFileSync(new URL('../src/renderer/src/components/TopBar.tsx', import.meta.url), 'utf8')
+    const css = readFileSync(new URL('../src/renderer/src/styles/app.css', import.meta.url), 'utf8')
+    check('TopBar decides the drag with dragGapPx and writes --topbar-drag', /dragGapPx\(/.test(src) && /setProperty\('--topbar-drag'/.test(src), true)
+    check('  hands it to the floor', /topBarKeep\(\{ \.\.\.keepInput, drag \}\)/.test(src), true)
+    check('  and to the fit', /fixed: trail \+ \(drag > 0 \? drag \+ innerGap : 0\)/.test(src), true)
+    check('  and draws the strip', src.includes('className="topbar-drag"'), true)
+    const rule = css.match(/\.topbar-drag \{([^}]*)\}/)?.[1] ?? ''
+    check('the CSS sizes it from --topbar-drag', /width: var\(--topbar-drag/.test(rule), true)
+    check('  and makes it a drag region of its own', /-webkit-app-region: drag/.test(rule), true)
+  }
 }
 
 console.log(failures ? `\n${failures} FAILED` : '\nall pass')

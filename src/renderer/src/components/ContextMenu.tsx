@@ -24,7 +24,17 @@ interface Props {
    * The tab menu uses it for the tab's name and the project folder it launched
    * from. Not focusable and not a menu item, so it stays out of `role="menu"`.
    */
-  header?: { title: string; subtitle?: string }
+  header?: {
+    title: string
+    subtitle?: string
+    /**
+     * Facts about it, a line each, in ordinary muted text that wraps — the git
+     * button's changes and upstream. Never menu items: dimmed like disabled
+     * ones they fell to ~2.3:1, and a screen reader calls those unavailable.
+     * With lines the title wraps too, rather than cutting a long branch name.
+     */
+    lines?: readonly string[]
+  }
   /**
    * Explanatory text below the items. Not a menu item: it is not focusable and
    * cannot be chosen, so it stays out of `role="menu"`'s children.
@@ -104,9 +114,14 @@ export function ContextMenu({ x, y, items, header, footer, onClose }: Props): Re
       onContextMenu={(e) => e.preventDefault()}
     >
       {header && (
-        <div className="context-menu-header">
+        <div className="context-menu-header" data-lines={header.lines?.length ? true : undefined}>
           <span className="context-menu-title">{header.title}</span>
           {header.subtitle && <span className="context-menu-subtitle">{header.subtitle}</span>}
+          {header.lines?.map((line, i) => (
+            <span key={i} className="context-menu-line">
+              {line}
+            </span>
+          ))}
         </div>
       )}
       {items.map((item) => (

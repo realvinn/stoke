@@ -475,6 +475,8 @@ rule file named on the group line.
   covers every property, so `focus()` meets a still-hidden element (`ColorPicker`).
 - **154.** Say news in a toast (`toast()`), ask questions in a strip; keep `Toaster` in `.main-col`, under
   every scrim and above the pane's foot floats (`setToastFloor`), and stop plain keys on its card.
+- **155.** Keep the title bar's drag strip (`DRAG_GAP_REM`) counted in `topBarKeep` and giving way first
+  (`dragGapPx`); scope any rule that changes a chip's width to `.topbar`, or the hidden measurer misfits it.
 
 **React state** — `.claude/rules/renderer.md`
 - **31.** `npm run check` cannot see a side effect inside a closure, or the wire from real input

@@ -422,12 +422,13 @@ export function tabsFloorPx(input: { natural: number; floor: number; avail: numb
 
 /**
  * The least the bar itself must keep (`tabsFloorPx`'s `keep`): its trailing
- * controls, the window's drag space and its gap (`DRAG_GAP_REM`, 0 while
- * editing, when the list scrolls instead), plus the "»" and its gap whenever a
- * shortcut could be moved into it — out of edit mode, with a shortcut on the
- * bar. Kept to the trail alone, the "»" that appears once every shortcut has
- * moved drew over the Find button at 940px and Interface scale 1.6 (driven,
- * 2026-10-02).
+ * controls and the gap before them, the window's drag space and its gap
+ * (`dragGapPx`, 0 while editing, when the list scrolls instead), plus the "»"
+ * and its gap whenever a shortcut could be moved into it — out of edit mode,
+ * with a shortcut on the bar. Kept to the trail alone, the "»" that appears
+ * once every shortcut has moved drew over the Find button at 940px and
+ * Interface scale 1.6 (driven, 2026-10-02); and without the gap before the
+ * trail, the bar's content ran 6px past its box there (measured, 2026-10-03).
  */
 export function topBarKeep(input: {
   trail: number
@@ -438,7 +439,29 @@ export function topBarKeep(input: {
   drag?: number
 }): number {
   const { trail, more, gap, shortcuts, editing, drag = 0 } = input
-  return trail + (drag > 0 && !editing ? drag + gap : 0) + (shortcuts && !editing ? more + gap : 0)
+  return trail + gap + (drag > 0 && !editing ? drag + gap : 0) + (shortcuts && !editing ? more + gap : 0)
+}
+
+/**
+ * How much of `DRAG_GAP_REM` (`want`, in px) the bar keeps for grabbing the
+ * window: all of it while the tab strip still has its floor beside it (`tabs`,
+ * the lesser of its natural width and `TABS_FLOOR_REM`), less as the bar runs
+ * out, none while editing. It gives way FIRST: held whole, at 940px and
+ * Interface scale 1.6 it took the tab strip to nothing and pushed the pencil
+ * over the Find button (driven, 2026-10-03).
+ */
+export function dragGapPx(input: {
+  want: number
+  avail: number
+  /** `topBarKeep` with no drag. */
+  keep: number
+  gap: number
+  tabs: number
+  editing: boolean
+}): number {
+  const { want, avail, keep, gap, tabs, editing } = input
+  if (editing) return 0
+  return Math.max(0, Math.floor(Math.min(want, avail - keep - gap - tabs)))
 }
 
 export interface FitItem {
