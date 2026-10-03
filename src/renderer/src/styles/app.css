@@ -2891,7 +2891,7 @@ mark.hit {
   position: absolute;
   inset: auto auto var(--strip-inset, var(--space-12)) var(--strip-inset, var(--space-12));
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: var(--space-8);
   max-width: calc(100% - var(--space-24));
   padding: var(--space-8) var(--space-12);
@@ -2908,8 +2908,48 @@ mark.hit {
   border-color: var(--danger);
 }
 
+/* One line of the strip: its dot and its sentence. */
+.voice-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+}
+
 .voice-text {
   min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/*
+ * Words the session did not take (a remote link that dropped while the speech
+ * service worked, a session that ended): why, the words themselves, and what
+ * to do with them. Never dropped silently (Dictation.tsx).
+ */
+.voice-kept {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.voice-kept-words {
+  margin: 0;
+  max-height: 6.5em;
+  overflow: auto;
+  padding: var(--space-4) var(--space-8);
+  border-left: 2px solid var(--border-strong);
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.voice-kept-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+}
+
+.voice-kept-actions .btn {
+  padding: 0.1875rem var(--space-8);
+  font-size: var(--fs-sm);
 }
 
 .voice-dot {

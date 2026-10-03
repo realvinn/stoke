@@ -260,6 +260,13 @@ export function spaceKey(
   return type === 'keydown' ? { type, code: e.code, repeat: e.repeat, composing } : { type, code: e.code, composing }
 }
 
+/**
+ * Why a transcript was not typed into a local tab: its session ended while the
+ * speech service worked. The words stay on the strip (Dictation.tsx), never
+ * dropped silently.
+ */
+export const SESSION_ENDED_WORDS = 'The session has ended, so these words were not typed.'
+
 /** The sentence shown instead of starting Stoke's dictation on a tab whose CLI owns Space. */
 export const CLI_OWNS_SPACE =
   'Claude Code’s own /voice is on in this tab — hold Space to talk to it. Run /voice to turn it off if you want Stoke’s dictation here instead.'

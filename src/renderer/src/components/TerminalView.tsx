@@ -9,21 +9,9 @@ import type { ClipboardPeek } from '@shared/api'
 import type { SshHost, TerminalSettings, Theme, VoiceSettings } from '@shared/types'
 import { dropText, imagePasteKeys } from '@shared/drop'
 import { PRIVATE_ENDED_TEXT } from '@shared/privateChat'
-import { noSignalLine } from '@shared/micDevice'
-import { createRecorder, voiceSupported, type Recorder } from '@shared/voice'
-import { createSignalWatch } from '@shared/voiceLevel'
+import { voiceSupported } from '@shared/voice'
 import { SizeClaimer, isGrid, sameGrid, type ClaimTrigger, type Grid } from '@shared/sizeClaim'
-import {
-  CLI_OWNS_SPACE,
-  microphoneError,
-  SPACE_IDLE,
-  spaceHold,
-  spaceKey,
-  spaceOwner,
-  type SpaceHoldEvent,
-  type SpaceHoldState,
-  type SpaceHoldStep
-} from '@shared/voiceRoute'
+import { CLI_OWNS_SPACE, SESSION_ENDED_WORDS, spaceOwner } from '@shared/voiceRoute'
 import { attachSink, noteInput } from '../lib/ptyBus'
 import { setToastFloor } from '../lib/toasts'
 import { recentlyUsed } from '../lib/lastInput'
@@ -36,6 +24,7 @@ import type { Tab } from '../types'
 import { ContextMenu } from './ContextMenu'
 import { TerminalFind } from './TerminalFind'
 import { useSshImages } from './ImageSendStrip'
+import { useDictation } from './Dictation'
 
 /**
  * How far the pointer may travel between press and release and still count as a
@@ -226,28 +215,45 @@ export function TerminalView({
   const [findInitial, setFindInitial] = useState('')
   const findOpenRef = useRef(false)
   /*
-   * Dictation. Off until asked for, because arming it takes Space away from the
-   * terminal — the most-pressed key there after Enter — so it must never be a
-   * mode you are in without having said so.
+   * Dictation (Dictation.tsx): the held Space, the recorder and the strip, the
+   * one copy this pane and a remote tab share. What is this pane's: who owns
+   * Space here (Claude Code's own /voice on a local Claude tab, gotcha 79),
+   * and that a transcript is pasted into this terminal.
    */
-  const [voiceOn, setVoiceOn] = useState(false)
-  /*
-   * `holding` is a Space that is down but not yet a hold: the strip says "Keep
-   * holding…" and no microphone is open, so a tap costs nothing and types a
-   * space (`spaceHold`, voiceRoute.ts).
-   */
-  const [voiceStatus, setVoiceStatus] = useState<'idle' | 'holding' | 'recording' | 'working'>('idle')
-  const [voiceError, setVoiceError] = useState<string | null>(null)
-  /** The chosen microphone was not there, so this recording is on the default. */
-  const [voiceDeviceNote, setVoiceDeviceNote] = useState<string | null>(null)
-  /** The level line has lain flat for NO_SIGNAL_MS while recording. */
-  const [noSignal, setNoSignal] = useState(false)
-  /**
-   * A one-off sentence shown INSTEAD of switching dictation on — today only the
-   * tab where Claude Code's own /voice owns Space. Separate from `voiceError`
-   * because nothing failed: the key simply belongs to someone else here.
-   */
-  const [voiceNotice, setVoiceNotice] = useState<string | null>(null)
+  const dictation = useDictation({
+    hostRef,
+    active,
+    voice,
+    target: {
+      /*
+       * If the CLI's setting cannot be read, dictation starts as before — a
+       * missed hint costs a double recording the user can see, while refusing
+       * would take a feature away on a read error.
+       */
+      refusal: async () => {
+        const state = await window.stoke.audio.voiceState().catch(() => null)
+        return state && spaceOwner(tab, state.claudeVoice) === 'cli' ? CLI_OWNS_SPACE : null
+      },
+      /*
+       * term.input, not a pty write: it goes out through onData exactly as a
+       * typed space does, so the draft tracking (`noteInput`) and selection
+       * clearing see a keystroke.
+       */
+      typeSpace: () => termRef.current?.input(' ', true),
+      deliver: async (text) => {
+        const term = termRef.current
+        if (!term || tab.status === 'exited') return SESSION_ENDED_WORDS
+        /*
+         * paste() rather than a raw pty write, for the reason the clipboard
+         * path already documents: it wraps the text in bracketed-paste markers
+         * when the CLI has advertised DECSET 2004, so a transcript that came
+         * back with a newline in it does not submit the prompt early.
+         */
+        term.paste(text)
+        return null
+      }
+    }
+  })
   /** Whether a file drag is currently over this pane, for the drop ring. */
   const [dropping, setDropping] = useState(false)
   /*
@@ -257,30 +263,6 @@ export function TerminalView({
    * the terminal rather than flickering off on the first child boundary.
    */
   const dragDepth = useRef(0)
-  const recorderRef = useRef<Recorder | null>(null)
-  /*
-   * Where the held Space is: idle, pending (down, not yet a hold), starting
-   * (the microphone opening — getUserMedia can wait on a permission prompt, so
-   * Space is routinely released in this phase) or recording. A ref, not state:
-   * the key handlers step it synchronously, several times inside one frame.
-   */
-  const holdRef = useRef<SpaceHoldState>(SPACE_IDLE)
-  const holdTimerRef = useRef<number | null>(null)
-  /** Read at each press and each start, so a Settings change reaches the next one. */
-  const voiceRef = useRef(voice)
-  voiceRef.current = voice
-  /*
-   * The level line's fill. Written straight from the recorder's animation
-   * frame (`style.transform`), never through React state: that would be sixty
-   * renders a second of the whole terminal pane.
-   */
-  const levelRef = useRef<HTMLSpanElement>(null)
-  const signalWatchRef = useRef<((level: number, now: number) => boolean) | null>(null)
-  const noSignalRef = useRef(false)
-  /** The label of the device recording now, for naming a virtual cable. */
-  const micLabelRef = useRef('')
-  /** Bumped by each recording, so an older one's transcript cannot reset a newer one's strip. */
-  const takeRef = useRef(0)
   // Kept in a ref so the resize observer can read it without re-subscribing.
   const openUrlRef = useRef(onOpenUrl)
   openUrlRef.current = onOpenUrl
@@ -1204,7 +1186,7 @@ export function TerminalView({
    * with a ResizeObserver as an error's ssh line wraps or a thumbnail arrives.
    */
   // Which floats are drawn: the two dictation strips are different elements.
-  const floatsKey = `${images.strip ? 1 : 0}${tab.status === 'exited' ? 1 : 0}${voiceOn ? 2 : voiceNotice ? 1 : 0}`
+  const floatsKey = `${images.strip ? 1 : 0}${tab.status === 'exited' ? 1 : 0}${dictation.stripKey}`
   useLayoutEffect(() => {
     const pane = hostRef.current?.parentElement
     if (!pane || !findOpen) return
@@ -1249,273 +1231,6 @@ export function TerminalView({
   }, [active, floatsKey])
 
   const findPalette = useMemo(() => findColors(theme, accent), [theme, accent])
-
-  /*
-   * Switch Stoke's dictation, after asking who owns Space in this tab.
-   *
-   * Asked at the moment of switching, not cached at mount: `/voice` is typed
-   * inside the session and flips the setting while the tab is open. If the
-   * answer cannot be read, dictation starts as before — a missed hint costs a
-   * double recording the user can see, while refusing would take a feature away
-   * on a read error.
-   */
-  const toggleDictation = (): void => {
-    setVoiceError(null)
-    setVoiceNotice(null)
-    if (voiceOn) {
-      setVoiceOn(false)
-      return
-    }
-    void window.stoke.audio
-      .voiceState()
-      .catch(() => null)
-      .then((state) => {
-        if (state && spaceOwner(tab, state.claudeVoice) === 'cli') setVoiceNotice(CLI_OWNS_SPACE)
-        else setVoiceOn(true)
-      })
-  }
-  const toggleDictationRef = useRef(toggleDictation)
-  toggleDictationRef.current = toggleDictation
-
-  useEffect(() => {
-    if (!voiceNotice) return
-    const t = setTimeout(() => setVoiceNotice(null), 9000)
-    return () => clearTimeout(t)
-  }, [voiceNotice])
-
-  /*
-   * Dictation's keys, bound on the host in the capture phase so they are taken
-   * before xterm's hidden textarea ever sees them — the same technique the
-   * right-click uses, and for the same reason: while Claude Code is running,
-   * anything that reaches the terminal is forwarded to the CLI.
-   *
-   * Terminal-scoped rather than in `lib/shortcuts.ts` with the app's chords.
-   * Those act on the window; this one acts on *this* terminal and the transcript
-   * goes into *this* PTY, so it belongs to the pane that owns them. It is also
-   * why the listeners hang off `host` rather than `window`: dictation follows
-   * the focused terminal with no routing, and a background tab cannot record.
-   */
-  useEffect(() => {
-    const host = hostRef.current
-    if (!host || !active) return
-
-    const isMac = IS_MAC
-
-    /*
-     * Only refs and state setters inside the options: the recorder outlives
-     * this effect (it is kept in a ref for the pane's life), so a closure over
-     * anything else would be the first render's copy.
-     */
-    const recorder = (recorderRef.current ??= createRecorder(
-      async (wav) => {
-        // The renderer never reaches the speech server itself; main proxies it,
-        // because the sidecar has no authentication of its own.
-        const res = await window.stoke.audio.transcribe(wav)
-        if (!res.ok) throw new Error(res.error)
-        return res.text
-      },
-      {
-        onLevel: (level) => {
-          const fill = levelRef.current
-          if (fill) fill.style.transform = `scaleX(${level.toFixed(3)})`
-          const watch = signalWatchRef.current
-          if (!watch) return
-          const flat = watch(level, performance.now())
-          if (flat !== noSignalRef.current) {
-            noSignalRef.current = flat
-            setNoSignal(flat)
-          }
-        },
-        device: () => ({ id: voiceRef.current.micDeviceId, label: voiceRef.current.micLabel })
-      }
-    ))
-
-    const stopWatch = (): void => {
-      signalWatchRef.current = null
-      if (noSignalRef.current) {
-        noSignalRef.current = false
-        setNoSignal(false)
-      }
-    }
-
-    const fail = (err: unknown, fallback: string): void => {
-      setVoiceStatus('idle')
-      setVoiceError(err instanceof Error && err.message ? err.message : fallback)
-    }
-
-    const clearHoldTimer = (): void => {
-      if (holdTimerRef.current === null) return
-      window.clearTimeout(holdTimerRef.current)
-      holdTimerRef.current = null
-    }
-
-    const beginRecording = async (): Promise<void> => {
-      ++takeRef.current
-      setVoiceError(null)
-      setVoiceDeviceNote(null)
-      setVoiceStatus('recording')
-      micLabelRef.current = ''
-      signalWatchRef.current = createSignalWatch()
-      try {
-        const info = await recorder.start()
-        // Null: released (or Esc) while the microphone was still opening. The
-        // step that cancelled has already put the strip back.
-        if (!info) return
-        micLabelRef.current = info.label
-        if (info.notice) setVoiceDeviceNote(info.notice)
-        dispatch({ type: 'opened' })
-      } catch (err) {
-        dispatch({ type: 'failed' })
-        stopWatch()
-        setVoiceStatus('idle')
-        setVoiceError(microphoneError(err, window.stoke.platform))
-      }
-    }
-
-    const finishRecording = async (): Promise<void> => {
-      stopWatch()
-      const take = takeRef.current
-      setVoiceStatus('working')
-      try {
-        const text = await recorder.finish()
-        if (takeRef.current === take) setVoiceStatus('idle')
-        /*
-         * paste() rather than a raw pty write, for the reason the clipboard
-         * path already documents: it wraps the text in bracketed-paste markers
-         * when the CLI has advertised DECSET 2004, so a transcript that came
-         * back with a newline in it does not submit the prompt early.
-         */
-        if (text) termRef.current?.paste(text)
-      } catch (err) {
-        fail(err, 'Transcription failed.')
-      }
-    }
-
-    /*
-     * Every Space event, the hold timer and the recorder's answer go through
-     * the one reducer (`spaceHold`); this only carries out what it says.
-     */
-    const dispatch = (event: SpaceHoldEvent): SpaceHoldStep => {
-      const step = spaceHold(holdRef.current, event, performance.now(), voiceRef.current.holdMs)
-      holdRef.current = step.state
-      switch (step.output) {
-        case 'arm-timer':
-          clearHoldTimer()
-          holdTimerRef.current = window.setTimeout(() => {
-            holdTimerRef.current = null
-            dispatch({ type: 'timer' })
-          }, step.wait ?? voiceRef.current.holdMs)
-          setVoiceError(null)
-          setVoiceStatus('holding')
-          break
-        case 'start':
-          clearHoldTimer()
-          void beginRecording()
-          break
-        case 'type-space':
-          clearHoldTimer()
-          setVoiceStatus((s) => (s === 'holding' ? 'idle' : s))
-          /*
-           * term.input, not a pty write: it goes out through onData exactly as
-           * a typed space does, so the draft tracking (`noteInput`) and
-           * selection clearing see a keystroke. It runs before a non-Space key
-           * that interrupted the press lets that key through, so "a b" typed
-           * with the space still down comes out in order.
-           */
-          termRef.current?.input(' ', true)
-          break
-        case 'finish':
-          void finishRecording()
-          break
-        case 'cancel':
-          clearHoldTimer()
-          recorder.cancel()
-          stopWatch()
-          setVoiceStatus('idle')
-          break
-      }
-      return step
-    }
-
-    const onKeyDown = (e: KeyboardEvent): void => {
-      const chord = isMac
-        ? e.metaKey && e.shiftKey && !e.ctrlKey && !e.altKey
-        : e.ctrlKey && e.shiftKey && !e.metaKey && !e.altKey
-      if (chord && e.code === 'KeyD') {
-        e.preventDefault()
-        e.stopPropagation()
-        toggleDictationRef.current()
-        return
-      }
-
-      if (!voiceOn) return
-
-      if (e.code === 'Escape') {
-        e.preventDefault()
-        e.stopPropagation()
-        setVoiceOn(false)
-        return
-      }
-
-      /*
-       * A held Space is a first keydown and then a stream of repeats, and BOTH
-       * have to be taken. The repeats used to be let through (`if (e.repeat)
-       * return`, to avoid restarting the live recording) — which handed the
-       * pty exactly the repeat stream Claude Code's /voice listens for, so one
-       * press started two recorders (gotcha 79). `spaceHold` takes every
-       * repeat in every phase; the first press only arms the hold timer, so a
-       * tap never opens the microphone, and it types a space on release.
-       */
-      const step = dispatch(spaceKey(e, 'keydown'))
-      if (step.take) {
-        e.preventDefault()
-        e.stopPropagation()
-      }
-    }
-
-    const onKeyUp = (e: KeyboardEvent): void => {
-      if (!voiceOn) return
-      const step = dispatch(spaceKey(e, 'keyup'))
-      if (step.take) {
-        e.preventDefault()
-        e.stopPropagation()
-      }
-    }
-
-    host.addEventListener('keydown', onKeyDown, true)
-    host.addEventListener('keyup', onKeyUp, true)
-    return () => {
-      host.removeEventListener('keydown', onKeyDown, true)
-      host.removeEventListener('keyup', onKeyUp, true)
-      // A press still pending when the mode or the tab changes is dropped, not
-      // typed: nobody is watching this pane's strip any more.
-      clearHoldTimer()
-      holdRef.current = SPACE_IDLE
-    }
-  }, [active, voiceOn])
-
-  /*
-   * Leaving voice mode — by Esc, by switching tabs, or by the pane going away —
-   * must release the microphone. Without this the OS recording indicator stays
-   * lit after the mode is off, which is exactly the kind of thing that makes a
-   * person stop trusting an app with their microphone.
-   */
-  useEffect(() => {
-    if (voiceOn && active) return
-    recorderRef.current?.cancel()
-    holdRef.current = SPACE_IDLE
-    signalWatchRef.current = null
-    noSignalRef.current = false
-    setNoSignal(false)
-    setVoiceStatus('idle')
-  }, [voiceOn, active])
-
-  useEffect(() => {
-    return () => {
-      recorderRef.current?.cancel()
-      recorderRef.current = null
-    }
-  }, [])
 
   /*
    * Repaint the terminal's own palette, then tell the child the scheme moved.
@@ -1819,9 +1534,9 @@ export function TerminalView({
             ...(voiceSupported()
               ? [
                   {
-                    label: voiceOn ? 'Stop dictation' : 'Dictate…',
+                    label: dictation.on ? 'Stop dictation' : 'Dictate…',
                     onSelect: () => {
-                      toggleDictation()
+                      dictation.toggle()
                       termRef.current?.focus()
                     }
                   }
@@ -1838,48 +1553,7 @@ export function TerminalView({
         />
       )}
       {images.strip}
-      {!voiceOn && voiceNotice && (
-        <div className="voice-strip" role="status">
-          <span className="voice-dot" data-state="idle" />
-          <span className="voice-text">{voiceNotice}</span>
-        </div>
-      )}
-      {voiceOn && (
-        <div
-          className="voice-strip"
-          role="status"
-          data-tone={voiceError || (voiceStatus === 'recording' && noSignal) ? 'error' : undefined}
-        >
-          <span className="voice-dot" data-state={voiceError ? 'error' : voiceStatus} />
-          <span className="voice-text">
-            {voiceError
-              ? voiceError
-              : voiceStatus === 'holding'
-                ? 'Keep holding…'
-                : voiceStatus === 'recording'
-                  ? noSignal
-                    ? noSignalLine(micLabelRef.current)
-                    : (voiceDeviceNote ?? 'Listening — release Space to transcribe')
-                  : voiceStatus === 'working'
-                    ? 'Transcribing…'
-                    : 'Hold Space to speak · tap for a space · Esc to exit'}
-          </span>
-          {/*
-            The recording volume. Always mounted while the strip is, so the
-            recorder's frame callback has a node to write to from its first
-            frame; shown only while recording. Its scale is data, not
-            decoration, so reduced motion keeps it live and drops only the
-            easing (gotcha 72).
-          */}
-          <span
-            className="voice-level"
-            aria-hidden="true"
-            data-live={!voiceError && voiceStatus === 'recording' ? 'true' : undefined}
-          >
-            <span ref={levelRef} className="voice-level-fill" />
-          </span>
-        </div>
-      )}
+      {dictation.strip}
       {tab.status === 'exited' && tab.enrollHostId ? (
         /*
          * An "Add key to …" tab's exit is ssh-copy-id finishing, not a session

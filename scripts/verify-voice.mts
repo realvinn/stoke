@@ -1030,52 +1030,62 @@ console.log('\nspeech providers: through stt.ts, against a loopback fake')
   await new Promise<void>((r) => server.close(() => r()))
 }
 
-console.log('\nthe wire: TerminalView and the phone really route through these')
+console.log('\nthe wire: the panes and the phone really route through these')
 /*
  * Regexes over the shipped source, so they can be pointed at any revision:
  *
- *   node scripts/verify-voice.mts --wire <TerminalView.tsx> <session.ts> <VoiceSettings.tsx> [MicPicker.tsx]
+ *   node scripts/verify-voice.mts --wire <TerminalView.tsx> <session.ts> <VoiceSettings.tsx> [MicPicker.tsx] [Dictation.tsx]
  *
- * reads those files instead of the working copy's (MicPicker's only when a
- * fourth is given). That is how the checks were shown to FAIL against the files
- * from before the hold threshold (gotcha 79's method) — a wire check that
- * passes on the old file proves nothing.
+ * reads those files instead of the working copy's (MicPicker's and
+ * Dictation's only when given). That is how the checks were shown to FAIL
+ * against the files from before the hold threshold (gotcha 79's method) — a
+ * wire check that passes on the old file proves nothing. Since 2026-10-04 the
+ * held Space, the recorder and the strip are one hook (Dictation.tsx) that
+ * TerminalView and RemoteTerminal both call, so the hold's checks read it.
  */
 {
   const argv = process.argv.slice(2)
   const at = argv.indexOf('--wire')
-  const given = at >= 0 ? argv.slice(at + 1, at + 5) : []
+  const given = at >= 0 ? argv.slice(at + 1, at + 6) : []
   const termPath = given[0] ?? new URL('../src/renderer/src/components/TerminalView.tsx', import.meta.url)
   const phonePath = given[1] ?? new URL('../src/remote/session.ts', import.meta.url)
   const settingsPath = given[2] ?? new URL('../src/renderer/src/components/VoiceSettings.tsx', import.meta.url)
   const micPath = given[3] ?? new URL('../src/renderer/src/components/MicPicker.tsx', import.meta.url)
+  const dictPath = given[4] ?? new URL('../src/renderer/src/components/Dictation.tsx', import.meta.url)
   const term = readFileSync(termPath, 'utf8')
   const phone = readFileSync(phonePath, 'utf8')
   const settingsUi = readFileSync(settingsPath, 'utf8')
   const micUi = readFileSync(micPath, 'utf8')
-  if (at >= 0) console.log(`  (reading ${termPath}, ${phonePath}, ${settingsPath}, ${micPath})`)
+  const dict = readFileSync(dictPath, 'utf8')
+  if (at >= 0) console.log(`  (reading ${termPath}, ${phonePath}, ${settingsPath}, ${micPath}, ${dictPath})`)
 
-  ok('the old repeat pass-through is gone', !/e\.code !== 'Space' \|\| e\.repeat\) return/.test(term))
+  ok('TerminalView arms dictation through the one hook, and draws its strip', /useDictation\(\{/.test(term) && /\{dictation\.strip\}/.test(term))
+  ok('the old repeat pass-through is gone', !/e\.code !== 'Space' \|\| e\.repeat\) return/.test(dict + term))
   ok(
     'keydown and keyup both step spaceHold, through spaceKey',
-    /spaceHold\(holdRef\.current/.test(term) && /spaceKey\(e, 'keydown'\)/.test(term) && /spaceKey\(e, 'keyup'\)/.test(term)
+    /spaceHold\(holdRef\.current/.test(dict) && /spaceKey\(e, 'keydown'\)/.test(dict) && /spaceKey\(e, 'keyup'\)/.test(dict)
   )
-  ok('the old start-on-the-first-press is gone', !/dictationKeyAction/.test(term) && !/void beginRecording\(\)\s*\n\s*\}\s*\n\s*\n\s*const onKeyUp/.test(term))
-  ok('a tap types its space through term.input, as typing does', /\.input\(' ', true\)/.test(term))
-  ok('only a step that takes the key stops it', /if \(step\.take\) \{\s*e\.preventDefault\(\)/.test(term))
+  ok('the old start-on-the-first-press is gone', !/dictationKeyAction/.test(dict + term) && !/void beginRecording\(\)\s*\n\s*\}\s*\n\s*\n\s*const onKeyUp/.test(dict))
+  ok('a tap types its space through the target, and TerminalView’s is term.input, as typing does', /targetRef\.current\.typeSpace\(\)/.test(dict) && /typeSpace: \(\) => termRef\.current\?\.input\(' ', true\)/.test(term))
+  ok('only a step that takes the key stops it', /if \(step\.take\) \{\s*e\.preventDefault\(\)/.test(dict))
   ok(
     'the hold timer is armed from the reducer and fires back into it',
-    /case 'arm-timer':[\s\S]{0,200}setTimeout\([\s\S]{0,120}dispatch\(\{ type: 'timer' \}\)/.test(term)
+    /case 'arm-timer':[\s\S]{0,200}setTimeout\([\s\S]{0,120}dispatch\(\{ type: 'timer' \}\)/.test(dict)
   )
-  ok('the strip says Keep holding while a press is pending', /'Keep holding…'/.test(term))
+  ok('the strip says Keep holding while a press is pending', /'Keep holding…'/.test(dict))
   ok(
     'the recorder’s level drives the line through a ref, not state',
-    /onLevel: \(level\) =>[\s\S]{0,120}style\.transform = `scaleX\(/.test(term) && /ref=\{levelRef\}/.test(term)
+    /onLevel: \(level\) =>[\s\S]{0,120}style\.transform = `scaleX\(/.test(dict) && /ref=\{levelRef\}/.test(dict)
   )
-  ok('the recorder is handed the saved microphone', /device: \(\) => \(\{ id: voiceRef\.current\.micDeviceId/.test(term))
-  ok('switching dictation on asks spaceOwner first', /spaceOwner\(tab, state\.claudeVoice\)/.test(term))
-  ok('the chord and the menu share one toggle', (term.match(/toggleDictation(Ref\.current)?\(\)/g) ?? []).length >= 2)
-  ok('a refused microphone goes through microphoneError', /microphoneError\(err, window\.stoke\.platform\)/.test(term))
+  ok('the recorder is handed the saved microphone', /device: \(\) => \(\{ id: voiceRef\.current\.micDeviceId/.test(dict))
+  ok('switching dictation on asks the target first, and TerminalView’s asks spaceOwner', /targetRef\.current\s*\.refusal\(\)/.test(dict) && /spaceOwner\(tab, state\.claudeVoice\)/.test(term))
+  ok('the chord and the menu share one toggle', /toggleRef\.current\(\)/.test(dict) && /dictation\.toggle\(\)/.test(term))
+  ok('a refused microphone goes through microphoneError', /microphoneError\(err, window\.stoke\.platform\)/.test(dict))
+  ok(
+    'a transcript the session did not take is kept on the strip, never dropped',
+    /why = await targetRef\.current\.deliver\(text\)/.test(dict) && /if \(why\) keep\(text, why\)/.test(dict) && /\{kept\.text\}/.test(dict)
+  )
+  ok('a local tab whose session ended says so instead of typing into nothing', /tab\.status === 'exited'\) return SESSION_ENDED_WORDS/.test(term))
   ok('the phone’s voice mode steps the same reducer', /spaceHold\(hold, event/.test(phone) && /spaceKey\(e, 'keydown'\)/.test(phone))
   ok('and no longer starts on the first press', !/e\.code === 'Space' && !e\.repeat\) void begin\(e\)/.test(phone))
   ok('the phone’s composer carries the level line', /onLevel: \(level\) =>[\s\S]{0,80}levelFill\.style\.transform/.test(phone))
