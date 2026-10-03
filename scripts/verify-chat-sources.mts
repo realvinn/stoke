@@ -57,7 +57,7 @@ import {
 } from '../src/shared/chatIndex.ts'
 import { agentLaunchPlan, DEFAULT_ENDPOINT } from '../src/shared/agents.ts'
 import { isSafeResumeId, resumableClis, type CodingCliId } from '../src/shared/codingClis.ts'
-import { cleanText, clineMeta, cutBytes, firstPromptOf, MESSAGE_MAX_BYTES, planTrim, redactSecrets } from '../src/main/chatIndex/parse.ts'
+import { cleanText, clineMeta, cutBytes, firstPromptOf, MESSAGE_MAX_BYTES, planTrim, rawFirstPromptOf, redactSecrets } from '../src/main/chatIndex/parse.ts'
 import { ChatStore, skipFolders } from '../src/main/chatIndex/store.ts'
 import { mergeMeta, recleanStale, runPass, type PassHooks } from '../src/main/chatIndex/scan.ts'
 import {
@@ -2045,6 +2045,52 @@ try {
     const meta = clineMeta({ prompt })
     check('a first prompt is cut at a space, never inside a word: a Cline title holds no part of a key', [meta.title?.includes('ghp_'), meta.title?.startsWith('clineword word'), firstPromptOf(prompt).length < 300], [false, true, true])
     check('...and one long word is still cut at the cap', firstPromptOf('z'.repeat(400)).length, 300)
+    check('...unless the text is raw: then the word the cut ran through is [redacted]', [rawFirstPromptOf('z'.repeat(400)), rawFirstPromptOf(prompt) === firstPromptOf(prompt)], ['[redacted]', true])
+
+    /*
+     * Review of 166e84f: a Cline title the OLD `firstPromptOf` cut — 300 raw characters, no mark — was
+     * cleaned only after the cut, so a key the cut ran through kept its first part, and `recleanChat`
+     * (which looked only for the cap's mark on a title) raised the chat with it: its title row answered
+     * a search for every prefix of what was left, and the title was served to another computer.
+     */
+    const NPM = fake('np' + 'm_', 36)
+    const NPM_PART = NPM.slice(0, 39)
+    const oldCut = `${pad('clinecut', 300 - 39)}${NPM} after`.slice(0, 300)
+    check('(control: the old cut is 300 characters ending in 39 of the token’s 40, which no pattern takes)', [oldCut.length, oldCut.endsWith(NPM_PART), redactSecrets(oldCut) === oldCut], [300, true, true])
+    const tDir = join(root, 'old-title-index')
+    const tl = ChatStore.open(tDir)
+    const tid = tl.upsertChat('cline', 'old-title', { title: oldCut, firstPrompt: 'clinecut a short prompt', cwd: '/w', gitBranch: null, model: null, createdMs: T0, updatedMs: T0 }, { subagent: false, dedupeKey: null, whole: true, redact: true })
+    tl.appendMessages(tid, [{ role: 'user', text: 'clinecut a short prompt', atMs: T0 }])
+    tl.close()
+    // Stored cleaned, by rule set 4: what a pass before this one left.
+    const tRaw = new DatabaseSync(join(tDir, 'index.sqlite'))
+    tRaw.exec('UPDATE chat SET redact_level = 4')
+    tRaw.close()
+    const t5 = ChatStore.open(tDir)
+    check('(control: stored, the part is searchable)', words(t5, NPM_PART), ['cline:old-title'])
+    await recleanStale(t5, hooks())
+    const tHit = t5.search('clinecut', 50, { redact: 'force' })[0]
+    check(
+      'a title the old cut left at the cap is cleaned again with its cut word [redacted]: nothing of the token is searchable or served',
+      [tHit?.title?.endsWith(' [redacted]'), tHit?.title?.length, words(t5, NPM_PART), words(t5, NPM_PART.slice(4, 16)), JSON.stringify(t5.search('clinecut', 50, { redact: 'force' })).includes(NPM_PART.slice(4, 16))],
+      [true, oldCut.length - 39 + '[redacted]'.length, [], [], false]
+    )
+    t5.close()
+
+    // Review of 166e84f: Codex's threads listing cut its raw first message at 300 inside a word, and the clean after the cut saw no key.
+    const cHome = join(root, 'listing-cut-home')
+    const cId = '019f456c-cccc-7e83-927d-f3b8ad5ac6cf'
+    const cRollout = join(cHome, '.codex', 'sessions', '2026', '09', '28', `rollout-2026-09-28T16-02-23-${cId}.jsonl`)
+    write(cRollout, jl([{ timestamp: iso(T0), type: 'session_meta', payload: { id: cId, cwd: '/tmp/listing', timestamp: iso(T0), source: 'vscode' } }]), T0)
+    const cdb = new DatabaseSync(join(cHome, '.codex', 'state_5.sqlite'))
+    cdb.exec(`CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+      source TEXT NOT NULL, cwd TEXT NOT NULL, title TEXT NOT NULL, archived INTEGER NOT NULL DEFAULT 0, git_branch TEXT,
+      first_user_message TEXT NOT NULL DEFAULT '', model TEXT, created_at_ms INTEGER, updated_at_ms INTEGER, name TEXT)`)
+    cdb.prepare('INSERT INTO threads VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(cId, cRollout, T0 / 1000, T0 / 1000, 'vscode', '/tmp/listing', 't', 0, null, `${pad('codexcut', 300 - 39)}${NPM} after`, null, T0, T0, 'Cut thread')
+    cdb.close()
+    const listedFirst = listSource('codex', { home: cHome, env: {}, platform: process.platform }, false, discovery(Date.now())).candidates[0]?.meta.firstPrompt
+    const mergedFirst = mergeMeta({ title: null, firstPrompt: null, cwd: null, gitBranch: null, model: null, createdMs: null, updatedMs: null }, { firstPrompt: listedFirst ?? undefined }, true).firstPrompt
+    check('Codex’s listed first message is cut back to a space before it is cleaned: no part of a key is stored', [listedFirst?.startsWith('codexcut word'), listedFirst?.includes(NPM.slice(0, 8)), mergedFirst?.includes(NPM.slice(0, 8))], [true, false, false])
   }
 
   section('a chat cleaned under rule set 3 is cleaned again under 4 before it is served as cleaned')

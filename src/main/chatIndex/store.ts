@@ -39,7 +39,7 @@ import {
   type ChatSourceStatus
 } from '../../shared/chatIndex.ts'
 import { isInside, pathRulesFor } from '../../shared/paths.ts'
-import { cleanText, FIRST_PROMPT_MAX, planTrim, REDACTION_VERSION, redactCutTail, redactMarkedCut, redactSecrets, type ChatMessage, type ChatMeta } from './parse.ts'
+import { cleanText, CUT_MARK, FIRST_PROMPT_MAX, planTrim, REDACTION_VERSION, redactCutTail, redactMarkedCut, redactSecrets, type ChatMessage, type ChatMeta } from './parse.ts'
 
 export const STORE_FILE = 'index.sqlite'
 
@@ -498,14 +498,20 @@ export class ChatStore {
    * mark, and a first prompt at its length cap (`FIRST_PROMPT_MAX`, cut with
    * no mark by a raw pass's `firstPromptOf`), has a token-shaped last word
    * made `[redacted]` before the chat is raised (`redactMarkedCut`,
-   * `redactCutTail`; re-review of 62b4ae6).
+   * `redactCutTail`; re-review of 62b4ae6). So does a title with no mark at
+   * that length or past it: a Cline chat with no title of its own took its
+   * RAW prompt's first 300 characters as one, cut inside a word by the
+   * `firstPromptOf` before 62b4ae6's and cleaned only after, so a key the cut
+   * ran through kept 39 of an npm token's 40 characters through every rule
+   * set (review of 166e84f). A cleaning that lengthened it (`password=x` →
+   * `password=[redacted]`) leaves it past the cap; one that shortened it
+   * (a key before it taken) leaves it under, and is not caught.
    */
   recleanChat(chatId: number): boolean {
     const clean = (t: string): string => redactMarkedCut(cleanText(t, { redact: true, maxBytes: Infinity }))
-    const cleanFirst = (t: string): string => {
-      const c = cleanText(t, { redact: true, maxBytes: Infinity })
-      return t.length >= FIRST_PROMPT_MAX ? redactCutTail(c) : c
-    }
+    const atCap = (t: string, c: string): string => (t.length >= FIRST_PROMPT_MAX ? redactCutTail(c) : c)
+    const cleanFirst = (t: string): string => atCap(t, cleanText(t, { redact: true, maxBytes: Infinity }))
+    const cleanTitle = (t: string): string => (t.endsWith(CUT_MARK) ? clean(t) : atCap(t, clean(t)))
     return this.tx(() => {
       const c = this.q('SELECT title, first_prompt FROM chat WHERE id = CAST(? AS INTEGER)').get(chatId) as { title?: unknown; first_prompt?: unknown } | undefined
       if (!c) return false
@@ -523,7 +529,7 @@ export class ChatStore {
       const title = strOrNull(c.title)
       const first = strOrNull(c.first_prompt)
       this.q('UPDATE chat SET title = ?, first_prompt = ?, text_bytes = text_bytes + ?, redact_level = ? WHERE id = CAST(? AS INTEGER)').run(
-        title === null ? null : clean(title) || null,
+        title === null ? null : cleanTitle(title) || null,
         first === null ? null : cleanFirst(first) || null,
         delta,
         REDACTION_VERSION,

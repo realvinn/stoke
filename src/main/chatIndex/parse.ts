@@ -116,7 +116,8 @@ export const REDACTED = '[redacted]'
  * password flags of `sshpass`, `redis-cli`, `docker login`, `openssl`,
  * `mongo` and `mysql --password=`, `vault login`, `--passphrase`; keyed
  * `pass`/`DB_PASS`/`passphrase`, and secret names with a suffix
- * (`SECRET_KEY_BASE`, `secret_access_key`).
+ * (`SECRET_KEY_BASE`, `secret_access_key`). A re-clean also makes the cut tail
+ * of a title the cap's length `[redacted]` (`recleanChat`).
  */
 export const REDACTION_VERSION = 5
 
@@ -718,11 +719,27 @@ export const FIRST_PROMPT_MAX = 300
  * `recleanChat` reads a first prompt AT the cap as: cut inside a word.
  */
 export function firstPromptOf(text: string): string {
+  return firstPromptCut(text).text
+}
+
+/**
+ * `firstPromptOf` for text no pattern has judged yet — a Cline prompt that
+ * stands in for a title, Codex's `first_user_message` — which is cleaned only
+ * after the cut. A cut that had to land inside a word (one word past the cap,
+ * no space to cut back to) makes that word `[redacted]` (`redactCutTail`),
+ * never leaves a part of a key there (review of 166e84f).
+ */
+export function rawFirstPromptOf(text: string): string {
+  const c = firstPromptCut(text)
+  return c.inWord ? redactCutTail(c.text) : c.text
+}
+
+function firstPromptCut(text: string): { text: string; inWord: boolean } {
   const t = text.replace(/\s+/g, ' ').trim()
-  if (t.length <= FIRST_PROMPT_MAX) return t
+  if (t.length <= FIRST_PROMPT_MAX) return { text: t, inWord: false }
   const cut = t.slice(0, FIRST_PROMPT_MAX)
   const space = cut.lastIndexOf(' ')
-  return space > 0 ? cut.slice(0, space) : cut
+  return space > 0 ? { text: cut.slice(0, space), inWord: false } : { text: cut, inWord: true }
 }
 
 /** One message, cleaned (`cleanText`); nothing when no text is left. The first user message is the first prompt. */
@@ -936,7 +953,7 @@ export function clineMeta(doc: unknown): ClineMeta {
   const git = md.git && typeof md.git === 'object' ? (md.git as Record<string, unknown>) : {}
   const origin = imp && typeof imp.tool === 'string' ? CLINE_ORIGINS[imp.tool] : undefined
   const originId = imp && typeof imp.sourceSessionId === 'string' ? imp.sourceSessionId : ''
-  const title = typeof md.title === 'string' && md.title.trim() ? md.title.trim() : typeof d.prompt === 'string' && d.prompt.trim() ? firstPromptOf(d.prompt) : null
+  const title = typeof md.title === 'string' && md.title.trim() ? md.title.trim() : typeof d.prompt === 'string' && d.prompt.trim() ? rawFirstPromptOf(d.prompt) : null
   return {
     title,
     cwd: typeof d.cwd === 'string' && d.cwd ? d.cwd : typeof d.workspace_root === 'string' && d.workspace_root ? d.workspace_root : null,

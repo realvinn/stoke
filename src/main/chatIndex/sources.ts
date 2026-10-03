@@ -31,6 +31,7 @@ import {
   foldCodexLine,
   foldOpencodeRows,
   foldZedThread,
+  rawFirstPromptOf,
   zedFolder,
   type ChatMeta,
   type Fold
@@ -322,7 +323,8 @@ function listCodex(e: SourceEnv, subagents: boolean, d: Discovery): Listing {
           subagent: sub,
           meta: {
             title,
-            firstPrompt: typeof r.first_user_message === 'string' && r.first_user_message.trim() ? r.first_user_message.replace(/\s+/g, ' ').trim().slice(0, 300) : null,
+            // Raw, and cleaned only after this cut (`mergeMeta`): cut back to a space, never inside a word, which a key's first part would be.
+            firstPrompt: typeof r.first_user_message === 'string' && r.first_user_message.trim() ? rawFirstPromptOf(r.first_user_message) : null,
             cwd: typeof r.cwd === 'string' && r.cwd ? r.cwd : null,
             gitBranch: typeof r.git_branch === 'string' && r.git_branch ? r.git_branch : null,
             model: typeof r.model === 'string' && r.model ? r.model : null,
