@@ -1305,7 +1305,10 @@ src/main/         Electron main process
     parse.ts          user + assistant words only, per source: no tool payloads, reasoning,
                       injected context, base64 or keys; Claude's rules are sessionFile.ts's own.
                       `SECRET_RULES` are named (one verify:chat-sources case each); a keyed
-                      `password=`/`api_key=` value goes only when it is a literal, not code.
+                      `password=`/`api_key=`/`client_secret=`/`token=` value goes only when it
+                      is a literal, not code, taken whole to the next space (a URL query's or
+                      connection string's to its `&`/`;`); no rule backtracks (the suite
+                      times 64 KB worst cases).
                       `REDACTION_VERSION` names the rule set a stored chat was cleaned with
     scan.ts           one pass: list everything, fold Cline's copies into originals their tool
                       still has, admit the newest per source then in all (a file holding no

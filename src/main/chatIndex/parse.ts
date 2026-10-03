@@ -73,8 +73,9 @@ const DATA_URL = /data:[\w.+-]+\/[\w.+-]+;base64,[A-Za-z0-9+/=]+/g
  *
  * Each rule is named, so `verify:chat-sources` holds one case per rule and a
  * measurement can count per rule. Order matters in one place: the keyed rules
- * (`password`, `api-key`) run last, so a key a shaped rule already took reads
- * `api_key=[redacted]` and is left alone.
+ * (`password`, `api-key`, `client-secret`, `token`) run last, so a key a shaped
+ * rule already took reads `api_key=[redacted]` and is left alone; the same
+ * holds for the `Authorization` header after the JWT rule.
  */
 export interface SecretRule {
   name: string
@@ -90,9 +91,16 @@ export const REDACTED = '[redacted]'
  * or widened: a row cleaned under an older set is cleaned again (`recleanStale`)
  * before anything is served from it as cleaned. 1 was the first eight rules;
  * 2 added credential URLs, keyed passwords and API keys, JWTs, Stripe, Notion,
- * ClickUp, Cloudflare, and a private key cut before its END line.
+ * ClickUp, Cloudflare, and a private key cut before its END line. 3 takes an
+ * unquoted keyed value whole up to the next space (2 cut it at a `&`, `;` or
+ * `,` and judged only the head, so `DB_PASSWORD=Xy7&kL9#mQ2vP` stayed whole
+ * and `api_key=9f8e7d6c,5b4a…` kept its tail), judges a dotted value by its
+ * segments (2 left any value that began `word.word`: `SENDGRID_API_KEY=SG.…`),
+ * and adds SendGrid, Mapbox, `Authorization:` headers, AWS secret access keys,
+ * GitLab, Hugging Face, npm, Stripe webhook secrets, and keyed client secrets
+ * and tokens.
  */
-export const REDACTION_VERSION = 2
+export const REDACTION_VERSION = 3
 
 /*
  * A keyed value — `password=…`, `"apiKey": "…"`, `DB_PASSWORD: …` — is only a
@@ -106,8 +114,21 @@ export const REDACTION_VERSION = 2
  * escape (`\n1449`: a line of grep output, JSON-escaped), judged without the
  * punctuation that closes it (`password: string):`). Except in a shell or
  * `.env` assignment (`POSTGRES_PASSWORD=postgres`: a name with no lower case,
- * then `=` and nothing between): there a bare word IS the value, unless it is
- * a type. A colon never gets that reading — `{ PWD: cwd }` is code.
+ * then `=` and nothing between) or a URL query (`?token=…`): there a bare word
+ * or a dotted one IS the value, unless it is a type. A colon never gets that
+ * reading — `{ PWD: cwd }` is code.
+ *
+ * A property path is code only while every segment has an identifier's shape
+ * (`secretSegment`): `SG.Ab3Cd….Ef7Gh…` and `p4ss.Word.xyz` are values that
+ * merely contain dots. A call, an index or an operator straight after a name
+ * is code whatever the name (`base64.b64decode(x)`, `process.env.X||'d'`).
+ *
+ * An unquoted value runs to the next space, or to a quote that ends the
+ * string it sits in: a `&`, `;` or `,` inside it is part of it
+ * (`Xy7&kL9#mQ2vP`). Only a key that itself follows `?`, `&` or `;` — a URL
+ * query, a connection string — has a value that ends at the next `&` or `;`
+ * (`;` alone after a `;`, as `Password=a&b;` is one value). Trailing structure
+ * (`,` `;` `&` `)` `]` `}` `>`) is put back after `[redacted]`.
  *
  * The colon must follow the name directly (`password: x`, `"password": "x"`),
  * so a ternary's `'new-password' : 'current-password'` is not a pair; `=`,
@@ -121,24 +142,78 @@ export const REDACTION_VERSION = 2
  */
 const TYPE_WORDS = new Set(['str', 'string', 'String', 'int', 'bool', 'boolean', 'None', 'null', 'nil', 'undefined', 'true', 'false', 'True', 'False', 'any', 'unknown', 'required', 'optional', 'Optional', 'Secret', 'SecretStr', 'bytes', 'text'])
 
-function literalSecret(value: string, quoted: boolean, min: number, assignment: boolean): boolean {
+/** What closes a value rather than belonging to it: a value is judged without it. */
+const CLOSING = ')]}>:.,!?;&'
+/** The part of `CLOSING` that is structure, put back after `[redacted]`: `{ password: x, … }`, `PASSWORD=x;`, `(password=x)`. */
+const STRUCTURE = ',;&)]}>'
+
+/**
+ * `s` without its trailing run of `chars`, walked from the end. Never a
+ * `/[…]+$/` regex: it retries from every position of a run that does not
+ * reach the end, so `password=a` + 64 KB of `)` + `x` took 6.8 s (measured;
+ * 2 had it, with one such regex).
+ */
+function trimTail(s: string, chars: string): string {
+  let end = s.length
+  while (end > 0 && chars.includes(s[end - 1])) end--
+  return s.slice(0, end)
+}
+
+/** A name or a dotted path of them at the start of a value: `getpass`, `process.env.KEY`, `self.api_key`, `Foo::BAR`, `$this->pw`. */
+const PATH_HEAD = /^[A-Za-z_$][\w$]*(?:(?:\.|::|->|\?\.)[A-Za-z_$][\w$]*)*/
+const PATH_SEP = /\.|::|->|\?\./
+
+/*
+ * A segment no identifier has the shape of: 12+ characters that MIX letters
+ * and digits — at least one switch between lower case, upper case and digits
+ * for every three characters, which a random string has (`dEf456gHi789jKl`:
+ * 10 in 15) and a name with a number in it does not (`oauth2ClientSecret`: 5
+ * in 18, `OPENROUTER_KEY_2`: 1) — or digits between two lower-case letters
+ * (`p4ss`, `s3cr3t`; `s3Key` is a name). Measured on the keyed values that are
+ * dotted paths in a real index's copy, this repository and node_modules'
+ * markdown (47, all code): neither clause took one.
+ */
+function secretSegment(s: string): boolean {
+  if (s.length >= 12) {
+    let switches = 0
+    let prev = ''
+    for (const c of s) {
+      const k = c >= '0' && c <= '9' ? 'd' : c >= 'a' && c <= 'z' ? 'l' : c >= 'A' && c <= 'Z' ? 'u' : ''
+      if (k && prev && k !== prev) switches++
+      if (k) prev = k
+    }
+    if (/[0-9]/.test(s) && /[A-Za-z]/.test(s) && switches * 3 >= s.length) return true
+  }
+  return /[a-z][0-9]+[a-z]/.test(s)
+}
+
+function literalSecret(value: string, quoted: boolean, min: number, literal: boolean): boolean {
+  /*
+   * Already taken, or a blob: the marker alone is left. Anything glued on
+   * after it is the rest of a value an older rule set cut short (2 stopped at
+   * `&`, `;` and `,`: `api_key=[redacted],5b4a…`), and goes too.
+   */
+  const marker = /^\[(?:redacted|data)\]/.exec(value)
+  if (marker) return !quoted && trimTail(value.slice(marker[0].length), CLOSING) !== ''
   if (value.length < min) return false
-  // Already taken, masked, or a template / variable standing in for the value.
-  if (value.startsWith('[redacted]') || value.startsWith('[data]')) return false
+  // Masked, or a template / variable standing in for the value.
   if (/^(?:\*+|•+|x+|X+|\.{3,}|…+)$/.test(value)) return false
-  if (/^(?:\$+\{|\{\{|\$\(|<[^<>]*>$|%[\w.]+%$|\$[A-Za-z_][\w-]*$)/.test(value)) return false
+  if (/^(?:\$+\{|\{\{|\$\(|<[^<>]*>$|&lt;.*&gt;$|%[\w.]+%$|\$[A-Za-z_][\w-]*$)/.test(value)) return false
   if (/^your[-_ ]/i.test(value)) return false
   if (quoted) return !/^\s|\s$/.test(value)
   if (value.startsWith('\\')) return false
-  const v = value.replace(/[)\]}>:.,!?]+$/, '')
+  const v = trimTail(value, CLOSING)
   if (v.length < min) return false
   // A word with no digit or symbol: a type, a keyword, a variable (`string`, `None`, `required`).
-  if (/^[A-Za-z_-]+$/.test(v)) return assignment && !TYPE_WORDS.has(v)
+  if (/^[A-Za-z_-]+$/.test(v)) return literal && !TYPE_WORDS.has(v)
   // A constant's name: `OPENROUTER_KEY_2`.
   if (/^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/.test(v)) return false
-  // A property path, a call or an index: `process.env.X`, `req.body.password`, `z.string()`, `os.environ['X']`.
-  if (/^[A-Za-z_$][\w$]*(?:(?:\.|::|->|\?\.)[A-Za-z_$][\w$]*)+/.test(v)) return false
-  if (/^[A-Za-z_$][\w$]*[([{]/.test(v)) return false
+  const head = PATH_HEAD.exec(v)?.[0] ?? ''
+  const rest = v.slice(head.length)
+  // A call, an index or an operator after a name or a path: `getpass()`, `z.string().min(8)`, `os.environ['X']`, `env.X||'d'`.
+  if (head && /^(?:[([{]|\|\||\?\?|&&)/.test(rest)) return false
+  // A property path whose every segment is a name's: `process.env.X`, `req.body.password`.
+  if (!literal && rest === '' && PATH_SEP.test(head) && !head.split(PATH_SEP).some(secretSegment)) return false
   // A path: a shell's `PWD=/Users/…`, a file the value is read from.
   if (/^(?:\/|~\/|\.\.?\/|[A-Za-z]:\\)/.test(v)) return false
   if (v.startsWith('{') || v.startsWith('[') || v.startsWith('(')) return false
@@ -146,25 +221,49 @@ function literalSecret(value: string, quoted: boolean, min: number, assignment: 
 }
 
 /**
+ * Before a value: the key's whole glued name and its `=`, for the lookbehinds
+ * that tell a URL query from the rest. Bounded everywhere: when a value does
+ * not match, the engine backs off one space of the separator at a time and
+ * runs these again, so an unbounded `[ \t]*` here made `password=` + 64 KB of
+ * spaces + `"` take 19 s (measured).
+ */
+const QUERY_KEY = String.raw`[\w.-]{0,64}[ \t]{0,4}=[ \t]{0,4}`
+const BT = '`'
+/** One character of an unquoted value: not a space or a quote, and not an escaped `\n`, `\r` or `\t` — a line's end in JSON-escaped text. */
+const CH = String.raw`(?:[^\s"'${BT}\\]|\\(?![nrt]))`
+const VALUE =
+  String.raw`(?:"([^"\n]*)"|'([^'\n]*)'` +
+  // A URL query's value ends at the next `&`, `;` or `#`, or a bracket that closes the link around it
+  // (`badge.svg?token=x)](https://…)`); a connection string's at the next `;`.
+  String.raw`|((?<=[?&]${QUERY_KEY})[^\s"'${BT}\\&;#()<>[\]{}]+|(?<=;${QUERY_KEY})(?:(?!;)${CH})+)` +
+  // Anything else runs to the next space, or to a quote that closes the string around it: a quote
+  // straight after structure always does (compact JSON's `null},"hasMore":false`), one inside a word
+  // (`Xy7'kL9`) only when space or structure follows it.
+  String.raw`|(?<![?&;]${QUERY_KEY})(${CH}+(?:(?<![,;:=([{)\]}])["'](?:(?![,;)\]}])${CH})+)*))`
+
+/**
  * A rule for `<name> = <value>` in the ways code and config write it:
  * `name=v`, `name: v`, `"name": "v"`, `'name' => 'v'`, `name := "v"`. The name
  * is kept, so "password" is still searchable; only a literal value goes.
  */
 function keyed(name: string, keyPattern: string, min: number): SecretRule {
-  const value = String.raw`(?:"([^"\n]*)"|'([^'\n]*)'|([^\s"'` + '`' + String.raw`,;&]+))`
   return {
     name,
     // The lookbehind is bounded: unbounded, it re-scanned a whole identifier run at every name inside it (0.8 s for 64 KB).
-    re: new RegExp(String.raw`(?<!\$\{[A-Za-z0-9_.-]{0,64})(${keyPattern})(["']?(?::(?!=)|[ \t]*(?:=>|:=|=))[ \t]*)` + value, 'g'),
-    to: (match, key, sep, dq, sq, bare) => {
+    re: new RegExp(String.raw`(?<!\$\{[A-Za-z0-9_.-]{0,64})(${keyPattern})(["']?(?::(?!=)|[ \t]*(?:=>|:=|=))[ \t]*)` + VALUE, 'g'),
+    to: (match, key, sep, dq, sq, query, bare) => {
       const quoted = dq ?? sq
-      const v = quoted ?? bare ?? ''
-      if (!literalSecret(v, quoted !== undefined, min, sep === '=' && !/[a-z]/.test(key))) return match
+      const v = quoted ?? query ?? bare ?? ''
+      if (!literalSecret(v, quoted !== undefined, min, query !== undefined || (sep === '=' && !/[a-z]/.test(key)))) return match
       const q = dq !== undefined ? '"' : sq !== undefined ? "'" : ''
-      return `${key}${sep}${q}${REDACTED}${q}`
+      const kept = quoted === undefined ? v.slice(trimTail(v, STRUCTURE).length) : ''
+      return `${key}${sep}${q}${REDACTED}${q}${kept}`
     }
   }
 }
+
+/** A shaped value after a name that says what it is: the name and its separator stay. */
+const keepName = (_m: string, name: string): string => `${name}${REDACTED}`
 
 export const SECRET_RULES: readonly SecretRule[] = [
   { name: 'private-key', re: /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g, to: REDACTED },
@@ -174,18 +273,55 @@ export const SECRET_RULES: readonly SecretRule[] = [
   { name: 'openai', re: /\bsk-(?:proj-|or-v1-)?[A-Za-z0-9_-]{20,}/g, to: REDACTED },
   { name: 'github', re: /\bgh[pousr]_[A-Za-z0-9]{20,}/g, to: REDACTED },
   { name: 'github-pat', re: /\bgithub_pat_[A-Za-z0-9_]{20,}/g, to: REDACTED },
-  { name: 'aws', re: /\bAKIA[0-9A-Z]{16}\b/g, to: REDACTED },
+  /*
+   * An access key id — AKIA (long-term), ASIA (temporary, from STS) — and a
+   * 40-character secret straight after it, as a pair is pasted (`id|secret`,
+   * `id:secret`, `id secret`).
+   */
+  { name: 'aws', re: /\bA[KS]IA[0-9A-Z]{16}\b(?:[|:,;\s]{1,3}[A-Za-z0-9/+]{40}(?![A-Za-z0-9/+]))?/g, to: REDACTED },
   { name: 'slack', re: /\bxox[abprs]-[A-Za-z0-9-]{10,}/g, to: REDACTED },
   { name: 'google', re: /\bAIza[0-9A-Za-z_-]{30,}/g, to: REDACTED },
   // Stripe's secret and restricted keys; the publishable `pk_` is public by design.
   { name: 'stripe', re: /\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{10,}/g, to: REDACTED },
+  // A Stripe webhook's signing secret (`whsec_` + 32 base62, or 64 hex from `stripe listen`).
+  { name: 'stripe-webhook', re: /\bwhsec_[A-Za-z0-9+/]{24,}={0,2}/g, to: REDACTED },
   // Notion's integration tokens: `secret_` (43 after it) and the newer `ntn_`.
   { name: 'notion', re: /\b(?:secret_[A-Za-z0-9]{40,}|ntn_[A-Za-z0-9]{30,})/g, to: REDACTED },
   // ClickUp's personal token: `pk_<user id>_<32 upper-case letters and digits>`.
   { name: 'clickup', re: /\bpk_[0-9]{2,}_[A-Z0-9]{20,}\b/g, to: REDACTED },
   // Cloudflare's scannable credentials (2026): cfk_ (global key), cfut_/cfat_ (tokens), cfast_ (Access service token); 40 + a checksum.
   { name: 'cloudflare', re: /\bcf(?:k|ut|at|ast)_[A-Za-z0-9]{40,}/g, to: REDACTED },
+  // SendGrid: `SG.` + 22 + `.` + 43, base64url.
+  { name: 'sendgrid', re: /\bSG\.[\w-]{16,}\.[\w-]{16,}/g, to: REDACTED },
+  // Mapbox: `sk.` (secret), `pk.` (public, still an account's) and `tk.` (temporary), each a JWT-like body.
+  { name: 'mapbox', re: /\b[spt]k\.eyJ[\w-]+\.[\w-]+/g, to: REDACTED },
+  { name: 'gitlab', re: /\bglpat-[\w-]{20,}/g, to: REDACTED },
+  { name: 'huggingface', re: /\bhf_[A-Za-z0-9]{30,}/g, to: REDACTED },
+  { name: 'npm', re: /\bnpm_[A-Za-z0-9]{36}(?![A-Za-z0-9])/g, to: REDACTED },
   { name: 'jwt', re: /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]*/g, to: REDACTED },
+  /*
+   * An `Authorization` header's credentials (`Proxy-Authorization` too, any
+   * case): a Bearer or Token value of 20+ token characters with a digit in it
+   * (a word-only `YOUR_ACCESS_TOKEN_HERE` is a placeholder), or Basic's
+   * base64 of 16+. A JWT or a shaped key the rules above took reads
+   * `[redacted]` and is not a token any more.
+   */
+  {
+    name: 'authorization',
+    re: /([Aa]uthorization["']?[ \t]*[:=][ \t]*["']?(?:[Bb]earer|[Tt]oken|BEARER)[ \t]+)(?=[A-Za-z_.~+/-]*[0-9])[\w.~+/-]{20,}=*|([Aa]uthorization["']?[ \t]*[:=][ \t]*["']?(?:[Bb]asic|BASIC)[ \t]+)[A-Za-z0-9+/]{16,}={0,2}/g,
+    to: (_m, bearer, basic) => `${bearer ?? basic}${REDACTED}`
+  },
+  /*
+   * An AWS secret access key: 40 base64 characters after a name that says so
+   * (`aws_secret_access_key`, `AWS_SECRET_ACCESS_KEY`, `SecretAccessKey`), and
+   * markdown's escaped `aws\_secret\_access\_key` — six of the seven in a real
+   * index's copy were written that way.
+   */
+  {
+    name: 'aws-secret',
+    re: /((?:aws\\?_secret\\?_access\\?_key|AWS\\?_SECRET\\?_ACCESS\\?_KEY|[Ss]ecretAccessKey)["']?[ \t]{0,4}(?::|=>|=)[ \t]{0,4}["']?)[A-Za-z0-9/+]{40}(?![A-Za-z0-9/+])/g,
+    to: keepName
+  },
   // `scheme://user:pass@host`: the scheme and host stay, the user and password go.
   // The match starts at the `://` (the scheme is a lookbehind), so the engine scans for a literal, not a class.
   { name: 'credential-url', re: /(?<=\b[A-Za-z][A-Za-z0-9+.-]{1,30}):\/\/[^\s:@/?#'"<>]*:[^\s@/?#'"<>]+@(?=[A-Za-z0-9[])/g, to: `://${REDACTED}@` },
@@ -195,10 +331,19 @@ export const SECRET_RULES: readonly SecretRule[] = [
    * `spring.datasource.password`): a leading `[A-Za-z0-9_.-]*` made each of
    * these two rules cost three times all the others together, measured on a
    * real index. A shell's `PWD=/a/path` and `OLDPWD=…` are paths, which
-   * `literalSecret` leaves.
+   * `literalSecret` leaves. The same holds for the client secret and token
+   * rules: `GOOGLE_CLIENT_SECRET`, `access_token`, `refreshToken`,
+   * `GITHUB_TOKEN` all end in the name the rule looks for.
    */
   keyed('password', String.raw`[Pp]ass(?:word|wd)|PASS(?:WORD|WD)|[Pp]wd|PWD`, 4),
-  keyed('api-key', String.raw`[Aa][Pp][Ii][_-]?[Kk][Ee][Yy]`, 8)
+  keyed('api-key', String.raw`[Aa][Pp][Ii]\\?[_-]?[Kk][Ee][Yy]`, 8),
+  keyed('client-secret', String.raw`[Cc]lient\\?[_-]?[Ss]ecret|CLIENT\\?[_-]?SECRET`, 12),
+  /*
+   * `token`, `access_token`, `refreshToken`, `GITHUB_TOKEN`: only a literal of
+   * 12+, which keeps counts, ids and code's short names out (`eos_token: 2`,
+   * `token = tok`); `max_tokens` never matches, as the name must end at `=`/`:`.
+   */
+  keyed('token', String.raw`[Tt]oken|TOKEN`, 12)
 ]
 
 export function redactSecrets(text: string): string {
