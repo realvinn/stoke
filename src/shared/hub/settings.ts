@@ -49,7 +49,26 @@ export interface HubSettings {
   shareSessions: boolean
   /** Requesting device id → its grant on THIS machine. Never synced. */
   grants: Record<string, HubGrant>
+  /**
+   * "Let my other computers search this computer's chat history" — this
+   * machine's own tick, default OFF, turned on only here with the hub password
+   * typed here (spec 2026-10-03 §2, `HubService.setShareChats`). Effective only
+   * while chat history is on and this device is in the vault
+   * (`chatsSharingEffective`, remote.ts). Off closes every chats relay at once
+   * and drops `chatGrants`. Never synced: `hub` is in LOCAL_KEYS.
+   */
+  shareChats: boolean
+  /**
+   * Requesting device id → `'always'`: that device searches and reads chats
+   * here without the question. Separate from `grants` on purpose: a session
+   * grant never opens chats, and a chats grant never a session. "Allow once"
+   * is memory only (`HubRemote`). Never synced.
+   */
+  chatGrants: Record<string, ChatGrant>
 }
+
+/** The one standing a device can hold for this computer's chat history. */
+export type ChatGrant = 'always'
 
 export const HUB_SETTINGS_DEFAULTS: HubSettings = {
   url: '',
@@ -59,7 +78,9 @@ export const HUB_SETTINGS_DEFAULTS: HubSettings = {
   deviceLabel: '',
   sync: { settings: true, hosts: true, keys: true },
   shareSessions: false,
-  grants: {}
+  grants: {},
+  shareChats: false,
+  chatGrants: {}
 }
 
 const str = (v: unknown, max = 512): string => (typeof v === 'string' ? v.slice(0, max) : '')
@@ -82,6 +103,11 @@ export function hydrateHubSettings(raw: unknown): HubSettings {
       grants[id] = { mode: g.mode, label: str(g.label, 64), at: typeof g.at === 'number' && Number.isFinite(g.at) ? g.at : 0 }
     }
   }
+  // Only a well-formed device id holding exactly 'always': anything else would be a grant this build never gave.
+  const chatGrants: Record<string, ChatGrant> = {}
+  if (isRecord(r.chatGrants)) {
+    for (const [id, g] of Object.entries(r.chatGrants)) if (isId('device', id) && g === 'always') chatGrants[id] = 'always'
+  }
   return {
     url: str(r.url, 2048).trim(),
     email: str(r.email, 254),
@@ -94,7 +120,10 @@ export function hydrateHubSettings(raw: unknown): HubSettings {
       keys: bool(sync.keys, HUB_SETTINGS_DEFAULTS.sync.keys)
     },
     shareSessions: bool(r.shareSessions, HUB_SETTINGS_DEFAULTS.shareSessions),
-    grants
+    grants,
+    // Only the literal `true`: a junk value reads as off, never as consent.
+    shareChats: r.shareChats === true,
+    chatGrants
   }
 }
 

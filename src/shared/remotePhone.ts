@@ -635,6 +635,25 @@ export function isGatedRemotePath(pathname: string): boolean {
 }
 
 /**
+ * Which `/api/chats/*` route an instance of the phone server answers:
+ * `not-chats` for any other path; `none` (a 404, like any unknown endpoint)
+ * on the PHONE's instance, for anything but GET, and for any other path under
+ * it; `search` or `open` only on the RELAY's instance (spec 2026-10-03 §3,
+ * `RemoteServer.serveChats`). Another of the owner's computers reaches these
+ * through a chats relay the host has judged; a phone, which holds only the
+ * bearer key, never does — so a leaked phone key reads no chat history.
+ */
+export type ChatsRoute = 'not-chats' | 'none' | 'search' | 'open'
+
+export function chatsRouteFor(instance: 'phone' | 'relay', method: string, pathname: string): ChatsRoute {
+  if (pathname !== '/api/chats' && !pathname.startsWith('/api/chats/')) return 'not-chats'
+  if (instance !== 'relay' || method !== 'GET') return 'none'
+  if (pathname === '/api/chats/search') return 'search'
+  if (pathname === '/api/chats/open') return 'open'
+  return 'none'
+}
+
+/**
  * What the public shell's static handler answers for a path with no file
  * behind it: the SPA shell, or a plain 404.
  *

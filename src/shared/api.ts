@@ -39,7 +39,7 @@ import type { ClaudeLaunchDefaults } from './launch'
 import type { SecretStoreStatus } from './secrets'
 import type { SetupPreview } from './setupFile'
 import type { HubLocalKeyView, HubResult, HubVerifyResult, HubView } from './hub/client'
-import type { AttachAnswer, HubRemoteView, RemoteTabFrame } from './hub/remote'
+import type { AttachAnswer, HubRemoteView, RemoteChatGrantView, RemoteChatOpen, RemoteChatsResult, RemoteTabFrame } from './hub/remote'
 import type { AccessLookup, RemoteAccessStatus } from './cfAccess'
 import type { ChatDetection, ChatImportResult, ChatIndexStatus, ChatSearchHit, ChatTranscript } from './chatIndex'
 import type {
@@ -957,6 +957,25 @@ export interface StokeApi {
       dropGuests(): Promise<void>
       setSharing(on: boolean): Promise<HubResult>
       revokeGrant(deviceId: string): Promise<HubResult>
+      /**
+       * Chat history on the owner's other computers (spec 2026-10-03 §3): one
+       * result per computer, never merged — its hits (folder NAME, text
+       * redacted there) or why there are none. Empty while the query is
+       * under `CHAT_SEARCH_MIN_CHARS` or this computer is not in the vault.
+       */
+      searchChats(query: string): Promise<RemoteChatsResult[]>
+      /** One chat a remote search found, read-only (no Resume: it lives on that computer). */
+      openChat(deviceId: string, source: string, nativeId: string): Promise<RemoteChatOpen>
+      /** The search box closed: the chats relays close now rather than when idle. */
+      endChatSearch(): void
+      /**
+       * This computer's "Let my other computers search this computer's chat
+       * history". Off is instant. On is refused unless the hub password was
+       * confirmed on this computer just now, and grants `deviceIds` Always.
+       */
+      setShareChats(on: boolean, deviceIds?: string[]): Promise<HubResult>
+      chatGrants(): Promise<RemoteChatGrantView[]>
+      removeChatGrant(deviceId: string): Promise<HubResult>
     }
   }
 

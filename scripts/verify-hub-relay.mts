@@ -42,12 +42,26 @@ import {
   type DeviceKeys
 } from '../src/main/hub/crypto.ts'
 import { HubRemote, type RelaySocket, type RemoteContext } from '../src/main/hub/remote.ts'
+import { answerChatsRoute, sharedChats, type ChatIndexAccess } from '../src/main/hub/chatShare.ts'
+import { redactSecrets } from '../src/main/chatIndex/parse.ts'
 import { VirtualSocket } from '../src/main/remote/socket.ts'
+import type { ChatSearchHit, ChatTranscript } from '../src/shared/chatIndex.ts'
+import { chatsRouteFor } from '../src/shared/remotePhone.ts'
 import { b64uDecode, b64uEncode, idFromBytes } from '../src/shared/hub/codec.ts'
 import { HUB_LABELS } from '../src/shared/hub/labels.ts'
 import { HUB_LIMITS, parsePresenceClientFrame, parsePresenceServerFrame, sealedStatusProblem, type PresenceClientFrame, type SealedStatus } from '../src/shared/hub/protocol.ts'
 import {
   attachDecision,
+  chatsAttachDecision,
+  chatsSharingEffective,
+  CHATS_ONCE_KEY,
+  folderName,
+  parseRemoteChat,
+  parseRemoteChatHits,
+  remoteChatFrom,
+  remoteChatHitFrom,
+  REMOTE_CHAT_MAX_BYTES,
+  type RemoteChatsResult,
   holdOnce,
   onceHolds,
   ONCE_GRACE_MS,
@@ -547,12 +561,66 @@ interface Machine {
   /** What this machine's status bar would say per session, and every session the relay asked about. */
   status: Record<string, RemoteSessionStatus>
   statusAsked: string[]
+  /** `hub.shareChats`, `hub.chatGrants` and `settings.chatIndex === 'on'` on THIS machine. */
+  shareChats: boolean
+  chatGrants: Record<string, 'always'>
+  indexOn: boolean
+  /** Its chat index: what `ChatIndexHost` would answer, behind the real `sharedChats`. */
+  chats: FakeChat[]
+  hidden: string[]
+  storedRedacted: boolean
+}
+/** One chat in a fake index: its search hit's fields and its transcript. */
+interface FakeChat {
+  chatId: number
+  source: string
+  nativeId: string
+  title: string | null
+  cwd: string | null
+  text: string
 }
 const machines = new Map<string, Machine>()
 const vkShared = randomU8(32)
 
-function machine(d: Dev, opts: { keepAlive?: { pingMs: number; pongWaitMs: number }; olderHost?: boolean } = {}): Machine {
-  const m = { dev: d, active: [...ACTIVE], out: false, sharing: false, grants: {}, views: [], frames: [], ptyInput: [], sockets: [], requests: [], sessions: [], resizes: [], status: {}, statusAsked: [] } as unknown as Machine
+/** The real `sharedChats` over a machine's fake index, as `chatIndexForGuests` (index.ts) wires the real one. */
+function chatAccess(m: Machine): ChatIndexAccess {
+  return {
+    indexOn: () => m.indexOn,
+    storedRedacted: () => m.storedRedacted,
+    hidden: (cwd) => m.hidden.some((h) => cwd === h || cwd.startsWith(`${h}/`)),
+    search: async (q, limit) =>
+      m.chats
+        .filter((c) => c.text.toLowerCase().includes(q.toLowerCase()))
+        .slice(0, limit)
+        .map((c): ChatSearchHit => {
+          const at = c.text.toLowerCase().indexOf(q.toLowerCase())
+          return {
+            chatId: c.chatId,
+            source: c.source as ChatSearchHit['source'],
+            nativeId: c.nativeId,
+            title: c.title,
+            firstPrompt: null,
+            cwd: c.cwd,
+            updatedMs: 1_700_000_000_000,
+            subagent: false,
+            role: 'user',
+            snippet: { text: c.text, ranges: [[at, at + q.length]] }
+          }
+        }),
+    find: async (source, nativeId) => m.chats.find((c) => c.source === source && c.nativeId === nativeId)?.chatId ?? null,
+    open: async (chatId) => {
+      const c = m.chats.find((x) => x.chatId === chatId)
+      return c
+        ? { chatId, source: c.source as ChatTranscript['source'], title: c.title, cwd: c.cwd, createdMs: 1, updatedMs: 2, messages: [{ role: 'user', text: c.text, atMs: 1 }, { role: 'assistant', text: `re: ${c.text}`, atMs: 2 }], from: 'source', fallback: null, partial: false }
+        : null
+    },
+    redact: redactSecrets
+  }
+}
+
+function machine(d: Dev, opts: { keepAlive?: { pingMs: number; pongWaitMs: number }; olderHost?: boolean; chatsTiming?: { idleMs?: number; waitMs?: number; retryMs?: number; requestMs?: number } } = {}): Machine {
+  const m = { dev: d, active: [...ACTIVE], out: false, sharing: false, grants: {}, views: [], frames: [], ptyInput: [], sockets: [], requests: [], sessions: [], resizes: [], status: {}, statusAsked: [], shareChats: false, chatGrants: {}, indexOn: true, chats: [], hidden: [], storedRedacted: true } as unknown as Machine
+  const chatShare = sharedChats(chatAccess(m))
   const ctx = (): RemoteContext | null => m.out ? null : ({
     account: ACCOUNT,
     epoch: 1,
@@ -561,6 +629,7 @@ function machine(d: Dev, opts: { keepAlive?: { pingMs: number; pongWaitMs: numbe
   })
   m.remote = new HubRemote({
     keepAlive: opts.keepAlive,
+    chatsTiming: opts.chatsTiming,
     now: () => clock,
     context: ctx,
     presenceKey: async (epoch) => presenceKey(vkShared, ACCOUNT, epoch),
@@ -602,10 +671,26 @@ function machine(d: Dev, opts: { keepAlive?: { pingMs: number; pongWaitMs: numbe
         m.grants = next
       }
     },
+    shareChats: () => m.shareChats,
+    chatGrants: () => m.chatGrants,
+    setChatGrant: async (device, on) => {
+      // As HubService.setChatGrant: never given while the chats tick is off.
+      if (on && !m.shareChats) return
+      const next = { ...m.chatGrants }
+      if (on) next[device] = 'always'
+      else delete next[device]
+      m.chatGrants = next
+    },
+    chatIndexOn: () => m.indexOn,
     log: () => {},
     sessions: async () => m.sessions,
     request: async (method, path) => {
       m.requests.push(`${method} ${path}`)
+      // The relay instance's own routing (server.ts `api`): chats only through `chatsRouteFor('relay', …)`.
+      const url = new URL(path, 'http://localhost')
+      const route = chatsRouteFor('relay', method, url.pathname)
+      if (route === 'search' || route === 'open') return answerChatsRoute(chatShare, route, url.searchParams)
+      if (route === 'none') return { status: 404, body: { error: 'No such endpoint or method.' } }
       return { status: 200, body: { machine: d.label } }
     },
     socket: (path, sock) => {
@@ -1310,6 +1395,302 @@ console.log('\na host from before last active wins is never resized: its own tab
   guestM.remote.close(tab)
   hostM.remote.reset()
   guestM.remote.reset()
+}
+
+/* ============================================================ chat history (spec 2026-10-03 §3) */
+
+console.log('\nchat history: the host’s rules, the scope, and what may leave')
+{
+  const base = { sharing: true, indexOn: true, grant: null as 'always' | null, once: [] as ReturnType<typeof holdOnce>, device: B.id, hostName: 'Studio', now: 1000 }
+  check('not sharing: refused as not-sharing, whatever was granted', chatsAttachDecision({ ...base, sharing: false, grant: 'always' }), { t: 'refuse', code: 'not-sharing', reason: 'Studio isn’t sharing its chat history.' })
+  check('chat history off: refused as not-sharing, whatever was granted', [chatsAttachDecision({ ...base, indexOn: false, grant: 'always' }).t, (chatsAttachDecision({ ...base, indexOn: false }) as { code?: string }).code], ['refuse', 'not-sharing'])
+  check('a chats Always: served', chatsAttachDecision({ ...base, grant: 'always' }), { t: 'allow', via: 'always' })
+  check('nothing yet: ask', chatsAttachDecision(base).t, 'ask')
+  check('a chats Allow once held for this device: served', chatsAttachDecision({ ...base, once: holdOnce([], B.id, CHATS_ONCE_KEY) }), { t: 'allow', via: 'once' })
+  check('a SESSION’s Allow once is not one (it is another list, keyed by pty)', chatsAttachDecision({ ...base, once: holdOnce([], B.id, 'pty-a1') }).t, 'ask')
+  check('a malformed device: refused', chatsAttachDecision({ ...base, device: 'nope' }).t, 'refuse')
+  check('effective only with the tick, chat history and the vault', [
+    chatsSharingEffective({ share: true, indexOn: true, inVault: true }),
+    chatsSharingEffective({ share: false, indexOn: true, inVault: true }),
+    chatsSharingEffective({ share: true, indexOn: false, inVault: true }),
+    chatsSharingEffective({ share: true, indexOn: true, inVault: false })
+  ], [true, false, false, false])
+
+  const chats = { kind: 'chats' } as const
+  const cv = (f: RelayInnerFrame): string => (relayScopeVerdict(chats, f).ok ? 'ok' : 'no')
+  const get = (path: string): RelayInnerFrame => ({ t: 'req', id: 1, method: 'GET', path })
+  check('a chats scope reaches the search and the open', [cv(get('/api/chats/search?q=relay&limit=50')), cv(get('/api/chats/search?q=relay')), cv(get('/api/chats/open?source=claude&id=abc-123'))], ['ok', 'ok', 'ok'])
+  check('and nothing else: not the host’s name or theme, sessions, transcripts (unredacted), history, folders, projects', ['/api/host', '/api/theme', '/api/sessions', '/api/transcript?id=00000000-0000-0000-0000-000000000000', '/api/history?cwd=/', '/api/folders', '/api/projects'].map((p) => cv(get(p))), ['no', 'no', 'no', 'no', 'no', 'no', 'no'])
+  check('no write, and no socket: no pty, no events', [cv({ t: 'req', id: 1, method: 'POST', path: '/api/chats/search?q=relay' }), cv({ t: 'req', id: 1, method: 'POST', path: '/api/sessions' }), cv({ t: 'ws-open', id: 1, path: '/ws?ptyId=pty-a1' }), cv({ t: 'ws-open', id: 1, path: '/ws/events' }), cv({ t: 'ws-msg', id: 1, data: '{"type":"input","data":"x"}' })], ['no', 'no', 'no', 'no', 'no'])
+  check('a query outside the shape is refused: too long, limit past 50 or 0, a stray or repeated key, no q', [
+    cv(get(`/api/chats/search?q=${'x'.repeat(201)}`)),
+    cv(get('/api/chats/search?q=relay&limit=51')),
+    cv(get('/api/chats/search?q=relay&limit=0')),
+    cv(get('/api/chats/search?q=relay&cwd=/')),
+    cv(get('/api/chats/search?q=a&q=b')),
+    cv(get('/api/chats/search?limit=5'))
+  ], ['no', 'no', 'no', 'no', 'no', 'no'])
+  check('an open needs exactly a source and an id, the source a name and never a path', [cv(get('/api/chats/open?source=claude')), cv(get('/api/chats/open?source=../x&id=1')), cv(get('/api/chats/open?source=claude&id=1&x=2')), cv(get('/api/chats/open?source=claude&id=a%0Ab'))], ['no', 'no', 'no', 'no'])
+  const one = { kind: 'session', ptyId: 'pty-a1' } as const
+  check('a SESSION scope reaches neither chats route, under any grant', [relayScopeVerdict(one, get('/api/chats/search?q=relay')).ok, relayScopeVerdict(one, get('/api/chats/open?source=claude&id=x')).ok], [false, false])
+  check('the grant’s mode lets a GET of either through: the scope is what holds', [relayFrameVerdict('view', get('/api/chats/search?q=relay')).ok, relayFrameVerdict('view', get('/api/chats/open?source=claude&id=x')).ok], [true, true])
+
+  check('a chats attach parses; one carrying a pty, or another kind, does not', [parseRelayInner('{"t":"attach","kind":"chats"}'), parseRelayInner('{"t":"attach","kind":"chats","ptyId":"pty-a1"}'), parseRelayInner('{"t":"attach","kind":"files"}'), parseRelayInner('{"t":"attach","ptyId":"pty-a1"}')], [{ t: 'attach', kind: 'chats' }, null, null, { t: 'attach', ptyId: 'pty-a1' }])
+  check('a refusal keeps a known code and drops an unknown one', [parseRelayInner('{"t":"refused","reason":"no","code":"denied"}'), parseRelayInner('{"t":"refused","reason":"no","code":"root"}')], [{ t: 'refused', reason: 'no', code: 'denied' }, { t: 'refused', reason: 'no' }])
+
+  check('the status says chats only as the literal true; an older status reads as not sharing', [
+    remoteStatusFrom({ at: 1, name: 'A', platform: 'darwin', open: false, rows: [], chats: true }).chats,
+    parseRemoteStatus(JSON.stringify({ v: 1, at: 1, name: 'A', platform: 'darwin', open: false, sessions: [] }))?.chats,
+    parseRemoteStatus(JSON.stringify({ v: 1, at: 1, name: 'A', platform: 'darwin', open: false, sessions: [], chats: 'yes' }))?.chats
+  ], [true, false, false])
+
+  check('a folder leaves by its last segment only, on either separator; a root names none', [folderName('/Users/v/dev/stoke'), folderName('C:\\Users\\v\\work\\proj\\'), folderName('/'), folderName('C:\\'), folderName(null)], ['stoke', 'proj', null, null, null])
+  const hit = remoteChatHitFrom({ source: 'claude', nativeId: 'abc-1', title: null, firstPrompt: 'Fix the relay', cwd: '/Users/v/secret-client/stoke', updatedMs: 5, role: 'assistant', snippet: { text: 'the relay\u0007 frame', ranges: [[4, 9], [2, 3], [8, 99]] } })
+  check('a hit as it leaves: folder name, the first prompt standing in for a title, controls out, bad ranges dropped', hit, { source: 'claude', nativeId: 'abc-1', title: 'Fix the relay', folder: 'stoke', updatedMs: 5, role: 'assistant', snippet: 'the relay frame', ranges: [[4, 9]] })
+  ok('and nothing of its path', !JSON.stringify(hit).includes('/Users') && !JSON.stringify(hit).includes('secret-client'))
+  const parsed = parseRemoteChatHits({ hits: [hit, { ...hit, source: '../etc' }, { ...hit, nativeId: 'a\nb' }, { ...hit, role: 'system' }, ...Array.from({ length: 60 }, () => hit)] })
+  check('another machine’s hits are checked: a bad source, id or role dropped, and only the first 50 looked at', [parsed?.length, parseRemoteChatHits({ hits: 'x' }), parseRemoteChatHits(null)], [47, null, null])
+  check('a folder another machine sends as a path is cut to its name here too', parseRemoteChatHits({ hits: [{ ...hit, folder: '/home/them/very/private' }] })?.[0].folder, 'private')
+  const big = 'x'.repeat(1024 * 1024)
+  const chat = remoteChatFrom({ source: 'claude', title: 'T', cwd: '/Users/v/proj', createdMs: 1, updatedMs: 2, messages: Array.from({ length: 6 }, (_, i) => ({ role: i % 2 ? 'assistant' : 'user', text: `${i}${big}`, atMs: i })), partial: false, fallback: null }, 'abc-1')
+  const bytes = chat.messages.reduce((n, m) => n + m.text.length, 0)
+  check('a chat past 4 MiB keeps its opening and its newest, says it is partial, and fits', [chat.partial, bytes <= REMOTE_CHAT_MAX_BYTES, chat.messages[0].text[0], chat.messages[chat.messages.length - 1].text[0], chat.folder], [true, true, '0', '5', 'proj'])
+  check('and comes back the same through the guest’s parse', parseRemoteChat(JSON.parse(JSON.stringify(chat)))?.messages.length, chat.messages.length)
+}
+
+console.log('\nchat history: what the relay instance reads is redacted, named by folder, and kept from hidden folders')
+{
+  const KEY = 'sk-ant-api03-chatcanary0123456789abcdef'
+  const m = { indexOn: true, storedRedacted: true, hidden: ['/Users/v/hidden'], chats: [
+    { chatId: 1, source: 'claude', nativeId: 'c-1', title: `About ${KEY}`, cwd: '/Users/v/dev/stoke', text: `use the key ${KEY} for the relay` },
+    { chatId: 2, source: 'codex', nativeId: 'c-2', title: 'Hidden one', cwd: '/Users/v/hidden/proj', text: 'the relay in a hidden folder' }
+  ] } as unknown as Machine
+  const share = sharedChats(chatAccess(m))
+  const found = await answerChatsRoute(share, 'search', new URLSearchParams({ q: 'relay', limit: '50' }))
+  const body = found.body as { hits: RemoteChatsResult['hits'] }
+  check('a search answers its hits, the hidden folder’s left out', [found.status, body.hits.map((h) => h.nativeId)], [200, ['c-1']])
+  ok('the key in the snippet and the title never leaves; folders by name', !JSON.stringify(body).includes('chatcanary') && body.hits[0].snippet.includes('[redacted]') && body.hits[0].title === 'About [redacted]' && body.hits[0].folder === 'stoke', JSON.stringify(body))
+  const h0 = body.hits[0]
+  check('the highlight is marked afresh on the redacted text', h0.ranges.map(([a, b]) => h0.snippet.slice(a, b)), ['relay'])
+  const opened = await answerChatsRoute(share, 'open', new URLSearchParams({ source: 'claude', id: 'c-1' }))
+  ok('an open answers the chat, every message redacted, the folder by name, no path', opened.status === 200 && !JSON.stringify(opened.body).includes('chatcanary') && !JSON.stringify(opened.body).includes('/Users') && (opened.body as { folder: string }).folder === 'stoke', JSON.stringify(opened.body).slice(0, 300))
+  check('a hidden folder’s chat answers exactly as a missing one: 404, no existence probe', [(await answerChatsRoute(share, 'open', new URLSearchParams({ source: 'codex', id: 'c-2' }))).status, (await answerChatsRoute(share, 'open', new URLSearchParams({ source: 'claude', id: 'nope' }))).status], [404, 404])
+  check('bad queries are 400 at the handler too', [(await answerChatsRoute(share, 'search', new URLSearchParams({ q: 'x'.repeat(201) }))).status, (await answerChatsRoute(share, 'search', new URLSearchParams({ q: 'relay', limit: '0' }))).status, (await answerChatsRoute(share, 'open', new URLSearchParams({ source: 'claude' }))).status], [400, 400, 400])
+  m.indexOn = false
+  check('chat history off: nothing is read, 503', [(await answerChatsRoute(share, 'search', new URLSearchParams({ q: 'relay' }))).status, (await answerChatsRoute(share, 'open', new URLSearchParams({ source: 'claude', id: 'c-1' }))).status], [503, 503])
+  m.indexOn = true
+  m.storedRedacted = false
+  check('a store kept with keys in (its own setting off) is not searched from another computer: a prefix search would be an oracle', (await answerChatsRoute(share, 'search', new URLSearchParams({ q: 'chatcan' }))).status, 503)
+  check('the phone’s instance serves no chats route; only the relay’s does', [chatsRouteFor('phone', 'GET', '/api/chats/search'), chatsRouteFor('relay', 'GET', '/api/chats/search'), chatsRouteFor('relay', 'POST', '/api/chats/search')], ['none', 'search', 'none'])
+}
+
+console.log('\nchat history between two machines: ask, allow, search, open; every request re-checked')
+{
+  const T = { idleMs: 60_000, waitMs: 400, retryMs: 50 }
+  const hostM = machine(A, { chatsTiming: T })
+  const guestM = machine(B, { chatsTiming: T })
+  const SECRET = 'sk-ant-api03-searchcanary0123456789abcd'
+  hostM.chats = [
+    { chatId: 7, source: 'claude', nativeId: 'n-7', title: 'Relay notes', cwd: '/Users/owner/clients/acme/stoke', text: `the relay key is ${SECRET}` },
+    { chatId: 8, source: 'codex', nativeId: 'n-8', title: 'Other', cwd: '/Users/owner/dev/other', text: 'nothing about it' }
+  ]
+  for (const mm of [hostM, guestM]) {
+    mm.remote.onOnline([A.id, B.id])
+    mm.remote.presenceOpened()
+  }
+  await until(() => last(guestM).machines[0]?.status)
+  const relaysAt = (): number => relays.size
+  const byDevice = (rs: RemoteChatsResult[], id: string): RemoteChatsResult | undefined => rs.find((r) => r.device === id)
+
+  // Not sharing: said from presence, and no relay is opened for it.
+  let before = relaysAt()
+  let res = await guestM.remote.searchChats('relay')
+  check('A not sharing: B’s search says so for A, and opens nothing', [byDevice(res, A.id)?.state, relaysAt() - before], ['not-sharing', 0])
+  check('a query under three characters asks nobody', await guestM.remote.searchChats('re'), [])
+
+  // A ticks it: its status says chats.
+  hostM.shareChats = true
+  hostM.remote.chatSharingChanged()
+  await until(() => last(guestM).machines[0]?.status?.chats)
+  check('A shares its chat history: its status says so (and its sessions still do not show)', [last(guestM).machines[0]?.status?.chats, last(guestM).machines[0]?.status?.open], [true, false])
+  ok('what went over presence was sealed: no chats flag in the clear', presence.filter((p) => p.from === A.id && p.frame.t === 'status').every((p) => !JSON.stringify(p.frame).includes('"chats"')))
+
+  // No grant: A asks, B waits, nothing is served before the answer.
+  before = hostM.requests.length
+  res = await guestM.remote.searchChats('relay')
+  check('no grant: B’s search says waiting for A', byDevice(res, A.id)?.state, 'waiting')
+  const ask = await until(() => last(hostM).asks[0])
+  check('A asks its own question: chats, naming the device, a fingerprint, no session', [ask?.kind, ask?.label, ask?.title, ask?.ptyId, ask?.fingerprint.split(' ').length], ['chats', 'Laptop', 'chat history', '', 4])
+  check('nothing reached A’s handlers before the answer', hostM.requests.length - before, 0)
+  await hostM.remote.answer(ask!.id, 'once')
+  await until(() => last(guestM).chatPeers[0]?.state === 'open')
+  check('Allow once: B’s chats peer opens (its cue to search again)', last(guestM).chatPeers.map((p) => [p.label, p.state]), [['Studio', 'open']])
+  check('Allow once stored nothing, in either grant list', [hostM.chatGrants, hostM.grants], [{}, {}])
+  res = await guestM.remote.searchChats('relay')
+  const a = byDevice(res, A.id)
+  check('B’s search answers A’s hit: folder by name, title, the match marked', [a?.state, a?.hits.map((h) => [h.nativeId, h.folder, h.title]), a?.hits[0] && a.hits[0].ranges.map(([x, y]) => a.hits[0].snippet.slice(x, y))], ['ok', [['n-7', 'stoke', 'Relay notes']], ['relay']])
+  ok('the key in A’s chat never reached B, nor any path', !JSON.stringify(res).includes('searchcanary') && !JSON.stringify(res).includes('/Users') && !JSON.stringify(res).includes('acme'), JSON.stringify(res).slice(0, 400))
+  ok('and the hub carried none of A’s chat text', !hubBytes.some((b) => b.includes(Buffer.from('Relay notes')) || b.includes(Buffer.from('searchcanary'))))
+  check('A shows B searching its chat history, not attached to a session', last(hostM).guests.map((g) => [g.kind, g.label, g.ptyId, g.via]), [['chats', 'Laptop', null, 'once']])
+  const opened = await guestM.remote.openRemoteChat(A.id, 'claude', 'n-7')
+  ok('B opens the chat: read-only text, redacted, folder by name, no path', opened.ok && opened.chat.messages.length === 2 && opened.chat.folder === 'stoke' && !JSON.stringify(opened).includes('searchcanary') && !JSON.stringify(opened).includes('/Users'), JSON.stringify(opened).slice(0, 300))
+  check('a chat A does not have: an error, not a crash', [(await guestM.remote.openRemoteChat(A.id, 'claude', 'missing')).ok, (await guestM.remote.openRemoteChat(A.id, '../x', 'n-7')).ok], [false, false])
+  check('both went through the relay instance’s two routes only', hostM.requests.filter((r) => !r.startsWith('GET /api/chats/')).length, 0)
+
+  // Every request is re-checked on the host: chat history switched off with no word to HubRemote.
+  hostM.indexOn = false
+  res = await guestM.remote.searchChats('relay')
+  check('chat history off on A, unannounced: the next request is refused, not served', [byDevice(res, A.id)?.state, last(hostM).guests.length], ['not-sharing', 0])
+  hostM.indexOn = true
+  await tick(T.retryMs + 10)
+  res = await guestM.remote.searchChats('relay')
+  check('back on inside the grace, the Allow once still holds: served without a new question', [byDevice(res, A.id)?.state, last(hostM).asks.length], ['ok', 0])
+  guestM.remote.endChatSearch()
+  await until(() => last(hostM).guests.length === 0)
+  clock += ONCE_GRACE_MS + 1
+
+  // Always: kept on A only; then removed behind HubRemote's back, and the next request is refused.
+  res = await guestM.remote.searchChats('relay')
+  const askAlways = await until(() => last(hostM).asks[0])
+  ok('past the grace the Allow once has lapsed: the next search asks again', !!askAlways)
+  if (askAlways) await hostM.remote.answer(askAlways.id, 'always')
+  await until(() => last(guestM).chatPeers[0]?.state === 'open')
+  check('Always: kept in A’s chatGrants only — never A’s session grants, never on B', [hostM.chatGrants, hostM.grants, guestM.chatGrants, guestM.grants], [{ [B.id]: 'always' }, {}, {}, {}])
+  check('Settings lists it with the device’s name and fingerprint', last(hostM).chatGrants.map((g) => [g.device, g.label, g.fingerprint.split(' ').length]), [[B.id, 'Laptop', 4]])
+  hostM.chatGrants = {}
+  res = await guestM.remote.searchChats('relay')
+  check('the grant gone from A’s settings: the next request is refused as denied', byDevice(res, A.id)?.state, 'denied')
+  await tick(T.retryMs + 10)
+  check('and a denial stands for the rest of the search, past the retry wait: no new question for A', [byDevice(await guestM.remote.searchChats('relay'), A.id)?.state, last(hostM).asks.length], ['denied', 0])
+  guestM.remote.endChatSearch()
+  check('the search box closed: B holds no chats relay', last(guestM).chatPeers.length, 0)
+
+  // A session grant never opens chats, and a chats grant never a session.
+  hostM.grants = { [B.id]: { mode: 'full', label: 'Laptop', at: 1 } }
+  hostM.sharing = true
+  hostM.sessions = [stubRow()]
+  hostM.remote.sharingChanged()
+  await guestM.remote.searchChats('relay')
+  const askWithSessionGrant = await until(() => last(hostM).asks[0])
+  check('B holding a SESSION Always: a chats relay is still asked about', askWithSessionGrant?.kind, 'chats')
+  await hostM.remote.answer(askWithSessionGrant!.id, 'deny')
+  guestM.remote.endChatSearch()
+  hostM.grants = {}
+  hostM.chatGrants = { [B.id]: 'always' }
+  const sessionTab = guestM.remote.open(A.id, 'pty-a1')
+  const askSession = await until(() => last(hostM).asks[0])
+  check('B holding a CHATS Always: opening a session is still asked about', [askSession?.kind, askSession?.ptyId], ['session', 'pty-a1'])
+  await hostM.remote.answer(askSession!.id, 'deny')
+  if (sessionTab.ok) guestM.remote.close(sessionTab.tab)
+
+  // A rogue guest under a chats grant reaching past its two routes; and a session relay reaching for chats.
+  const rogue = await rogueChannel(hostM, B)
+  rogue.ch.send({ t: 'attach', kind: 'chats' })
+  await until(() => rogue.got.some((f) => f.t === 'ready'))
+  check('under a chats Always the host serves at once, read-only', (rogue.got.find((f) => f.t === 'ready') as { mode?: string } | undefined)?.mode, 'view')
+  const requestsBefore = hostM.requests.length
+  const socketsBefore = hostM.sockets.length
+  rogue.ch.send({ t: 'ws-open', id: 1, path: '/ws?ptyId=pty-a1' })
+  rogue.ch.send({ t: 'req', id: 2, method: 'GET', path: '/api/host' })
+  rogue.ch.send({ t: 'req', id: 3, method: 'GET', path: '/api/sessions' })
+  rogue.ch.send({ t: 'req', id: 4, method: 'GET', path: '/api/transcript?id=00000000-0000-0000-0000-000000000000' })
+  rogue.ch.send({ t: 'req', id: 5, method: 'POST', path: '/api/sessions', body: { cwd: '/tmp' } })
+  rogue.ch.send({ t: 'req', id: 6, method: 'GET', path: '/api/chats/search?q=relay&cwd=/' })
+  rogue.ch.send({ t: 'req', id: 7, method: 'GET', path: '/api/chats/search?q=relay' })
+  await until(() => rogue.got.some((f) => f.t === 'res' && f.id === 7))
+  const st = (id: number): number | undefined => (rogue.got.find((f) => f.t === 'res' && f.id === id) as { status?: number } | undefined)?.status
+  check('a chats relay gets no pty socket and 403 for the host, sessions, transcripts, a new session and a bent query', [!!rogue.got.find((f) => f.t === 'ws-close' && f.id === 1), [2, 3, 4, 5, 6].map(st), st(7)], [true, [403, 403, 403, 403, 403], 200])
+  check('and only its one search reached the handlers', [hostM.requests.slice(requestsBefore), hostM.sockets.length - socketsBefore], [['GET /api/chats/search?q=relay'], 0])
+  rogue.ch.close('done')
+  hostM.chatGrants = {}
+  hostM.grants = { [B.id]: { mode: 'full', label: 'Laptop', at: 1 } }
+  const sessionRogue = await rogueChannel(hostM, B)
+  sessionRogue.ch.send({ t: 'attach', ptyId: 'pty-a1' })
+  await until(() => sessionRogue.got.some((f) => f.t === 'ready'))
+  const before2 = hostM.requests.length
+  sessionRogue.ch.send({ t: 'req', id: 9, method: 'GET', path: '/api/chats/search?q=relay' })
+  sessionRogue.ch.send({ t: 'req', id: 10, method: 'GET', path: '/api/chats/open?source=claude&id=n-7' })
+  sessionRogue.ch.send({ t: 'req', id: 11, method: 'GET', path: '/api/host' })
+  await until(() => sessionRogue.got.some((f) => f.t === 'res' && f.id === 11))
+  const st2 = (id: number): number | undefined => (sessionRogue.got.find((f) => f.t === 'res' && f.id === id) as { status?: number } | undefined)?.status
+  check('a SESSION relay under a session Always gets 403 for both chats routes', [st2(9), st2(10), hostM.requests.slice(before2)], [403, 403, ['GET /api/host']])
+  sessionRogue.ch.close('done')
+  hostM.grants = {}
+
+  // The switch off closes every chats relay, at once, without the guest searching again.
+  hostM.chatGrants = { [B.id]: 'always' }
+  await guestM.remote.searchChats('relay')
+  await until(() => last(guestM).chatPeers[0]?.state === 'open' && last(hostM).guests.some((g) => g.kind === 'chats'))
+  ok('(B is searching A under Always)', last(hostM).guests.some((g) => g.kind === 'chats'))
+  // The SESSIONS tick and a session Always are another scope: neither ends a chats search.
+  hostM.grants = { [B.id]: { mode: 'full', label: 'Laptop', at: 1 } }
+  await hostM.remote.revokeGrant(B.id)
+  hostM.sharing = false
+  hostM.remote.sharingChanged()
+  await tick(30)
+  check('the sessions tick off, and a session Always taken back, leave B’s chats search open', [last(guestM).chatPeers[0]?.state, last(hostM).guests.filter((g) => g.kind === 'chats').length, byDevice(await guestM.remote.searchChats('relay'), A.id)?.state], ['open', 1, 'ok'])
+  hostM.shareChats = false
+  hostM.chatGrants = {} // as HubService.setShareChats(false) commits it
+  hostM.remote.chatSharingChanged()
+  await until(() => last(guestM).chatPeers[0]?.state === 'not-sharing')
+  check('A turns it off: B’s relay is closed by A, not at B’s next keystroke', [last(guestM).chatPeers[0]?.state, last(hostM).guests.filter((g) => g.kind === 'chats').length], ['not-sharing', 0])
+  await until(() => last(guestM).machines[0]?.status?.chats === false)
+  before = relaysAt()
+  await tick(T.retryMs + 10)
+  res = await guestM.remote.searchChats('relay')
+  check('and A’s status says so: B’s next search opens nothing', [byDevice(res, A.id)?.state, relaysAt() - before], ['not-sharing', 0])
+
+  // A question waiting when the switch goes off goes with it.
+  hostM.shareChats = true
+  hostM.remote.chatSharingChanged()
+  await until(() => last(guestM).machines[0]?.status?.chats === true)
+  await tick(T.retryMs + 10)
+  void guestM.remote.searchChats('relay')
+  await until(() => last(hostM).asks[0])
+  hostM.shareChats = false
+  hostM.remote.chatSharingChanged()
+  check('the tick off with a question up: the question goes too', last(hostM).asks.length, 0)
+
+  // A device the chain no longer holds: refused at its next request even before the hook, and its grant taken back by it.
+  hostM.shareChats = true
+  hostM.chatGrants = { [B.id]: 'always' }
+  hostM.remote.chatSharingChanged()
+  await until(() => last(guestM).machines[0]?.status?.chats === true)
+  await tick(T.retryMs + 10)
+  await guestM.remote.searchChats('relay')
+  await until(() => last(guestM).chatPeers[0]?.state === 'open')
+  hostM.active = [A]
+  before = hostM.requests.length
+  res = await guestM.remote.searchChats('relay')
+  check('B removed from A’s chain, before any hook ran: its next search is refused and reads nothing', [byDevice(res, A.id)?.state !== 'ok', hostM.requests.length - before], [true, 0])
+  hostM.remote.chainChanged()
+  await until(() => Object.keys(hostM.chatGrants).length === 0)
+  check('the chain moved: B’s chats Always is taken back', hostM.chatGrants, {})
+  hostM.active = [...ACTIVE]
+
+  // Offline: said from presence, never reached.
+  guestM.remote.onOnline([B.id])
+  before = relaysAt()
+  res = await guestM.remote.searchChats('relay')
+  check('A offline: B says so for A, opens nothing, and keeps nothing', [byDevice(res, A.id)?.state, byDevice(res, A.id)?.message, relaysAt() - before, byDevice(res, A.id)?.hits], ['offline', 'Studio is offline — not searched.', 0, []])
+  guestM.remote.onOnline([A.id, B.id])
+
+  // Idle: the relays close by themselves.
+  const idleHost = machine(A, { chatsTiming: T })
+  const idleGuest = machine(B, { chatsTiming: { ...T, idleMs: 150 } })
+  idleHost.chats = hostM.chats
+  idleHost.shareChats = true
+  idleHost.chatGrants = { [B.id]: 'always' }
+  for (const mm of [idleHost, idleGuest]) {
+    mm.remote.onOnline([A.id, B.id])
+    mm.remote.presenceOpened()
+  }
+  await until(() => last(idleGuest).machines[0]?.status?.chats)
+  check('(a fresh pair: B searches A under Always)', byDevice(await idleGuest.remote.searchChats('relay'), A.id)?.state, 'ok')
+  await until(() => last(idleGuest).chatPeers.length === 0 && last(idleHost).guests.length === 0, 2000)
+  check('left idle, B closes its chats relay and A stops showing it', [last(idleGuest).chatPeers.length, last(idleHost).guests.length], [0, 0])
+
+  for (const mm of [hostM, guestM, idleHost, idleGuest]) mm.remote.reset()
 }
 
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)

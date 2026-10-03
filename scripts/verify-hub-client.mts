@@ -1276,13 +1276,40 @@ try {
   check(`the hub’s database (${files.join(', ')}) holds none of the API keys, the MCP variable, the SSH key, any Kit or the password`, leaked, [])
   ok('nor any item path (the hub sees opaque ids)', !bytes.includes(Buffer.from('providers.anthropicApiKey')) && !bytes.includes(Buffer.from('t4/ssh-key')))
 
+  /* ------------------------------------------ the chats tick (spec 2026-10-03 §2, §3) */
+  // Only the computer being searched turns it on, with the hub password confirmed THERE
+  // (`noteChatConsent`, which `verifyPassword` calls once integrated); off is instant.
+  {
+    const aId = A.svc.view().device.id
+    const dId = D.svc.view().device.id
+    A.set({ chatIndex: 'on' } as Partial<Settings>)
+    const noConsent = await A.svc.setShareChats(true, [dId])
+    check('the chats tick does not go on without the password confirmed on this computer', [noConsent.ok, !noConsent.ok && /password/.test(noConsent.message), A.settings().hub.shareChats], [false, true, false])
+    A.set({ chatIndex: 'off' } as Partial<Settings>)
+    A.svc.noteChatConsent()
+    const indexOff = await A.svc.setShareChats(true, [dId])
+    check('nor while chat history is off', [indexOff.ok, !indexOff.ok && /Chat history/.test(indexOff.message), A.settings().hub.shareChats], [false, true, false])
+    A.set({ chatIndex: 'on' } as Partial<Settings>)
+    const on = await A.svc.setShareChats(true, [dId, aId, 'd0000000000000000', 7])
+    check('confirmed, with chat history on: on, and only ticked OTHER devices of the chain get Always', [on.ok, A.settings().hub.shareChats, A.settings().hub.chatGrants], [true, true, { [dId]: 'always' }])
+    check('the confirmation is spent: another turn-on asks for the password again', (await A.svc.setShareChats(true, [dId])).ok, false)
+    check('off is instant, needs nothing, and takes every chats grant with it', [(await A.svc.setShareChats(false)).ok, A.settings().hub.shareChats, A.settings().hub.chatGrants], [true, false, {}])
+    A.svc.noteChatConsent()
+    await A.svc.setShareChats(true, [dId])
+    check('Remove takes one device’s chats Always', [(await A.svc.revokeChatGrant(dId)).ok, A.settings().hub.chatGrants, A.settings().hub.shareChats], [true, {}, true])
+    await A.svc.setShareChats(false)
+    A.set({ chatIndex: 'off' } as Partial<Settings>)
+  }
+
   /* ------------------------------------------ sign out */
   // This machine's "Always" answers and its sharing tick are hub state too (review, 2026-10-02): kept,
   // they came back on at the next sign-in, to any account, for whichever device holds those ids there.
-  C.set({ hub: { ...C.settings().hub, shareSessions: true, grants: { [A.svc.view().device.id]: { mode: 'full', label: 'Mac', at: 1 } } } } as Partial<Settings>)
+  // The chats tick and its grants likewise (spec 2026-10-03).
+  C.set({ hub: { ...C.settings().hub, shareSessions: true, grants: { [A.svc.view().device.id]: { mode: 'full', label: 'Mac', at: 1 } }, shareChats: true, chatGrants: { [A.svc.view().device.id]: 'always' } } } as Partial<Settings>)
   check('C signs out', (await C.svc.signOut()).ok, true)
   check('and its hub files are gone; what it synced stays', [existsSync(join(C.userData, 'hub-device.json')), existsSync(join(C.userData, 'hub-state.json')), C.settings().providers.anthropicApiKey, C.svc.view().phase], [false, false, CANARY_KEY, 'signed-out'])
   check('and so are its Always grants and its "share my sessions" tick', [C.settings().hub.grants, C.settings().hub.shareSessions], [{}, false])
+  check('and its chats tick and chats grants', [C.settings().hub.shareChats, C.settings().hub.chatGrants], [false, {}])
   for (const d of [A, B, C, ...extras]) d.svc.stop()
 } finally {
   await hub.close()

@@ -104,7 +104,7 @@ import {
   type VaultWrap
 } from '../../shared/hub/protocol.ts'
 import { keyFingerprint, RELAY_MAX_FRAME_BYTES, type HubGrant } from '../../shared/hub/relay.ts'
-import { emptyRemoteView, isAttachAnswer, type HubRemoteView } from '../../shared/hub/remote.ts'
+import { emptyRemoteView, isAttachAnswer, type HubRemoteView, type RemoteChatOpen, type RemoteChatsResult } from '../../shared/hub/remote.ts'
 import { applySyncedSettings, heldChangesFor, runsCode, sshKeyPayloadProblem, type SshKeyPayload, type SyncableHost } from '../../shared/hub/settings.ts'
 import type { SecretBackend } from '../secrets.ts'
 import type { ExecRun } from '../sshEnroll.ts'
@@ -261,6 +261,11 @@ const REVOKED_SENTENCE =
 const UNANCHORED_SENTENCE =
   'The hub’s device list says this computer is in the vault, but this computer never joined it: no pairing code was confirmed here and no Recovery Kit was used here. A hub that built a vault of its own would look like this, so nothing was taken or synced. If you approved this computer from another one and Stoke restarted before you confirmed the code here, remove it there, then sign out here and join again.'
 const LOGOUT_TIMEOUT_MS = 5000
+/**
+ * How long a confirmed password lets the chats tick go on: long enough to
+ * tick the devices on the sheet that follows, never a standing licence.
+ */
+const CHAT_CONSENT_MS = 5 * 60_000
 /** What each held group is, on its card (`heldChangesFor` names the groups; a host is its own). */
 const HELD_GROUP_LABELS: Record<string, string> = {
   agents: 'MCP servers and agent endpoints (Settings › Agents)',
@@ -335,6 +340,15 @@ export class HubService {
   private autoJoined: boolean
   /** A password check is in flight (`verifyPassword`), claimed before its first await (gotcha 20). */
   private verifying: boolean
+  /**
+   * When the owner last typed the hub password on THIS computer and the hub
+   * said it was right (`noteChatConsent`): the one thing that lets the chats
+   * tick go on (`setShareChats`), spent by it, and good for
+   * `CHAT_CONSENT_MS`. Memory only.
+   */
+  private chatConsentAt: number | null
+  /** `settings.chatIndex` as last seen, so switching chat history off ends every chats relay at once. */
+  private chatIndexWas: Settings['chatIndex']
 
   constructor(deps: HubServiceDeps) {
     this.deps = deps
@@ -390,9 +404,14 @@ export class HubService {
           sharing: () => this.settings().hub.shareSessions,
           grants: () => this.settings().hub.grants,
           setGrant: (device, grant) => this.setGrant(device, grant),
+          shareChats: () => this.settings().hub.shareChats,
+          chatGrants: () => this.settings().hub.chatGrants,
+          setChatGrant: (device, on) => this.setChatGrant(device, on),
           log: (message, err) => this.log(message, err)
         })
       : null
+    this.chatConsentAt = null
+    this.chatIndexWas = deps.getSettings().chatIndex
   }
 
   /* ======================================================== plumbing */
@@ -945,7 +964,9 @@ export class HubService {
       this.failures = 0
       this.revokeReport = null
       this.vkCache.clear()
-      await this.commitHub({ email: '', deviceId: '', token: '', grants: {}, shareSessions: false })
+      // Every standing this computer gave its other devices goes with the account: sessions and chat history alike.
+      this.chatConsentAt = null
+      await this.commitHub({ email: '', deviceId: '', token: '', grants: {}, shareSessions: false, shareChats: false, chatGrants: {} })
       return { ok: true }
     })
   }
@@ -2070,6 +2091,12 @@ export class HubService {
   }
 
   private onSettingsChanged(): void {
+    // Chat history switched off (or on) in Settings: the chats tick's force moves with it, at once.
+    const chatIndex = this.settings().chatIndex
+    if (chatIndex !== this.chatIndexWas) {
+      this.chatIndexWas = chatIndex
+      this.remote?.chatSharingChanged()
+    }
     if (this.applying || !this.isActiveIn(this.verdict)) return
     if (this.stampTimer) clearTimeout(this.stampTimer)
     this.stampTimer = setTimeout(() => {
@@ -2805,6 +2832,92 @@ export class HubService {
   /** The "Other machines" view, for the sidebar, the remote tabs and Account & sync. */
   remoteView(): HubRemoteView {
     return this.remote?.view() ?? emptyRemoteView()
+  }
+
+  /**
+   * One device's chats "Always" on THIS machine (T0: `hub.chatGrants`, never
+   * synced). Never given while the chats tick is off: a grant outliving the
+   * tick would come back on with it, for whichever device holds that id.
+   */
+  private async setChatGrant(device: string, on: boolean): Promise<void> {
+    if (!isId('device', device)) return
+    const hub = this.settings().hub
+    if (on && !hub.shareChats) return
+    const chatGrants = { ...hub.chatGrants }
+    if (on) chatGrants[device] = 'always'
+    else delete chatGrants[device]
+    await this.commitHub({ chatGrants })
+  }
+
+  /**
+   * The hub said the password typed HERE is right: the chats tick may go on
+   * within `CHAT_CONSENT_MS`, once (spec 2026-10-03 §2: only the computer
+   * being searched consents, on its own screen).
+   * TODO(integrate): call this from `verifyPassword`'s `ok` branch (built in
+   * parallel); until then `setShareChats(true, …)` is always refused.
+   */
+  noteChatConsent(): void {
+    this.chatConsentAt = this.now()
+  }
+
+  /**
+   * "Let my other computers search this computer's chat history". Off is
+   * instant and needs no password: every chats relay closes and every chats
+   * grant goes. On needs a password confirmed here just now
+   * (`noteChatConsent`, spent by this call), chat history on, and this device
+   * in the vault; the devices ticked on the sheet (other ACTIVE devices of the
+   * verified chain only) get "Always" at once. The renderer cannot write
+   * `hub` itself (`commitSettings` keeps main's copy), so this is the only way on.
+   */
+  async setShareChats(on: boolean, devices: readonly unknown[] = []): Promise<HubResult> {
+    if (!on) {
+      this.chatConsentAt = null
+      await this.commitHub({ shareChats: false, chatGrants: {} })
+      this.remote?.chatSharingChanged()
+      this.emit()
+      return { ok: true }
+    }
+    const at = this.chatConsentAt
+    if (at === null || this.now() - at > CHAT_CONSENT_MS) {
+      this.chatConsentAt = null
+      return { ok: false, message: 'Confirm it’s you first: type your hub password on this computer.' }
+    }
+    if (this.settings().chatIndex !== 'on') return { ok: false, message: 'Turn on Chat history first.' }
+    const ctx = this.remoteContext()
+    if (!ctx) return { ok: false, message: 'Sign in to Stoke Hub first.' }
+    // Spent before the first await (gotcha 20): a second press needs the password again.
+    this.chatConsentAt = null
+    const others = new Set(ctx.active.filter((a) => a.id !== ctx.me.id).map((a) => a.id))
+    const chatGrants: Record<string, 'always'> = {}
+    for (const d of devices) if (typeof d === 'string' && others.has(d)) chatGrants[d] = 'always'
+    await this.commitHub({ shareChats: true, chatGrants })
+    this.remote?.chatSharingChanged()
+    this.emit()
+    return { ok: true }
+  }
+
+  /** Settings' Remove beside a device: its chats "Always" goes, and so does any search it has open here. */
+  async revokeChatGrant(device: string): Promise<HubResult> {
+    if (!isId('device', device)) return { ok: false, message: 'That is not a device.' }
+    if (this.remote) await this.remote.revokeChatGrant(device)
+    else await this.setChatGrant(device, false)
+    return { ok: true }
+  }
+
+  /** Search the owner's other computers' chat history (`HubRemote.searchChats`): one result per computer. */
+  searchChats(q: string): Promise<RemoteChatsResult[]> {
+    return this.remote ? this.remote.searchChats(q) : Promise.resolve([])
+  }
+
+  /** One chat from another computer, read-only (`HubRemote.openRemoteChat`). */
+  openRemoteChat(device: string, source: string, nativeId: string): Promise<RemoteChatOpen> {
+    if (!this.remote) return Promise.resolve({ ok: false, state: 'error', message: 'Other machines are not available here.' })
+    return this.remote.openRemoteChat(device, source, nativeId)
+  }
+
+  /** The search box closed: the chats relays go now. */
+  endChatSearch(): void {
+    this.remote?.endChatSearch()
   }
 
   /** "Let my other devices see and open my sessions" on this computer. */

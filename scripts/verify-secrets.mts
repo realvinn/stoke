@@ -509,6 +509,11 @@ console.log('\nwhat travels in a setup file')
   ])
   ok('but never the phone access key', !JSON.stringify(withKeys).includes(CANARY.phone))
   ok('nor an account\u2019s key: accounts stay on this machine', !JSON.stringify(withKeys).includes(CANARY.account))
+  // Spec 2026-10-03: only the computer being searched turns its chat sharing on, with the
+  // hub password typed there. A setup file carrying the tick or its grants would do it for it.
+  const sharing = hydrateSettings({ ...plaintextSettings(), hub: { shareChats: true, chatGrants: { d0000000000000000: 'always' }, shareSessions: true } })
+  const sharingFile = JSON.stringify(buildSetupPayload(sharing, { includeSecrets: true, version: '0.0.0', platform: 'darwin', now: new Date(0) }))
+  check('the chat-sharing tick and its grants never travel in a setup file (hub is local)', [(LOCAL_KEYS as readonly string[]).includes('hub'), sharingFile.includes('shareChats'), sharingFile.includes('chatGrants'), sharingFile.includes('d0000000000000000')], [true, false, false, false])
 }
 
 console.log('\nsealing and opening (scrypt N=2^17, AES-256-GCM)')

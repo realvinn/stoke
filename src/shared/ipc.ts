@@ -364,6 +364,24 @@ export const CH = {
   /** "Let my other devices see and open my sessions" on this computer. */
   hubSetSharing: 'hub:set-sharing',
   hubRevokeGrant: 'hub:revoke-grant',
+  /*
+   * Chat history across the owner's computers (spec 2026-10-03 §3). What
+   * crosses is per-computer results (`RemoteChatsResult`: hits with a folder
+   * NAME, text redacted on the computer it came from) and one read-only chat;
+   * never a path, never stored here.
+   */
+  /** Guest: search every other computer that shares its chat history (query) -> RemoteChatsResult[]. */
+  hubSearchChats: 'hub:search-chats',
+  /** Guest: one chat from another computer (device, source, nativeId) -> RemoteChatOpen. */
+  hubOpenRemoteChat: 'hub:open-remote-chat',
+  /** Guest, fire and forget: the search box closed, so the chats relays close now rather than when idle. */
+  hubEndChatSearch: 'hub:end-chat-search',
+  /** Host: "Let my other computers search this computer's chat history" (on, devices to grant Always). On needs a password confirmed here. */
+  hubSetShareChats: 'hub:set-share-chats',
+  /** Host: the devices holding Always for this computer's chat history -> RemoteChatGrantView[]. */
+  hubChatGrants: 'hub:chat-grants',
+  /** Host: Remove one device's chats Always (device id); its searches here close. */
+  hubRemoveChatGrant: 'hub:remove-chat-grant',
 
   /*
    * Claude Code's own configuration, which is not Stoke's Settings. These read

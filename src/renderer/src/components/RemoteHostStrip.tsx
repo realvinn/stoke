@@ -48,6 +48,40 @@ function Ask({ ask }: { ask: RemoteAskView }): React.JSX.Element {
     setSent(a)
     void window.stoke.hub.remote.answer(ask.id, a)
   }
+  if (ask.kind === 'chats') {
+    // Its own question and its own grants (spec 2026-10-03 §3): read-only, two routes, never a session.
+    return (
+      <div className="ssh-prompt remote-strip" role="status" aria-live="assertive" aria-label={`Let ${ask.label} search chat history on this computer?`} data-hub="remote-ask" data-kind="chats">
+        <span className="ssh-prompt-kind">Remote</span>
+        <p className="ssh-prompt-text" title={`${ask.label} (${platformName(ask.platform)}), key ${ask.fingerprint}`}>
+          Let <strong>{ask.label}</strong> search and read chat history on this computer?
+        </p>
+        <span className="ssh-prompt-meta truncate mono" title="The asking device's signing-key fingerprint, as Settings › Account & sync lists it">
+          {platformName(ask.platform)} · {ask.fingerprint} · {left}s
+        </span>
+        <button
+          className="btn"
+          data-variant="primary"
+          disabled={sent !== null}
+          onClick={() => answer('once')}
+          title={`This search: ${ask.label} can search and read, but not change, chats here until it stops searching, and for ${GRACE_MIN} minutes after without asking again. Secrets are redacted; folders show by name.`}
+        >
+          Allow once
+        </button>
+        <button
+          className="btn"
+          disabled={sent !== null}
+          onClick={() => answer('always')}
+          title={`Let ${ask.label} search and read chats here without asking. It cannot open or start sessions, or change anything. Take it back in Settings › Account & sync.`}
+        >
+          Always
+        </button>
+        <button className="btn" data-variant="ghost" disabled={sent !== null} onClick={() => answer('deny')}>
+          Deny
+        </button>
+      </div>
+    )
+  }
   return (
     <div className="ssh-prompt remote-strip" role="status" aria-live="assertive" aria-label={`Let ${ask.label} open ${ask.title}?`} data-hub="remote-ask">
       <span className="ssh-prompt-kind">Remote</span>
@@ -81,13 +115,33 @@ function Ask({ ask }: { ask: RemoteAskView }): React.JSX.Element {
   )
 }
 
-/** "Laptop is attached to Fix the relay" — or, for several, who and how many. */
+/** What one guest reaches here, for a list line. */
+function guestWhat(g: RemoteGuestView): string {
+  return g.kind === 'chats' ? 'searching chat history' : (g.title ?? 'a session')
+}
+
+/**
+ * "Laptop is attached to Fix the relay" — or, for several, who and how many —
+ * then who is searching chat history here, a sentence of its own.
+ */
 function attachedSentence(guests: readonly RemoteGuestView[]): React.JSX.Element {
-  const names = [...new Set(guests.map((g) => g.label))]
+  const sessions = guests.filter((g) => g.kind !== 'chats')
+  const searching = [...new Set(guests.filter((g) => g.kind === 'chats').map((g) => g.label))]
+  const names = [...new Set(sessions.map((g) => g.label))]
   return (
     <>
-      <strong>{names.join(', ')}</strong> {guests.length === 1 ? 'is' : 'are'} attached to{' '}
-      {guests.length === 1 ? <strong>{guests[0].title ?? 'a session'}</strong> : `${guests.length} sessions`} here, from another machine.
+      {sessions.length > 0 && (
+        <>
+          <strong>{names.join(', ')}</strong> {sessions.length === 1 ? 'is' : 'are'} attached to{' '}
+          {sessions.length === 1 ? <strong>{sessions[0].title ?? 'a session'}</strong> : `${sessions.length} sessions`} here, from another machine.
+        </>
+      )}
+      {sessions.length > 0 && searching.length > 0 && ' '}
+      {searching.length > 0 && (
+        <>
+          <strong>{searching.join(', ')}</strong> {searching.length === 1 ? 'is' : 'are'} searching chat history here.
+        </>
+      )}
     </>
   )
 }
@@ -124,7 +178,7 @@ export function RemoteHostFab({ view }: { view: HubRemoteView }): React.JSX.Elem
         <ul className="remote-fab-list">
           {guests.map((g) => (
             <li key={g.relay}>
-              <strong>{g.label}</strong> · {g.title ?? 'a session'}
+              <strong>{g.label}</strong> · {guestWhat(g)}
               {g.via === 'always' ? <span className="remote-fab-meta"> · always allowed</span> : null}
             </li>
           ))}
@@ -151,7 +205,7 @@ export function RemoteHostStrip({ view, bar }: Props): React.JSX.Element | null 
         <div className="ssh-prompt remote-strip" role="status" aria-live="polite" data-hub="remote-guests">
           <span className="remote-live" aria-hidden="true" />
           <span className="ssh-prompt-kind">Remote</span>
-          <p className="ssh-prompt-text" title={guests.map((g) => `${g.label}: ${g.title ?? 'a session'}${g.via === 'always' ? ' (always allowed)' : ''}`).join('\n')}>
+          <p className="ssh-prompt-text" title={guests.map((g) => `${g.label}: ${guestWhat(g)}${g.via === 'always' ? ' (always allowed)' : ''}`).join('\n')}>
             {attachedSentence(guests)}
           </p>
           <button className="btn" onClick={() => void window.stoke.hub.remote.dropGuests()} title={DISCONNECT_TITLE}>

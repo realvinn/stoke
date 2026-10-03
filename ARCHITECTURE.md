@@ -387,6 +387,22 @@ device it no longer holds, and takes back its grants. A guest pings through the 
 pty replay measures past the hub's 1 MiB frame cap (gotcha 142), and a status is cut to the
 sessions that fit the hub's 24 KiB cap before it is sealed and sent.
 
+CHAT HISTORY across the owner's computers (spec 2026-10-03 §3) rides the same relays. A host's
+tick (`hub.shareChats`, default off, turned on only by `HubService.setShareChats` after a password
+confirmed there, `noteChatConsent`) puts `chats: true` in its status while chat history is on and it
+is in the vault (`chatsSharingEffective`). A guest's `searchChats` reads offline and not-sharing from
+presence and opens ONE relay per sharing machine (`attach {kind:'chats'}`), kept while searches come
+and closed after two idle minutes; results are per computer, never merged (`RemoteChatsResult`:
+ok / offline / not-sharing / waiting / denied / error), and `openRemoteChat` reads one chat. The host
+judges a chats relay by its own rule (`chatsAttachDecision`), question (`kind: 'chats'`), Always
+(`hub.chatGrants`) and Allow once list — a session grant never opens chats and a chats grant never a
+session — and its scope is exactly `GET /api/chats/search` and `GET /api/chats/open`, which only the
+relay instance of the phone server answers (`serveChats`, `chatsRouteFor`). Every request re-checks
+the tick, chat history, the guest by its pinned key and the grant; the tick off ends every chats
+relay and drops every chats grant, and `chainChanged` drops a removed device's. What leaves is
+`hub/chatShare.ts`'s: redacted again with the index's own patterns, a folder by its last segment,
+nothing from a hidden folder, and nothing at all while the store keeps unredacted text.
+
 ## Remote access
 
 `src/main/remote/server.ts` serves the mobile bundle plus a small API and a WebSocket that
@@ -1108,7 +1124,13 @@ npm run verify:hub-relay      # "Other machines": two RelayChannels through an i
                               # session's pty, and never a host whose `ready` lacks `sizes` (an
                               # older Stoke, whose tab would not follow); the host's status frame
                               # for that session only, parsed and cut on the guest, never resent
-                              # unchanged
+                              # unchanged. Chat history: the chats decision and its two-route
+                              # scope, a session scope refusing both, hit and chat shapes (folder
+                              # names, 4 MiB), the redacting reader with the real redactSecrets,
+                              # and two HubRemotes: not sharing, ask, Allow once, Always (on the
+                              # host only), Deny standing, every request re-checked behind
+                              # HubRemote's back, the tick off closing relays, a removed device,
+                              # offline, idle. Each fix mutated back turns it red
 npm run verify:install        # the one-line installer and the endpoint that serves it: the whole
                               # User-Agent matrix through the Worker's routing rule (PowerShell
                               # before anything browser-shaped, and HTML as the fallback), the
@@ -1419,8 +1441,15 @@ src/main/         Electron main process
                     machine (the host: the owner's question, grants, the scope, relayed requests
                     and sockets through the phone server's handlers, and the served session's
                     model, effort, context and usage as `{t:'status'}` — that session's only);
-                    `chainChanged` ends what the chain stopped vouching for. No electron
+                    `chainChanged` ends what the chain stopped vouching for. Chat history too:
+                    the host's chats question, grants and per-request checks, and the guest's
+                    `searchChats`/`openRemoteChat` over one chats relay per machine. No electron
                     import. verify:hub-relay
+  hub/chatShare.ts  what another computer may read of this one's chat history: the relay
+                    instance's two routes (`answerChatsRoute`) over `sharedChats`, which redacts
+                    every string again, names a folder by its last segment, keeps hidden folders'
+                    chats here and refuses an unredacted store. The chat index reaches it through
+                    `chatIndexForGuests` in index.ts. No electron import. verify:hub-relay
   accounts.ts       an agent account's folder, `~/.stoke/accounts/<cli>-<slug>` (not userData:
                     dev and packaged differ, and the `stoke` command reads it with no app),
                     realpath'd once — Claude's Keychain item is named after that exact string

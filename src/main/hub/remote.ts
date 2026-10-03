@@ -26,19 +26,36 @@
  *   (`chainChanged`), a relay or tab to a device it no longer holds ends.
  * - LIVENESS. A guest pings through the channel (`RELAY_PING_MS`), or the hub
  *   would close a quiet tab as idle every `RELAY_IDLE_MS`.
+ * - CHAT HISTORY (spec 2026-10-03 §3). As host: a relay that attaches
+ *   `{ kind: 'chats' }` gets its own question ("search and read chat
+ *   history"), its own grants (`hub.chatGrants`, a chats "Allow once" in
+ *   `chatOnce`) and a scope of two GET routes; EVERY request re-checks the
+ *   tick, chat history, the guest's place in the chain and the grant, and the
+ *   tick going off ends every chats relay (`chatSharingChanged`). As guest:
+ *   `searchChats` fans out to every online machine whose status says
+ *   `chats: true`, over one chats relay per machine kept while the search is
+ *   in use and closed after `CHATS_IDLE_MS`; `openRemoteChat` reads one.
  *
  * No electron import, so a suite can run two of these against a real hub.
  * No TypeScript parameter properties (strip-only mode).
  */
 import { stableJson } from '../../shared/hub/codec.ts'
 import { isGrid } from '../../shared/sizeClaim.ts'
+import { CHAT_SEARCH_MIN_CHARS } from '../../shared/chatIndex.ts'
 import { reconnectDelayMs, sealedStatusProblem, type PresenceClientFrame, type SealedStatus } from '../../shared/hub/protocol.ts'
+import type { ChatGrant } from '../../shared/hub/settings.ts'
 import {
   attachDecision,
+  chatsAttachDecision,
+  chatsSharingEffective,
+  CHATS_ONCE_KEY,
   emptyRemoteView,
   holdOnce,
   newerStatus,
+  onceHolds,
   otherMachines,
+  parseRemoteChat,
+  parseRemoteChatHits,
   parseRemoteSessionStatus,
   parseRemoteStatus,
   pruneOnce,
@@ -51,6 +68,10 @@ import {
   type HubRemoteView,
   type OnceGrant,
   type RelayScope,
+  type RemoteChatOpen,
+  type RemoteChatPeerState,
+  type RemoteChatsResult,
+  type RemoteChatsState,
   type RemoteRowLike,
   type RemoteSessionStatus,
   type RemoteStatus,
@@ -58,6 +79,10 @@ import {
   type RemoteTabState
 } from '../../shared/hub/remote.ts'
 import {
+  CHAT_HITS_MAX,
+  CHAT_QUERY_MAX,
+  isChatNativeId,
+  isChatSource,
   isPtyId,
   keyFingerprint,
   RELAY_ASK_MS,
@@ -66,7 +91,8 @@ import {
   relayFrameVerdict,
   type HubGrant,
   type RelayInnerFrame,
-  type RelayMode
+  type RelayMode,
+  type RelayRefusalCode
 } from '../../shared/hub/relay.ts'
 import type { PhoneSocket } from '../remote/socket.ts'
 import { VirtualSocket } from '../remote/socket.ts'
@@ -117,6 +143,13 @@ export interface RemoteMachineDeps {
    * as it sends none to a host from before last active wins.
    */
   followsResize?: boolean
+  /**
+   * `settings.chatIndex === 'on'`, read on every call. Absent: this machine
+   * never shares its chat history (no `chats: true`, every chats relay
+   * refused). The two routes themselves are the relay server's
+   * (`RemoteServer.serveChats`), reached through `request`.
+   */
+  chatIndexOn?(): boolean
 }
 
 export interface HubRemoteDeps extends RemoteMachineDeps {
@@ -134,9 +167,17 @@ export interface HubRemoteDeps extends RemoteMachineDeps {
   /** `hub.grants`, read on every call. */
   grants(): Record<string, HubGrant>
   setGrant(device: string, grant: HubGrant | null): Promise<void>
+  /** `hub.shareChats`, read on every call: "Let my other computers search this computer's chat history". */
+  shareChats(): boolean
+  /** `hub.chatGrants`, read on every call. Never `grants`: a session grant opens no chats. */
+  chatGrants(): Record<string, ChatGrant>
+  /** Give (`true`) or take back a device's chats "Always". Main refuses to give one while the tick is off. */
+  setChatGrant(device: string, on: boolean): Promise<void>
   log(message: string, err?: unknown): void
   /** Tests only: the guest's keepalive, in real milliseconds (`RELAY_PING_MS`, `RELAY_PONG_WAIT_MS`). */
   keepAlive?: { pingMs: number; pongWaitMs: number }
+  /** Tests only: the guest's chats timings, in real milliseconds (`CHATS_IDLE_MS`, `CHATS_WAIT_MS`, `CHATS_RETRY_MS`). */
+  chatsTiming?: { idleMs?: number; waitMs?: number; retryMs?: number; requestMs?: number }
 }
 
 /** Why a relay from, or a tab to, a device the verified chain no longer holds as active is ended. */
@@ -158,6 +199,16 @@ const STATUS_ACTIVITY_MS = 30_000
 const PTY_SOCKET = 1
 /** How often a host re-reads a served session's status, sending it only when it changed. */
 const SESSION_STATUS_MS = 2000
+/** A guest's chats relays close once no search or open has used them for this long. */
+const CHATS_IDLE_MS = 2 * 60_000
+/** How long one search waits for a chats relay to be served before it says `waiting`. */
+const CHATS_WAIT_MS = 4000
+/** A chats relay that failed is tried again by the first search this long after. */
+const CHATS_RETRY_MS = 5000
+/** One search's answer; an open's is three times it (a chat is up to 4 MiB). */
+const CHATS_REQUEST_MS = 15_000
+/** What the host's question names for a chats relay. */
+const CHATS_TITLE = 'chat history'
 
 interface GuestTab {
   id: string
@@ -192,9 +243,36 @@ interface GuestTab {
   sizes: boolean
 }
 
+/**
+ * Guest side: one other machine's chat history, reached over ONE chats relay
+ * while a search here uses it. Kept, with its refusal, until the search goes
+ * idle, so a "Deny" is not asked again at every keystroke.
+ */
+interface ChatPeer {
+  device: string
+  label: string
+  state: RemoteChatPeerState
+  message: string | null
+  channel: RelayChannel | null
+  /** Bumped per connect and at the end: a continuation acts only while it names the current attempt. */
+  gen: number
+  /** A connect is under way (claimed before its first await, gotcha 20). */
+  connecting: boolean
+  hint: ReturnType<typeof setTimeout> | null
+  /** Searches waiting for the relay to be served, refused or lost. */
+  waiters: Set<() => void>
+  nextId: number
+  pending: Map<number, (answer: { status: number; body: unknown } | null) => void>
+  /** Real ms when it reached `error`: the first search `CHATS_RETRY_MS` later connects afresh. */
+  failedAt: number
+  closed: boolean
+}
+
 interface HostRelay {
   relay: string
   guest: string
+  /** What the relay attached for: one session, or this machine's chat history. Null until it says. */
+  kind: 'session' | 'chats' | null
   /** The guest's signing key the handshake was checked against: a chain that stops holding it ends the relay. */
   guestKey: string | null
   channel: RelayChannel | null
@@ -215,6 +293,8 @@ interface HostRelay {
 
 interface PendingAsk {
   id: string
+  /** `chats`: "search and read chat history"; an answer then writes `hub.chatGrants`, never `hub.grants`. */
+  kind: 'session' | 'chats'
   relay: string
   device: string
   label: string
@@ -242,6 +322,13 @@ export class HubRemote {
   private readonly hosted: Map<string, HostRelay>
   private readonly asks: Map<string, PendingAsk>
   private once: OnceGrant[]
+  /** Chats "Allow once", keyed `CHATS_ONCE_KEY`: a list of its own, so no session's once is ever read for chats. */
+  private chatOnce: OnceGrant[]
+  /** Guest side: one per other machine a search here is reaching. */
+  private readonly chatPeers: Map<string, ChatPeer>
+  private chatsIdle: ReturnType<typeof setTimeout> | null
+  /** Whether the last status sent said `chats: true`: a fall to false ends every chats relay. */
+  private chatsWere: boolean
   /**
    * The newest `at` opened per device and epoch, for the life of the process:
    * never cleared by a presence reconnect or a device going offline, so a hub
@@ -264,6 +351,10 @@ export class HubRemote {
     this.hosted = new Map()
     this.asks = new Map()
     this.once = []
+    this.chatOnce = []
+    this.chatPeers = new Map()
+    this.chatsIdle = null
+    this.chatsWere = false
     this.statusMarks = new Map()
   }
 
@@ -290,9 +381,19 @@ export class HubRemote {
     }))
     v.guests = [...this.hosted.values()]
       .filter((h) => h.phase === 'serving')
-      .map((h) => ({ relay: h.relay, device: h.guest, label: label(h.guest), ptyId: h.ptyId, title: h.title, since: h.since, via: h.via }))
+      .map((h) => ({
+        relay: h.relay,
+        kind: h.kind === 'chats' ? ('chats' as const) : ('session' as const),
+        device: h.guest,
+        label: label(h.guest),
+        ptyId: h.ptyId,
+        title: h.title,
+        since: h.since,
+        via: h.via
+      }))
     v.asks = [...this.asks.values()].map((a) => ({
       id: a.id,
+      kind: a.kind,
       device: a.device,
       label: a.label,
       platform: a.platform,
@@ -302,6 +403,13 @@ export class HubRemote {
       expiresAt: a.expiresAt
     }))
     v.grants = Object.entries(this.d.grants()).map(([device, g]) => ({ device, label: ctx?.active.find((a) => a.id === device)?.label ?? g.label, mode: g.mode, at: g.at }))
+    v.sharingChats = this.d.shareChats()
+    v.chatsEffective = this.chatsEffective()
+    v.chatGrants = Object.keys(this.d.chatGrants()).map((device) => {
+      const a = ctx?.active.find((x) => x.id === device)
+      return { device, label: a?.label ?? this.statuses[device]?.name ?? 'another device', platform: a?.platform ?? '', fingerprint: a ? keyFingerprint(a.sign) : '?' }
+    })
+    v.chatPeers = [...this.chatPeers.values()].map((p) => ({ device: p.device, label: p.label, state: p.state, message: p.message }))
     return v
   }
 
@@ -397,10 +505,18 @@ export class HubRemote {
       if (!key) return
       const sharing = this.d.sharing()
       const rows = sharing ? await this.d.sessions() : []
+      /*
+       * Chat history off, or the tick: no status says `chats: true`, and any
+       * chats relay still open ends now rather than at its next request (the
+       * poll is what notices a chat history switched off in Settings).
+       */
+      const chats = this.chatsEffective()
+      if (this.chatsWere && !chats) this.endChats(`${ctx.me.label} stopped sharing its chat history.`)
+      this.chatsWere = chats
       const now = this.d.now()
       // Strictly increasing per device (a hybrid clock): two statuses in one millisecond still order.
       const at = Math.max(now, this.lastAt + 1)
-      const status = remoteStatusFrom({ at, name: ctx.me.label, platform: ctx.me.platform, open: sharing, rows })
+      const status = remoteStatusFrom({ at, name: ctx.me.label, platform: ctx.me.platform, open: sharing, rows, chats })
       const full = stableJson({ ...status, at: 0 })
       const core = stableJson({ ...status, at: 0, sessions: status.sessions.map((s) => ({ ...s, lastActivityAt: 0 })) })
       const last = this.sent
@@ -739,6 +855,7 @@ export class HubRemote {
     const h: HostRelay = {
       relay,
       guest,
+      kind: null,
       guestKey: null,
       channel: null,
       phase: 'handshake',
@@ -803,12 +920,19 @@ export class HubRemote {
       if (h.wait) clearTimeout(h.wait)
       h.wait = null
       if (f.t !== 'attach') return this.refuse(h, channel, 'The first frame must name a session.')
-      h.ptyId = f.ptyId
       h.phase = 'asking'
+      if (f.kind === 'chats') {
+        h.kind = 'chats'
+        this.decideChats(h, channel)
+        return
+      }
+      h.kind = 'session'
+      h.ptyId = f.ptyId
       await this.decide(h, channel)
       return
     }
     if (h.phase !== 'serving' || !h.mode || !h.scope) return
+    if (h.kind === 'chats') return this.hostChatsFrame(h, channel, f)
     switch (f.t) {
       case 'req': {
         const verdict = this.judge(h, f)
@@ -907,12 +1031,13 @@ export class HubRemote {
     if (decision.t === 'refuse') return this.refuse(h, channel, decision.reason)
     if (decision.t === 'allow') return this.serve(h, channel, decision.mode, decision.via)
     for (const a of this.asks.values()) {
-      if (a.device === h.guest && a.ptyId === h.ptyId) return this.refuse(h, channel, 'This computer is already asking about that session.')
+      if (a.kind === 'session' && a.device === h.guest && a.ptyId === h.ptyId) return this.refuse(h, channel, 'This computer is already asking about that session.', 'busy')
     }
     const peer = ctx.active.find((a) => a.id === h.guest)
     const id = `ask-${randomB64u(9)}`
     const ask: PendingAsk = {
       id,
+      kind: 'session',
       relay: h.relay,
       device: h.guest,
       label: peer?.label ?? this.statuses[h.guest]?.name ?? 'another device',
@@ -946,9 +1071,10 @@ export class HubRemote {
       return { ok: false }
     }
     if (answer === 'deny') {
-      this.refuse(h, channel, why ?? `The owner of ${this.d.context()?.me.label ?? 'that computer'} said no.`)
+      this.refuse(h, channel, why ?? `The owner of ${this.d.context()?.me.label ?? 'that computer'} said no.`, 'denied')
       return { ok: true }
     }
+    if (a.kind === 'chats') return this.answerChats(h, channel, answer)
     if (!this.d.sharing()) {
       this.refuse(h, channel, 'That computer stopped sharing its sessions.')
       return { ok: true }
@@ -967,6 +1093,167 @@ export class HubRemote {
       this.serve(h, channel, 'full', 'once')
     }
     return { ok: true }
+  }
+
+  /* ---------------------------------------------- host: chat history */
+
+  /** `hub.shareChats`, chat history on, and this device in the vault (`chatsSharingEffective`), read now. */
+  private chatsEffective(): boolean {
+    return chatsSharingEffective({ share: this.d.shareChats(), indexOn: this.d.chatIndexOn?.() === true, inVault: this.d.context() !== null })
+  }
+
+  /** A chats relay's first decision: refuse, serve under a chats grant, or ask "search and read chat history?". */
+  private decideChats(h: HostRelay, channel: RelayChannel): void {
+    const ctx = this.d.context()
+    if (!ctx) return this.refuse(h, channel, 'This computer is not in your hub’s vault any more.', 'not-sharing')
+    const now = this.d.now()
+    this.chatOnce = pruneOnce(this.chatOnce, now)
+    const decision = chatsAttachDecision({
+      sharing: this.d.shareChats(),
+      indexOn: this.d.chatIndexOn?.() === true,
+      grant: this.d.chatGrants()[h.guest] ?? null,
+      once: this.chatOnce,
+      device: h.guest,
+      hostName: ctx.me.label,
+      now
+    })
+    if (decision.t === 'refuse') return this.refuse(h, channel, decision.reason, decision.code)
+    if (decision.t === 'allow') return this.serveChats(h, channel, decision.via)
+    for (const a of this.asks.values()) {
+      if (a.kind === 'chats' && a.device === h.guest) return this.refuse(h, channel, 'This computer is already asking about its chat history.', 'busy')
+    }
+    const peer = ctx.active.find((a) => a.id === h.guest)
+    const id = `ask-${randomB64u(9)}`
+    this.asks.set(id, {
+      id,
+      kind: 'chats',
+      relay: h.relay,
+      device: h.guest,
+      label: peer?.label ?? this.statuses[h.guest]?.name ?? 'another device',
+      platform: peer?.platform ?? '',
+      fingerprint: peer ? keyFingerprint(peer.sign) : '?',
+      ptyId: '',
+      title: CHATS_TITLE,
+      expiresAt: now + RELAY_ASK_MS,
+      timer: setTimeout(() => void this.answer(id, 'deny', 'Nobody answered on the other machine in time.'), RELAY_ASK_MS)
+    })
+    this.emit()
+  }
+
+  /** The owner's Allow once or Always to a chats question (Deny was handled with the sessions'). */
+  private async answerChats(h: HostRelay, channel: RelayChannel, answer: 'once' | 'always'): Promise<{ ok: boolean }> {
+    if (!this.chatsEffective()) {
+      this.refuse(h, channel, 'That computer stopped sharing its chat history.', 'not-sharing')
+      return { ok: true }
+    }
+    if (answer === 'always') {
+      await this.d.setChatGrant(h.guest, true)
+      // The chain, or the tick, moved during the write: take it back before anything is served under it.
+      if (!this.guestHolds(h) || !this.chatsEffective()) {
+        await this.d.setChatGrant(h.guest, false)
+        if (h.phase === 'asking') this.refuse(h, channel, this.guestHolds(h) ? 'That computer stopped sharing its chat history.' : NOT_A_DEVICE, this.guestHolds(h) ? 'not-sharing' : 'not-a-device')
+        return { ok: false }
+      }
+      if (h.phase !== 'asking') return { ok: false }
+      this.serveChats(h, channel, 'always')
+    } else {
+      this.serveChats(h, channel, 'once')
+    }
+    return { ok: true }
+  }
+
+  private serveChats(h: HostRelay, channel: RelayChannel, via: 'once' | 'always'): void {
+    const ctx = this.d.context()
+    if (!ctx) return this.refuse(h, channel, 'This computer is not in your hub’s vault any more.', 'not-sharing')
+    if (!this.guestHolds(h)) return this.refuse(h, channel, NOT_A_DEVICE, 'not-a-device')
+    // Read-only, and two routes: `relayScopeVerdict`'s chats scope.
+    h.mode = 'view'
+    h.via = via
+    h.scope = { kind: 'chats' }
+    if (via === 'once') this.chatOnce = holdOnce(this.chatOnce, h.guest, CHATS_ONCE_KEY)
+    h.phase = 'serving'
+    channel.send({ t: 'ready', mode: 'view', host: { label: ctx.me.label, platform: ctx.me.platform } })
+    this.emit()
+  }
+
+  /**
+   * Whether a serving chats relay may have its next request, read NOW (spec
+   * §3: "on every request the host re-checks"): the tick and chat history
+   * (`chatsEffective`), and its grant — an "Always" still in
+   * `hub.chatGrants`, or the "Allow once" it was served under still held.
+   * The guest's place in the chain is `hostFrame`'s first check.
+   */
+  private chatsAllowed(h: HostRelay): { ok: true } | { ok: false; reason: string; code: RelayRefusalCode } {
+    const ctx = this.d.context()
+    if (!ctx || !this.chatsEffective()) return { ok: false, reason: `${ctx?.me.label ?? 'That computer'} stopped sharing its chat history.`, code: 'not-sharing' }
+    const always = this.d.chatGrants()[h.guest] === 'always'
+    const once = h.via === 'once' && onceHolds(this.chatOnce, h.guest, CHATS_ONCE_KEY, this.d.now())
+    if (!always && !once) return { ok: false, reason: 'This computer’s owner took back this device’s access to its chat history.', code: 'denied' }
+    return { ok: true }
+  }
+
+  /** One frame on a serving chats relay: the two GET routes, nothing else. */
+  private async hostChatsFrame(h: HostRelay, channel: RelayChannel, f: RelayInnerFrame): Promise<void> {
+    switch (f.t) {
+      case 'req': {
+        const allowed = this.chatsAllowed(h)
+        if (!allowed.ok) return this.refuse(h, channel, allowed.reason, allowed.code)
+        const verdict = this.judge(h, f)
+        if (!verdict.ok) {
+          channel.send({ t: 'res', id: f.id, status: 403, body: { error: verdict.reason } })
+          return
+        }
+        const answer = await this.d.request(f.method, f.path, f.body)
+        // Read again after the await: a switch-off or a removal meanwhile sends nothing it read.
+        if (h.phase === 'serving' && this.guestHolds(h) && this.chatsAllowed(h).ok) channel.send({ t: 'res', id: f.id, status: answer.status, body: answer.body })
+        return
+      }
+      case 'ws-open':
+        // No socket at all: a chats relay never reaches a pty.
+        channel.send({ t: 'ws-close', id: f.id, code: 1008, reason: 'This connection reaches only chat history search.' })
+        return
+      default:
+        return
+    }
+  }
+
+  /** Every chats relay served or asking here ends, and every chats "Allow once" with it. */
+  private endChats(reason: string): void {
+    this.chatOnce = []
+    for (const h of [...this.hosted.values()]) {
+      if (h.kind !== 'chats') continue
+      const ch = h.channel
+      if (ch && ch.state === 'open') this.refuse(h, ch, reason, 'not-sharing')
+      else {
+        ch?.close('stopped sharing')
+        this.endHosted(h)
+      }
+    }
+  }
+
+  /**
+   * The chats tick (or chat history) moved. Off ends every chats relay and
+   * question at once (spec §3, "turning the switch off closes every chats
+   * relay"); either way the status says so at once.
+   */
+  chatSharingChanged(): void {
+    if (!this.chatsEffective()) this.endChats(`${this.d.context()?.me.label ?? 'That computer'} stopped sharing its chat history.`)
+    this.chatsWere = this.chatsEffective()
+    void this.publish(true)
+    this.emit()
+  }
+
+  /** A chats "Always" taken back (Settings' Remove): that device's chats relays, and its chats "Allow once", go now. */
+  async revokeChatGrant(device: string): Promise<void> {
+    await this.d.setChatGrant(device, false)
+    this.chatOnce = this.chatOnce.filter((g) => g.device !== device)
+    for (const h of [...this.hosted.values()]) {
+      if (h.guest !== device || h.kind !== 'chats') continue
+      const ch = h.channel
+      if (ch && ch.state === 'open') this.refuse(h, ch, 'This computer’s owner took back this device’s access to its chat history.', 'denied')
+      else this.endHosted(h)
+    }
+    this.emit()
   }
 
   private serve(h: HostRelay, channel: RelayChannel, mode: RelayMode, via: 'once' | 'always'): void {
@@ -1035,8 +1322,8 @@ export class HubRemote {
     }
   }
 
-  private refuse(h: HostRelay, channel: RelayChannel, reason: string): void {
-    channel.send({ t: 'refused', reason })
+  private refuse(h: HostRelay, channel: RelayChannel, reason: string, code?: RelayRefusalCode): void {
+    channel.send(code ? { t: 'refused', reason, code } : { t: 'refused', reason })
     channel.close('refused')
     this.endHosted(h)
   }
@@ -1044,6 +1331,7 @@ export class HubRemote {
   private endHosted(h: HostRelay): void {
     if (h.phase === 'closed') return
     const wasOnce = h.via === 'once' && h.ptyId !== null
+    const wasChatsOnce = h.kind === 'chats' && h.via === 'once' && h.phase === 'serving'
     h.phase = 'closed'
     if (h.wait) clearTimeout(h.wait)
     for (const s of h.sockets.values()) s.sock.drop()
@@ -1059,12 +1347,18 @@ export class HubRemote {
       const still = [...this.hosted.values()].some((o) => o.guest === h.guest && o.ptyId === h.ptyId && o.via === 'once')
       if (!still) this.once = releaseOnce(this.once, h.guest, h.ptyId, this.d.now())
     }
+    if (wasChatsOnce) {
+      // A search that pauses and comes back within the grace is not asked again (`ONCE_GRACE_MS`).
+      const still = [...this.hosted.values()].some((o) => o.guest === h.guest && o.kind === 'chats' && o.via === 'once')
+      if (!still) this.chatOnce = releaseOnce(this.chatOnce, h.guest, CHATS_ONCE_KEY, this.d.now())
+    }
     this.emit()
   }
 
   /** "Disconnect": every device attached here goes, and every "Allow once" with it. */
   dropGuests(): void {
     this.once = []
+    this.chatOnce = []
     for (const h of [...this.hosted.values()]) {
       const ch = h.channel
       if (ch && ch.state === 'open') this.refuse(h, ch, 'The owner of this computer disconnected you.')
@@ -1077,18 +1371,34 @@ export class HubRemote {
     this.emit()
   }
 
-  /** The tick moved: off drops every guest; either way the status says so at once. */
+  /**
+   * The sessions tick moved: off drops every SESSION guest and its "Allow
+   * once"; either way the status says so at once. A chats relay is the chats
+   * tick's (`chatSharingChanged`), and a relay that has not said what it is
+   * for yet is judged when it does.
+   */
   sharingChanged(): void {
-    if (!this.d.sharing()) this.dropGuests()
+    if (!this.d.sharing()) {
+      this.once = []
+      for (const h of [...this.hosted.values()]) {
+        if (h.kind !== 'session') continue
+        const ch = h.channel
+        if (ch && ch.state === 'open') this.refuse(h, ch, 'The owner of this computer disconnected you.')
+        else {
+          ch?.close('disconnected')
+          this.endHosted(h)
+        }
+      }
+    }
     void this.publish(true)
     this.emit()
   }
 
-  /** An "Always" is taken back: that device's relays riding on it go now. */
+  /** An "Always" is taken back: that device's session relays riding on it go now (its chats grant is `revokeChatGrant`'s). */
   async revokeGrant(device: string): Promise<void> {
     await this.d.setGrant(device, null)
     for (const h of [...this.hosted.values()]) {
-      if (h.guest !== device || h.via !== 'always') continue
+      if (h.guest !== device || h.via !== 'always' || h.kind !== 'session') continue
       const ch = h.channel
       if (ch && ch.state === 'open') this.refuse(h, ch, 'The owner of this computer took back this device’s access.')
       else this.endHosted(h)
@@ -1129,15 +1439,28 @@ export class HubRemote {
       // No context: it is THIS computer that left the vault (revoked, signed out), not the other one.
       this.endTab(t, 'lost', ctx ? `${this.nameOf(t.device)} is no longer one of your devices.` : NOT_IN_VAULT)
     }
-    const before = this.once.length
+    const before = this.once.length + this.chatOnce.length
     this.once = this.once.filter((g) => this.holds(g.device, null))
-    if (this.once.length !== before) moved = true
+    this.chatOnce = this.chatOnce.filter((g) => this.holds(g.device, null))
+    if (this.once.length + this.chatOnce.length !== before) moved = true
     if (ctx) {
       for (const device of Object.keys(this.d.grants())) {
         if (this.holds(device, null)) continue
         moved = true
         void this.d.setGrant(device, null).catch((err) => this.d.log('hub remote: could not take back a removed device’s grant', err))
       }
+      // Removing a device ends its chats grant too (spec 2026-10-03 §3): a revoked laptop searches nothing here.
+      for (const device of Object.keys(this.d.chatGrants())) {
+        if (this.holds(device, null)) continue
+        moved = true
+        void this.d.setChatGrant(device, false).catch((err) => this.d.log('hub remote: could not take back a removed device’s chats grant', err))
+      }
+    }
+    // Guest side: a search reaching a machine the chain no longer holds stops reaching it.
+    for (const p of [...this.chatPeers.values()]) {
+      if (this.holds(p.device, p.channel?.peerSignKey ?? null)) continue
+      moved = true
+      this.dropPeer(p, 'the device is no longer one of yours')
     }
     if (moved) this.emit()
   }
@@ -1165,8 +1488,338 @@ export class HubRemote {
       this.endHosted(h)
     }
     this.once = []
+    this.chatOnce = []
+    this.endChatSearch()
     this.presenceClosed()
   }
+
+  /* ======================================================== guest: chat history */
+
+  /**
+   * Search every other machine's chat history (spec 2026-10-03 §3): each
+   * online machine whose status says `chats: true` is asked over its own
+   * chats relay, opened by the first search and kept while searches keep
+   * coming (`CHATS_IDLE_MS`). Never merged: one result per machine the chain
+   * holds, with its hits or why there are none — `offline`, `not-sharing`,
+   * `waiting` (its owner is being asked, or the relay is still coming up),
+   * `denied`, `error`. A machine that answers later moves `chatPeers` in the
+   * view, which is the renderer's cue to search again. Nothing is stored.
+   */
+  async searchChats(q: unknown): Promise<RemoteChatsResult[]> {
+    const ctx = this.d.context()
+    if (!ctx || typeof q !== 'string') return []
+    let query = q.slice(0, CHAT_QUERY_MAX)
+    // Never cut a surrogate pair in half: `encodeURIComponent` throws on a lone one.
+    if (/[\ud800-\udbff]$/.test(query)) query = query.slice(0, -1)
+    if (query.trim().length < CHAT_SEARCH_MIN_CHARS) return []
+    let encoded: string
+    try {
+      encoded = encodeURIComponent(query)
+    } catch {
+      return []
+    }
+    this.touchChats()
+    const others = ctx.active.filter((a) => a.id !== ctx.me.id)
+    const results = await Promise.all(
+      others.map((a) => this.searchOne(a, `/api/chats/search?q=${encoded}&limit=${CHAT_HITS_MAX}`))
+    )
+    return results.sort((a, b) => a.label.localeCompare(b.label) || a.device.localeCompare(b.device))
+  }
+
+  /** Read one chat another machine's search found, through the same chats relay. Read-only; nothing is kept here. */
+  async openRemoteChat(device: unknown, source: unknown, nativeId: unknown): Promise<RemoteChatOpen> {
+    const ctx = this.d.context()
+    if (!ctx) return { ok: false, state: 'error', message: NOT_IN_VAULT }
+    const a = typeof device === 'string' && device !== ctx.me.id ? ctx.active.find((x) => x.id === device) : undefined
+    if (!a) return { ok: false, state: 'error', message: 'That computer is not one of your devices.' }
+    if (!isChatSource(source) || !isChatNativeId(nativeId)) return { ok: false, state: 'error', message: 'That is not a chat.' }
+    this.touchChats()
+    const reach = await this.reachChats(a)
+    if ('state' in reach) return { ok: false, state: reach.state, message: reach.message }
+    const answer = await this.chatRequest(reach.peer, `/api/chats/open?source=${encodeURIComponent(source)}&id=${encodeURIComponent(nativeId)}`, this.chatsMs('requestMs', CHATS_REQUEST_MS) * 3)
+    const failed = this.failedAnswer(reach.peer, answer, `${reach.label} could not open that chat.`)
+    if (failed) return { ok: false, state: failed.state, message: failed.message ?? '' }
+    const chat = parseRemoteChat(answer!.body)
+    if (!chat) return { ok: false, state: 'error', message: `${reach.label} answered with something that is not a chat.` }
+    return { ok: true, device: a.id, label: reach.label, chat }
+  }
+
+  /** The search box closed: every chats relay this machine holds goes now, not after `CHATS_IDLE_MS`. */
+  endChatSearch(): void {
+    if (this.chatsIdle) clearTimeout(this.chatsIdle)
+    this.chatsIdle = null
+    if (this.chatPeers.size === 0) return
+    for (const p of [...this.chatPeers.values()]) this.dropPeer(p, 'the search ended')
+    this.emit()
+  }
+
+  private chatsMs(key: 'idleMs' | 'waitMs' | 'retryMs' | 'requestMs', dflt: number): number {
+    return this.d.chatsTiming?.[key] ?? dflt
+  }
+
+  /** A search or an open used the chats relays: they stay another `CHATS_IDLE_MS`. */
+  private touchChats(): void {
+    if (this.chatsIdle) clearTimeout(this.chatsIdle)
+    this.chatsIdle = setTimeout(() => {
+      this.chatsIdle = null
+      this.endChatSearch()
+    }, this.chatsMs('idleMs', CHATS_IDLE_MS))
+    this.chatsIdle.unref?.()
+  }
+
+  private async searchOne(a: { id: string; label: string; platform: string }, path: string): Promise<RemoteChatsResult> {
+    const label = this.statuses[a.id]?.name || a.label
+    const base = { device: a.id, label, platform: a.platform, hits: [] }
+    const reach = await this.reachChats(a)
+    if ('state' in reach) return { ...base, state: reach.state, message: reach.message }
+    const answer = await this.chatRequest(reach.peer, path, this.chatsMs('requestMs', CHATS_REQUEST_MS))
+    const failed = this.failedAnswer(reach.peer, answer, `${label} could not search its chat history.`)
+    if (failed) return { ...base, state: failed.state, message: failed.message }
+    const hits = parseRemoteChatHits(answer!.body)
+    if (!hits) return { ...base, state: 'error', message: `${label} answered with something that is not a search.` }
+    return { ...base, state: 'ok', message: null, hits }
+  }
+
+  /**
+   * A served chats relay to `a`, or why there is none: offline and not
+   * sharing are read from presence without opening anything; otherwise the
+   * machine's peer, opened if need be, waited for up to `CHATS_WAIT_MS`.
+   */
+  private async reachChats(a: { id: string; label: string }): Promise<{ peer: ChatPeer; label: string } | { state: RemoteChatsState; message: string }> {
+    const label = this.statuses[a.id]?.name || a.label
+    if (!this.online.includes(a.id)) {
+      // Not reached, and not kept: an offline machine's relay would fail anyway.
+      const p = this.chatPeers.get(a.id)
+      if (p) {
+        this.dropPeer(p, 'offline')
+        this.emit()
+      }
+      return { state: 'offline', message: `${label} is offline — not searched.` }
+    }
+    if (this.statuses[a.id]?.chats !== true) return { state: 'not-sharing', message: `${label} isn’t sharing chat history.` }
+    const p = this.chatPeer(a.id, label)
+    await this.settle(p, this.chatsMs('waitMs', CHATS_WAIT_MS))
+    if (p.state === 'open') return { peer: p, label }
+    return this.peerState(p)
+  }
+
+  /** What a peer that is not `open` says, as a search result's state. */
+  private peerState(p: ChatPeer): { state: RemoteChatsState; message: string } {
+    switch (p.state) {
+      case 'connecting':
+        return { state: 'waiting', message: `Still reaching ${p.label}…` }
+      case 'waiting':
+        return { state: 'waiting', message: `Waiting for ${p.label} to allow it…` }
+      case 'denied':
+      case 'not-sharing':
+        return { state: p.state, message: p.message ?? `${p.label} said no.` }
+      default:
+        return { state: 'error', message: p.message ?? `${p.label} could not be reached.` }
+    }
+  }
+
+  /** Null when `answer` is a 200; otherwise the state to say (the peer's own, if it ended meanwhile). */
+  private failedAnswer(p: ChatPeer, answer: { status: number; body: unknown } | null, fallback: string): { state: RemoteChatsState; message: string } | null {
+    if (answer && answer.status === 200) return null
+    if (p.state !== 'open') return this.peerState(p)
+    if (!answer) return { state: 'error', message: `${p.label} did not answer in time.` }
+    const body = answer.body as { error?: unknown } | null
+    const said = body && typeof body.error === 'string' ? oneLine(body.error) : ''
+    return { state: 'error', message: said || fallback }
+  }
+
+  /**
+   * The machine's peer: the live one, or a new one connecting. A Deny stands
+   * until the search ends, so its owner is not asked again at every keystroke;
+   * a failure, or "not sharing" from a machine whose status says it is, is
+   * tried again `CHATS_RETRY_MS` later.
+   */
+  private chatPeer(device: string, label: string): ChatPeer {
+    const have = this.chatPeers.get(device)
+    const retryable = have !== undefined && (have.state === 'error' || have.state === 'not-sharing')
+    if (have && (!retryable || Date.now() - have.failedAt < this.chatsMs('retryMs', CHATS_RETRY_MS))) return have
+    if (have) this.dropPeer(have, 'trying again')
+    const p: ChatPeer = {
+      device,
+      label,
+      state: 'connecting',
+      message: null,
+      channel: null,
+      gen: 0,
+      connecting: false,
+      hint: null,
+      waiters: new Set(),
+      nextId: 0,
+      pending: new Map(),
+      failedAt: 0,
+      closed: false
+    }
+    this.chatPeers.set(device, p)
+    void this.connectChats(p)
+    this.emit()
+    return p
+  }
+
+  private async connectChats(p: ChatPeer): Promise<void> {
+    if (p.closed || p.connecting) return
+    p.connecting = true
+    const gen = ++p.gen
+    const current = (): boolean => !p.closed && p.gen === gen
+    try {
+      const ctx = this.d.context()
+      if (!ctx) return this.peerEnded(p, 'error', NOT_IN_VAULT)
+      const { relay } = await this.d.createRelay(p.device)
+      if (!current()) return
+      const socket = await this.d.openRelay(relay)
+      if (!current()) {
+        socket.close(1000, 'the search ended')
+        return
+      }
+      const channel = new RelayChannel({
+        role: 'guest',
+        relay,
+        account: ctx.account,
+        me: { id: ctx.me.id, signPriv: ctx.me.signPriv },
+        peer: p.device,
+        peerKey: (id) => this.d.context()?.active.find((a) => a.id === id && a.id !== ctx.me.id)?.sign ?? null,
+        io: { send: (data) => socket.send(data), close: (code, reason) => socket.close(code, reason) },
+        events: {
+          onOpen: () => {
+            if (!current()) return
+            channel.send({ t: 'attach', kind: 'chats' })
+            p.hint = setTimeout(() => {
+              if (!current() || p.state !== 'connecting') return
+              p.state = 'waiting'
+              p.message = `Waiting for ${p.label} to allow it…`
+              this.wake(p)
+              this.emit()
+            }, ASKING_HINT_MS)
+          },
+          onFrame: (f) => {
+            if (current()) this.guestChatsFrame(p, channel, f)
+          },
+          onClose: (reason) => {
+            if (p.channel === channel) p.channel = null
+            if (current()) this.peerEnded(p, 'error', reason)
+          }
+        }
+      })
+      p.channel = channel
+      socket.on('open', () => channel.start())
+      socket.on('message', (data, binary) => channel.receive(binary ? toBytes(data) : String(data), binary))
+      socket.on('close', () => channel.close('the relay closed'))
+      socket.on('error', () => undefined)
+      if (socket.readyState === 1) channel.start()
+    } catch (err) {
+      if (current()) this.peerEnded(p, 'error', err instanceof Error ? err.message : String(err))
+    } finally {
+      p.connecting = false
+    }
+  }
+
+  private guestChatsFrame(p: ChatPeer, channel: RelayChannel, f: RelayInnerFrame): void {
+    switch (f.t) {
+      case 'ready':
+        if (p.hint) clearTimeout(p.hint)
+        p.hint = null
+        p.state = 'open'
+        p.message = null
+        this.wake(p)
+        this.emit()
+        return
+      case 'refused': {
+        const state: RemoteChatPeerState = f.code === 'not-sharing' ? 'not-sharing' : f.code === 'denied' ? 'denied' : 'error'
+        this.peerEnded(p, state, oneLine(f.reason))
+        return
+      }
+      case 'res': {
+        const settle = p.pending.get(f.id)
+        if (settle) settle({ status: f.status, body: f.body })
+        return
+      }
+      case 'ping':
+        channel.send({ t: 'pong' })
+        return
+      default:
+        return
+    }
+  }
+
+  /** The peer's relay ended (refused, lost, or failed to open): it stays, saying why, until retried or the search ends. */
+  private peerEnded(p: ChatPeer, state: RemoteChatPeerState, message: string): void {
+    if (p.closed) return
+    if (p.hint) clearTimeout(p.hint)
+    p.hint = null
+    p.state = state
+    p.message = message
+    p.failedAt = Date.now()
+    p.gen++
+    const ch = p.channel
+    p.channel = null
+    ch?.close(message)
+    for (const settle of [...p.pending.values()]) settle(null)
+    p.pending.clear()
+    this.wake(p)
+    this.emit()
+  }
+
+  /** Gone for good (the search ended, the device left): its relay closes and it is forgotten. */
+  private dropPeer(p: ChatPeer, why: string): void {
+    p.closed = true
+    if (p.hint) clearTimeout(p.hint)
+    p.hint = null
+    p.gen++
+    const ch = p.channel
+    p.channel = null
+    ch?.close(why)
+    for (const settle of [...p.pending.values()]) settle(null)
+    p.pending.clear()
+    this.wake(p)
+    if (this.chatPeers.get(p.device) === p) this.chatPeers.delete(p.device)
+  }
+
+  private wake(p: ChatPeer): void {
+    for (const w of [...p.waiters]) w()
+  }
+
+  /** Resolves once the peer is past `connecting` (served, asking, refused or lost), or after `ms`. */
+  private settle(p: ChatPeer, ms: number): Promise<void> {
+    if (p.state !== 'connecting') return Promise.resolve()
+    return new Promise((resolve) => {
+      const done = (): void => {
+        clearTimeout(timer)
+        p.waiters.delete(done)
+        resolve()
+      }
+      const timer = setTimeout(done, ms)
+      p.waiters.add(done)
+    })
+  }
+
+  /** One GET over a served chats relay, answered by its `res` or null (lost, or not in `ms`). */
+  private chatRequest(p: ChatPeer, path: string, ms: number): Promise<{ status: number; body: unknown } | null> {
+    const ch = p.channel
+    if (!ch || p.state !== 'open') return Promise.resolve(null)
+    const id = ++p.nextId
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        p.pending.delete(id)
+        resolve(null)
+      }, ms)
+      p.pending.set(id, (answer) => {
+        clearTimeout(timer)
+        p.pending.delete(id)
+        resolve(answer)
+      })
+      if (!ch.send({ t: 'req', id, method: 'GET', path })) p.pending.get(id)?.(null)
+    })
+  }
+}
+
+/** A sentence another machine sent, as one line of at most 300 characters. */
+function oneLine(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, 300)
 }
 
 function toBytes(data: unknown): Uint8Array {
