@@ -55,6 +55,13 @@ export interface ParsedSession {
   cacheReadTokens: number
   cacheCreationTokens: number
   outputTokens: number
+  /**
+   * The most context this session has held on its current model, a compaction's
+   * `preTokens` included. Only the WINDOW is read from it (`sessionLimit`): a
+   * compacted 1M session holds far under 200k, and judged by that alone it
+   * would read as a 200k one.
+   */
+  peakTokens: number
 }
 
 export function safeParse(line: string): Record<string, unknown> | null {
@@ -191,7 +198,8 @@ export function createFold(): SessionFold {
     inputTokens: 0,
     cacheReadTokens: 0,
     cacheCreationTokens: 0,
-    outputTokens: 0
+    outputTokens: 0,
+    peakTokens: 0
   }
 }
 
@@ -226,12 +234,40 @@ export function foldLine(out: SessionFold, line: string): void {
     return
   }
 
+  /*
+   * `/compact`, or auto-compact: the conversation is now its summary. The CLI
+   * states the size it left (`compactMetadata.postTokens`) and nothing else
+   * says so until the next reply's usage, so without this the last pre-compact
+   * turn stood as the occupancy — the sidebar showed a just-compacted 1M chat
+   * at 967k, "almost full", while the status bar's payload said 23k (owner,
+   * 2026-10-03). Every compaction on this machine (17) states `postTokens`; one
+   * that does not leaves the old reading, which overstates rather than hides.
+   */
+  if (type === 'system' && rec.subtype === 'compact_boundary') {
+    const meta = rec.compactMetadata as Record<string, unknown> | undefined
+    out.peakTokens = Math.max(out.peakTokens, num(meta?.preTokens))
+    if (typeof meta?.postTokens === 'number' && Number.isFinite(meta.postTokens) && meta.postTokens >= 0) {
+      out.inputTokens = meta.postTokens
+      out.cacheReadTokens = 0
+      out.cacheCreationTokens = 0
+      out.outputTokens = 0
+    }
+    return
+  }
+
   if (type === 'assistant') {
     out.messageCount++
     const msg = rec.message as
       | { model?: unknown; usage?: Record<string, unknown> }
       | undefined
-    if (typeof msg?.model === 'string') out.model = msg.model
+    if (typeof msg?.model === 'string') {
+      // A different model is a different window: the peak was the old one's.
+      // Only between real model ids — an error turn is `<synthetic>`.
+      if (out.model && /^claude-/.test(msg.model) && /^claude-/.test(out.model) && msg.model !== out.model) {
+        out.peakTokens = 0
+      }
+      out.model = msg.model
+    }
     const u = msg?.usage
     if (u) {
       // Overwrite rather than accumulate: each turn's usage already reports the
@@ -240,6 +276,7 @@ export function foldLine(out: SessionFold, line: string): void {
       out.cacheReadTokens = num(u.cache_read_input_tokens)
       out.cacheCreationTokens = num(u.cache_creation_input_tokens)
       out.outputTokens = num(u.output_tokens)
+      out.peakTokens = Math.max(out.peakTokens, contextUsed(out))
     }
   }
 }
@@ -707,4 +744,18 @@ export function contextUsed(p: {
   outputTokens: number
 }): number {
   return p.inputTokens + p.cacheReadTokens + p.cacheCreationTokens + p.outputTokens
+}
+
+/**
+ * A parsed session's window: `contextLimitFor` judged by the most this
+ * session has ever held on its model (`peakTokens`), not only what it holds
+ * now. Observed usage is the only sign of a 1M window in a transcript (gotcha
+ * 2), and a compaction takes it away: judged by 23k, a 1M chat that held 967k
+ * read as 200k. The stated window, when there is one, still wins.
+ */
+export function sessionLimit(
+  p: Parameters<typeof contextUsed>[0] & { model: string | null; peakTokens: number },
+  bannerLimit: number | null = null
+): number {
+  return contextLimitFor(p.model, Math.max(contextUsed(p), p.peakTokens), bannerLimit)
 }

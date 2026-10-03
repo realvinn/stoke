@@ -64,6 +64,19 @@ that assumes the file name *is* the session id will not find a `--continue` sess
 > `EMPTY_STATUS_LINE`, one SGR reset. Suppressing the line and reading the data are still one
 > act; suppressing it with an empty stdout was the wrong way to do it. Gotcha 118.
 
+> **Checked against the code on 2026-10-03: a compaction left the transcript readers at the old size.**
+> The owner compacted, and the status bar read right while the sidebar's row said almost full. The
+> row (`listSessions`) and any tab without a payload (an SSH tab) read the transcript, and the fold
+> took the last assistant turn's usage as the occupancy. A compaction writes no turn. It writes a
+> `system` record, `subtype: 'compact_boundary'`, whose `compactMetadata` states `preTokens` and
+> `postTokens` (measured on this session: 967,156 → 23,072). So until the next reply the row showed 97%.
+> The fold now takes `postTokens` as the occupancy at the boundary; all 17 compactions on this Mac
+> state it, and one that does not keeps the old reading. The fold also keeps `peakTokens`, the most the
+> session has held on its current model (`preTokens` included, reset only when the model id moves
+> between two `claude-` ids), and `sessionLimit` judges the window by it. Judged by 23k alone, a
+> compacted 1M chat read as 200k. `verify:folders` holds both. Each mutated out turned it red: the
+> boundary branch 2 checks, the peak 4, the model reset 1.
+
 ## 26. A `--continue` session has no context ring, and it is the missing *id* that causes it
 
 **A `--continue` session has no context ring, and it is the missing *id* that causes it.** This

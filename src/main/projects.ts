@@ -8,7 +8,7 @@ import { applyProjectMeta } from './projectMeta.ts'
 import { claudeConfigDir, claudeGlobalConfigPath } from './claudePaths.ts'
 import {
   CHUNK,
-  contextLimitFor,
+  sessionLimit,
   contextUsed,
   mapLimit,
   parseSession,
@@ -758,7 +758,7 @@ export async function listSessions(
         messageCount: parsed.messageCount,
         model: parsed.model,
         contextTokens: used,
-        contextLimit: contextLimitFor(parsed.model, used),
+        contextLimit: sessionLimit(parsed),
         gitBranch: parsed.gitBranch
       }
     } catch {

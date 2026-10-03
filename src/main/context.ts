@@ -3,7 +3,7 @@ import type { ContextSnapshot } from '@shared/types'
 import { findSessionFile } from './projects.ts'
 import {
   advanceCursor,
-  contextLimitFor,
+  sessionLimit,
   contextUsed,
   finishFold,
   type TranscriptCursor
@@ -285,7 +285,7 @@ export class ContextWatcher {
         this.publish({
           sessionId: w.sessionId,
           contextTokens: used,
-          contextLimit: contextLimitFor(parsed.model, used, window),
+          contextLimit: sessionLimit(parsed, window),
           inputTokens: parsed.inputTokens,
           cacheReadTokens: parsed.cacheReadTokens,
           cacheCreationTokens: parsed.cacheCreationTokens,

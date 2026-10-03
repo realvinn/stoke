@@ -12,6 +12,7 @@ import { ContextWatcher } from '../src/main/context.ts'
 import { findSessionFile } from '../src/main/projects.ts'
 import {
   contextLimitFor,
+  sessionLimit,
   contextUsed,
   createFold,
   finishFold,
@@ -70,7 +71,7 @@ for (const f of sample) {
   const ms = Number(process.hrtime.bigint() - started) / 1e6
 
   const used = contextUsed(parsed)
-  const limit = contextLimitFor(parsed.model, used)
+  const limit = sessionLimit(parsed)
   const pct = limit > 0 ? ((used / limit) * 100).toFixed(1) : 'n/a'
 
   console.log(`${f.path.split(/[\\/]/).slice(-2).join('/')}  (${fmt(f.size)} bytes, ${ms.toFixed(0)}ms)`)

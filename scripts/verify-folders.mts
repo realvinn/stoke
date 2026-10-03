@@ -52,7 +52,7 @@ import { addRemoteProject, browseRemoteFolder, resolveFolderBases } from '../src
 import { ContextWatcher } from '../src/main/context.ts'
 import {
   advanceCursor,
-  contextLimitFor,
+  sessionLimit,
   contextUsed,
   createFold,
   finishFold,
@@ -1209,7 +1209,7 @@ try {
     const expect = async (w: number | null): Promise<unknown> => {
       const p = await parseSession(local)
       const used = contextUsed(p)
-      return [used, contextLimitFor(p.model, used, w), p.inputTokens, p.cacheReadTokens,
+      return [used, sessionLimit(p, w), p.inputTokens, p.cacheReadTokens,
         p.cacheCreationTokens, p.outputTokens, p.model, p.messageCount, p.title, p.permissionMode]
     }
     try {
@@ -1418,7 +1418,7 @@ try {
           messageCount: p.messageCount,
           model: p.model,
           contextTokens: used,
-          contextLimit: contextLimitFor(p.model, used),
+          contextLimit: sessionLimit(p),
           gitBranch: p.gitBranch
         })
       }
@@ -1475,6 +1475,58 @@ try {
   }
 } finally {
   rmSync(tx, { recursive: true, force: true })
+}
+
+console.log('\na compaction is the conversation’s new size, and leaves its window')
+{
+  /*
+   * The owner, 2026-10-03: after /compact the status bar read right and the
+   * sidebar row said almost full. The row and the SSH meter read the
+   * transcript, whose last turn before the boundary still said 967k; the
+   * boundary's own `compactMetadata.postTokens` is the size left (the shape
+   * below is the real record's, trimmed).
+   */
+  const turn = (model: string, input: number, cache: number, out: number): string =>
+    JSON.stringify({
+      type: 'assistant',
+      message: { model, usage: { input_tokens: input, cache_read_input_tokens: cache, cache_creation_input_tokens: 0, output_tokens: out } }
+    })
+  const boundary = (meta: Record<string, unknown>): string =>
+    JSON.stringify({ type: 'system', subtype: 'compact_boundary', content: 'Conversation compacted', level: 'info', compactMetadata: meta })
+  const fold = (...lines: string[]) => {
+    const f = createFold()
+    foldLines(f, lines.join('\n') + '\n')
+    const p = finishFold(f)
+    return { used: contextUsed(p), limit: sessionLimit(p), p }
+  }
+  const big = turn('claude-opus-5', 2, 960_000, 7_154)
+  const compacted = fold(big, boundary({ trigger: 'manual', preTokens: 967_156, postTokens: 23_072 }))
+  check('after a compaction the reading is its postTokens, not the last turn', compacted.used, 23_072)
+  check('  and a chat that held 967k keeps the 1M window it showed', compacted.limit, 1_000_000)
+  const replied = fold(big, boundary({ trigger: 'auto', preTokens: 967_156, postTokens: 23_072 }), turn('claude-opus-5', 2, 30_000, 900))
+  check('the next reply’s usage replaces it', [replied.used, replied.limit], [30_902, 1_000_000])
+  check(
+    'a compaction stating no postTokens leaves the old reading (overstated, never hidden)',
+    fold(big, boundary({ trigger: 'manual', preTokens: 967_156 })).used,
+    967_156
+  )
+  check(
+    'a chat compacted before it ever replied still knows its window from preTokens',
+    fold(boundary({ trigger: 'auto', preTokens: 450_000, postTokens: 20_000 })).limit,
+    1_000_000
+  )
+  check(
+    'a switch to another model forgets the old one’s peak: a 200k model is not read as 1M',
+    fold(big, boundary({ preTokens: 967_156, postTokens: 23_072 }), turn('claude-fable-5', 2, 40_000, 100)).limit,
+    200_000
+  )
+  check(
+    '  but an error turn (`<synthetic>`) is not a model switch',
+    fold(big, boundary({ preTokens: 967_156, postTokens: 23_072 }), JSON.stringify({ type: 'assistant', message: { model: '<synthetic>' } })).limit,
+    1_000_000
+  )
+  check('a stated window still wins over the peak', sessionLimit(compacted.p, 2_000_000), 2_000_000)
+  check('a chat that never passed 200k stays 200k', fold(turn('claude-opus-5', 2, 150_000, 10)).limit, 200_000)
 }
 
 console.log('\nrevealProblem: the file manager is asked only for an absolute path to a folder that exists')
