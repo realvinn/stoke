@@ -260,9 +260,16 @@ export function foldLine(out: SessionFold, line: string): void {
     const msg = rec.message as
       | { model?: unknown; usage?: Record<string, unknown> }
       | undefined
+    /*
+     * The CLI's own error turns — a rate limit, a server error, "No response
+     * requested." — are model `<synthetic>` with a usage of all zeros (376 on
+     * this Mac, every one zero). They are no reply: folded, the meter read 0%
+     * for a session at 99.7% until the limit reset, and the model id they wrote
+     * hid a switch made right after one from the peak reset below.
+     */
+    if (msg?.model === '<synthetic>') return
     if (typeof msg?.model === 'string') {
       // A different model is a different window: the peak was the old one's.
-      // Only between real model ids — an error turn is `<synthetic>`.
       if (out.model && /^claude-/.test(msg.model) && /^claude-/.test(out.model) && msg.model !== out.model) {
         out.peakTokens = 0
       }
@@ -747,15 +754,20 @@ export function contextUsed(p: {
 }
 
 /**
- * A parsed session's window: `contextLimitFor` judged by the most this
+ * A parsed session's window. A stated one (the payload's) wins whenever what
+ * the session holds NOW fits it — a 200k model chosen after a compacted 1M one
+ * states 200k, and judged by the old peak the meter read 15% for 75% (found in
+ * review, 2026-10-03). With none, `contextLimitFor` judges by the most this
  * session has ever held on its model (`peakTokens`), not only what it holds
- * now. Observed usage is the only sign of a 1M window in a transcript (gotcha
- * 2), and a compaction takes it away: judged by 23k, a 1M chat that held 967k
- * read as 200k. The stated window, when there is one, still wins.
+ * now: observed usage is the only sign of a 1M window in a transcript (gotcha
+ * 2), and a compaction takes it away — judged by 23k, a 1M chat that held 967k
+ * read as 200k.
  */
 export function sessionLimit(
   p: Parameters<typeof contextUsed>[0] & { model: string | null; peakTokens: number },
   bannerLimit: number | null = null
 ): number {
-  return contextLimitFor(p.model, Math.max(contextUsed(p), p.peakTokens), bannerLimit)
+  const used = contextUsed(p)
+  if (bannerLimit && used <= bannerLimit) return bannerLimit
+  return contextLimitFor(p.model, Math.max(used, p.peakTokens), null)
 }

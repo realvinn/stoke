@@ -1520,12 +1520,29 @@ console.log('\na compaction is the conversation’s new size, and leaves its win
     fold(big, boundary({ preTokens: 967_156, postTokens: 23_072 }), turn('claude-fable-5', 2, 40_000, 100)).limit,
     200_000
   )
+  // The CLI's real error turn: model `<synthetic>`, usage all zeros (a rate limit, here).
+  const synthetic = JSON.stringify({
+    type: 'assistant',
+    message: { model: '<synthetic>', usage: { input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 0 } }
+  })
   check(
-    '  but an error turn (`<synthetic>`) is not a model switch',
-    fold(big, boundary({ preTokens: 967_156, postTokens: 23_072 }), JSON.stringify({ type: 'assistant', message: { model: '<synthetic>' } })).limit,
-    1_000_000
+    'an error turn (`<synthetic>`, usage all zeros) is no reply: the reading stands',
+    [fold(turn('claude-opus-5', 2, 199_000, 327), synthetic).used, fold(turn('claude-opus-5', 2, 199_000, 327), synthetic).p.model],
+    [199_329, 'claude-opus-5']
+  )
+  check('  and it is not a model switch', fold(big, boundary({ preTokens: 967_156, postTokens: 23_072 }), synthetic).limit, 1_000_000)
+  check(
+    '  nor does it hide one made right after it: a 200k model is not read as 1M',
+    fold(big, boundary({ preTokens: 967_156, postTokens: 23_072 }), synthetic, turn('claude-fable-5', 2, 40_000, 100)).limit,
+    200_000
   )
   check('a stated window still wins over the peak', sessionLimit(compacted.p, 2_000_000), 2_000_000)
+  check(
+    '  and a SMALLER stated one wins too while the chat fits it (a 200k model after a 1M peak)',
+    sessionLimit(fold(big, boundary({ preTokens: 967_156, postTokens: 23_072 }), turn('claude-opus-5', 2, 150_000, 100)).p, 200_000),
+    200_000
+  )
+  check('  but not once the chat holds more than it states', sessionLimit(fold(turn('claude-opus-5', 2, 300_000, 10)).p, 200_000), 1_000_000)
   check('a chat that never passed 200k stays 200k', fold(turn('claude-opus-5', 2, 150_000, 10)).limit, 200_000)
 }
 
