@@ -62,6 +62,10 @@ import {
   SYNC_INTERVAL_MS,
   sshKeyInstallPlan,
   valueDigest,
+  VERIFY_OLD_HUB,
+  verifyPasswordSentence,
+  verifyResultFor,
+  type HubVerifyResult,
   type RemoteItem,
   type SyncedRecord
 } from '../src/shared/hub/client.ts'
@@ -475,6 +479,64 @@ function fakeSshG(): ExecRun {
 }
 
 /* =================================================== two devices, one hub */
+/* =================================================== "confirm it's you": what each answer means */
+console.log('\n“confirm it’s you”: what each hub answer means, and what the sheet says')
+{
+  check(
+    'the hub’s codes, as results: wrong is never a dead session, throttles keep the hub’s wait, an old hub says so',
+    [
+      verifyResultFor('wrong-password', undefined, 'x'),
+      verifyResultFor('throttled', 900_000, 'x'),
+      verifyResultFor('locked', 120_000, 'x'),
+      verifyResultFor('rate-limited', undefined, 'x'),
+      verifyResultFor('unauthorized', undefined, 'x'),
+      verifyResultFor('pending', undefined, 'x'),
+      verifyResultFor('not-found', undefined, 'The hub has nothing at that address.'),
+      verifyResultFor('offline', undefined, 'Could not reach the hub at nuc: refused.'),
+      verifyResultFor('clock-skew', undefined, 'This computer’s clock is off.')
+    ],
+    [
+      { kind: 'wrong' },
+      { kind: 'throttled', retryAfterMs: 900_000 },
+      { kind: 'throttled', retryAfterMs: 120_000 },
+      { kind: 'throttled', retryAfterMs: 60_000 },
+      { kind: 'not-signed-in' },
+      { kind: 'not-signed-in' },
+      { kind: 'unreachable', message: VERIFY_OLD_HUB },
+      { kind: 'unreachable', message: 'Could not reach the hub at nuc: refused.' },
+      { kind: 'unreachable', message: 'This computer’s clock is off.' }
+    ]
+  )
+  const says = (r: HubVerifyResult): string | null => verifyPasswordSentence(r)
+  check(
+    'the sheet’s sentences (spec §2), a wait rounded UP and never "0 min", hours past an hour and a half',
+    [
+      says({ kind: 'wrong' }),
+      says({ kind: 'throttled', retryAfterMs: 15 * 60_000 }),
+      says({ kind: 'throttled', retryAfterMs: 61_000 }),
+      says({ kind: 'throttled', retryAfterMs: 1 }),
+      says({ kind: 'throttled', retryAfterMs: 90 * 60_000 }),
+      says({ kind: 'throttled', retryAfterMs: 4 * 60 * 60_000 - 1 }),
+      says({ kind: 'unreachable', message: 'anything' }),
+      says({ kind: 'not-signed-in' }),
+      says({ kind: 'ok' }),
+      says({ kind: 'busy' })
+    ],
+    [
+      'That password didn’t match.',
+      'Too many tries. Try again in 15 min.',
+      'Too many tries. Try again in 2 min.',
+      'Too many tries. Try again in 1 min.',
+      'Too many tries. Try again in 90 min.',
+      'Too many tries. Try again in 4 h.',
+      'Can’t reach your hub.',
+      'Sign in to Stoke Hub first.',
+      null,
+      null
+    ]
+  )
+}
+
 console.log('\nthe client end to end: devices, a hub on 127.0.0.1, and a hub that lies')
 
 function fakeBackend(tag: string): SecretBackend {
@@ -1146,6 +1208,66 @@ try {
   A.intercept = null
   check('a hub that keeps saying “more” without moving on is a failed sync in a sentence, not a loop', [stuck.ok, !stuck.ok && /did not move past/.test(stuck.message), Date.now() - t0 < 5000], [false, true, true])
   check('and the next pass is fine', (await A.svc.syncNow()).ok, true)
+
+  /* ------------------------------------------ "confirm it's you": one password check, nothing kept (spec 2026-10-03 §2) */
+  {
+    const verifies = (b: Box): number => b.seen.filter((r) => r === 'POST /v1/auth/verify').length
+    const WRONG = `not the hub password ${Math.random().toString(36).slice(2)}`
+    secretsSeen.push(WRONG)
+    const n0 = verifies(A)
+    check('the right password, from a device in the vault, is ok', await A.svc.verifyPassword(PASSWORD), { kind: 'ok' })
+    check('a wrong one is wrong', await A.svc.verifyPassword(WRONG), { kind: 'wrong' })
+    check('and the device is still signed in and in the vault: wrong-password is not a dead session', A.svc.view().phase, 'active')
+    check('each check is one signed request', verifies(A) - n0, 2)
+    const n1 = verifies(A)
+    const both = await Promise.all([A.svc.verifyPassword(PASSWORD), A.svc.verifyPassword(PASSWORD)])
+    check('a double press sends ONE check; the second answers busy (claimed before the first await, gotcha 20)', [both.map((r) => r.kind).sort(), verifies(A) - n1], [['busy', 'ok'], 1])
+    check('an empty password is never sent', [await A.svc.verifyPassword(''), verifies(A) - n1], [{ kind: 'wrong' }, 1])
+
+    // What the hub, or anything on the path to it, can answer instead: through A's own fetch.
+    const answer = async (respond: (url: URL, init: RequestInit) => Response): Promise<HubVerifyResult> => {
+      A.intercept = (url, init) => (v1(url) === '/v1/auth/verify' ? respond(url, init) : null)
+      try {
+        return await A.svc.verifyPassword(PASSWORD)
+      } finally {
+        A.intercept = null
+      }
+    }
+    check(
+      '429 throttled carries the hub’s own wait',
+      await answer(() => json({ error: 'throttled', message: 'Too many tries. Try again later.', retryAfterMs: 1_800_000 }, 429)),
+      { kind: 'throttled', retryAfterMs: 1_800_000 }
+    )
+    const down = await answer(() => {
+      throw new TypeError('fetch failed')
+    })
+    check('no answer at all is unreachable, with the reason', [down.kind, down.kind === 'unreachable' && /Could not reach the hub/.test(down.message)], ['unreachable', true])
+    const challenge = await answer(() => new Response('<html>Just a moment…</html>', { status: 200, headers: { 'content-type': 'text/html' } }))
+    check('a challenge page (HTML, status 200) is unreachable, never ok (gotcha 71)', challenge.kind, 'unreachable')
+    check('nor is a 200 that does not say { ok: true }', (await answer(() => json({ accountId: account }))).kind, 'unreachable')
+    check('a hub too old to have the route says to update it', await answer(() => json({ error: 'not-found', message: 'The hub has nothing at that address.' }, 404)), { kind: 'unreachable', message: VERIFY_OLD_HUB })
+    check('and through all of it A stayed signed in', A.svc.view().phase, 'active')
+
+    // Devices that may not ask.
+    check('a device signed in but not in the vault is not-signed-in, on the hub’s word (403 pending)', [await W.svc.verifyPassword(PASSWORD), W.svc.view().phase], [{ kind: 'not-signed-in' }, 'locked'])
+    const N = device('never-signed-in', {} as Partial<Settings>)
+    extras.push(N)
+    await N.svc.start()
+    await N.svc.setUrl(URL_)
+    check('a device never signed in is not-signed-in, and sends nothing', [await N.svc.verifyPassword(PASSWORD), verifies(N)], [{ kind: 'not-signed-in' }, 0])
+    W.intercept = (url) => (v1(url) === '/v1/auth/verify' ? json({ error: 'unauthorized', message: 'Your hub session ended. Sign in again.' }, 401) : null)
+    check('a session the hub ended is not-signed-in, and signs the device out as any request does', [await W.svc.verifyPassword(PASSWORD), W.svc.view().phase], [{ kind: 'not-signed-in' }, 'signed-out'])
+    W.intercept = null
+
+    // Never stored: not in A's device or state file (both opened, so a sealed copy would show), nor in any file beside them.
+    const aFiles = new HubFiles(A.userData, fakeBackend('mac'), 'darwin')
+    const kept = JSON.stringify([await aFiles.loadDevice(), await aFiles.loadState(account)])
+    const raw = readdirSync(A.userData)
+      .filter((f) => statSync(join(A.userData, f)).isFile())
+      .map((f) => readFileSync(join(A.userData, f), 'utf8'))
+      .join('\n')
+    ok('neither password is kept by the device, sealed or not', kept.length > 100 && ![kept, raw].some((t) => t.includes(PASSWORD) || t.includes(WRONG)))
+  }
 
   /* ------------------------------------------ what the hub can see */
   const files = readdirSync(hubDir).filter((f) => f.startsWith('hub.db'))
