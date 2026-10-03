@@ -2,8 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import { dismissToast, useToastFloor, useToasts, type Toast } from '../lib/toasts'
 import { IconAlert, IconCheck, IconClose } from './Icons'
 
-/** How long a leaving toast takes to fade before it is removed. */
-const LEAVE_MS = 180
+/** How long a leaving toast takes to fade and drop away before it is removed (app.css `--toast-leave`). */
+const LEAVE_MS = 320
 
 /** Whether this window is the one in front and showing — a notice read by nobody is not used up. */
 function useWindowActive(): boolean {
