@@ -339,6 +339,12 @@ export const CH = {
    * answer is a `HubVerifyResult`, never anything that holds it.
    */
   hubVerifyPassword: 'hub:verify-password',
+  /**
+   * The "Confirm it's you" sheet went without using its yes (Cancel, Escape,
+   * or unmounted): a check still in flight confirms nothing when it lands,
+   * and a confirmation not yet spent goes (`HubService.cancelVerify`).
+   */
+  hubCancelVerify: 'hub:cancel-verify',
   /*
    * "Other machines" (src/main/hub/remote.ts, spec §6): the owner's other
    * signed-in devices and their sessions, remote tabs, and — on the host —

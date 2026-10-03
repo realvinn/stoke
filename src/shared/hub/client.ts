@@ -967,6 +967,9 @@ export type HubResult<T extends object = object> = ({ ok: true } & T) | { ok: fa
  *   is not in the vault (the route takes only an active device).
  * - `busy`: a check from this device is already in flight; nothing was sent
  *   (gotcha 20). The sheet that asked is still showing that one.
+ * - `cancelled`: the hub said yes, but the sheet that asked was cancelled
+ *   while it was checking (`HubService.cancelVerify`), so nothing was
+ *   confirmed. Nobody is left to tell; it says nothing.
  */
 export type HubVerifyResult =
   | { kind: 'ok' }
@@ -975,6 +978,7 @@ export type HubVerifyResult =
   | { kind: 'unreachable'; message: string }
   | { kind: 'not-signed-in' }
   | { kind: 'busy' }
+  | { kind: 'cancelled' }
 
 /** What a hub without `POST /v1/auth/verify` answers (404), said so the owner knows what to update. */
 export const VERIFY_OLD_HUB = 'Your hub is older than this Stoke and cannot check a password yet. Update the hub, then try again.'

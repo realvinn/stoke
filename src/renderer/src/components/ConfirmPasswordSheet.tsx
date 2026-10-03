@@ -91,6 +91,8 @@ export function ConfirmPasswordSheet({
   const claimed = useRef(false)
   /** Cancelled, confirmed or gone: an answer that lands later turns nothing on. */
   const closed = useRef(false)
+  /** The hub's yes reached `onConfirmed`: the one way this sheet leaves without telling main to drop it. */
+  const usedYes = useRef(false)
   /** The caller's latest `onConfirmed`, for an answer that lands after a re-render. */
   const confirmedRef = useRef(onConfirmed)
   confirmedRef.current = onConfirmed
@@ -113,12 +115,23 @@ export function ConfirmPasswordSheet({
     setFilled(false)
   }, [])
 
+  /*
+   * Main keeps the hub's yes as a short-lived consent (`HubService.cancelVerify`).
+   * A sheet that goes without using it says so, or a check still in flight —
+   * whose answer this sheet ignores — would still confirm the switch for minutes.
+   */
+  const dropConsent = useCallback((): void => {
+    if (usedYes.current) return
+    void window.stoke.hub.cancelVerify().catch(() => undefined)
+  }, [])
+
   const cancel = useCallback((): void => {
     if (closed.current) return
     closed.current = true
     forget()
+    dropConsent()
     onCancel()
-  }, [forget, onCancel])
+  }, [forget, dropConsent, onCancel])
 
   // The field again whenever a check ends (and on mount): it is disabled while one runs.
   // Never shown-then-focused through `visibility` (gotcha 137): nothing here is hidden first.
@@ -131,8 +144,10 @@ export function ConfirmPasswordSheet({
     return () => {
       closed.current = true
       if (field) field.value = ''
+      // Gone under the caller (Settings closed beneath it) without using the yes.
+      dropConsent()
     }
-  }, [])
+  }, [dropConsent])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
@@ -151,6 +166,7 @@ export function ConfirmPasswordSheet({
     setChecking(false)
     if (r.kind === 'ok') {
       closed.current = true
+      usedYes.current = true
       confirmedRef.current()
       return
     }

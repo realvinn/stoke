@@ -38,9 +38,23 @@ import {
   type ChatSourceId,
   type ChatSourceStatus
 } from '../../shared/chatIndex.ts'
+import { isInside, pathRulesFor } from '../../shared/paths.ts'
 import { cleanText, planTrim, REDACTION_VERSION, redactSecrets, type ChatMessage, type ChatMeta } from './parse.ts'
 
 export const STORE_FILE = 'index.sqlite'
+
+/**
+ * `search`'s `skip` for the owner's hidden folders (`hiddenProjects`), by
+ * `platform`'s path rules — the same `isInside` test as `chatIndexForGuests`'s
+ * `hidden` (index.ts). Undefined when nothing is hidden, so the search keeps
+ * its SQL limit.
+ */
+export function skipFolders(folders: readonly unknown[], platform: string): ((cwd: string) => boolean) | undefined {
+  const hidden = folders.filter((f): f is string => typeof f === 'string' && f !== '')
+  if (hidden.length === 0) return undefined
+  const rules = pathRulesFor(platform)
+  return (cwd) => hidden.some((f) => isInside(f, cwd, rules))
+}
 /*
  * 2: imports — the `import_file` table and `chat.import_id`. A version-1 store
  * gains the column in place (`migrate`); nothing in it is rewritten.
@@ -769,21 +783,42 @@ export class ChatStore {
    * one prefix at a time. The filter is inside the grouping, before the
    * limit, so stale chats cannot take a cleaned one's place. Titles and first
    * prompts are cleaned once more on the way out, which costs nothing.
+   *
+   * `skip` leaves a chat out by its folder (another computer never sees a
+   * hidden project's chats) BEFORE the limit, for the same reason: a hidden
+   * chat that took a place and was dropped afterwards would make the answer
+   * one short, and how many hits a limit returns would say whether a hidden
+   * chat matched and how it ranked. With it the ranked rows are walked until
+   * `limit` pass, rather than cut by SQL.
    */
-  search(query: string, limit = 50, opts: { redact?: 'force' } = {}): ChatSearchHit[] {
+  search(query: string, limit = 50, opts: { redact?: 'force'; skip?: (cwd: string) => boolean } = {}): ChatSearchHit[] {
     const match = ftsQuery(query)
     if (!match) return []
     const force = opts.redact === 'force'
-    const best = this.q(
+    const skip = opts.skip
+    type Best = { chat_id: unknown; mid: unknown; role: unknown; cwd: unknown }
+    const bestQ = this.q(
       // MATERIALIZED: flattened into the aggregate, bm25() has no FTS context and errors.
       `WITH h AS MATERIALIZED (SELECT rowid AS mid, bm25(message_fts) AS r FROM message_fts WHERE message_fts MATCH ?)
-       SELECT m.chat_id AS chat_id, h.mid AS mid, m.role AS role, MIN(h.r) AS best
+       SELECT m.chat_id AS chat_id, h.mid AS mid, m.role AS role, c.cwd AS cwd, MIN(h.r) AS best
        FROM h JOIN message m ON m.id = h.mid JOIN chat c ON c.id = m.chat_id
        WHERE c.redact_level >= ?
        GROUP BY m.chat_id
        ORDER BY best
        LIMIT ?`
-    ).all(match, force ? REDACTION_VERSION : -1, limit) as { chat_id: unknown; mid: unknown; role: unknown }[]
+    )
+    const level = force ? REDACTION_VERSION : -1
+    let best: Best[]
+    if (!skip) best = bestQ.all(match, level, limit) as Best[]
+    else {
+      best = []
+      // LIMIT -1 is no limit: the walk stops itself once `limit` chats are kept.
+      for (const r of bestQ.iterate(match, level, -1) as Iterable<Best>) {
+        if (typeof r.cwd === 'string' && r.cwd !== '' && skip(r.cwd)) continue
+        best.push(r)
+        if (best.length >= limit) break
+      }
+    }
     /*
      * `CAST(? AS INTEGER)`, and it is load-bearing (gotcha 125): node:sqlite
      * binds every JS number as a REAL, and FTS5 silently ignores `rowid = <a

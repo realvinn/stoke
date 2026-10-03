@@ -19,7 +19,9 @@
  *   `hub.grants` (T0: never synced, so neither the hub nor any synced item
  *   can grant anything); revoking it is deleting it.
  * - CHAT HISTORY (spec 2026-10-03 §3): a status says `chats: true` while
- *   this machine shares it (`chatsSharingEffective`); a relay that attaches
+ *   this machine shares it (`chatsSharingEffective`; its redaction off is a
+ *   pause, `chatsShareBlock`); every refusal carries a code the guest words
+ *   itself (`ChatsRefusalCode`, `chatsRefusalSentence`); a relay that attaches
  *   `{ kind: 'chats' }` is judged by its own rule (`chatsAttachDecision`), its
  *   own "Always" (`hub.chatGrants`) and its own "Allow once", and reaches
  *   exactly two GET routes (`relayScopeVerdict`'s `chats` scope). What it
@@ -37,6 +39,7 @@ import {
   isChatNativeId,
   isChatSource,
   isPtyId,
+  isRelayRefusalCode,
   relayRouteFor,
   type HubGrant,
   type RelayInnerFrame,
@@ -567,6 +570,8 @@ export interface RemoteChatPeerView {
   label: string
   state: RemoteChatPeerState
   message: string | null
+  /** Why that machine refused, when it said (`ChatsRefusalCode`): reword by this, never by `message`. */
+  code: ChatsRefusalCode | null
 }
 
 /** Everything the renderer shows about "Other machines", pushed whole on every change. */
@@ -582,8 +587,16 @@ export interface HubRemoteView {
   grants: RemoteGrantView[]
   /** This machine's tick: "Let my other computers search this computer's chat history" (`hub.shareChats`). */
   sharingChats: boolean
-  /** Whether that tick is in force now: it also needs chat history on and this device in the vault. */
+  /** Whether that tick is in force now: it also needs this device in the vault, chat history on, and its redaction on. */
   chatsEffective: boolean
+  /**
+   * What stands between this computer's chat history and its other computers
+   * NOW, whatever the tick says (`chatsShareBlock`), or null. With the tick
+   * off it is why the tick cannot go on (the row's disabled reason; for
+   * `redaction-off`, `CHATS_REDACTION_BLOCK`); with it on, why sharing is
+   * paused (for `redaction-off`, `CHATS_PAUSED_SENTENCE`).
+   */
+  chatsBlocked: ChatsShareBlock | null
   chatGrants: RemoteChatGrantView[]
   /**
    * Guest side: each other machine a search here is reaching. A peer moving
@@ -604,6 +617,7 @@ export function emptyRemoteView(): HubRemoteView {
     grants: [],
     sharingChats: false,
     chatsEffective: false,
+    chatsBlocked: null,
     chatGrants: [],
     chatPeers: []
   }
@@ -615,13 +629,129 @@ export type RemoteTabFrame = { type: string; [k: string]: unknown }
 /* ------------------------------------------------- chat history (spec 2026-10-03) */
 
 /**
- * Whether this machine's chat history is shared NOW: the owner's tick
- * (`hub.shareChats`), chat history itself on, and this device in the vault.
- * `HubRemote` re-reads each on every request, so turning any one off stops
- * the next search, and the status stops saying `chats: true`.
+ * What stands between this computer's chat history and its other computers
+ * NOW, the owner's tick aside, first one first: this device is out of the
+ * vault, chat history is off, or its "Leave out anything that looks like an
+ * API key" is off.
+ *
+ * The last is a PAUSE, not a refusal of the tick. While it is off the index
+ * stores chats at `redact_level` 0, and a guest searches only rows cleaned by
+ * today's rules (`searchCleaned`, gotcha 156) — so a search answered "Nothing
+ * on Studio says …" for a chat that is there, while Studio's row still said
+ * On. Sharing waits for it instead, and both ends say why.
  */
-export function chatsSharingEffective(f: { share: boolean; indexOn: boolean; inVault: boolean }): boolean {
-  return f.share && f.indexOn && f.inVault
+export type ChatsShareBlock = 'not-in-vault' | 'history-off' | 'redaction-off'
+
+export function chatsShareBlock(f: { indexOn: boolean; redactOn: boolean; inVault: boolean }): ChatsShareBlock | null {
+  if (!f.inVault) return 'not-in-vault'
+  if (!f.indexOn) return 'history-off'
+  if (!f.redactOn) return 'redaction-off'
+  return null
+}
+
+/**
+ * Whether this machine's chat history is shared NOW: the owner's tick
+ * (`hub.shareChats`) and nothing in its way (`chatsShareBlock`: the vault,
+ * chat history, its redaction). `HubRemote` re-reads each on every request,
+ * so turning any one off stops the next search, and the status stops saying
+ * `chats: true`.
+ */
+export function chatsSharingEffective(f: { share: boolean; indexOn: boolean; redactOn: boolean; inVault: boolean }): boolean {
+  return f.share && chatsShareBlock(f) === null
+}
+
+/** Why the tick cannot go on while redaction is off: the Settings row's disabled reason, and main's refusal. */
+export const CHATS_REDACTION_BLOCK = 'Turn on “Leave out anything that looks like an API key” in Chat history first.'
+/** The Settings row's hint while the tick is on and redaction is off: nothing is shared until it is back on. */
+export const CHATS_PAUSED_SENTENCE = 'Paused: turn on “Leave out anything that looks like an API key” in Chat history to share it.'
+
+/**
+ * Why a host refused a chats relay: the `code` of its `refused` frame (the
+ * wire's `RelayRefusalCode`), for the GUEST to word (`chatsRefusalSentence`)
+ * and act on (`chatsRefusalState`). The host's own sentence travels beside it
+ * only as a fallback for a guest older than the code; never show it where a
+ * code came, since the host may have written it about itself. `<C>` below is
+ * the host's name as the guest knows it.
+ *
+ * - `not-sharing` — its tick is off. "<C> isn’t sharing its chat history."
+ * - `history-off` — chat history is off there. "<C> has chat history turned off."
+ * - `redaction-off` — sharing is PAUSED there: its "Leave out anything that
+ *   looks like an API key" is off (`chatsShareBlock`). "<C> has paused sharing its chat history: …"
+ * - `denied` — its owner pressed Deny. "<C> said no."
+ * - `no-answer` — nobody answered its question in time. "Nobody answered on <C> in time."
+ * - `revoked` — its owner took this device's grant back (Remove, or the grant
+ *   went from its settings). "<C> took back this computer’s access to its chat history."
+ * - `busy` — it is already asking about this device. "<C> is already asking whether to let this computer in."
+ * - `not-a-device` — its chain no longer holds this device. "<C> no longer counts this computer as one of your devices."
+ * - `not-in-vault` — the host itself left the vault. "<C> is no longer in your hub’s vault."
+ * - `disconnected` — its owner pressed Disconnect. "<C> disconnected this computer."
+ *
+ * The first three read as `not-sharing` (asked again `CHATS_RETRY_MS`
+ * later), the next three as `denied` (standing until the search ends), the
+ * rest as `error` (`chatsRefusalState`).
+ */
+export const CHATS_REFUSAL_CODES = [
+  'not-sharing',
+  'history-off',
+  'redaction-off',
+  'denied',
+  'no-answer',
+  'revoked',
+  'busy',
+  'not-a-device',
+  'not-in-vault',
+  'disconnected'
+] as const satisfies readonly RelayRefusalCode[]
+export type ChatsRefusalCode = (typeof CHATS_REFUSAL_CODES)[number]
+
+export function isChatsRefusalCode(v: unknown): v is ChatsRefusalCode {
+  return isRelayRefusalCode(v) && (CHATS_REFUSAL_CODES as readonly string[]).includes(v)
+}
+
+/**
+ * A code as one sentence about the computer called `computer`, true on
+ * either end: the host sends it as its fallback `reason` with its own name,
+ * and the guest says it again with the name it knows the host by.
+ */
+export function chatsRefusalSentence(code: ChatsRefusalCode, computer: string): string {
+  switch (code) {
+    case 'not-sharing':
+      return `${computer} isn’t sharing its chat history.`
+    case 'history-off':
+      return `${computer} has chat history turned off.`
+    case 'redaction-off':
+      return `${computer} has paused sharing its chat history: “Leave out anything that looks like an API key” is off there.`
+    case 'denied':
+      return `${computer} said no.`
+    case 'no-answer':
+      return `Nobody answered on ${computer} in time.`
+    case 'revoked':
+      return `${computer} took back this computer’s access to its chat history.`
+    case 'busy':
+      return `${computer} is already asking whether to let this computer in.`
+    case 'not-a-device':
+      return `${computer} no longer counts this computer as one of your devices.`
+    case 'not-in-vault':
+      return `${computer} is no longer in your hub’s vault.`
+    case 'disconnected':
+      return `${computer} disconnected this computer.`
+  }
+}
+
+/** What a refusal makes of the guest's peer: not sharing (asked again later), denied (stands), or an error (asked again). */
+export function chatsRefusalState(code: ChatsRefusalCode | null): 'not-sharing' | 'denied' | 'error' {
+  switch (code) {
+    case 'not-sharing':
+    case 'history-off':
+    case 'redaction-off':
+      return 'not-sharing'
+    case 'denied':
+    case 'no-answer':
+    case 'revoked':
+      return 'denied'
+    default:
+      return 'error'
+  }
 }
 
 /** The key a chats "Allow once" is held under, in a list of its own: never the sessions' list. */
@@ -634,8 +764,9 @@ export type ChatsDecision =
 
 /**
  * What the host does with a relay that attaches `{ kind: 'chats' }`, in
- * order: not sharing, or chat history off → refused (whatever was granted:
- * the tick is the master switch); an "Always" in `hub.chatGrants` → served;
+ * order: not sharing, chat history off, or its redaction off → refused
+ * (whatever was granted: the tick is the master switch, and the other two
+ * pause it, `chatsShareBlock`); an "Always" in `hub.chatGrants` → served;
  * a chats "Allow once" still holding for this device → served; anything else
  * → ask the owner. A SESSION grant is never read here, and `once` must be the
  * chats list, never the sessions' (`HubRemote.chatOnce`).
@@ -643,15 +774,18 @@ export type ChatsDecision =
 export function chatsAttachDecision(f: {
   sharing: boolean
   indexOn: boolean
+  redactOn: boolean
   grant: ChatGrant | null
   once: readonly OnceGrant[]
   device: string
   hostName: string
   now: number
 }): ChatsDecision {
-  if (!isId('device', f.device)) return { t: 'refuse', code: 'not-a-device', reason: 'That is not one of this account’s devices.' }
-  if (!f.sharing) return { t: 'refuse', code: 'not-sharing', reason: `${f.hostName} isn’t sharing its chat history.` }
-  if (!f.indexOn) return { t: 'refuse', code: 'not-sharing', reason: `${f.hostName} has chat history turned off.` }
+  const refuse = (code: ChatsRefusalCode): ChatsDecision => ({ t: 'refuse', code, reason: chatsRefusalSentence(code, f.hostName) })
+  if (!isId('device', f.device)) return refuse('not-a-device')
+  if (!f.sharing) return refuse('not-sharing')
+  if (!f.indexOn) return refuse('history-off')
+  if (!f.redactOn) return refuse('redaction-off')
   if (f.grant === 'always') return { t: 'allow', via: 'always' }
   if (onceHolds(f.once, f.device, CHATS_ONCE_KEY, f.now)) return { t: 'allow', via: 'once' }
   return { t: 'ask' }
@@ -681,8 +815,10 @@ export interface RemoteChatsResult {
   label: string
   platform: string
   state: RemoteChatsState
-  /** One sentence for a state that is not `ok`, or null. */
+  /** One sentence for a state that is not `ok`, or null: for a refusal, this machine's own words for `code`. */
   message: string | null
+  /** The host's refusal code when it refused (`ChatsRefusalCode`); null for anything this machine decided itself. */
+  code: ChatsRefusalCode | null
   hits: RemoteChatHit[]
 }
 
@@ -709,7 +845,7 @@ export interface RemoteChat {
 
 export type RemoteChatOpen =
   | { ok: true; device: string; label: string; chat: RemoteChat }
-  | { ok: false; state: RemoteChatsState; message: string }
+  | { ok: false; state: RemoteChatsState; message: string; code: ChatsRefusalCode | null }
 
 /** The most one chat sent across may weigh, in UTF-8 bytes of its text (the viewer's own bound, `CHAT_VIEW_MAX_BYTES`). */
 export const REMOTE_CHAT_MAX_BYTES = 4 * 1024 * 1024

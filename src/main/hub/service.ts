@@ -104,7 +104,7 @@ import {
   type VaultWrap
 } from '../../shared/hub/protocol.ts'
 import { keyFingerprint, RELAY_MAX_FRAME_BYTES, type HubGrant } from '../../shared/hub/relay.ts'
-import { emptyRemoteView, isAttachAnswer, type HubRemoteView, type RemoteChatOpen, type RemoteChatsResult } from '../../shared/hub/remote.ts'
+import { CHATS_REDACTION_BLOCK, emptyRemoteView, isAttachAnswer, type HubRemoteView, type RemoteChatOpen, type RemoteChatsResult } from '../../shared/hub/remote.ts'
 import { applySyncedSettings, heldChangesFor, runsCode, sshKeyPayloadProblem, type SshKeyPayload, type SyncableHost } from '../../shared/hub/settings.ts'
 import type { SecretBackend } from '../secrets.ts'
 import type { ExecRun } from '../sshEnroll.ts'
@@ -347,8 +347,17 @@ export class HubService {
    * `CHAT_CONSENT_MS`. Memory only.
    */
   private chatConsentAt: number | null
+  /**
+   * Bumped whenever a consent must not be given any more: the sheet that
+   * asked was cancelled (`cancelVerify`) or the account signed out. A check
+   * in flight across a bump records nothing when its `ok` lands — the
+   * password was right, but whoever asked has gone.
+   */
+  private consentGen: number
   /** `settings.chatIndex` as last seen, so switching chat history off ends every chats relay at once. */
   private chatIndexWas: Settings['chatIndex']
+  /** `settings.chatIndexOptions.redact` as last seen: off pauses sharing, and ends every chats relay at once. */
+  private chatRedactWas: boolean
 
   constructor(deps: HubServiceDeps) {
     this.deps = deps
@@ -411,7 +420,9 @@ export class HubService {
         })
       : null
     this.chatConsentAt = null
+    this.consentGen = 0
     this.chatIndexWas = deps.getSettings().chatIndex
+    this.chatRedactWas = deps.getSettings().chatIndexOptions.redact
   }
 
   /* ======================================================== plumbing */
@@ -965,7 +976,8 @@ export class HubService {
       this.revokeReport = null
       this.vkCache.clear()
       // Every standing this computer gave its other devices goes with the account: sessions and chat history alike.
-      this.chatConsentAt = null
+      // A password check still in flight gives none either (`consentGen`).
+      this.dropChatConsent()
       await this.commitHub({ email: '', deviceId: '', token: '', grants: {}, shareSessions: false, shareChats: false, chatGrants: {} })
       return { ok: true }
     })
@@ -996,9 +1008,12 @@ export class HubService {
     if (!this.signedIn() || this.revoked) return { kind: 'not-signed-in' }
     if (typeof password !== 'string' || password.length === 0) return { kind: 'wrong' }
     this.verifying = true
+    // Whose check this is: a Cancel or a sign-out while it is in flight bumps it, and its yes then gives nothing.
+    const gen = this.consentGen
     try {
       const res = await this.req('POST', '/v1/auth/verify', { password })
       if (res.ok !== true) return { kind: 'unreachable', message: 'The hub answered, but not with a yes or a no. Check that the address is your hub.' }
+      if (gen !== this.consentGen) return this.signedIn() && !this.revoked ? { kind: 'cancelled' } : { kind: 'not-signed-in' }
       // The one consent the chats tick takes (spec 2026-10-03 §2): typed HERE, and the hub said yes.
       this.noteChatConsent()
       return { kind: 'ok' }
@@ -2094,10 +2109,12 @@ export class HubService {
   }
 
   private onSettingsChanged(): void {
-    // Chat history switched off (or on) in Settings: the chats tick's force moves with it, at once.
+    // Chat history, or its redaction, switched off (or on) in Settings: the chats tick's force moves with it, at once.
     const chatIndex = this.settings().chatIndex
-    if (chatIndex !== this.chatIndexWas) {
+    const redact = this.settings().chatIndexOptions.redact
+    if (chatIndex !== this.chatIndexWas || redact !== this.chatRedactWas) {
       this.chatIndexWas = chatIndex
+      this.chatRedactWas = redact
       this.remote?.chatSharingChanged()
     }
     if (this.applying || !this.isActiveIn(this.verdict)) return
@@ -2862,14 +2879,33 @@ export class HubService {
     this.chatConsentAt = this.now()
   }
 
+  /** No consent stands, and none a check in flight brings back will (`consentGen`). */
+  private dropChatConsent(): void {
+    this.consentGen++
+    this.chatConsentAt = null
+  }
+
+  /**
+   * "Confirm it's you" was cancelled, or went without its yes being used:
+   * a password check still in flight records nothing when it lands, and a
+   * consent not yet spent goes. Before this, a check that came back `ok`
+   * after the sheet was cancelled still let the tick go on, unasked, for
+   * `CHAT_CONSENT_MS` — to any later `setShareChats(true)`.
+   */
+  cancelVerify(): void {
+    this.dropChatConsent()
+  }
+
   /**
    * "Let my other computers search this computer's chat history". Off is
    * instant and needs no password: every chats relay closes and every chats
    * grant goes. On needs a password confirmed here just now
-   * (`noteChatConsent`, spent by this call), chat history on, and this device
-   * in the vault; the devices ticked on the sheet (other ACTIVE devices of the
-   * verified chain only) get "Always" at once. The renderer cannot write
-   * `hub` itself (`commitSettings` keeps main's copy), so this is the only way on.
+   * (`noteChatConsent`, spent by this call), chat history on with its
+   * redaction on (`CHATS_REDACTION_BLOCK`: rows stored with it off cannot be
+   * searched from elsewhere, gotcha 156), and this device in the vault; the
+   * devices ticked on the sheet (other ACTIVE devices of the verified chain
+   * only) get "Always" at once. The renderer cannot write `hub` itself
+   * (`commitSettings` keeps main's copy), so this is the only way on.
    */
   async setShareChats(on: boolean, devices: readonly unknown[] = []): Promise<HubResult> {
     if (!on) {
@@ -2885,6 +2921,7 @@ export class HubService {
       return { ok: false, message: 'Confirm it’s you first: type your hub password on this computer.' }
     }
     if (this.settings().chatIndex !== 'on') return { ok: false, message: 'Turn on Chat history first.' }
+    if (!this.settings().chatIndexOptions.redact) return { ok: false, message: CHATS_REDACTION_BLOCK }
     const ctx = this.remoteContext()
     if (!ctx) return { ok: false, message: 'Sign in to Stoke Hub first.' }
     // Spent before the first await (gotcha 20): a second press needs the password again.
@@ -2913,7 +2950,7 @@ export class HubService {
 
   /** One chat from another computer, read-only (`HubRemote.openRemoteChat`). */
   openRemoteChat(device: string, source: string, nativeId: string): Promise<RemoteChatOpen> {
-    if (!this.remote) return Promise.resolve({ ok: false, state: 'error', message: 'Other machines are not available here.' })
+    if (!this.remote) return Promise.resolve({ ok: false, state: 'error', message: 'Other machines are not available here.', code: null })
     return this.remote.openRemoteChat(device, source, nativeId)
   }
 

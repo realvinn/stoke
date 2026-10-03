@@ -130,12 +130,15 @@ export class ChatIndexHost {
    * force now are searched, whatever this computer's own redaction setting
    * says, and titles and first prompts are cleaned again on the way out. A
    * chat stored while redaction was off is not found until a pass with
-   * redaction on has cleaned it (`recleanStale`). The caller still owns the
-   * route's other rules: chat history on, hidden projects left out, a folder
-   * named by its last segment only, `chatId` (a local row id) not sent.
+   * redaction on has cleaned it (`recleanStale`). A chat inside one of
+   * `hidden` (the owner's `hiddenProjects`) is left out BEFORE the limit, so
+   * it takes no place in the answer (store.ts `search`'s `skip`). The caller
+   * still owns the route's other rules: chat history on, hidden projects
+   * checked again, a folder named by its last segment only, `chatId` (a
+   * local row id) not sent.
    */
-  searchCleaned(query: string, limit: number): Promise<ChatSearchHit[]> {
-    return this.request('search', { query, limit, redact: 'force' })
+  searchCleaned(query: string, limit: number, hidden: readonly string[] = []): Promise<ChatSearchHit[]> {
+    return this.request('search', { query, limit, redact: 'force', hidden: [...hidden] })
   }
 
   /**

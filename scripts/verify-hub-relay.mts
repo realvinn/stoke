@@ -54,8 +54,15 @@ import { HUB_LIMITS, parsePresenceClientFrame, parsePresenceServerFrame, sealedS
 import {
   attachDecision,
   chatsAttachDecision,
+  chatsRefusalSentence,
+  chatsRefusalState,
+  chatsShareBlock,
   chatsSharingEffective,
   CHATS_ONCE_KEY,
+  CHATS_PAUSED_SENTENCE,
+  CHATS_REDACTION_BLOCK,
+  CHATS_REFUSAL_CODES,
+  isChatsRefusalCode,
   folderName,
   parseRemoteChat,
   parseRemoteChatHits,
@@ -562,13 +569,20 @@ interface Machine {
   /** What this machine's status bar would say per session, and every session the relay asked about. */
   status: Record<string, RemoteSessionStatus>
   statusAsked: string[]
-  /** `hub.shareChats`, `hub.chatGrants` and `settings.chatIndex === 'on'` on THIS machine. */
+  /** `hub.shareChats`, `hub.chatGrants`, `settings.chatIndex === 'on'` and `chatIndexOptions.redact` on THIS machine. */
   shareChats: boolean
   chatGrants: Record<string, 'always'>
   indexOn: boolean
+  redactOn: boolean
   /** Its chat index: what `ChatIndexHost` would answer, behind the real `sharedChats`. */
   chats: FakeChat[]
   hidden: string[]
+  /** Runs inside a grant write, before it lands (`setGrant`/`setChatGrant`): the world moving during the await. */
+  duringGrant?: () => void
+  /** Runs (once) while a relayed request is being answered: the world moving during the handler's await. */
+  duringRequest?: () => void
+  /** What this machine calls itself now, when it differs from what the others last heard (a rename not yet published). */
+  selfLabel?: string
 }
 /** One chat in a fake index: its search hit's fields and its transcript. */
 interface FakeChat {
@@ -586,6 +600,8 @@ const vkShared = randomU8(32)
 function chatAccess(m: Machine): ChatIndexAccess {
   return {
     indexOn: () => m.indexOn,
+    // Absent on a bare test machine means on: the cases that turn it off say so.
+    redactOn: () => m.redactOn !== false,
     hidden: (cwd) => m.hidden.some((h) => cwd === h || cwd.startsWith(`${h}/`)),
     search: async (q, limit) =>
       m.chats
@@ -617,12 +633,20 @@ function chatAccess(m: Machine): ChatIndexAccess {
 }
 
 function machine(d: Dev, opts: { keepAlive?: { pingMs: number; pongWaitMs: number }; olderHost?: boolean; chatsTiming?: { idleMs?: number; waitMs?: number; retryMs?: number; requestMs?: number } } = {}): Machine {
-  const m = { dev: d, active: [...ACTIVE], out: false, sharing: false, grants: {}, views: [], frames: [], ptyInput: [], sockets: [], requests: [], sessions: [], resizes: [], status: {}, statusAsked: [], shareChats: false, chatGrants: {}, indexOn: true, chats: [], hidden: [] } as unknown as Machine
+  const m = { dev: d, active: [...ACTIVE], out: false, sharing: false, grants: {}, views: [], frames: [], ptyInput: [], sockets: [], requests: [], sessions: [], resizes: [], status: {}, statusAsked: [], shareChats: false, chatGrants: {}, indexOn: true, redactOn: true, chats: [], hidden: [] } as unknown as Machine
   const chatShare = sharedChats(chatAccess(m))
+  /** A give that is being written: the hook (once) runs while it is in flight, as a sync pass or a click would. */
+  const writing = async (): Promise<void> => {
+    const during = m.duringGrant
+    if (!during) return
+    m.duringGrant = undefined
+    await tick()
+    during()
+  }
   const ctx = (): RemoteContext | null => m.out ? null : ({
     account: ACCOUNT,
     epoch: 1,
-    me: { id: d.id, label: d.label, platform: d.platform, signPriv: d.keys.signPriv },
+    me: { id: d.id, label: m.selfLabel ?? d.label, platform: d.platform, signPriv: d.keys.signPriv },
     active: m.active.map((a) => ({ id: a.id, label: a.label, platform: a.platform, sign: a.keys.signPub }))
   })
   m.remote = new HubRemote({
@@ -662,8 +686,10 @@ function machine(d: Dev, opts: { keepAlive?: { pingMs: number; pongWaitMs: numbe
     sharing: () => m.sharing,
     grants: () => m.grants,
     setGrant: async (device, grant) => {
-      if (grant) m.grants = { ...m.grants, [device]: grant }
-      else {
+      if (grant) {
+        m.grants = { ...m.grants, [device]: grant }
+        await writing()
+      } else {
         const next = { ...m.grants }
         delete next[device]
         m.grants = next
@@ -678,12 +704,20 @@ function machine(d: Dev, opts: { keepAlive?: { pingMs: number; pongWaitMs: numbe
       if (on) next[device] = 'always'
       else delete next[device]
       m.chatGrants = next
+      if (on) await writing()
     },
     chatIndexOn: () => m.indexOn,
+    chatRedactOn: () => m.redactOn,
     log: () => {},
     sessions: async () => m.sessions,
     request: async (method, path) => {
       m.requests.push(`${method} ${path}`)
+      const during = m.duringRequest
+      if (during) {
+        m.duringRequest = undefined
+        await tick()
+        during()
+      }
       // The relay instance's own routing (server.ts `api`): chats only through `chatsRouteFor('relay', …)`.
       const url = new URL(path, 'http://localhost')
       const route = chatsRouteFor('relay', method, url.pathname)
@@ -1399,20 +1433,46 @@ console.log('\na host from before last active wins is never resized: its own tab
 
 console.log('\nchat history: the host’s rules, the scope, and what may leave')
 {
-  const base = { sharing: true, indexOn: true, grant: null as 'always' | null, once: [] as ReturnType<typeof holdOnce>, device: B.id, hostName: 'Studio', now: 1000 }
+  const base = { sharing: true, indexOn: true, redactOn: true, grant: null as 'always' | null, once: [] as ReturnType<typeof holdOnce>, device: B.id, hostName: 'Studio', now: 1000 }
   check('not sharing: refused as not-sharing, whatever was granted', chatsAttachDecision({ ...base, sharing: false, grant: 'always' }), { t: 'refuse', code: 'not-sharing', reason: 'Studio isn’t sharing its chat history.' })
-  check('chat history off: refused as not-sharing, whatever was granted', [chatsAttachDecision({ ...base, indexOn: false, grant: 'always' }).t, (chatsAttachDecision({ ...base, indexOn: false }) as { code?: string }).code], ['refuse', 'not-sharing'])
+  check('chat history off: refused as history-off, whatever was granted', [chatsAttachDecision({ ...base, indexOn: false, grant: 'always' }).t, (chatsAttachDecision({ ...base, indexOn: false }) as { code?: string }).code], ['refuse', 'history-off'])
+  check(
+    'redaction off: refused as redaction-off (sharing paused), whatever was granted or held',
+    [chatsAttachDecision({ ...base, redactOn: false, grant: 'always' }), chatsAttachDecision({ ...base, redactOn: false, once: holdOnce([], B.id, CHATS_ONCE_KEY) }).t],
+    [{ t: 'refuse', code: 'redaction-off', reason: 'Studio has paused sharing its chat history: “Leave out anything that looks like an API key” is off there.' }, 'refuse']
+  )
   check('a chats Always: served', chatsAttachDecision({ ...base, grant: 'always' }), { t: 'allow', via: 'always' })
   check('nothing yet: ask', chatsAttachDecision(base).t, 'ask')
   check('a chats Allow once held for this device: served', chatsAttachDecision({ ...base, once: holdOnce([], B.id, CHATS_ONCE_KEY) }), { t: 'allow', via: 'once' })
   check('a SESSION’s Allow once is not one (it is another list, keyed by pty)', chatsAttachDecision({ ...base, once: holdOnce([], B.id, 'pty-a1') }).t, 'ask')
   check('a malformed device: refused', chatsAttachDecision({ ...base, device: 'nope' }).t, 'refuse')
-  check('effective only with the tick, chat history and the vault', [
-    chatsSharingEffective({ share: true, indexOn: true, inVault: true }),
-    chatsSharingEffective({ share: false, indexOn: true, inVault: true }),
-    chatsSharingEffective({ share: true, indexOn: false, inVault: true }),
-    chatsSharingEffective({ share: true, indexOn: true, inVault: false })
-  ], [true, false, false, false])
+  check('effective only with the tick, chat history, its redaction and the vault', [
+    chatsSharingEffective({ share: true, indexOn: true, redactOn: true, inVault: true }),
+    chatsSharingEffective({ share: false, indexOn: true, redactOn: true, inVault: true }),
+    chatsSharingEffective({ share: true, indexOn: false, redactOn: true, inVault: true }),
+    chatsSharingEffective({ share: true, indexOn: true, redactOn: false, inVault: true }),
+    chatsSharingEffective({ share: true, indexOn: true, redactOn: true, inVault: false })
+  ], [true, false, false, false, false])
+  check('what stands in the way, first one first, whatever the tick says', [
+    chatsShareBlock({ indexOn: true, redactOn: true, inVault: true }),
+    chatsShareBlock({ indexOn: false, redactOn: false, inVault: false }),
+    chatsShareBlock({ indexOn: false, redactOn: false, inVault: true }),
+    chatsShareBlock({ indexOn: true, redactOn: false, inVault: true })
+  ], [null, 'not-in-vault', 'history-off', 'redaction-off'])
+
+  // The codes a guest words itself (spec 2026-10-03; the host's sentence is only a fallback).
+  check('every chats refusal code is one the wire carries, and a stray one is not a code', [CHATS_REFUSAL_CODES.every((c) => parseRelayInner(JSON.stringify({ t: 'refused', reason: 'x', code: c }))?.t === 'refused' && (parseRelayInner(JSON.stringify({ t: 'refused', reason: 'x', code: c })) as { code?: string }).code === c), isChatsRefusalCode('root'), isChatsRefusalCode(undefined)], [true, false, false])
+  check(
+    'the guest’s words name the HOST, never “this computer” for it',
+    CHATS_REFUSAL_CODES.map((c) => chatsRefusalSentence(c, 'Studio')).filter((s) => !s.includes('Studio') || /^This computer/.test(s)),
+    []
+  )
+  check('took back and already asking read from the guest’s side', [chatsRefusalSentence('revoked', 'Studio'), chatsRefusalSentence('busy', 'Studio')], ['Studio took back this computer’s access to its chat history.', 'Studio is already asking whether to let this computer in.'])
+  check(
+    'each code’s state: paused reads as not sharing, revoked and no answer as denied, the rest as errors',
+    CHATS_REFUSAL_CODES.map((c) => [c, chatsRefusalState(c)]),
+    [['not-sharing', 'not-sharing'], ['history-off', 'not-sharing'], ['redaction-off', 'not-sharing'], ['denied', 'denied'], ['no-answer', 'denied'], ['revoked', 'denied'], ['busy', 'error'], ['not-a-device', 'error'], ['not-in-vault', 'error'], ['disconnected', 'error']]
+  )
 
   const chats = { kind: 'chats' } as const
   const cv = (f: RelayInnerFrame): string => (relayScopeVerdict(chats, f).ok ? 'ok' : 'no')
@@ -1484,7 +1544,50 @@ console.log('\nchat history: what the relay instance reads is redacted, named by
   m.indexOn = false
   check('chat history off: nothing is read, 503', [(await answerChatsRoute(share, 'search', new URLSearchParams({ q: 'relay' }))).status, (await answerChatsRoute(share, 'open', new URLSearchParams({ source: 'claude', id: 'c-1' }))).status], [503, 503])
   m.indexOn = true
+  {
+    // Redaction off on this computer (review of db1ae51): rows stored then are raw and the cleaned search
+    // finds none of them, so a search answered "nothing here" for a chat that is. Nothing is served instead.
+    const asked: string[] = []
+    const base = chatAccess(m)
+    const watched = sharedChats({ ...base, search: async (q, limit) => (asked.push(q), base.search(q, limit)), open: async (s, id) => (asked.push(id), base.open(s, id)) })
+    m.redactOn = false
+    const s = await answerChatsRoute(watched, 'search', new URLSearchParams({ q: 'relay' }))
+    const o = await answerChatsRoute(watched, 'open', new URLSearchParams({ source: 'claude', id: 'c-1' }))
+    check('redaction off: search and open are 503 redaction-off, and the index is never asked', [s.status, (s.body as { code?: string }).code, o.status, (o.body as { code?: string }).code, asked], [503, 'redaction-off', 503, 'redaction-off', []])
+    m.redactOn = true
+  }
   check('the phone’s instance serves no chats route; only the relay’s does', [chatsRouteFor('phone', 'GET', '/api/chats/search'), chatsRouteFor('relay', 'GET', '/api/chats/search'), chatsRouteFor('relay', 'POST', '/api/chats/search')], ['none', 'search', 'none'])
+}
+
+console.log('\nchat history: a hidden chat takes no place in the answer, and nothing that looks like a key leaves as a name')
+{
+  // Review of db1ae51: the guest's limit was applied in the index BEFORE hidden folders were dropped, so
+  // limit=1 answered nothing where limit=2 answered one hit — a hidden chat matched, and ranked first.
+  const m = { indexOn: true, hidden: ['/Users/v/hidden'], chats: [
+    { chatId: 1, source: 'claude', nativeId: 'h-1', title: 'Hidden first', cwd: '/Users/v/hidden/acme', text: 'quokka in a hidden folder' },
+    { chatId: 2, source: 'claude', nativeId: 'v-2', title: 'Visible', cwd: '/Users/v/dev/stoke', text: 'quokka out in the open' },
+    { chatId: 3, source: 'codex', nativeId: 'v-3', title: 'Visible too', cwd: '/Users/v/dev/other', text: 'another quokka' },
+    { chatId: 4, source: 'claude', nativeId: 'v-4', title: 'Visible three', cwd: null, text: 'a third quokka' }
+  ] } as unknown as Machine
+  const share = sharedChats(chatAccess(m))
+  const ids = async (limit: number): Promise<string[]> => ((await answerChatsRoute(share, 'search', new URLSearchParams({ q: 'quokka', limit: String(limit) }))).body as { hits: { nativeId: string }[] }).hits.map((h) => h.nativeId)
+  check('limit=1 with the hidden chat ranked first answers the visible hit', await ids(1), ['v-2'])
+  check('and every limit answers as many visible hits as there are, the hidden one never counted', [await ids(2), await ids(3), await ids(50)], [['v-2', 'v-3'], ['v-2', 'v-3', 'v-4'], ['v-2', 'v-3', 'v-4']])
+
+  // Folder names and the tool's own ids go through the patterns too.
+  const KEY = 'sk-ant-api03-foldercanary0123456789abcd'
+  const n = { indexOn: true, hidden: [], chats: [
+    { chatId: 5, source: 'claude', nativeId: 'n-5', title: 'Named folder', cwd: `/Users/v/${KEY}`, text: 'the wombat' },
+    { chatId: 6, source: 'claude', nativeId: KEY, title: 'Keyed id', cwd: '/Users/v/dev/stoke', text: 'the wombat again' }
+  ] } as unknown as Machine
+  const keyed = sharedChats(chatAccess(n))
+  const found = await answerChatsRoute(keyed, 'search', new URLSearchParams({ q: 'wombat' }))
+  const hits = (found.body as { hits: { nativeId: string; folder: string | null }[] }).hits
+  check('a folder named like a key leaves redacted; a chat whose id looks like one is not sent at all', [hits.map((h) => [h.nativeId, h.folder])], [[['n-5', '[redacted]']]])
+  ok('and the key is in no byte of the answer', !JSON.stringify(found.body).includes('foldercanary'))
+  const opened = await answerChatsRoute(keyed, 'open', new URLSearchParams({ source: 'claude', id: 'n-5' }))
+  check('an opened chat’s folder is redacted the same way', [opened.status, (opened.body as { folder?: string }).folder], [200, '[redacted]'])
+  check('and an id that looks like a key opens nothing: the 404 of a missing chat', (await answerChatsRoute(keyed, 'open', new URLSearchParams({ source: 'claude', id: KEY }))).status, 404)
 }
 
 console.log('\nchat history between two machines: ask, allow, search, open; every request re-checked')
@@ -1708,6 +1811,150 @@ console.log('\nchat history between two machines: ask, allow, search, open; ever
   for (const mm of [hostM, guestM, idleHost, idleGuest]) mm.remote.reset()
 }
 
+console.log('\nchat history: redaction off pauses sharing; a Remove, a grant taken back, and the guest’s own words (review of db1ae51)')
+{
+  const T = { idleMs: 60_000, waitMs: 400, retryMs: 50, requestMs: 2000 }
+  const hostM = machine(A, { chatsTiming: T })
+  const guestM = machine(B, { chatsTiming: T })
+  hostM.chats = [{ chatId: 9, source: 'claude', nativeId: 'p-9', title: 'Paused notes', cwd: '/Users/owner/dev/stoke', text: 'the platypus plan' }]
+  hostM.shareChats = true
+  hostM.chatGrants = { [B.id]: 'always' }
+  for (const mm of [hostM, guestM]) {
+    mm.remote.onOnline([A.id, B.id])
+    mm.remote.presenceOpened()
+  }
+  await until(() => last(guestM).machines[0]?.status?.chats)
+  const byA = (rs: RemoteChatsResult[]): RemoteChatsResult | undefined => rs.find((r) => r.device === A.id)
+  const chatsGuests = (): number => last(hostM).guests.filter((g) => g.kind === 'chats').length
+  const servedNow = async (): Promise<void> => {
+    await guestM.remote.searchChats('platypus')
+    await until(() => last(guestM).chatPeers[0]?.state === 'open' && chatsGuests() === 1)
+  }
+
+  // 2. Redaction off: before, A still said `chats: true`, served the relay, and the cleaned search found
+  // nothing — B was told "Nothing on Studio says …" while A's row said On.
+  await servedNow()
+  ok('(B is searching A under Always)', chatsGuests() === 1)
+  check('with everything on, A says sharing is in force and nothing is in the way', [last(hostM).chatsEffective, last(hostM).chatsBlocked], [true, null])
+  hostM.redactOn = false
+  hostM.remote.chatSharingChanged()
+  await until(() => last(guestM).chatPeers[0]?.state === 'not-sharing')
+  check('redaction off on A: B’s relay is closed by A at once, as a pause, in B’s own words', [chatsGuests(), last(guestM).chatPeers.map((p) => [p.state, p.code, p.message])], [0, [['not-sharing', 'redaction-off', 'Studio has paused sharing its chat history: “Leave out anything that looks like an API key” is off there.']]])
+  check('A’s own view: the tick still on, not in force, paused by redaction (what the row shows)', [last(hostM).sharingChats, last(hostM).chatsEffective, last(hostM).chatsBlocked], [true, false, 'redaction-off'])
+  check('and the row says it in the spec’s words', shareChatsRow({ phase: 'active', chatIndexOn: true, redactOn: last(hostM).chatsBlocked !== 'redaction-off', sharing: true, grants: ['Laptop'] }).hint, CHATS_PAUSED_SENTENCE)
+  await until(() => last(guestM).machines[0]?.status?.chats === false)
+  check('A advertises nothing: its status stops saying chats', last(guestM).machines[0]?.status?.chats, false)
+  let before = relays.size
+  const reqBefore = hostM.requests.length
+  await tick(T.retryMs + 10)
+  const res = await guestM.remote.searchChats('platypus')
+  check('B’s next search opens nothing and reads nothing on A', [byA(res)?.state, relays.size - before, hostM.requests.length - reqBefore], ['not-sharing', 0, 0])
+  const rogue = await rogueChannel(hostM, B)
+  rogue.ch.send({ t: 'attach', kind: 'chats' })
+  await until(() => rogue.got.some((f) => f.t === 'refused'))
+  check('a guest that asks anyway, under its Always, is refused as redaction-off and served nothing', [(rogue.got.find((f) => f.t === 'refused') as { code?: string } | undefined)?.code, rogue.got.some((f) => f.t === 'ready'), hostM.requests.length - reqBefore], ['redaction-off', false, 0])
+  // A question waiting when redaction goes off goes with it.
+  hostM.redactOn = true
+  hostM.chatGrants = {}
+  hostM.remote.chatSharingChanged()
+  await until(() => last(guestM).machines[0]?.status?.chats === true)
+  await tick(T.retryMs + 10)
+  void guestM.remote.searchChats('platypus')
+  await until(() => last(hostM).asks[0])
+  hostM.redactOn = false
+  hostM.remote.chatSharingChanged()
+  check('redaction off with a question up: the question goes too', last(hostM).asks.length, 0)
+  // Unannounced (no hook): the next request on a served relay is refused, not answered.
+  hostM.redactOn = true
+  hostM.chatGrants = { [B.id]: 'always' }
+  hostM.remote.chatSharingChanged()
+  guestM.remote.endChatSearch()
+  await until(() => last(guestM).machines[0]?.status?.chats === true)
+  await servedNow()
+  hostM.redactOn = false
+  const unannounced = await guestM.remote.searchChats('platypus')
+  check('redaction off with no word to HubRemote: the next request is refused, said as a pause', [byA(unannounced)?.state, byA(unannounced)?.code, chatsGuests()], ['not-sharing', 'redaction-off', 0])
+  hostM.redactOn = true
+  hostM.remote.chatSharingChanged()
+  guestM.remote.endChatSearch()
+  await until(() => last(guestM).machines[0]?.status?.chats === true)
+  // And while the handler is reading: the grant goes from A's settings (no hook told HubRemote). What the
+  // handler read is not sent, and the guest is told why at once rather than left to time out.
+  await servedNow()
+  hostM.duringRequest = () => {
+    hostM.chatGrants = {}
+  }
+  // A silent drop would leave B to time out (`requestMs`) and read `error` with no code: the state and code say which.
+  const midway = await guestM.remote.searchChats('platypus')
+  check('the grant gone while a search is being answered: nothing it read is sent, refused as revoked', [byA(midway)?.state, byA(midway)?.code, byA(midway)?.hits.length], ['denied', 'revoked', 0])
+  hostM.chatGrants = { [B.id]: 'always' }
+  guestM.remote.endChatSearch()
+  await tick(T.retryMs + 10)
+
+  // 3a. Remove (Settings): a served relay to that device ends at once, with no new search from it.
+  await servedNow()
+  // A renamed itself since B last heard: the host's fallback sentence names "Studio (desk)", and B words the code itself.
+  hostM.selfLabel = 'Studio (desk)'
+  await hostM.remote.revokeChatGrant(B.id)
+  check('Remove ends B’s live relay at once: A shows no guest', chatsGuests(), 0)
+  await until(() => last(guestM).chatPeers[0]?.state === 'denied')
+  check('and B’s peer is denied as revoked, in B’s own words for the code, without B searching again', last(guestM).chatPeers.map((p) => [p.state, p.code, p.message]), [['denied', 'revoked', 'Studio took back this computer’s access to its chat history.']])
+  check('and the grant is gone from A', hostM.chatGrants, {})
+  hostM.selfLabel = undefined
+  guestM.remote.endChatSearch()
+
+  // 3b. Always answered, and the chain moves while the grant is being written: taken back, nothing served.
+  void guestM.remote.searchChats('platypus')
+  const ask = await until(() => last(hostM).asks[0])
+  hostM.duringGrant = () => {
+    hostM.active = [A]
+  }
+  const answered = ask ? await hostM.remote.answer(ask.id, 'always') : { ok: true }
+  check('B removed from A’s chain during the Always write: the grant is taken back, nothing served', [answered.ok, hostM.chatGrants, chatsGuests()], [false, {}, 0])
+  hostM.active = [...ACTIVE]
+  guestM.remote.endChatSearch()
+  await tick(T.retryMs + 10)
+  // The same with redaction going off during the write.
+  void guestM.remote.searchChats('platypus')
+  const ask2 = await until(() => last(hostM).asks[0])
+  hostM.duringGrant = () => {
+    hostM.redactOn = false
+  }
+  const answered2 = ask2 ? await hostM.remote.answer(ask2.id, 'always') : { ok: true }
+  await until(() => last(guestM).chatPeers[0]?.state === 'not-sharing')
+  check('redaction off during the Always write: taken back, refused as a pause', [answered2.ok, hostM.chatGrants, chatsGuests(), last(guestM).chatPeers[0]?.code], [false, {}, 0, 'redaction-off'])
+  hostM.redactOn = true
+  guestM.remote.endChatSearch()
+
+  // Its sessions twin: a session Always answered while the chain drops the guest.
+  hostM.sessions = [stubRow()]
+  hostM.sharing = true
+  hostM.remote.sharingChanged()
+  const tabOpen = guestM.remote.open(A.id, 'pty-a1')
+  const askSession = await until(() => last(hostM).asks.find((a) => a.kind === 'session'))
+  hostM.duringGrant = () => {
+    hostM.active = [A]
+  }
+  const answered3 = askSession ? await hostM.remote.answer(askSession.id, 'always') : { ok: true }
+  check('a session Always written while the chain drops B: taken back, never served', [answered3.ok, hostM.grants, last(hostM).guests.length], [false, {}, 0])
+  hostM.active = [...ACTIVE]
+  if (tabOpen.ok) guestM.remote.close(tabOpen.tab)
+
+  // "Already asking": the host's code, not its sentence about itself.
+  hostM.chatGrants = {}
+  const first = await rogueChannel(hostM, B)
+  first.ch.send({ t: 'attach', kind: 'chats' })
+  await until(() => last(hostM).asks.some((a) => a.kind === 'chats'))
+  const second = await rogueChannel(hostM, B)
+  second.ch.send({ t: 'attach', kind: 'chats' })
+  await until(() => second.got.some((f) => f.t === 'refused'))
+  const busy = second.got.find((f) => f.t === 'refused') as { code?: string; reason?: string } | undefined
+  check('a second chats relay while one is asked about: refused with the busy code, its fallback naming the host', [busy?.code, busy?.reason], ['busy', 'Studio is already asking whether to let this computer in.'])
+  first.ch.close('done')
+  second.ch.close('done')
+  for (const mm of [hostM, guestM]) mm.remote.reset()
+}
+
 console.log('\nchat history across computers: what the renderer says (spec 2026-10-03 §4)')
 {
   check('a name list reads as a sentence', [namesList([]), namesList(['Studio']), namesList(['Studio', 'Laptop']), namesList(['Studio', 'Laptop', 'NUC'])], ['', 'Studio', 'Studio and Laptop', 'Studio, Laptop and NUC'])
@@ -1726,6 +1973,11 @@ console.log('\nchat history across computers: what the renderer says (spec 2026-
   ok('on with no Always: says each computer asks first', /ask here first/.test(shareChatsRow({ phase: 'active', chatIndexOn: true, sharing: true, grants: [] }).hint))
   const onBlocked = shareChatsRow({ phase: 'active', chatIndexOn: false, sharing: true, grants: ['Studio'] })
   check('on while chat history is off: still untickable (off is never refused), and says nothing is shared', [onBlocked.checked, onBlocked.enabled, /nothing is shared/.test(onBlocked.hint) && /Turn on Chat history first/.test(onBlocked.hint)], [true, true, true])
+  const offNoRedact = shareChatsRow({ phase: 'active', chatIndexOn: true, redactOn: false, sharing: false, grants: [] })
+  check('off with redaction off: disabled, with that as its reason', [offNoRedact.enabled, offNoRedact.blocked, offNoRedact.hint, shareChatsBlock('active', true, false)], [false, CHATS_REDACTION_BLOCK, CHATS_REDACTION_BLOCK, CHATS_REDACTION_BLOCK])
+  const paused = shareChatsRow({ phase: 'active', chatIndexOn: true, redactOn: false, sharing: true, grants: ['Studio'] })
+  check('on with redaction off: still untickable, and says it is paused in the spec’s words', [paused.checked, paused.enabled, paused.hint], [true, true, 'Paused: turn on “Leave out anything that looks like an API key” in Chat history to share it.'])
+  check('chat history off is said before redaction', shareChatsBlock('active', false, false), 'Turn on Chat history first.')
   check('off says what it did', SHARE_CHATS_STOPPED, 'Stopped. Searches from other computers were closed.')
   const groups = remoteChatGroups(
     [

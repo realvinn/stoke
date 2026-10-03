@@ -9,7 +9,7 @@
  * Imports only src/shared by relative `.ts` path (gotcha 78).
  */
 import type { HubPhase } from './hub/client.ts'
-import type { RemoteChatHit, RemoteChatPeerView, RemoteChatsResult, RemoteChatsState } from './hub/remote.ts'
+import { CHATS_PAUSED_SENTENCE, CHATS_REDACTION_BLOCK, type RemoteChatHit, type RemoteChatPeerView, type RemoteChatsResult, type RemoteChatsState } from './hub/remote.ts'
 
 export const SHARE_CHATS_LABEL = 'Let my other computers search this computer’s chat history'
 /** Said once the tick goes off: off is instant, and every chats relay closed with it. */
@@ -25,12 +25,16 @@ export function namesList(names: readonly string[]): string {
 /**
  * Why the tick cannot go ON now, or null. Off is never refused. Only a device
  * in the vault shares (`chatsSharingEffective`); a device signed in but not in
- * the vault yet is told what it still has to do rather than to sign in.
+ * the vault yet is told what it still has to do rather than to sign in. With
+ * "Leave out anything that looks like an API key" off (`redactOn` false: the
+ * view's `chatsBlocked === 'redaction-off'`) nothing could be found from
+ * elsewhere, so the tick waits for it too — main refuses with the same words.
  */
-export function shareChatsBlock(phase: HubPhase, chatIndexOn: boolean): string | null {
+export function shareChatsBlock(phase: HubPhase, chatIndexOn: boolean, redactOn = true): string | null {
   if (phase === 'new-account' || phase === 'locked') return 'Join this computer to your vault first.'
   if (phase !== 'active') return 'Sign in to Stoke Hub first.'
   if (!chatIndexOn) return 'Turn on Chat history first.'
+  if (!redactOn) return CHATS_REDACTION_BLOCK
   return null
 }
 
@@ -47,13 +51,17 @@ export interface ShareChatsRowView {
 /**
  * The row's state and its words. `sharing` is `hub.shareChats` as main holds
  * it; `grants` are the devices holding "Always" for this computer's chat
- * history (`hub.chatGrants`), by the name the chain gives them.
+ * history (`hub.chatGrants`), by the name the chain gives them. `redactOn`
+ * is false while the view says `chatsBlocked === 'redaction-off'`: on, the
+ * row then says sharing is paused (`CHATS_PAUSED_SENTENCE`); off, why it
+ * cannot go on.
  */
-export function shareChatsRow(f: { phase: HubPhase; chatIndexOn: boolean; sharing: boolean; grants: readonly string[] }): ShareChatsRowView {
-  const blocked = shareChatsBlock(f.phase, f.chatIndexOn)
+export function shareChatsRow(f: { phase: HubPhase; chatIndexOn: boolean; redactOn?: boolean; sharing: boolean; grants: readonly string[] }): ShareChatsRowView {
+  const blocked = shareChatsBlock(f.phase, f.chatIndexOn, f.redactOn ?? true)
   if (!f.sharing) {
     return { checked: false, enabled: blocked === null, blocked, hint: blocked ?? 'Off. Other computers can’t see chats on this one.' }
   }
+  if (blocked === CHATS_REDACTION_BLOCK) return { checked: true, enabled: true, blocked, hint: CHATS_PAUSED_SENTENCE }
   if (blocked) return { checked: true, enabled: true, blocked, hint: `On, but nothing is shared while it can’t be: ${blocked}` }
   const who = f.grants.length
     ? `On. ${namesList(f.grants)} can search and read, but not change, chats on this computer.`

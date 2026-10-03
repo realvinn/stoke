@@ -23,8 +23,11 @@ export interface WorkerData {
 export type WorkerRequest =
   | { id: number; op: 'detect'; env: SourceEnv; subagents: boolean }
   | { id: number; op: 'scan'; plan: PassPlan }
-  /** `redact: 'force'`: only chats cleaned with the rules in force now, whatever the setting (store.ts `search`). */
-  | { id: number; op: 'search'; query: string; limit: number; redact?: 'force' }
+  /**
+   * `redact: 'force'`: only chats cleaned with the rules in force now, whatever the setting (store.ts `search`).
+   * `hidden`: folders (`hiddenProjects`) whose chats are left out before the limit, by this platform's path rules.
+   */
+  | { id: number; op: 'search'; query: string; limit: number; redact?: 'force'; hidden?: string[] }
   | { id: number; op: 'status' }
   | { id: number; op: 'cancel' }
   | { id: number; op: 'delete' }

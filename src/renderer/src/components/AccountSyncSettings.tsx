@@ -1015,7 +1015,9 @@ function ShareChats({ view, chatIndexOn, onOpenChatHistory }: { view: HubView; c
   const tickRef = useRef<HTMLInputElement>(null)
   const hintId = useId()
   const others = view.devices.filter((d) => !d.me)
-  const row = shareChatsRow({ phase: view.phase, chatIndexOn, sharing: remote.sharingChats, grants: remote.chatGrants.map((g) => g.label) })
+  // Redaction off pauses sharing (main's `chatsBlocked`): the row says so, and the tick cannot go on.
+  const redactOn = remote.chatsBlocked !== 'redaction-off'
+  const row = shareChatsRow({ phase: view.phase, chatIndexOn, redactOn, sharing: remote.sharingChats, grants: remote.chatGrants.map((g) => g.label) })
 
   const closeSheet = (): void => {
     setConfirming(false)
@@ -1059,7 +1061,7 @@ function ShareChats({ view, chatIndexOn, onOpenChatHistory }: { view: HubView; c
           </span>
         </span>
       </label>
-      {!chatIndexOn && view.phase === 'active' && onOpenChatHistory && (
+      {(!chatIndexOn || !redactOn) && view.phase === 'active' && onOpenChatHistory && (
         <div className="btn-row">
           <button className="btn" onClick={onOpenChatHistory}>
             Open Chat history…
