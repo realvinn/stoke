@@ -1552,7 +1552,8 @@ console.log('\nchat history between two machines: ask, allow, search, open; ever
   // Always: kept on A only; then removed behind HubRemote's back, and the next request is refused.
   res = await guestM.remote.searchChats('relay')
   const askAlways = await until(() => last(hostM).asks[0])
-  await hostM.remote.answer(askAlways!.id, 'always')
+  ok('past the grace the Allow once has lapsed: the next search asks again', !!askAlways)
+  if (askAlways) await hostM.remote.answer(askAlways.id, 'always')
   await until(() => last(guestM).chatPeers[0]?.state === 'open')
   check('Always: kept in A’s chatGrants only — never A’s session grants, never on B', [hostM.chatGrants, hostM.grants, guestM.chatGrants, guestM.grants], [{ [B.id]: 'always' }, {}, {}, {}])
   check('Settings lists it with the device’s name and fingerprint', last(hostM).chatGrants.map((g) => [g.device, g.label, g.fingerprint.split(' ').length]), [[B.id, 'Laptop', 4]])

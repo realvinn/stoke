@@ -1160,8 +1160,10 @@ try {
   {
     const aId = A.svc.view().device.id
     const dId = D.svc.view().device.id
+    A.set({ chatIndex: 'on' } as Partial<Settings>)
     const noConsent = await A.svc.setShareChats(true, [dId])
-    check('the chats tick does not go on without the password confirmed on this computer', [noConsent.ok, A.settings().hub.shareChats], [false, false])
+    check('the chats tick does not go on without the password confirmed on this computer', [noConsent.ok, !noConsent.ok && /password/.test(noConsent.message), A.settings().hub.shareChats], [false, true, false])
+    A.set({ chatIndex: 'off' } as Partial<Settings>)
     A.svc.noteChatConsent()
     const indexOff = await A.svc.setShareChats(true, [dId])
     check('nor while chat history is off', [indexOff.ok, !indexOff.ok && /Chat history/.test(indexOff.message), A.settings().hub.shareChats], [false, true, false])

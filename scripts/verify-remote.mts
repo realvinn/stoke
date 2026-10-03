@@ -556,7 +556,8 @@ check('every other path is not a chats path at all, on either instance', [chatsR
   // Main wires the chats deps into the relay instance only: a `serveChats` on the phone's
   // `remote` would make every route above answer on the phone's server.
   const main = readFileSync(join(import.meta.dirname, '../src/main/index.ts'), 'utf8')
-  const calls = [...main.matchAll(/(\w+)\.serveChats\(/g)].map((m) => m[1])
+  // Any receiver, optional chaining included (`remote?.serveChats(`).
+  const calls = [...main.matchAll(/([\w$]+)\s*\??\.\s*serveChats\s*\(/g)].map((m) => m[1])
   check('main calls serveChats on the relay instance alone', calls, ['relayServer'])
   const server = readFileSync(join(import.meta.dirname, '../src/main/remote/server.ts'), 'utf8')
   check('and the server asks chatsRouteFor which instance it is from that alone', /chatsRouteFor\(this\.relayChats \? 'relay' : 'phone'/.test(server), true)
