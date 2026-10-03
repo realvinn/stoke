@@ -274,7 +274,9 @@ export function ChatHistorySettings({ settings, onPatch, status, detection }: Pr
           <input type="checkbox" checked={opts.redact} onChange={(e) => patchOpts({ redact: e.target.checked })} />
           <span>
             <span>Leave out anything that looks like an API key</span>
-            <FieldHint>Keys and private keys pasted into a chat are replaced with [redacted] before the text is kept.</FieldHint>
+            <FieldHint more="Turned back on, it cleans what was kept while it was off. Chats another computer reads are cleaned whatever this says.">
+              Keys, tokens, passwords and private keys pasted into a chat are replaced with [redacted] before the text is kept.
+            </FieldHint>
           </span>
         </label>
       </div>

@@ -1259,7 +1259,9 @@ src/main/         Electron main process
   chatIndex/        chat history: a searchable copy of every AI chat's TEXT, off until the
                     user says yes (shared/chatIndex.ts has the rules both processes share)
     host.ts           main's handle on the worker: lazy start, idle stop, a pass claimed
-                      before its first await, a second ask queued once (gotcha 20)
+                      before its first await, a second ask queued once (gotcha 20).
+                      `searchCleaned`/`openCleaned` are what another computer may be given:
+                      cleaned text only, whatever the local redaction setting says
     worker.ts         the worker thread (its own bundle via `?modulePath`): the store's only
                       writer and the only reader of any source; yields between chats so a
                       search is answered mid-pass. A pass and an import each have their own
@@ -1269,19 +1271,27 @@ src/main/         Electron main process
                       pool is shared with pty writes. JSONL is read from the last offset with
                       advanceCursor's checks (gotcha 103); detection is names and sizes only
     parse.ts          user + assistant words only, per source: no tool payloads, reasoning,
-                      injected context, base64 or keys; Claude's rules are sessionFile.ts's own
+                      injected context, base64 or keys; Claude's rules are sessionFile.ts's own.
+                      `SECRET_RULES` are named (one verify:chat-sources case each); a keyed
+                      `password=`/`api_key=` value goes only when it is a literal, not code.
+                      `REDACTION_VERSION` names the rule set a stored chat was cleaned with
     scan.ts           one pass: list everything, fold Cline's copies into originals their tool
                       still has, admit the newest per source then in all (a file holding no
                       chat takes no slot; nothing at or below the store ceiling's remembered
                       cut; imports, held to THIS pass's caps, take their room under the total
                       first), read what changed
                       under the byte and time budget, prune only a complete listing — never
-                      an import
+                      an import. With redaction on, a pass first cleans in place every chat
+                      stored without it or under older rules (`recleanStale`); a listing's
+                      own title and first prompt are cleaned like a message (`mergeMeta`)
     store.ts          node:sqlite + FTS5 in userData/chat-index (0700, files 0600). Search is
                       grouped per chat in SQL; a rowid bound to FTS5 must be an integer
                       (gotcha 125). The ceiling is chat TEXT, evicted oldest by admission
                       key: FTS5 frees no page when a row is deleted (`evictToText`). Imports
-                      are `import_file` rows plus `chat.import_id` (schema 2, added in place)
+                      are `import_file` rows plus `chat.import_id` (schema 2, added in place).
+                      `chat.redact_level` (schema 3) only goes down on a write; a cleaned-only
+                      search (`redact: 'force'`) reads only chats at today's level, never raw
+                      rows redacted on the way out (a snippet can start inside a key)
     zip.ts            a suspicious ZIP reader: the central directory (ZIP64 too), then ONE
                       member inflated under its declared size; refuses escaping names, bombs
                       (200:1 past 1 MB), oversize members, encryption, other methods, bad CRCs
@@ -1294,7 +1304,9 @@ src/main/         Electron main process
                       a stop part-way included (`ok: false`, "stopped after K of N")
     viewer.ts         one chat for the read-only viewer: a local one re-read from its tool's
                       own file or database at open time (only inside that tool's root), the
-                      store's copy for an import or an original that is gone
+                      store's copy for an import or an original that is gone. Forced
+                      (`openChatCleaned`): re-read with redaction on, and the store's copy
+                      only if it is cleaned at today's level, else null
   sessionIndex.ts   every session's title + first prompt, for search: one 256 KB chunk
                     from each end of a transcript, cached on mtime+size, top-level
                     `*.jsonl` only (never `<id>/subagents/`). Never `listSessions`, which

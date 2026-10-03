@@ -386,7 +386,11 @@ export interface ChatIndexOptions {
    * bytes, and nobody goes looking for them.
    */
   subagents: boolean
-  /** Replace what looks like an API key or a private key with `[redacted]` before storing. */
+  /**
+   * Replace what looks like a credential (parse.ts `SECRET_RULES`: keys, tokens, keyed passwords,
+   * credential URLs, private keys) with `[redacted]` before storing. Turned back on, a pass cleans
+   * what was stored without it first. What leaves this computer is cleaned whatever this says.
+   */
   redact: boolean
   caps: ChatIndexCaps
 }
