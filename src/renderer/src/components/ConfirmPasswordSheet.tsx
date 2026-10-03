@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { verifyPasswordSentence, type HubVerifyResult } from '@shared/hub/client'
+import { leaveVerifySheet, verifyPasswordSentence, type HubVerifyResult } from '@shared/hub/client'
 import { useFloatingLayer } from '../lib/floatingLayers'
 import { Spinner } from './Spinner'
 
@@ -119,10 +119,10 @@ export function ConfirmPasswordSheet({
    * Main keeps the hub's yes as a short-lived consent (`HubService.cancelVerify`).
    * A sheet that goes without using it says so, or a check still in flight —
    * whose answer this sheet ignores — would still confirm the switch for minutes.
+   * The rule is `leaveVerifySheet`'s; verify:hub-client pins this wiring to it.
    */
   const dropConsent = useCallback((): void => {
-    if (usedYes.current) return
-    void window.stoke.hub.cancelVerify().catch(() => undefined)
+    leaveVerifySheet(usedYes.current, () => window.stoke.hub.cancelVerify())
   }, [])
 
   const cancel = useCallback((): void => {

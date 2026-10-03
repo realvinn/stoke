@@ -55,6 +55,7 @@ import {
   isPrefixOf,
   ITEMS_PAGE,
   kitHandlers,
+  leaveVerifySheet,
   MAX_FEED_PAGES,
   inScope,
   localValues,
@@ -536,6 +537,52 @@ console.log('\n“confirm it’s you”: what each hub answer means, and what th
       null,
       null
     ]
+  )
+}
+
+console.log('\n“confirm it’s you” going away: main drops the yes unless the sheet used it (re-review of c5bfae5)')
+{
+  // Main keeps the hub's yes as a short-lived consent; `HubService.cancelVerify` (held below, end to end) drops it.
+  // Mutated to never drop it, the sheet left nothing red: these are the sheet's rule and its wiring to it.
+  let asked = 0
+  const cancelVerify = async (): Promise<void> => void asked++
+  check('a sheet that goes without using the yes (Cancel, Escape, a click outside, unmounted) asks main to drop it', [leaveVerifySheet(false, cancelVerify), asked], [true, 1])
+  check('one whose yes reached its caller keeps it: main is not asked', [leaveVerifySheet(true, cancelVerify), asked], [false, 1])
+  const unhandled: unknown[] = []
+  const note = (e: unknown): void => void unhandled.push(e)
+  process.on('unhandledRejection', note)
+  const refusedAsk = leaveVerifySheet(false, () => Promise.reject(new Error('main is gone')))
+  await new Promise((r) => setTimeout(r, 0))
+  process.off('unhandledRejection', note)
+  check('main refusing the ask throws nothing at the sheet, and leaves no unhandled rejection', [refusedAsk, unhandled.length], [true, 0])
+
+  // The wire from the sheet to that rule (gotcha 31: no pure case sees a closure's side effect).
+  const sheet = readFileSync(new URL('../src/renderer/src/components/ConfirmPasswordSheet.tsx', import.meta.url), 'utf8')
+  check(
+    'the sheet drops consent through the rule, with its own used-yes flag and main’s own cancel, and asks main nowhere else',
+    [
+      /const dropConsent = useCallback\(\(\): void => \{\s*leaveVerifySheet\(usedYes\.current, \(\) => window\.stoke\.hub\.cancelVerify\(\)\)\s*\}, \[\]\)/.test(sheet),
+      (sheet.match(/window\.stoke\.hub\.cancelVerify/g) ?? []).length
+    ],
+    [true, 1]
+  )
+  check(
+    'Cancel drops it before telling the caller, and so does going away under the caller (the unmount cleanup)',
+    [
+      /const cancel = useCallback\(\(\): void => \{\s*if \(closed\.current\) return\s*closed\.current = true\s*forget\(\)\s*dropConsent\(\)\s*onCancel\(\)\s*\}/.test(sheet),
+      /const field = fieldRef\.current\s*return \(\) => \{[\s\S]*?\n\s*dropConsent\(\)\n\s*\}\n\s*\}, \[dropConsent\]\)/.test(sheet)
+    ],
+    [true, true]
+  )
+  check(
+    'every way out is Cancel: the scrim and the Cancel button, and Escape wherever focus is',
+    [(sheet.match(/onClick=\{cancel\}/g) ?? []).length, /if \(e\.key !== 'Escape' \|\| e\.defaultPrevented\) return\s*e\.preventDefault\(\)\s*e\.stopPropagation\(\)\s*cancel\(\)/.test(sheet)],
+    [2, true]
+  )
+  check(
+    'the yes counts as used only where the hub said ok and the caller is told, nowhere else',
+    [(sheet.match(/usedYes\.current = /g) ?? []).length, /if \(r\.kind === 'ok'\) \{\s*closed\.current = true\s*usedYes\.current = true\s*confirmedRef\.current\(\)/.test(sheet)],
+    [1, true]
   )
 }
 

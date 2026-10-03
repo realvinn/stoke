@@ -597,6 +597,11 @@ interface Machine {
   hidden: string[]
   /** Runs inside a grant write, before it lands (`setGrant`/`setChatGrant`): the world moving during the await. */
   duringGrant?: () => void
+  /**
+   * A chats grant being taken back is written slowly: `setChatGrant(…, false)` takes the grant out at once,
+   * as `HubService.setChatGrant`'s first step does, and resolves only once this does.
+   */
+  chatGrantOffWrite?: Promise<void>
   /** Runs (once) while a relayed request is being answered: the world moving during the handler's await. */
   duringRequest?: () => void
   /** What this machine calls itself now, when it differs from what the others last heard (a rename not yet published). */
@@ -723,6 +728,7 @@ function machine(d: Dev, opts: { keepAlive?: { pingMs: number; pongWaitMs: numbe
       else delete next[device]
       m.chatGrants = next
       if (on) await writing()
+      else if (m.chatGrantOffWrite) await m.chatGrantOffWrite
     },
     chatIndexOn: () => m.indexOn,
     chatRedactOn: () => m.redactOn,
@@ -1590,6 +1596,41 @@ console.log('\nchat history: what the relay instance reads is redacted, named by
     check('redaction off: search and open are 503 redaction-off, and the index is never asked', [s.status, (s.body as { code?: string }).code, o.status, (o.body as { code?: string }).code, asked], [503, 'redaction-off', 503, 'redaction-off', []])
     m.redactOn = true
   }
+  {
+    // Switched off WHILE the index reads (re-review of c5bfae5): dropping sharedChats' own re-check after its
+    // await stayed green, as only HubRemote's check after `request` was ever driven. Here sharedChats stands
+    // alone — no HubRemote, no grant — so what it read must not leave on its own word.
+    const base = chatAccess(m)
+    const during = (flip: () => void): ReturnType<typeof sharedChats> =>
+      sharedChats({
+        ...base,
+        search: async (q, limit) => {
+          const hits = await base.search(q, limit)
+          flip()
+          return hits
+        },
+        open: async (s, id) => {
+          const t = await base.open(s, id)
+          flip()
+          return t
+        }
+      })
+    const refusal = (r: { status: number; body: unknown }): [number, string | undefined, boolean] => [r.status, (r.body as { code?: string }).code, JSON.stringify(r.body).includes('relay')]
+    const paused = during(() => (m.redactOn = false))
+    const pausedSearch = refusal(await answerChatsRoute(paused, 'search', new URLSearchParams({ q: 'relay' })))
+    m.redactOn = true
+    const pausedOpen = refusal(await answerChatsRoute(paused, 'open', new URLSearchParams({ source: 'claude', id: 'c-1' })))
+    m.redactOn = true
+    check('redaction goes off while the index searches, then opens: each answers 503 redaction-off, and nothing it read', [pausedSearch, pausedOpen], [[503, 'redaction-off', false], [503, 'redaction-off', false]])
+    const off = during(() => (m.indexOn = false))
+    const offSearch = refusal(await answerChatsRoute(off, 'search', new URLSearchParams({ q: 'relay' })))
+    m.indexOn = true
+    const offOpen = refusal(await answerChatsRoute(off, 'open', new URLSearchParams({ source: 'claude', id: 'c-1' })))
+    m.indexOn = true
+    check('chat history goes off while the index searches, then opens: each answers 503 history-off, and nothing it read', [offSearch, offOpen], [[503, 'history-off', false], [503, 'history-off', false]])
+    const still = during(() => undefined)
+    check('(nothing switched: the same reader answers the hit and the chat)', [(await answerChatsRoute(still, 'search', new URLSearchParams({ q: 'relay' }))).status, (await answerChatsRoute(still, 'open', new URLSearchParams({ source: 'claude', id: 'c-1' }))).status], [200, 200])
+  }
   check('the phone’s instance serves no chats route; only the relay’s does', [chatsRouteFor('phone', 'GET', '/api/chats/search'), chatsRouteFor('relay', 'GET', '/api/chats/search'), chatsRouteFor('relay', 'POST', '/api/chats/search')], ['none', 'search', 'none'])
 }
 
@@ -2003,15 +2044,28 @@ console.log('\nchat history: redaction off pauses sharing; a Remove, a grant tak
   guestM.remote.endChatSearch()
   await tick(T.retryMs + 10)
 
-  // 3a. Remove (Settings): a served relay to that device ends at once, with no new search from it.
+  // 3a. Remove (Settings): a served relay to that device ends at once, with no new search from it — with the press,
+  // not when the settings write lands (re-review of c5bfae5: awaiting the write first stayed green while every
+  // write here resolved at once, so the write is held open until the relay is seen gone).
   await servedNow()
   // A renamed itself since B last heard: the host's fallback sentence names "Studio (desk)", and B words the code itself.
   hostM.selfLabel = 'Studio (desk)'
-  await hostM.remote.revokeChatGrant(B.id)
-  check('Remove ends B’s live relay at once: A shows no guest', chatsGuests(), 0)
+  let landWrite: () => void = () => undefined
+  hostM.chatGrantOffWrite = new Promise<void>((r) => (landWrite = r))
+  let written = false
+  const removing = hostM.remote.revokeChatGrant(B.id).then(() => (written = true))
+  await tick(20)
+  check('Remove ends B’s live relay while its settings write is still pending: A shows no guest', [written, chatsGuests()], [false, 0])
   await until(() => last(guestM).chatPeers[0]?.state === 'denied')
-  check('and B’s peer is denied as revoked, in B’s own words for the code, without B searching again', last(guestM).chatPeers.map((p) => [p.state, p.code, p.message]), [['denied', 'revoked', 'Studio took back this computer’s access to its chat history.']])
-  check('and the grant is gone from A', hostM.chatGrants, {})
+  check(
+    'and B’s peer is denied as revoked, in B’s own words for the code, without B searching again — the write still pending',
+    [written, last(guestM).chatPeers.map((p) => [p.state, p.code, p.message])],
+    [false, [['denied', 'revoked', 'Studio took back this computer’s access to its chat history.']]]
+  )
+  landWrite()
+  await removing
+  hostM.chatGrantOffWrite = undefined
+  check('and once the write lands, the grant is gone from A', [written, hostM.chatGrants], [true, {}])
   hostM.selfLabel = undefined
   guestM.remote.endChatSearch()
 
@@ -2064,6 +2118,65 @@ console.log('\nchat history: redaction off pauses sharing; a Remove, a grant tak
   check('a second chats relay while one is asked about: refused with the busy code, its fallback naming the host', [busy?.code, busy?.reason], ['busy', 'Studio is already asking whether to let this computer in.'])
   first.ch.close('done')
   second.ch.close('done')
+  for (const mm of [hostM, guestM]) mm.remote.reset()
+}
+
+console.log('\nthe chain moves under a serving host: the guest removed is told so, and a host that left the vault says it left (re-review of c5bfae5)')
+{
+  // `chainChanged` words the refusal by whose leaving it is: `not-a-device` while this host is in the vault and its
+  // chain dropped the guest, `not-in-vault` once this host itself has no context. Forced to always send
+  // `not-a-device`, every case stayed green: the codes were never read.
+  const T = { idleMs: 60_000, waitMs: 400, retryMs: 50, requestMs: 2000 }
+  const hostM = machine(A, { chatsTiming: T })
+  const guestM = machine(B, { chatsTiming: T })
+  hostM.chats = [{ chatId: 11, source: 'claude', nativeId: 'v-11', title: 'Vault notes', cwd: '/Users/owner/dev/stoke', text: 'the numbat notes' }]
+  hostM.sessions = [stubRow()]
+  hostM.sharing = true
+  hostM.shareChats = true
+  for (const mm of [hostM, guestM]) {
+    mm.remote.onOnline([A.id, B.id])
+    mm.remote.presenceOpened()
+  }
+  await until(() => last(guestM).machines[0]?.status?.chats)
+  const byA = (rs: RemoteChatsResult[]): RemoteChatsResult | undefined => rs.find((r) => r.device === A.id)
+  /** B searching A's chats under Always, and a raw B attached to A's session under Always (the raw end keeps every frame, codes included). */
+  const servedBoth = async (): Promise<Awaited<ReturnType<typeof rogueChannel>>> => {
+    hostM.chatGrants = { [B.id]: 'always' }
+    hostM.grants = { [B.id]: { mode: 'full', label: 'Laptop', at: 1 } }
+    guestM.remote.endChatSearch()
+    await tick(T.retryMs + 10)
+    check('(B searches A under Always)', byA(await guestM.remote.searchChats('numbat'))?.state, 'ok')
+    const raw = await rogueChannel(hostM, B)
+    raw.ch.send({ t: 'attach', ptyId: 'pty-a1' })
+    await until(() => raw.got.some((f) => f.t === 'ready'))
+    check('(and B is attached to A’s session: A serves both)', last(hostM).guests.map((g) => g.kind).sort(), ['chats', 'session'])
+    return raw
+  }
+  const refusedOf = (raw: Awaited<ReturnType<typeof rogueChannel>>): [string | undefined, string | undefined] => {
+    const f = raw.got.find((x) => x.t === 'refused') as { code?: string; reason?: string } | undefined
+    return [f?.code, f?.reason]
+  }
+
+  // A's chain drops B: it is B that is no longer a device.
+  const raw1 = await servedBoth()
+  hostM.active = [A]
+  hostM.remote.chainChanged()
+  await until(() => last(guestM).chatPeers[0]?.state === 'error' && raw1.got.some((f) => f.t === 'refused'))
+  check('B dropped from A’s chain: B’s chats peer is told B is no longer a device, by code, in B’s own words', last(guestM).chatPeers.map((p) => [p.state, p.code, p.message]), [['error', 'not-a-device', 'Studio no longer counts this computer as one of your devices.']])
+  const [code1, reason1] = refusedOf(raw1)
+  check('and B’s session relay is refused as not-a-device', [code1, /no longer one of this account/.test(reason1 ?? '')], ['not-a-device', true])
+  check('A serves neither any more', last(hostM).guests.length, 0)
+  hostM.active = [...ACTIVE]
+
+  // A itself leaves the vault (revoked, signed out): no context. It is A that went, not B.
+  const raw2 = await servedBoth()
+  hostM.out = true
+  hostM.remote.chainChanged()
+  await until(() => last(guestM).chatPeers[0]?.state === 'error' && raw2.got.some((f) => f.t === 'refused'))
+  check('A leaves the vault: B’s chats peer is told A left, by code, in B’s own words — never that B was removed', last(guestM).chatPeers.map((p) => [p.state, p.code, p.message]), [['error', 'not-in-vault', 'Studio is no longer in your hub’s vault.']])
+  check('and B’s session relay is refused as not-in-vault, its sentence about A', refusedOf(raw2), ['not-in-vault', 'That computer is no longer in your hub’s vault.'])
+  check('A serves neither any more', last(hostM).guests.length, 0)
+  hostM.out = false
   for (const mm of [hostM, guestM]) mm.remote.reset()
 }
 
