@@ -125,6 +125,10 @@ export type HubErrorCode =
   | 'pending'
   | 'offline'
   | 'server-error'
+  /** `POST /v1/auth/verify`: the password typed is not the account's. Never `unauthorized`, which signs a device out. */
+  | 'wrong-password'
+  /** `POST /v1/auth/verify`: this device's own counter (`VERIFY_THROTTLE`) is locked. */
+  | 'throttled'
 
 export const HUB_ERROR_STATUS: Record<HubErrorCode, number> = {
   'bad-request': 400,
@@ -146,7 +150,9 @@ export const HUB_ERROR_STATUS: Record<HubErrorCode, number> = {
   'edge-refused': 403,
   pending: 403,
   offline: 409,
-  'server-error': 500
+  'server-error': 500,
+  'wrong-password': 401,
+  throttled: 429
 }
 
 /** Every non-2xx body. `message` is a sentence the panel may show as is. */
@@ -220,6 +226,7 @@ export const HUB_ROUTES = {
   signup: { method: 'POST', path: '/v1/auth/signup', auth: 'public' },
   login: { method: 'POST', path: '/v1/auth/login', auth: 'public' },
   logout: { method: 'POST', path: '/v1/auth/logout', auth: 'session' },
+  authVerify: { method: 'POST', path: '/v1/auth/verify', auth: 'active' },
   account: { method: 'GET', path: '/v1/account', auth: 'session' },
   invite: { method: 'POST', path: '/v1/auth/invites', auth: 'owner' },
   chainGet: { method: 'GET', path: '/v1/chain', auth: 'session' },
@@ -319,6 +326,22 @@ export interface LoginResponse {
    * `active`: the chain lists this device.
    */
   state: 'new-account' | 'pending' | 'active'
+}
+
+/**
+ * `POST /v1/auth/verify` (spec 2026-10-03 §2): "confirm it's you" on a device
+ * already in the vault, before it lets its other devices in to something. The
+ * password is checked against the account's hash and nothing else happens: no
+ * session is minted, nothing is written but this device's own failure counter
+ * (`VERIFY_THROTTLE`, keyed by account and device, never the sign-in
+ * counters). Answers `{ ok: true }`, 401 `wrong-password`, or 429 `throttled`
+ * with `retryAfterMs`.
+ */
+export interface VerifyPasswordRequest {
+  password: string
+}
+export interface VerifyPasswordResponse {
+  ok: true
 }
 
 export interface AccountResponse {

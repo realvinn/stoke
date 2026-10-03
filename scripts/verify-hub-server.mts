@@ -655,6 +655,69 @@ async function main(): Promise<void> {
     )
   }
 
+  /* ------------------------------------- "confirm it's you": POST /v1/auth/verify */
+  console.log('\n“confirm it’s you”: a password check that signs nothing in and locks no sign-in (spec 2026-10-03 §2)')
+  {
+    const db = <T,>(fn: (d: DatabaseSync) => T): T => {
+      const d = new DatabaseSync(join(TMP, 'hub', 'hub.db'), { timeout: 5000 })
+      try {
+        return fn(d)
+      } finally {
+        d.close()
+      }
+    }
+    const sessions = (): number => db((d) => Number((d.prepare('SELECT count(*) AS n FROM sessions').get() as { n: number }).n))
+    // Every sign-in counter, as it stands: the email's, each device's proven sign-ins, every address.
+    const signInRows = (): string =>
+      db((d) => JSON.stringify(d.prepare("SELECT * FROM login_failures WHERE key NOT LIKE 'verify:%' ORDER BY key").all()))
+    const verifyRows = (): { key: string; failures: number; lockouts: number }[] =>
+      db((d) => d.prepare("SELECT key, failures, lockouts FROM login_failures WHERE key LIKE 'verify:%' ORDER BY key").all() as { key: string; failures: number; lockouts: number }[])
+    const verify = (dev: Dev, password: unknown, o: CallOpts = {}): Promise<Reply> => call('POST', '/v1/auth/verify', { password }, { dev, ...o })
+    const wrongs = Array.from({ length: 12 }, (_, i) => `not the owner’s password, try ${i} ${randomB64u(4)}`)
+    secretsSeen.push(...wrongs)
+
+    const sessions0 = sessions()
+    const signIn0 = signInRows()
+    const right = await verify(A, OWNER_PW)
+    check('the right password from a device in the vault is { ok: true }', [right.status, right.body], [200, { ok: true }])
+    check('and mints no session: no token in the answer, no new row', [Object.keys(right.body ?? {}), sessions()], [['ok'], sessions0])
+    const wrong = await verify(A, wrongs[0])
+    check('a wrong one is 401 wrong-password, in the sheet’s own words', [wrong.status, wrong.body?.error, wrong.body?.message], [401, 'wrong-password', 'That password didn’t match.'])
+    check('which is not "unauthorized": the device is still signed in', (await call('GET', '/v1/account', undefined, { dev: A })).status, 200)
+    const pending = await verify(B, OWNER_PW)
+    check('a device the chain does not list (pending) is refused, right password or not', [pending.status, pending.body?.error], [403, 'pending'])
+    const bearerOnly = await call('POST', '/v1/auth/verify', { password: OWNER_PW }, { headers: { authorization: `Bearer ${A.token}` } })
+    check('so is a bearer with no device signature', [bearerOnly.status, bearerOnly.body?.error], [401, 'bad-signature'])
+    check('an empty password is a bad request, not a guess', [(await verify(A, '')).body?.error, (await verify(A, 42)).body?.error], ['bad-request', 'bad-request'])
+
+    const fails: number[] = [wrong.status]
+    for (let i = 1; i < 5; i++) fails.push((await verify(A, wrongs[i])).status)
+    check('five wrong passwords are five refusals', fails, [401, 401, 401, 401, 401])
+    const locked = await verify(A, OWNER_PW)
+    check('then even the right one is throttled for 15 minutes', [locked.status, locked.body?.error, locked.body?.retryAfterMs], [429, 'throttled', 15 * 60_000])
+    ok(`judged before scrypt (${locked.ms.toFixed(0)} ms), with a Retry-After header`, locked.ms < 150 && locked.headers.get('retry-after') === String(15 * 60))
+    check('the counter is this device’s own, by account and id', verifyRows().map((r) => r.key), [`verify:${ACCOUNT}:${A.id}`])
+    check('no sign-in counter moved: not the email’s, not the device’s proven sign-in, not an address’s', signInRows(), signIn0)
+    const fresh = newDevice('fresh')
+    const signIn = await login(fresh, OWNER_EMAIL, OWNER_PW, { ip: '198.51.100.120' })
+    const proven = await login(A, OWNER_EMAIL, OWNER_PW, { prove: true })
+    check('so signing in still works, by email and by an active device’s proof', [signIn.status, proven.status], [200, 200])
+    check('and still no session came from the checks themselves', sessions(), sessions0 + 2)
+    const signIn1 = signInRows()
+
+    clock += 15 * 60_000 + 1
+    const race = await Promise.all([verify(A, wrongs[5]), verify(A, wrongs[6])])
+    check('two guesses in flight from one device: one is checked, one refused before scrypt (gotcha 20)', race.map((r) => r.status).sort(), [401, 429])
+    for (let i = 7; i < 11; i++) await verify(A, wrongs[i])
+    const doubled = await verify(A, OWNER_PW)
+    check('a second lockout doubles to 30 minutes', [doubled.status, doubled.body?.error, doubled.body?.retryAfterMs], [429, 'throttled', 30 * 60_000])
+    clock += 30 * 60_000 + 1
+    const back = await verify(A, OWNER_PW)
+    check('after it the right password passes, and the success clears the counter', [back.status, verifyRows()], [200, []])
+    check('nor did a sign-in counter move through the second lockout', signInRows(), signIn1)
+    check('and no check, right or wrong, minted a session', sessions(), sessions0 + 2)
+  }
+
   /* ----------------------------------------------------- items */
   console.log('\nitems: compare-and-swap, epochs, the change feed')
   const K1 = itemKeys(VK1, ACCOUNT, 1)
@@ -1333,6 +1396,11 @@ let liveItemId = ''
     const post = await forwardHttp(new Request('https://stoke.vinn.dev/hub/v1/items', { method: 'POST', headers: { ...putHeaders, 'content-type': 'application/json' }, body: putBody }), env, fetch)
     const postBody = (await post.json()) as any
     check('a POST body crosses byte for byte (its signature still verifies)', [post.status, postBody?.results?.[0]?.ok], [200, true])
+    // The Worker gates nothing by route (only `/hub/`), so the password check needs no change there: proven, not assumed.
+    const pwBody = JSON.stringify({ password: OWNER_PW })
+    const pwHeaders = signRequest({ method: 'POST', pathFromV1: '/v1/auth/verify', device: A.id, signPriv: A.keys.signPriv, token: A.token, body: pwBody, now: clock })
+    const pw = await forwardHttp(new Request('https://stoke.vinn.dev/hub/v1/auth/verify', { method: 'POST', headers: { ...pwHeaders, 'content-type': 'application/json' }, body: pwBody }), env, fetch)
+    check('“confirm it’s you” (POST /v1/auth/verify) passes through the Worker as it is', [pw.status, await pw.json()], [200, { ok: true }])
     const unset = await forwardHttp(new Request(`https://stoke.vinn.dev/hub${path}`, { headers: signed }), { HUB_ORIGIN: env.HUB_ORIGIN }, fetch)
     const unsetRead = readHubResponse(unset.status, unset.headers.get('content-type'), await unset.text())
     check('with no secret configured the Worker forwards nothing and says so as a hub error', [unset.status, !unsetRead.ok && unsetRead.error.error], [503, 'server-error'])
