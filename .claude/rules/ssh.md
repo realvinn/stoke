@@ -24,6 +24,7 @@ paths:
   - "scripts/verify-ssh.mts"
   - "scripts/verify-tabs.mts"
   - "scripts/verify-worklog-gate.mts"
+  - "src/main/hub/sshKeys.ts"
 ---
 
 # SSH tabs
@@ -620,3 +621,75 @@ And save and restore the owner's pasteboard around it (every item, every type) �
 > Re-proven on 127.0.0.1:2301 in the fixed build: the three-file drop (one bracketed paste of three
 > far paths, hashes identical, 0600 in 0700), the folder sentence with nothing sent or typed, an
 > exactly-100 MiB file sent, and a local tab still typing the local paths.
+
+## 153. Inside a Windows ssh login, every ssh.exe started with pipes inherits a description of someone else's stdio, and hangs after its first write
+
+**Found 2026-10-03 on the owner's Windows 11 desktop (OpenSSH_for_Windows_9.5p2), from two reports.**
+`ssh -n -o BatchMode=yes … exit`, run from PowerShell inside an ssh login with its output captured,
+printed "Host key verification failed." and never exited. And verify:ssh, run there over ssh, died
+16 s in on its first `ssh -G` while it passed on GitHub's Windows runner. Reproduced against the
+desktop's own sshd and a scratch user-mode sshd on 127.0.0.1 (its own config, keys and
+`authorized_keys` under `%TEMP%`, so nothing in `C:\ProgramData\ssh` or `~\.ssh` was read or
+written). Through node `execFile`/`spawn` (stdio `'pipe'`), every shape hung with only its FIRST
+write delivered: `ssh -G` (its one stderr line, then none of its 4,031 bytes of stdout), a host-key
+failure, a wrong key, a refused port, and a login that worked, a 4 MB `type` arriving as 80 bytes.
+Stdin did not matter (`-n`, `'ignore'`, a pipe left open or ended). `windowsHide` did not matter.
+In the host-key case, a stderr that was a FILE, NUL or a node `'overlapped'` pipe exited in
+70-110 ms.
+
+**The cause is an environment variable.** Win32-OpenSSH tells a child it starts how its stdio is
+made: `c28fc6f98a2c44abbbd89d6a3037d0d9_POSIX_FD_STATE` (`fd_encode_state`, w32fd.c). The child
+decodes it at startup and clears it from its OWN environment only. Everything in between that is
+not OpenSSH, such as PowerShell, cmd, node or Electron, passes it on. So every process in a Windows
+ssh login WITHOUT a pty (`ssh host <command>`, how scripts and agents drive a machine) carries
+sshd's `AAAAAAICAgA=`: stdin, stdout and stderr are type 2, overlapped. A `-tt` login to the same
+desktop had no such variable (measured), so an interactive session there, and a Stoke SSH tab
+(always `-t` with a command), never sees it. A grandchild ssh.exe applies that value to handles it
+does not describe. Node's `'pipe'` and .NET's
+redirects are synchronous pipes. ssh.exe then writes through `WriteFileEx`, the bytes go out, and
+the completion routine never runs. The next write, or the exit (which waits for a pending write),
+sleeps alertably forever. The thread scan of a hung ssh.exe confirms it: main thread in `SleepEx` ←
+`wait_for_multiple_objects_enhanced` ← `wait_for_any_event` (named from Microsoft's public
+`ssh.pdb`), and no write thread alive. The source says so itself, above `fd_decode_state`: "the
+posix child process may misinterpret POSIX_FD_STATE set by grand parent". With ONLY the variable
+deleted from ssh.exe's env, every shape above exited in 80-290 ms (a refused port 2 s, Windows'
+own connect retry) with every byte, through sync pipes and `execFile`. That covers 4,000,000 of
+4,000,000 bytes and a 160 KB stdin. The owner's
+PowerShell shape, a .NET `Process` with redirects, was 8 s and still running with the variable,
+and 82 ms without. **Set to `''` it is worse: ssh.exe crashed at startup (0xC0000005).** So delete
+it, never blank it. `ssh-keygen` did not hang (it prints through the C runtime, not ssh's logger).
+A ConPTY ssh tab did not hang either, since console handles take the sync path whatever the
+variable says.
+
+**What it meant for Stoke:** only a Stoke whose own environment holds the variable, which means one
+started from a no-pty Windows ssh login: an agent's `npm run dev`, a probe, or a `stoke` sent over
+ssh with no Stoke running yet. A Stoke the owner starts at the desktop never had it. There, by the
+shapes measured above, every BatchMode run that wrote twice waited out its
+timeout and reported "No answer within N s" in place of ssh's own line. The kept-session list
+failed after 20 s. "End session" was fine when tmux printed nothing, and failed after 20 s when it
+had something to say. The transcript fetch resolved at its 20 s timeout with the first few bytes
+as if they were the whole transcript. A failing enroll probe took 25 s, and `resolveIdentity`'s
+`ssh -G` gave up at 10 s with nothing, which fails "Add a key" before it starts ("did not
+answer"). The hub's `identityFilesFor` returned null. An upload sat until its stall or overall
+timeout. **The fix:** `sshChildEnv()` (ssh.ts, `OPENSSH_PARENT_VARS`, which also drops
+`…_POSIX_CHROOT`) on every OpenSSH run without a terminal (`runSsh`, the transcript fetch, the
+enroll `defaultExec`, the hub's `defaultExec` and `spawnWithInput`), and both names in `STRIP_ENV`
+(pty.ts and agent.ts, gotcha 1's pair), so no tab inherits it either: an `ssh` behind a pipe or
+git over ssh in a tab would hang the same way. verify:ssh holds the name list, the
+delete-not-blank, the case fold, each call site, both STRIP_ENV lists, the env the upload runner's
+child really gets, and the env ssh hands its ProxyCommand (off Windows). On Windows it also holds
+the hang itself with the variable planted: `runSsh`'s `ssh -G` and the hub's, after a control that
+shows this ssh.exe hangs. It also takes the variable out of its OWN env at the top, so it passes
+when run over ssh. Mutated back: 8 checks red on the desktop, 4 on the Mac.
+
+**The rig rule for whoever drives that desktop over ssh:** any test there that starts ssh.exe (or
+anything Win32-OpenSSH) with pipes inherits the variable from the no-pty login, and hangs where
+GitHub's runner does not. Remove it first
+(`Remove-Item Env:\c28fc6f98a2c44abbbd89d6a3037d0d9_POSIX_FD_STATE` in PowerShell,
+`set c28fc6f98a2c44abbbd89d6a3037d0d9_POSIX_FD_STATE=` in cmd; both delete it), or the suite has to
+(verify:ssh does). The same holds for any OpenSSH program a no-pty remote command runs on a Windows
+machine, git over ssh included.
+
+**Not explained by this:** gotcha 144's "Add key" tab whose ssh.exe never exited. A ConPTY
+`ssh -e none -t … "echo …"` against the scratch sshd exited in 1.2-1.3 s with and without the
+variable, and a POSIX far side (the owner's VPS) was not reachable from the rig.

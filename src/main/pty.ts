@@ -304,6 +304,11 @@ const BANNER_SCAN_LIMIT = 64 * 1024
  * CLAUDE_CODE_CHILD_SESSION marker"), which silently breaks both session resume
  * and Stoke's own context meter, since both read the transcript.
  *
+ * The last two are Win32-OpenSSH's description of a process's stdio, left in
+ * the environment of a Stoke started from a no-pty Windows ssh login: an OpenSSH
+ * program in a tab (an `ssh` behind a pipe, git over ssh) would apply it to
+ * its own handles and hang (gotcha 153; `OPENSSH_PARENT_VARS`, ssh.ts).
+ *
  * Only session/runtime markers are stripped. Configuration and credentials
  * (ANTHROPIC_API_KEY, CLAUDE_CONFIG_DIR, proxy settings, ...) are passed
  * through untouched, then Settings > Providers may overlay them for a
@@ -319,7 +324,9 @@ const STRIP_ENV = [
   'CLAUDE_CODE_ENTRYPOINT',
   'CLAUDE_CODE_SESSION_ID',
   'CLAUDE_CODE_SSE_PORT',
-  'CLAUDE_PID'
+  'CLAUDE_PID',
+  'c28fc6f98a2c44abbbd89d6a3037d0d9_POSIX_FD_STATE',
+  'c28fc6f98a2c44abbbd89d6a3037d0d9_POSIX_CHROOT'
 ]
 
 /**

@@ -4,6 +4,7 @@ import {
   buildRemoteSessionKillArgs,
   buildRemoteSessionListArgs,
   parseRemoteSessionList,
+  sshChildEnv,
   sshExecutable
 } from './ssh.ts'
 
@@ -40,14 +41,15 @@ export type SshRunner = (args: string[]) => Promise<RunResult>
  * Run ssh with an argv, never through a shell: the remote command carries `#`,
  * `"` and tabs that are for the far machine's `sh`, and nothing local may read
  * them. `killed` is tested before any numeric code (gotcha 25): a timeout is
- * `killed: true, code: null`.
+ * `killed: true, code: null`. `sshChildEnv`, or a Stoke started inside a
+ * Windows ssh login hands ssh.exe a stdio description that hangs it (gotcha 153).
  */
 export const runSsh: SshRunner = (args) =>
   new Promise((resolve) => {
     execFile(
       sshExecutable(),
       args,
-      { timeout: TIMEOUT_MS, maxBuffer: MAX_BUFFER, encoding: 'utf8', windowsHide: true },
+      { timeout: TIMEOUT_MS, maxBuffer: MAX_BUFFER, encoding: 'utf8', windowsHide: true, env: sshChildEnv() },
       (err, stdout, stderr) => {
         if (!err) {
           resolve({ stdout, stderr, code: 0, error: '' })

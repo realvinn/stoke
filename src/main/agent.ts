@@ -27,7 +27,7 @@ import type { ProviderSettings } from '../shared/providers.ts'
  * list itself matters more than it looks — if Stoke is started from inside a
  * Claude Code session these markers are inherited, the child is treated as a
  * nested session, and transcript saving is silently disabled. Keep the two
- * lists in step.
+ * lists in step. The last two: gotcha 153 (pty.ts says why).
  */
 const STRIP_ENV = [
   'ELECTRON_RUN_AS_NODE',
@@ -39,7 +39,9 @@ const STRIP_ENV = [
   'CLAUDE_CODE_ENTRYPOINT',
   'CLAUDE_CODE_SESSION_ID',
   'CLAUDE_CODE_SSE_PORT',
-  'CLAUDE_PID'
+  'CLAUDE_PID',
+  'c28fc6f98a2c44abbbd89d6a3037d0d9_POSIX_FD_STATE',
+  'c28fc6f98a2c44abbbd89d6a3037d0d9_POSIX_CHROOT'
 ]
 
 /**

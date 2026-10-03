@@ -27,7 +27,7 @@ import { homedir, userInfo } from 'node:os'
 import { join } from 'node:path'
 import { hostsUsingKey, parsePublicKeyLine, sshKeyInstallPlan } from '../../shared/hub/client.ts'
 import { isSafeSshKeyName, type SshKeyPayload, type SyncableHost } from '../../shared/hub/settings.ts'
-import { buildIdentityBlock, identityFilesFromSshG, sshExecutable } from '../ssh.ts'
+import { buildIdentityBlock, identityFilesFromSshG, sshChildEnv, sshExecutable } from '../ssh.ts'
 import { appendToSshConfig, type ExecRun } from '../sshEnroll.ts'
 
 export interface SshPaths {
@@ -158,9 +158,10 @@ export interface InstallResult {
   message: string
 }
 
+/** `ssh -G` only, so `sshChildEnv` (gotcha 153). */
 function defaultExec(file: string, args: string[], timeoutMs: number): ReturnType<ExecRun> {
   return new Promise((resolve) => {
-    execFile(file, args, { timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024, encoding: 'utf8', windowsHide: true }, (err, stdout, stderr) => {
+    execFile(file, args, { timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024, encoding: 'utf8', windowsHide: true, env: sshChildEnv() }, (err, stdout, stderr) => {
       resolve({ ok: !err, stdout: stdout ?? '', stderr: stderr ?? '', error: err ? err.message : null })
     })
   })
