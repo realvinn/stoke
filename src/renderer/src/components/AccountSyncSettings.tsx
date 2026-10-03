@@ -962,7 +962,7 @@ function OtherMachinesSettings({ remoteBar, onRemoteBar }: AccountSyncProps): Re
       {remote.guests.length > 0 && (
         <div className="btn-row">
           <span className="field-hint" style={{ flex: 1 }}>
-            Attached now: {remote.guests.map((g) => `${g.label} (${g.title ?? 'a session'})`).join(', ')}.
+            Attached now: {remote.guests.map((g) => `${g.label} (${g.kind === 'chats' ? 'searching chat history' : (g.title ?? 'a session')})`).join(', ')}.
           </span>
           <button className="btn" onClick={() => void window.stoke.hub.remote.dropGuests()}>
             Disconnect
