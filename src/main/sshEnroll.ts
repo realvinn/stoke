@@ -620,7 +620,10 @@ export async function finishEnroll(
       fallback
         ? `Adding the key to ${alias} did not finish (exit ${exitCode}). If that machine's login shell is not a POSIX shell — a Windows OpenSSH server, say — run \`ssh-copy-id\` from Git Bash, or add ${keyPath}.pub to its authorized_keys by hand.`
         : `ssh-copy-id did not finish (exit ${exitCode}); what it printed is in the “Add key” tab.`,
-      direct.message ? `ssh said: ${direct.message}` : ''
+      // The probe's words, not the install's: labelled as a test login, or a
+      // failure on this machine before any connection (a missing ~/.ssh)
+      // reads like a wrong password (measured, 2026-10-03).
+      direct.message ? `A test login with ${keyPath} afterwards said: ${direct.message}` : ''
     ]
       .filter(Boolean)
       .join('\n')
@@ -631,7 +634,7 @@ export async function finishEnroll(
   const message = [
     `The install reported success, but ${alias} still will not take ${keyPath}.`,
     'The usual causes are `PubkeyAuthentication no` in the remote sshd_config, an `AuthorizedKeysFile` pointing somewhere else, or a group-writable home directory — sshd ignores the file silently in that last case. A key with a passphrase also cannot be tried here unless ssh-agent holds it.',
-    direct.message ? `ssh said: ${direct.message}` : ''
+    direct.message ? `A test login with ${keyPath} said: ${direct.message}` : ''
   ]
     .filter(Boolean)
     .join('\n')
