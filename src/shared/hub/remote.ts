@@ -685,6 +685,11 @@ export const CHATS_PAUSED_SENTENCE = 'Paused: turn on “Leave out anything that
  * - `not-a-device` — its chain no longer holds this device. "<C> no longer counts this computer as one of your devices."
  * - `not-in-vault` — the host itself left the vault. "<C> is no longer in your hub’s vault."
  * - `disconnected` — its owner pressed Disconnect. "<C> disconnected this computer."
+ * - `query-key-shaped` — one search, not the relay: its words look like a key
+ *   or a code (`keyShapedQuery`, shared/keyShaped.ts), and a host answers no
+ *   such search, since FTS would answer it for any prefix of a key no pattern
+ *   knows (gotcha 156). "That search looks like a key or a code — search <C>
+ *   with words instead."
  *
  * The first three read as `not-sharing` (asked again `CHATS_RETRY_MS`
  * later), the next three as `denied` (standing until the search ends), the
@@ -700,7 +705,8 @@ export const CHATS_REFUSAL_CODES = [
   'busy',
   'not-a-device',
   'not-in-vault',
-  'disconnected'
+  'disconnected',
+  'query-key-shaped'
 ] as const satisfies readonly RelayRefusalCode[]
 export type ChatsRefusalCode = (typeof CHATS_REFUSAL_CODES)[number]
 
@@ -735,6 +741,8 @@ export function chatsRefusalSentence(code: ChatsRefusalCode, computer: string): 
       return `${computer} is no longer in your hub’s vault.`
     case 'disconnected':
       return `${computer} disconnected this computer.`
+    case 'query-key-shaped':
+      return `That search looks like a key or a code — search ${computer} with words instead.`
   }
 }
 

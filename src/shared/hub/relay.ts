@@ -204,8 +204,10 @@ export type RelayInnerFrame =
  * device's grant back), `busy` (it is already asking about the same thing),
  * `not-a-device` (the host's chain does not hold the guest), `not-in-vault`
  * (the host itself is out of the vault), `disconnected` (the owner pressed
- * Disconnect there). What a chats guest makes of each, and says, is
- * `ChatsRefusalCode` in remote.ts.
+ * Disconnect there), `query-key-shaped` (a chats search that looks like a key
+ * or a code, refused per request and never on a `refused` frame: gotcha 156).
+ * What a chats guest makes of each, and says, is `ChatsRefusalCode` in
+ * remote.ts.
  */
 export type RelayRefusalCode =
   | 'not-sharing'
@@ -218,6 +220,7 @@ export type RelayRefusalCode =
   | 'not-a-device'
   | 'not-in-vault'
   | 'disconnected'
+  | 'query-key-shaped'
 const REFUSAL_CODES: readonly RelayRefusalCode[] = [
   'not-sharing',
   'history-off',
@@ -228,7 +231,8 @@ const REFUSAL_CODES: readonly RelayRefusalCode[] = [
   'busy',
   'not-a-device',
   'not-in-vault',
-  'disconnected'
+  'disconnected',
+  'query-key-shaped'
 ]
 
 /** A refusal code this build knows; anything else is dropped from a frame, never trusted. */

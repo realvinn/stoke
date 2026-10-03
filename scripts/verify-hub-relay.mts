@@ -43,7 +43,8 @@ import {
   type DeviceKeys
 } from '../src/main/hub/crypto.ts'
 import { HubRemote, type RelaySocket, type RemoteContext } from '../src/main/hub/remote.ts'
-import { answerChatsRoute, sharedChats, type ChatIndexAccess } from '../src/main/hub/chatShare.ts'
+import { answerChatsRoute, matchedOnlyInKeys, sharedChats, type ChatIndexAccess } from '../src/main/hub/chatShare.ts'
+import { keyShapedQuery, keyShapedRun, redactKeyShaped } from '../src/shared/keyShaped.ts'
 import { redactSecrets } from '../src/main/chatIndex/parse.ts'
 import { VirtualSocket } from '../src/main/remote/socket.ts'
 import type { ChatSearchHit, ChatTranscript } from '../src/shared/chatIndex.ts'
@@ -1495,7 +1496,7 @@ console.log('\nchat history: the host’s rules, the scope, and what may leave')
   check(
     'each code’s state: paused reads as not sharing, revoked and no answer as denied, the rest as errors',
     CHATS_REFUSAL_CODES.map((c) => [c, chatsRefusalState(c)]),
-    [['not-sharing', 'not-sharing'], ['history-off', 'not-sharing'], ['redaction-off', 'not-sharing'], ['denied', 'denied'], ['no-answer', 'denied'], ['revoked', 'denied'], ['busy', 'error'], ['not-a-device', 'error'], ['not-in-vault', 'error'], ['disconnected', 'error']]
+    [['not-sharing', 'not-sharing'], ['history-off', 'not-sharing'], ['redaction-off', 'not-sharing'], ['denied', 'denied'], ['no-answer', 'denied'], ['revoked', 'denied'], ['busy', 'error'], ['not-a-device', 'error'], ['not-in-vault', 'error'], ['disconnected', 'error'], ['query-key-shaped', 'error']]
   )
 
   const chats = { kind: 'chats' } as const
@@ -1672,6 +1673,186 @@ console.log('\nchat history: a hidden chat takes no place in the answer, and not
   check('and an id that looks like a key opens nothing: the 404 of a missing chat', (await answerChatsRoute(keyed, 'open', new URLSearchParams({ source: 'claude', id: KEY }))).status, 404)
 }
 
+console.log('\nchat history: what leaves goes through a generic net, and a search that looks like a key is refused')
+{
+  /*
+   * Review of 10b0840: four rounds of provider shapes (rule set 5) still let 44 of 46 fresh secret shapes
+   * through to the other computer, so the share path carries a net that knows a key by its shape alone
+   * (shared/keyShaped.ts), and refuses a search shaped like one. Every key here is built at run time from a
+   * seeded generator, never written out (gotcha 157).
+   */
+  const B62 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
+  const HEXA = '0123456789abcdef'
+  const gen = (seed: number, n: number, alphabet = B62): string => {
+    let x = (seed * 2654435761) >>> 0
+    let out = ''
+    for (let i = 0; i < n; i++) {
+      x ^= x << 13
+      x >>>= 0
+      x ^= x >>> 17
+      x ^= x << 5
+      x >>>= 0
+      out += alphabet[x % alphabet.length]
+    }
+    return out
+  }
+  const WG = 'Q' + gen(11, 42, B62 + '+') + '='
+  const TW1 = gen(12, 32, HEXA)
+  const TW2 = gen(13, 32, HEXA)
+  const PYPI = 'pypi' + '-AgEIcHlwaS5vcmc' + gen(14, 120, B62 + '_-')
+  const ATL = 'ATA' + 'TT3x' + gen(15, 180, B62 + '_-=')
+  const AGE = 'AGE-SECRET' + '-KEY-1' + gen(16, 58, 'QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L')
+  const ETH = '0x' + gen(17, 64, HEXA)
+  const PMAK = 'PM' + 'AK-' + gen(18, 24, HEXA) + '-' + gen(19, 34, HEXA)
+  const LOWER = gen(20, 24, 'abcdefghijklmnopqrstuvwxyz0123456789')
+  const UPPER = gen(21, 20, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567')
+  const AUTH = Buffer.from('me:' + gen(22, 30)).toString('base64')
+  check(
+    'the net takes shapes no pattern knows: a WireGuard key, a Twilio pair, PyPI, Atlassian, age, an Ethereum key, Postman, lower- and upper-case tokens, a docker auth',
+    [
+      redactKeyShaped(`[Peer]\nPresharedKey = ${WG}`),
+      redactKeyShaped(`client = Client("AC${TW1}", "${TW2}")`),
+      redactKeyShaped(`pass ${PYPI} and jira ${ATL}`),
+      redactKeyShaped(`${AGE} / my wallet key is ${ETH} / key ${PMAK}`),
+      redactKeyShaped(`t=${LOWER} u=${UPPER}`),
+      redactKeyShaped(`{"auths":{"ghcr.io":{"auth":"${AUTH}"}}}`)
+    ],
+    [
+      '[Peer]\nPresharedKey = [redacted]',
+      'client = Client("[redacted]", "[redacted]")',
+      'pass [redacted] and jira [redacted]',
+      '[redacted] / my wallet key is [redacted] / key [redacted]',
+      't=[redacted] u=[redacted]',
+      '{"auths":{"ghcr.io":{"auth":"[redacted]"}}}'
+    ]
+  )
+  check(
+    'a SHA-256 goes too, which a shared view accepts losing; 32+ hex goes whatever its rate; the marker is a fixed point',
+    [redactKeyShaped(`sha256:${gen(23, 64, HEXA)}`), redactKeyShaped(`key 0x${'0'.repeat(30)}ab here`), redactKeyShaped('a [redacted] b')],
+    ['sha256:[redacted]', 'key [redacted] here', 'a [redacted] b']
+  )
+  const GIT = gen(24, 40, HEXA)
+  const UUID = `${gen(25, 8, HEXA)}-${gen(26, 4, HEXA)}-${gen(27, 4, HEXA)}-${gen(28, 4, HEXA)}-${gen(29, 12, HEXA)}`
+  const leftAlone = [
+    `commit ${GIT}, short 9ea4f06`,
+    `session ${UUID}, file codex-clipboard-${UUID}.png and rollout-2026-09-28T16-02-23-${UUID}.jsonl`,
+    'docs/superpowers/specs/2026-10-03-cross-machine-chats.md and node_modules/@lydell/node-pty-darwin-arm64/lib',
+    'node --max-old-space-size=4096 build.js',
+    'base64urlToUint8Array, pbeWithSHAAnd40BitRC2CBC, uniformMatrix2x3fv, writeBigUInt64BE, legacyFp32OnlyRanked',
+    'COSC3045_Week2Lectorial_2026.pdf, realstock_20260901T080513Z, protech_windows11_usb_labels_150x100mm',
+    'branch lena-full-audit-wf_3cf08d0a-e2b and 6000282863-asth24kmte-aoth24kmte-service-instructions',
+    'v1.2.3-beta.4+build.567 at 2026-10-04T12:34:56.789Z',
+    'TERMINAL_DEFAULTS and HTTP2_SERVER_PORT_8080 and getServerSidePropsForTheWholePage',
+    'a ---------------------------------------------------------------- line'
+  ]
+  check('the net leaves a git commit, UUIDs, paths, flags, names with numbers, versions, dates and a rule of dashes', leftAlone.map((t) => redactKeyShaped(t)), leftAlone)
+  check(
+    'a base64 key cut by a / goes whole; a path beside a taken hash keeps its names; 40 hex as a URL’s user is a token, not a commit',
+    [
+      redactKeyShaped(`type("${'Ss' + gen(34, 5)}/${gen(35, 32)}") and type("${gen(37, 32)}/${'Xy' + gen(38, 5)}")`),
+      redactKeyShaped(`.wrangler/state/v3/d1/miniflare-D1DatabaseObject/${gen(36, 64, HEXA)}.sqlite`),
+      redactKeyShaped(`git clone https://${GIT}@git.example.com/team/app.git`)
+    ],
+    ['type("[redacted]/[redacted]") and type("[redacted]/[redacted]")', '.wrangler/state/v3/d1/miniflare-D1DatabaseObject/[redacted].sqlite', 'git clone https://[redacted]@git.example.com/team/app.git']
+  )
+  const KEY = 'Q' + gen(30, 40)
+  check(
+    'a run a cut end left is judged as a key’s part: a snippet that opens or closes inside a key',
+    [redactKeyShaped(`…${KEY.slice(25)} said so`, { start: true, end: false }), redactKeyShaped(`it is ${KEY.slice(0, 12)}…`, { start: false, end: true }), redactKeyShaped(`…${KEY.slice(25)} said so`)],
+    ['…[redacted] said so', 'it is [redacted]…', `…${KEY.slice(25)} said so`]
+  )
+  check('a plain name before a taken value stays: NAME=, --flag=', [redactKeyShaped(`DB_PASSWORD=${KEY} and --token=${KEY}`), redactKeyShaped(`${KEY}=${KEY}`)], ['DB_PASSWORD=[redacted] and --token=[redacted]', '[redacted]'])
+  {
+    // Linear: no run, separator or mixture backtracks (the suite's 64 KB rule, gotcha 156's measurements).
+    const K = 64 * 1024
+    const fill = (unit: string): string => unit.repeat(Math.ceil(K / unit.length)).slice(0, K)
+    const worst = [gen(31, K), fill('a-'), fill('-'), fill('aA1'), fill(' '), fill('0123456789abcdef'), fill('Ab3-'), fill('a=b '), fill('…'), `${gen(32, K - 40)}${'-'.repeat(40)}`, fill('Ab3x/'), fill('a=b'), fill('a1'), 'a'.repeat(K - 1) + '1', fill('0123abcd-')]
+    let slowest = 0
+    for (const t of worst) {
+      const t0 = performance.now()
+      redactKeyShaped(t, { start: true, end: true })
+      keyShapedQuery(t.slice(0, 200))
+      slowest = Math.max(slowest, performance.now() - t0)
+    }
+    ok(`every 64 KB worst case is judged in well under a second (slowest ${slowest.toFixed(1)} ms)`, slowest < 250)
+  }
+
+  // The query: refused while it looks like a key or a code; words, file names, short ids and a 7-character git id pass.
+  const refused = [KEY.slice(0, 8), 'ab3de9xy', '9f8e7d6c5b4a3210', 'deadbeefcafe0000', GIT.slice(0, 16), `${PYPI}`, `word ${KEY.slice(0, 10)} word`, KEY, `DB_PASSWORD=${KEY}`]
+  const allowed = ['relay', 'stoke sessions', 'verify-hub-relay.mts', 'index2.html', 'c-1', 'PR-1234', 'issue 42', '9ea4f06', 'windows11', 'es2022', 'utf8mb4_unicode_ci', 'win32-x64', 'useState2', 'sha256 checksum', 'node20 x86_64', '2026-10-03', 'v0.9.91', 'tiếng Việt 2024', 'base64UrlEncode']
+  check('a search shaped like a key or a code is refused: an opening of 8 as pasted, three changes of letter and digit, hex of 16, a key pasted whole', refused.filter((q) => !keyShapedQuery(q)), [])
+  check('words, file names, short ids, a 7-character git id and names with a number are searched', allowed.filter((q) => keyShapedQuery(q)), [])
+  // A key whose every word is short: only the run, judged as a shared text's would be, says it is one.
+  const DASHED = [gen(41, 7), gen(42, 7), gen(43, 7), gen(44, 7)].join('-')
+  check(
+    '(the run test is the net’s own: what a shared text loses, a search may not ask, though each word alone could be)',
+    [keyShapedRun(KEY), keyShapedQuery(KEY), keyShapedQuery(DASHED), DASHED.split('-').some((w) => keyShapedQuery(w))],
+    [true, true, true, false]
+  )
+
+  // Through sharedChats: a fake index holding keys of shapes no pattern knows.
+  const m = { indexOn: true, hidden: [], chats: [
+    { chatId: 21, source: 'claude', nativeId: 'k-21', title: `WireGuard ${WG}`, cwd: '/Users/v/dev/vpn', text: `the netkeys peer has PresharedKey = ${WG} in it` },
+    { chatId: 22, source: 'claude', nativeId: 'k-22', title: 'Twilio', cwd: '/Users/v/dev/sms', text: `netkeys client = Client("AC${TW1}", "${TW2}")` }
+  ] } as unknown as Machine
+  const base = chatAccess(m)
+  const asked: string[] = []
+  const share = sharedChats({ ...base, search: async (q, l) => (asked.push(q), base.search(q, l)) })
+  const found = await answerChatsRoute(share, 'search', new URLSearchParams({ q: 'netkeys' }))
+  const opened = await Promise.all(['k-21', 'k-22'].map((id) => answerChatsRoute(share, 'open', new URLSearchParams({ source: 'claude', id }))))
+  const sent = JSON.stringify([found, opened])
+  const runsOf = (k: string): string[] => Array.from({ length: Math.max(0, k.length - 11) }, (_, i) => k.slice(i, i + 12))
+  check(
+    'search and open answer, and no 12 characters in a row of any of the keys is in a byte of either',
+    [found.status, (found.body as { hits: { nativeId: string }[] }).hits.map((h) => h.nativeId), opened.map((o) => o.status), [WG, TW1, TW2].flatMap(runsOf).filter((r) => sent.includes(r))],
+    [200, ['k-21', 'k-22'], [200, 200], []]
+  )
+  check('the title and the snippet say [redacted] where the key was', [(found.body as { hits: { title: string; snippet: string }[] }).hits[0].title, (found.body as { hits: { snippet: string }[] }).hits[0].snippet], ['WireGuard [redacted]', 'the netkeys peer has PresharedKey = [redacted] in it'])
+  {
+    // Judged whole before the cut to shape: a title is cut at 200, which here leaves 15 of a key's 40 — too few for any test after.
+    const LONG = 'Q' + gen(40, 39)
+    const title = `${'word '.repeat(37)}${LONG} and more`
+    const n = { indexOn: true, hidden: [], chats: [{ chatId: 23, source: 'claude', nativeId: 'k-23', title, cwd: '/Users/v/dev/long', text: 'longtitle chat' }] } as unknown as Machine
+    const longShare = sharedChats(chatAccess(n))
+    const hit = ((await answerChatsRoute(longShare, 'search', new URLSearchParams({ q: 'longtitle' }))).body as { hits: { title: string }[] }).hits[0]
+    const read = (await answerChatsRoute(longShare, 'open', new URLSearchParams({ source: 'claude', id: 'k-23' }))).body as { title: string }
+    check(
+      'a key the title’s 200-character cut runs through is judged whole before the cut: none of it is sent',
+      [title.indexOf(LONG) < 200 && title.indexOf(LONG) + LONG.length > 200, [hit?.title, read?.title].map((t) => runsOf(LONG).some((r) => t.includes(r.slice(0, 8)))), hit?.title.includes(' [redacted] ')],
+      [true, [false, false], true]
+    )
+  }
+  {
+    // FTS cuts a snippet at any word, so one may open past a key's `-` with too little of it for the net: its `…` says so.
+    const part = `${gen(45, 15)}`
+    const cutShare = sharedChats({
+      ...base,
+      search: async () => [{ chatId: 24, source: 'claude', nativeId: 'k-24', title: 'Cut', firstPrompt: null, cwd: '/Users/v/dev/cut', updatedMs: 1, subagent: false, role: 'user', snippet: { text: `…${part} said snipcut here…`, ranges: [] } }]
+    })
+    const cutHit = ((await answerChatsRoute(cutShare, 'search', new URLSearchParams({ q: 'snipcut' }))).body as { hits: { snippet: string; ranges: [number, number][] }[] }).hits[0]
+    check('a snippet FTS opened inside a key: what its cut left is judged as a part, and the match is marked on what is sent', [cutHit?.snippet, cutHit?.ranges.map(([x, y]) => cutHit.snippet.slice(x, y))], ['…[redacted] said snipcut here…', ['snipcut']])
+  }
+  asked.length = 0
+  const keyAsk = await answerChatsRoute(share, 'search', new URLSearchParams({ q: WG.slice(0, 9) }))
+  check('a search for a key’s opening: 400 query-key-shaped, in words for an older guest, and the index is never asked', [keyAsk.status, (keyAsk.body as { code?: string }).code, (keyAsk.body as { error?: string }).error, asked], [400, 'query-key-shaped', 'That search looks like a key or a code — search with words instead.', []])
+  check('the guest says it from its side, naming the computer', chatsRefusalSentence('query-key-shaped', 'Studio'), 'That search looks like a key or a code — search Studio with words instead.')
+  // The walk: every opening of the key, one character more at a time, either refused or answered with no hit on its chat.
+  const walk: string[] = []
+  for (let n = 3; n <= WG.length; n++) {
+    for (const q of [WG.slice(0, n), WG.slice(0, n).toLowerCase()]) {
+      const r = await answerChatsRoute(share, 'search', new URLSearchParams({ q }))
+      const hits = r.status === 200 ? (r.body as { hits: { nativeId: string }[] }).hits.map((h) => h.nativeId) : []
+      if (hits.includes('k-21')) walk.push(q.length + ':' + r.status)
+    }
+  }
+  check('walking a key’s openings one character at a time finds its chat at no length (refused, or matched only inside [redacted])', walk, [])
+  check(
+    'a word seen outside a key keeps its hit; a word marked only inside one drops it',
+    [matchedOnlyInKeys(`the peer ${WG} peer`, 'peer'), matchedOnlyInKeys(`the peer ${WG}`, WG.slice(0, 5)), matchedOnlyInKeys(`the peer ${WG}`, 'zzz')],
+    [false, true, false]
+  )
+}
+
 console.log('\nchat history between two machines: ask, allow, search, open; every request re-checked')
 {
   const T = { idleMs: 60_000, waitMs: 400, retryMs: 50 }
@@ -1826,6 +2007,17 @@ console.log('\nchat history between two machines: ask, allow, search, open; ever
     )
     check('and the hit is marked on the text that was sent', crHit && crHit.ranges.map(([x, y]) => crHit.snippet.slice(x, y)), ['crsplit'])
     hostM.chats.pop()
+  }
+  {
+    // Review of 10b0840: a search shaped like a key is refused by A per request, and B words it from its side.
+    const before = hostM.requests.length
+    res = await guestM.remote.searchChats(`${'Ab3d' + 'E9xYq2'}`)
+    const r = byDevice(res, A.id)
+    check(
+      'a search that looks like a key reaches A and is refused there: B says so in its own words, naming A, and the relay stays open',
+      [r?.state, r?.code, r?.message, remoteChatGroups({ query: 'x', results: res }, 'x', new Set([A.id]))[0]?.line, hostM.requests.length - before, last(guestM).chatPeers[0]?.state],
+      ['error', 'query-key-shaped', 'That search looks like a key or a code — search Studio with words instead.', 'That search looks like a key or a code — search Studio with words instead.', 1, 'open']
+    )
   }
   hostM.chatGrants = {}
   res = await guestM.remote.searchChats('relay')

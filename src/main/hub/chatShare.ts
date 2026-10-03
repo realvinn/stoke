@@ -32,7 +32,20 @@
  *   where `limit=2` answered one hit, which said a hidden chat matched and
  *   ranked first. The index leaves hidden folders out before ITS limit
  *   (`searchCleaned`'s `hidden`), and this asks it for `CHAT_HITS_MAX` and cuts
- *   to the guest's limit only after its own filters.
+ *   to the guest's limit only after its own filters;
+ * - the patterns know a key by its provider's shape, and no list of providers
+ *   ends (44 of 46 fresh shapes passed rule set 5). So everything that leaves
+ *   also goes through a generic net (shared/keyShaped.ts `redactKeyShaped`):
+ *   any run of token characters long and random enough to be a key is
+ *   `[redacted]`, judged (with the patterns before it) once over the index's
+ *   whole text before it is cut to shape, as a cut can leave too little of a
+ *   key to judge, and again over the bytes that are sent. It takes ids and hashes too, so it runs here, on the
+ *   way out, and never on the local index or viewer;
+ * - a search that looks like a key or a code is refused before the index is
+ *   asked (`keyShapedQuery`, `query-key-shaped`): the cleaned rows still hold
+ *   every key no pattern knows, and FTS answers a prefix of one. And a hit is
+ *   left out when one of the query's words matched it only inside text the net
+ *   takes (`matchedOnlyInKeys`): its snippet would say that word is in a key.
  *
  * The HOST's grant and scope are judged before any of this runs
  * (`HubRemote`); this is what a judged request reads.
@@ -40,9 +53,10 @@
  * No electron import, so `verify:hub-relay` runs it against a real
  * `redactSecrets`. Imports only src/shared by relative `.ts` path (gotcha 78).
  */
-import { CHAT_SEARCH_MIN_CHARS, highlightRanges, isChatOrigin, type ChatOrigin, type ChatSearchHit, type ChatTranscript } from '../../shared/chatIndex.ts'
+import { CHAT_SEARCH_MIN_CHARS, dropInvisible, highlightRanges, isChatOrigin, type ChatOrigin, type ChatSearchHit, type ChatTranscript } from '../../shared/chatIndex.ts'
 import { CHAT_HITS_MAX, CHAT_QUERY_MAX, isChatNativeId, isChatSource } from '../../shared/hub/relay.ts'
 import { remoteChatFrom, remoteChatHitFrom, type ChatsRefusalCode, type RemoteChat, type RemoteChatHit } from '../../shared/hub/remote.ts'
+import { keyShapedQuery, keyShapedSpans, redactKeyShaped, type KeyShapedCut } from '../../shared/keyShaped.ts'
 
 export type ChatsRefusal = { ok: false; status: number; error: string; code?: ChatsRefusalCode }
 
@@ -88,18 +102,57 @@ const PAUSED: ChatsRefusal = {
   code: 'redaction-off'
 }
 const MISSING: ChatsRefusal = { ok: false, status: 404, error: 'That chat isn’t on that computer any more.' }
+const KEY_SHAPED: ChatsRefusal = { ok: false, status: 400, error: 'That search looks like a key or a code — search with words instead.', code: 'query-key-shaped' }
+
+/** Which ends of a search snippet FTS cut (its `…`): a run against one is judged as part of a longer one. */
+function snippetCut(text: string): KeyShapedCut {
+  return { start: text.startsWith('…'), end: text.endsWith('…') }
+}
+
+/**
+ * Whether a word of `query` matched `snippet` only inside runs the net takes
+ * (`keyShapedSpans`): every place it is marked lies in one. Such a hit is
+ * evidence that the word is part of a key — "is there a word starting
+ * `ab3de`?" answered by a chat whose snippet shows only `[redacted]` — so it
+ * is left out. A word marked nowhere in the snippet (FTS matched it outside
+ * the window) is not judged here; the query's own shape is (`keyShapedQuery`).
+ */
+export function matchedOnlyInKeys(snippet: string, query: string): boolean {
+  const spans = keyShapedSpans(snippet, snippetCut(snippet))
+  if (spans.length === 0) return false
+  const inside = ([a, b]: [number, number]): boolean => spans.some(([s, e]) => a >= s && b <= e)
+  for (const w of new Set(query.match(/[\p{L}\p{N}]+/gu) ?? [])) {
+    const marked = highlightRanges(snippet, w)
+    if (marked.length > 0 && marked.every(inside)) return true
+  }
+  return false
+}
 
 /** The guarded, redacted reader the relay instance serves (`RemoteServer.serveChats`). */
 export function sharedChats(a: ChatIndexAccess): SharedChats {
   /** Why nothing may be read now, or null: asked before the index is, and again after its await. */
   const shut = (): ChatsRefusal | null => (!a.indexOn() ? OFF : !a.redactOn() ? PAUSED : null)
-  /** The folder's name (already its last segment) through the patterns too. */
-  const named = <T extends { folder: string | null }>(x: T): T => (x.folder === null ? x : { ...x, folder: a.redact(x.folder) })
+  /**
+   * The bytes that leave: the patterns, then the net (`redactKeyShaped`). Today's shaping only splits and
+   * cuts, so the net here takes nothing `whole` has not (a suite cannot tell them apart); it stays for the
+   * day shaping joins what was judged apart, as deleting controls once did (re-review of 62b4ae6).
+   */
+  const belt = (text: string, cut?: KeyShapedCut): string => redactKeyShaped(a.redact(text), cut)
+  /**
+   * The index's whole text, as a reader would see it (no invisible characters), through the patterns and
+   * the net before it is cut to shape: a cut may leave too little of a key to judge. The patterns first,
+   * so a key the net would take half of (`ghp_Ab1Cd2\r<the rest>`) is still one key to `split-key`.
+   */
+  const whole = (text: string, cut?: KeyShapedCut): string => redactKeyShaped(a.redact(dropInvisible(text)), cut)
+  /** The folder's name (already its last segment) through the patterns and the net too. */
+  const named = <T extends { folder: string | null }>(x: T): T => (x.folder === null ? x : { ...x, folder: belt(x.folder) })
   return {
     async search(q, limit) {
       const before = shut()
       if (before) return before
       const query = q.slice(0, CHAT_QUERY_MAX)
+      // Before the index is asked anything: its cleaned rows still hold every key no pattern knows.
+      if (keyShapedQuery(query)) return KEY_SHAPED
       if (query.trim().length < CHAT_SEARCH_MIN_CHARS) return { ok: true, hits: [] }
       const want = Math.max(1, Math.min(CHAT_HITS_MAX, Math.floor(limit)))
       // Always the most there may be; the guest's limit is taken only after the filters below.
@@ -108,15 +161,23 @@ export function sharedChats(a: ChatIndexAccess): SharedChats {
       const after = shut()
       if (after) return after
       const hits = found
-        .filter((h) => (!h.cwd || !a.hidden(h.cwd)) && a.redact(h.nativeId) === h.nativeId)
+        .filter((h) => (!h.cwd || !a.hidden(h.cwd)) && a.redact(h.nativeId) === h.nativeId && !matchedOnlyInKeys(dropInvisible(h.snippet.text), query))
         .slice(0, want)
         .map((h) => {
-          // Shaped first, judged after: the patterns see exactly the bytes that leave.
-          const shaped = remoteChatHitFrom(h, query)
-          const snippet = a.redact(shaped.snippet)
+          const text = whole(h.snippet.text, snippetCut(h.snippet.text))
+          const netted: ChatSearchHit = {
+            ...h,
+            title: h.title === null ? null : whole(h.title),
+            firstPrompt: h.firstPrompt === null ? null : whole(h.firstPrompt),
+            // The ranges point into the index's text: once the net moves it, marked afresh.
+            snippet: { text, ranges: text === h.snippet.text ? h.snippet.ranges : highlightRanges(text, query) }
+          }
+          // Shaped first, judged after: the patterns and the net see exactly the bytes that leave.
+          const shaped = remoteChatHitFrom(netted, query)
+          const snippet = belt(shaped.snippet, snippetCut(shaped.snippet))
           // The ranges point into the shaped text: once redaction moves it, mark the redacted text afresh.
           const ranges = snippet === shaped.snippet ? shaped.ranges : highlightRanges(snippet, query)
-          return named({ ...shaped, title: shaped.title === null ? null : a.redact(shaped.title), snippet, ranges })
+          return named({ ...shaped, title: shaped.title === null ? null : belt(shaped.title), snippet, ranges })
         })
       return { ok: true, hits }
     },
@@ -128,12 +189,14 @@ export function sharedChats(a: ChatIndexAccess): SharedChats {
       const after = shut()
       if (after) return after
       if (!t || (t.cwd && a.hidden(t.cwd))) return MISSING
-      // Shaped first (controls, the size cut), judged after: the patterns see exactly the bytes that leave.
-      const shaped = remoteChatFrom(t, nativeId)
+      // The net over each whole text first: the size cut below may leave too little of a key to judge.
+      const netted: ChatTranscript = { ...t, title: t.title === null ? null : whole(t.title), messages: t.messages.map((m) => ({ ...m, text: whole(m.text) })) }
+      // Shaped (controls, the size cut), judged after: the patterns and the net see exactly the bytes that leave.
+      const shaped = remoteChatFrom(netted, nativeId)
       const chat: RemoteChat = {
         ...shaped,
-        title: shaped.title === null ? null : a.redact(shaped.title),
-        messages: shaped.messages.map((m) => ({ ...m, text: a.redact(m.text) }))
+        title: shaped.title === null ? null : belt(shaped.title),
+        messages: shaped.messages.map((m) => ({ ...m, text: belt(m.text) }))
       }
       return { ok: true, chat: named(chat) }
     }
