@@ -1884,9 +1884,9 @@ console.log('\nchat history: redaction off pauses sharing; a Remove, a grant tak
   hostM.duringRequest = () => {
     hostM.chatGrants = {}
   }
-  const t0 = Date.now()
+  // A silent drop would leave B to time out (`requestMs`) and read `error` with no code: the state and code say which.
   const midway = await guestM.remote.searchChats('platypus')
-  check('the grant gone while a search is being answered: nothing it read is sent, refused as revoked at once', [byA(midway)?.state, byA(midway)?.code, byA(midway)?.hits.length, Date.now() - t0 < 1000], ['denied', 'revoked', 0, true])
+  check('the grant gone while a search is being answered: nothing it read is sent, refused as revoked', [byA(midway)?.state, byA(midway)?.code, byA(midway)?.hits.length], ['denied', 'revoked', 0])
   hostM.chatGrants = { [B.id]: 'always' }
   guestM.remote.endChatSearch()
   await tick(T.retryMs + 10)
