@@ -9,8 +9,8 @@ import {
   type ChatSearchHit,
   type ChatTranscriptMessage
 } from '@shared/chatIndex'
-import type { RemoteChatHit, RemoteChatPeerState } from '@shared/hub/remote'
-import { remoteChatWhere, remoteOpenLine, remoteReadWatch } from '@shared/remoteChatsView'
+import type { RemoteChatHit, RemoteChatOpen, RemoteChatPeerState } from '@shared/hub/remote'
+import { remoteChatWhere, remoteOpenLine, remoteReadLine, remoteReadWatch } from '@shared/remoteChatsView'
 import { Highlight } from './Highlight'
 import { IconCheck, IconClose, IconCopy } from './Icons'
 import { Spinner } from './Spinner'
@@ -72,6 +72,8 @@ interface Loaded {
   shown: Shown | null
   error: string | null
   waiting: boolean
+  /** Another computer's failed answer, kept so its line can follow that computer's presence (`remoteReadLine`). */
+  failure?: Extract<RemoteChatOpen, { ok: false }>
 }
 
 /** Read one chat: this computer's index, or another computer's over the hub relay. */
@@ -82,7 +84,7 @@ async function load(target: ChatViewTarget, key: string): Promise<Loaded> {
     return { shown: { key, title: t.title, updatedMs: t.updatedMs, messages: t.messages, partial: t.partial, fallback: t.fallback }, error: null, waiting: false }
   }
   const r = await window.stoke.hub.remote.openChat(target.device, target.hit.source, target.hit.nativeId)
-  if (!r.ok) return { shown: null, error: remoteOpenLine(target.computer, r), waiting: r.state === 'waiting' }
+  if (!r.ok) return { shown: null, error: remoteOpenLine(target.computer, r), waiting: r.state === 'waiting', failure: r }
   const c = r.chat
   return { shown: { key, title: c.title, updatedMs: c.updatedMs, messages: c.messages, partial: c.partial, fallback: c.note }, error: null, waiting: false }
 }
@@ -113,11 +115,14 @@ async function load(target: ChatViewTarget, key: string): Promise<Loaded> {
 export function ChatViewer({
   target,
   peer = null,
+  online = null,
   onClose
 }: {
   target: ChatViewTarget
   /** For a remote target: the state of this computer's chats relay to that one (`HubRemoteView.chatPeers`), or null for none. */
   peer?: RemoteChatPeerState | null
+  /** For a remote target: that computer is online now (in `HubRemoteView.machines`); null outside the vault. */
+  online?: boolean | null
   onClose: () => void
 }): React.JSX.Element {
   const { query } = target
@@ -272,7 +277,8 @@ export function ChatViewer({
         <div>
           <p className="chat-view-status" role="status" data-chat-error="">
             {state.waiting && <Spinner />}
-            {state.error ?? 'This chat could not be read.'}
+            {/* Worded as things stand now: a read lost from a computer that has since gone offline says so. */}
+            {(remote && state.failure ? remoteReadLine(remote.computer, state.failure, online) : state.error) ?? 'This chat could not be read.'}
           </p>
           {remote && (
             <div className="chat-view-retry">

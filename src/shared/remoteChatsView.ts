@@ -273,6 +273,29 @@ export function remoteOpenLine(computer: string, r: { state: RemoteChatsState; m
 }
 
 /**
+ * The viewer's line for a failed read, as things stand NOW. `online` is
+ * whether that computer is in this one's list of online machines
+ * (`HubRemoteView.machines`, which main fills from presence: with this
+ * computer's own presence down it is empty, and main's own search says
+ * every computer is offline too); null outside the vault. A read that was lost
+ * with no refusal (`error`, no code) from a computer that is offline now is
+ * said as offline: the relay's end reaches this computer before presence says
+ * the other one left, so the answer main gave at that moment could say only
+ * that the connection was lost. Driven end to end (re-drive of 62b4ae6), a
+ * host that quit mid-read left the viewer saying "the relay closed" while the
+ * sidebar beside it said the host was offline. A refusal stands as its code
+ * says, online or not, and so does a wait.
+ */
+export function remoteReadLine(
+  computer: string,
+  r: { state: RemoteChatsState; message: string | null; code?: ChatsRefusalCode | null },
+  online: boolean | null
+): string {
+  if (online === false && r.state === 'error' && chatRefusalCodeOf(r) === null) return remoteOpenLine(computer, { state: 'offline', message: null })
+  return remoteOpenLine(computer, r)
+}
+
+/**
  * The viewer's watch on the relay a read from another computer goes through.
  * Call it with `awaited: false` when a read starts, then on every peer state
  * seen after and when the read ends, carrying `awaited` forward. It reads

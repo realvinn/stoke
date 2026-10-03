@@ -1800,7 +1800,8 @@ export class HubRemote {
           },
           onClose: (reason) => {
             if (p.channel === channel) p.channel = null
-            if (current()) this.peerEnded(p, 'error', reason)
+            // In this computer's words, naming the other: the channel's reason ("the relay closed") is a diagnostic.
+            if (current()) this.peerEnded(p, 'error', `Lost the connection to ${p.label}: ${reason}`)
           }
         }
       })
