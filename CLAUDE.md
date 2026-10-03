@@ -382,6 +382,8 @@ rule file named on the group line.
   `ClearAllForwardings`, `RemoteCommand=none`; main names it; EPIPE) and type several paths with `escapePath`.
 - **152.** Send any other dropped or copied file by a path only the preload or main read, checked at the drop
   (`inspectUploadFile`) and again at the open (`O_NOFOLLOW|O_NONBLOCK`); 0 bytes is a file; macOS: `NSFilenamesPboardType`.
+- **153.** Run every OpenSSH program without a terminal with `sshChildEnv()` and keep `OPENSSH_PARENT_VARS` in both `STRIP_ENV`s:
+  a no-pty Windows ssh login's inherited `…_POSIX_FD_STATE` hangs ssh.exe on sync pipes after one write. Delete it, never blank it.
 
 **Phone access** — `.claude/rules/phone.md`
 - **53.** Draw no QR for `connectTarget`'s `loopback` reach, mint the key only in start paths
