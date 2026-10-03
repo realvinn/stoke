@@ -147,7 +147,10 @@ export type { ConnectTarget, Reach } from './link.ts'
  *    never bracketed for Claude Code, newlines as ESC CR — then a bare `\r`
  *    after a short delay (CLAUDE.md gotchas 85, 86 / PX-1). Bracketed paste
  *    made Claude file every phone message as `<pasted_content>` and refuse to
- *    act on it. `{type:'input', data}` is unchanged.
+ *    act on it. `{type:'submit', text, enter: false}` types the same way and
+ *    presses no Enter: another machine's dictation through the hub relay
+ *    (`HubRemote.type`, whose host says `typeOnly` in its `ready`). The
+ *    phone never sends it. `{type:'input', data}` is unchanged.
  * 7. `POST /api/sessions/:ptyId/answer {key, promptId}`: writes only while
  *    that pty's status is `'waiting'` (else 409 `{error:'not waiting'}`) AND
  *    `promptId` names the prompt on screen with nothing typed into the pty
@@ -2168,6 +2171,7 @@ export class RemoteServer {
         type?: string
         data?: string
         text?: string
+        enter?: boolean
         cols?: number
         rows?: number
         force?: boolean
@@ -2187,8 +2191,9 @@ export class RemoteServer {
       if (msg.type === 'input' && typeof msg.data === 'string') {
         manager.write(ptyId, msg.data)
       } else if (msg.type === 'submit' && typeof msg.text === 'string') {
-        // CLAUDE.md gotchas 85, 86 / audit PX-1: typed chunks, then Enter on its own.
-        manager.submit(ptyId, msg.text)
+        // CLAUDE.md gotchas 85, 86 / audit PX-1: typed chunks, then Enter on its own —
+        // unless the frame says `enter: false` (another machine's dictation: the words, no Enter).
+        manager.submit(ptyId, msg.text, { enter: msg.enter !== false })
       } else if (msg.type === 'resize' && msg.force && dim(msg.cols) && dim(msg.rows)) {
         /*
          * Only on explicit request: a phone resizing the PTY reflows the

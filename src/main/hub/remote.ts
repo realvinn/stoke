@@ -69,6 +69,7 @@ import {
   relayScopeVerdict,
   releaseOnce,
   remoteStatusFrom,
+  remoteTypeVerdict,
   REMOTE_STATUS_MIN_MS,
   REMOTE_STATUS_POLL_MS,
   type AttachAnswer,
@@ -152,6 +153,14 @@ export interface RemoteMachineDeps {
    * as it sends none to a host from before last active wins.
    */
   followsResize?: boolean
+  /**
+   * This machine's pty socket types a `{type:'submit', enter: false}` and
+   * presses no Enter (server.ts), so `ready` may say `typeOnly: true` and a
+   * guest may send its dictation here. Absent: a guest sends this host no
+   * transcript, as it sends none to a host from before dictation over remote
+   * tabs (it would press Enter after the words).
+   */
+  typeOnly?: boolean
   /**
    * `settings.chatIndex === 'on'`, read on every call. Absent: this machine
    * never shares its chat history (no `chats: true`, every chats relay
@@ -258,6 +267,10 @@ interface GuestTab {
    * this one's — the session drawn wrong at the desk (`resize`).
    */
   sizes: boolean
+  /** The grant the host's last `ready` served this tab under; null before one. */
+  mode: RelayMode | null
+  /** The host's last `ready` said `typeOnly` under a full grant: it takes dictation (`type`). */
+  typeOnly: boolean
 }
 
 /** Why a guest's search or open of one machine has nothing: its state, this machine's sentence, and the host's code if it gave one. */
@@ -399,7 +412,9 @@ export class HubRemote {
       project: t.project,
       state: t.state,
       message: t.message,
-      session: t.session
+      session: t.session,
+      mode: t.mode,
+      typeOnly: t.typeOnly
     }))
     v.guests = [...this.hosted.values()]
       .filter((h) => h.phase === 'serving')
@@ -627,7 +642,9 @@ export class HubRemote {
       pongWait: null,
       closed: false,
       session: null,
-      sizes: false
+      sizes: false,
+      mode: null,
+      typeOnly: false
     }
     this.tabs.set(tab.id, tab)
     void this.connect(tab)
@@ -640,6 +657,33 @@ export class HubRemote {
     const t = this.tabs.get(tabId)
     if (!t || t.state !== 'open' || typeof data !== 'string' || data.length === 0) return
     t.channel?.send({ t: 'ws-msg', id: PTY_SOCKET, data: JSON.stringify({ type: 'input', data }) })
+  }
+
+  /**
+   * A transcript dictated on THIS computer, for the session in a remote tab:
+   * this machine's microphone and speech service, the other machine's
+   * session (Dictation.tsx). Sent as the phone's own `submit` frame with
+   * `enter: false`, so the HOST types it the way Claude Code takes typing —
+   * its own chunks, its own newlines, never a bracketed paste (gotchas 85,
+   * 86) — paced on that machine rather than by a relay that may bunch
+   * frames, and with no Enter: the owner reads it and sends it.
+   *
+   * Whether it can go is `remoteTypeVerdict`: an open link, a full grant and
+   * a host that said `typeOnly`. Anything else — or a channel that will not
+   * take the frame — answers with the sentence, and the words stay on the
+   * strip there. Never queued for a later connection: words typed into a
+   * session minutes after they were spoken, into whatever it shows by then,
+   * are words nobody meant there.
+   */
+  type(tabId: string, text: string): { ok: true } | { ok: false; message: string } {
+    const t = this.tabs.get(tabId)
+    if (typeof text !== 'string' || text.trim().length === 0) return { ok: true }
+    // The name the tab's banner shows, so the strip and the banner say the same machine.
+    const who = t ? (this.d.context()?.active.find((a) => a.id === t.device)?.label ?? this.statuses[t.device]?.name ?? t.label) : ''
+    const why = remoteTypeVerdict(t ? { state: t.state, mode: t.mode, typeOnly: t.typeOnly, deviceLabel: who } : null, text)
+    if (why) return { ok: false, message: why }
+    const sent = t?.channel?.send({ t: 'ws-msg', id: PTY_SOCKET, data: JSON.stringify({ type: 'submit', text, enter: false }) }) ?? false
+    return sent ? { ok: true } : { ok: false, message: `The link to ${who} dropped before the words were sent, so nothing was typed.` }
   }
 
   /**
@@ -768,6 +812,9 @@ export class HubRemote {
         t.tries = 0
         // Only a host that says its own tab follows takes a resize from here (relay.ts `ready`).
         t.sizes = f.mode === 'full' && f.sizes === true
+        // And only one that says so takes a transcript: an older host would press Enter after it.
+        t.mode = f.mode
+        t.typeOnly = f.mode === 'full' && f.typeOnly === true
         channel.send({ t: 'ws-open', id: PTY_SOCKET, path: `/ws?ptyId=${encodeURIComponent(t.ptyId)}` })
         this.emit()
         return
@@ -1361,7 +1408,8 @@ export class HubRemote {
       t: 'ready',
       mode,
       host: { label: ctx.me.label, platform: ctx.me.platform },
-      ...(this.d.followsResize ? { sizes: true } : {})
+      ...(this.d.followsResize ? { sizes: true } : {}),
+      ...(this.d.typeOnly ? { typeOnly: true } : {})
     })
     void this.pushStatus(h)
     this.armStatus()

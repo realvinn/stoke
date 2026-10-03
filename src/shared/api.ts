@@ -955,6 +955,13 @@ export interface StokeApi {
       onFrame(cb: (tabId: string, frame: RemoteTabFrame) => void): () => void
       open(deviceId: string, ptyId: string): Promise<HubResult<{ tab: string }>>
       input(tabId: string, data: string): void
+      /**
+       * Type a transcript dictated on THIS computer into the remote tab's
+       * session, as the host types — no bracketed paste, no Enter. Not ok
+       * (with the sentence) when the link is not open, the tab may only
+       * watch, or the host is too old to take it; the caller keeps the words.
+       */
+      type(tabId: string, text: string): Promise<HubResult>
       /** The remote tab is being used: size the host's pty to this grid (shared/sizeClaim.ts decides when). */
       resize(tabId: string, cols: number, rows: number): void
       close(tabId: string): Promise<void>

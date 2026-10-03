@@ -359,6 +359,12 @@ export const CH = {
   hubRemoteOpen: 'hub:remote-open',
   /** renderer -> main, fire and forget: keystrokes typed into a remote tab. */
   hubRemoteInput: 'hub:remote-input',
+  /**
+   * renderer -> main: a transcript dictated here, typed into a remote tab's
+   * session by the host with no Enter (`HubRemote.type`). Answers whether it
+   * went, and why not, so the words can stay on the strip.
+   */
+  hubRemoteType: 'hub:remote-type',
   /** renderer -> main, fire and forget: a remote tab is being used, so size the host's pty to its pane (tabId, cols, rows). */
   hubRemoteResize: 'hub:remote-resize',
   hubRemoteClose: 'hub:remote-close',

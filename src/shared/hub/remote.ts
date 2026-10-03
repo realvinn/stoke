@@ -512,6 +512,55 @@ export interface RemoteTabView {
   message: string | null
   /** The session's model, context and usage as the host last said (`RemoteSessionStatus`), or null. */
   session: RemoteSessionStatus | null
+  /**
+   * The grant the host served this tab under, from its last `ready`: `view`
+   * may only watch (every key and every typed transcript is refused there),
+   * `full` may type. Null until the first `ready`.
+   */
+  mode: RelayMode | null
+  /**
+   * The host's last `ready` said `typeOnly: true` under a full grant: it
+   * types a `{type:'submit', enter: false}` and presses no Enter, which is
+   * how dictation reaches its session (`HubRemote.type`). False for a host
+   * from before that, which would press Enter after the words.
+   */
+  typeOnly: boolean
+}
+
+/**
+ * The longest transcript a remote tab hands the host in one go. A dictated
+ * clip is a few hundred characters; this only stops a runaway from being
+ * queued as minutes of typing on the other machine (the host types it in 64-
+ * character chunks, gotcha 86). Over it, the words stay on the strip to copy.
+ */
+export const REMOTE_TYPE_MAX = 20_000
+
+/**
+ * Whether a remote tab can take a dictated transcript now, as the host would
+ * type it — null when it can, else the sentence that says why not, which the
+ * strip shows with the words kept (Dictation.tsx). The guest's whole rule, so
+ * the renderer's refusal at arming and main's at sending say the same thing:
+ *
+ *  - the link must be open: a transcript that comes back while it is down is
+ *    kept, never typed into a later connection behind the owner's back;
+ *  - a `view` grant only watches;
+ *  - a host must say `typeOnly`, or it would press Enter after the words —
+ *    a host from before dictation over remote tabs is asked to update.
+ *
+ * `text` is optional so the same rule can be asked before there is any.
+ */
+export function remoteTypeVerdict(
+  tab: { state: RemoteTabState; mode: RelayMode | null; typeOnly: boolean; deviceLabel: string } | null | undefined,
+  text?: string
+): string | null {
+  if (!tab) return 'This tab is no longer linked to the other machine, so nothing was typed.'
+  const who = tab.deviceLabel || 'the other machine'
+  if (tab.state === 'ended') return `The session ended on ${who}, so nothing was typed.`
+  if (tab.state !== 'open') return `The link to ${who} is not open, so nothing was typed there.`
+  if (tab.mode === 'view') return `${who} lets this computer watch this session, not type into it, so there is nothing to dictate into.`
+  if (!tab.typeOnly) return `${who} runs an older Stoke that cannot take dictation. Update Stoke there to dictate into its sessions.`
+  if (text !== undefined && text.length > REMOTE_TYPE_MAX) return `That is too long to type into ${who}’s session in one go, so nothing was typed. Copy it instead.`
+  return null
 }
 
 /** Another device attached to a session HERE (this machine is the host), for the indicator. */

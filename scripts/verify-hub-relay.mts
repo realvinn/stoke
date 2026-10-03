@@ -100,6 +100,8 @@ import {
   remoteStatusFrom,
   parseRemoteSessionStatus,
   remoteSessionStatusFrom,
+  remoteTypeVerdict,
+  REMOTE_TYPE_MAX,
   REMOTE_MAX_SESSIONS,
   REMOTE_USAGE_MAX,
   type HubRemoteView,
@@ -585,6 +587,8 @@ interface Machine {
   sessions: RemoteRowLike[]
   /** Every resize frame the fake pty behind the phone socket got. */
   resizes: { ptyId: string | null; cols: number; rows: number; force: boolean }[]
+  /** Every submit frame it got: what the phone server would type (PtyManager.submit), and whether Enter follows. */
+  submits: { ptyId: string | null; text: string; enter: boolean }[]
   /** What this machine's status bar would say per session, and every session the relay asked about. */
   status: Record<string, RemoteSessionStatus>
   statusAsked: string[]
@@ -656,8 +660,8 @@ function chatAccess(m: Machine): ChatIndexAccess {
   }
 }
 
-function machine(d: Dev, opts: { keepAlive?: { pingMs: number; pongWaitMs: number }; olderHost?: boolean; chatsTiming?: { idleMs?: number; waitMs?: number; retryMs?: number; requestMs?: number } } = {}): Machine {
-  const m = { dev: d, active: [...ACTIVE], out: false, sharing: false, grants: {}, views: [], frames: [], ptyInput: [], sockets: [], requests: [], sessions: [], resizes: [], status: {}, statusAsked: [], shareChats: false, chatGrants: {}, indexOn: true, redactOn: true, chats: [], hidden: [] } as unknown as Machine
+function machine(d: Dev, opts: { keepAlive?: { pingMs: number; pongWaitMs: number }; olderHost?: boolean; noTyping?: boolean; chatsTiming?: { idleMs?: number; waitMs?: number; retryMs?: number; requestMs?: number } } = {}): Machine {
+  const m = { dev: d, active: [...ACTIVE], out: false, sharing: false, grants: {}, views: [], frames: [], ptyInput: [], sockets: [], requests: [], sessions: [], resizes: [], submits: [], status: {}, statusAsked: [], shareChats: false, chatGrants: {}, indexOn: true, redactOn: true, chats: [], hidden: [] } as unknown as Machine
   const chatShare = sharedChats(chatAccess(m))
   /** A give that is being written: the hook (once) runs while it is in flight, as a sync pass or a click would. */
   const writing = async (): Promise<void> => {
@@ -756,12 +760,14 @@ function machine(d: Dev, opts: { keepAlive?: { pingMs: number; pongWaitMs: numbe
       const ptyId = new URLSearchParams(path.split('?')[1] ?? '').get('ptyId')
       sock.send(JSON.stringify({ type: 'attached', ptyId, cols: 100, rows: 30, desktopCols: 100, desktopRows: 30, status: 'idle', history: 'stub$ ' }))
       sock.on('message', (raw) => {
-        const msg = JSON.parse(String(raw)) as { type: string; data?: string; cols?: number; rows?: number; force?: boolean }
+        const msg = JSON.parse(String(raw)) as { type: string; data?: string; text?: string; enter?: boolean; cols?: number; rows?: number; force?: boolean }
         if (msg.type === 'input' && msg.data) {
           m.ptyInput.push(msg.data)
           sock.send(JSON.stringify({ type: 'data', ptyId, data: msg.data.replace('\r', '\r\n') }))
         }
         if (msg.type === 'resize') m.resizes.push({ ptyId, cols: msg.cols ?? 0, rows: msg.rows ?? 0, force: msg.force === true })
+        // server.ts: `manager.submit(ptyId, text, { enter: msg.enter !== false })`.
+        if (msg.type === 'submit' && typeof msg.text === 'string') m.submits.push({ ptyId, text: msg.text, enter: msg.enter !== false })
       })
     },
     emit: (view) => m.views.push(view),
@@ -771,7 +777,9 @@ function machine(d: Dev, opts: { keepAlive?: { pingMs: number; pongWaitMs: numbe
       return m.status[ptyId] ?? null
     },
     // A host from before last active wins says nothing about sizes in its `ready`.
-    followsResize: !opts.olderHost
+    followsResize: !opts.olderHost,
+    // Nor about typing without an Enter, and neither does one from before dictation over remote tabs.
+    typeOnly: !opts.olderHost && !opts.noTyping
   })
   machines.set(d.id, m)
   return m
@@ -1452,6 +1460,110 @@ console.log('\na host from before last active wins is never resized: its own tab
   guestM.remote.close(tab)
   hostM.remote.reset()
   guestM.remote.reset()
+}
+
+/*
+ * Dictation on a remote tab (2026-10-04, the owner: "if I remote to another one
+ * and want to use claude /voice it should work over the remote"). The words are
+ * dictated HERE — this computer's microphone and speech service — and typed
+ * THERE by the host's phone server as the phone's own submit frame with
+ * `enter: false`: Claude Code's typing rules (gotchas 85, 86), paced on the
+ * host, and no Enter. Refused, with the sentence the strip shows over the kept
+ * words, on a link that is not open, a grant that only watches, and a host that
+ * never said `typeOnly` (it would press Enter after the words).
+ */
+console.log('\ndictation on a remote tab: typed by the host with no Enter, refused where it cannot go')
+{
+  const v = (over: Partial<{ state: 'connecting' | 'asking' | 'open' | 'reconnecting' | 'refused' | 'ended' | 'lost'; mode: 'view' | 'full' | null; typeOnly: boolean }> = {}) => ({ state: 'open' as const, mode: 'full' as const, typeOnly: true, deviceLabel: 'Studio', ...over })
+  check('an open link under a full grant to a host that types: it goes', remoteTypeVerdict(v(), 'hello'), null)
+  check('a link that is not open says so, naming the machine', [remoteTypeVerdict(v({ state: 'reconnecting' })), remoteTypeVerdict(v({ state: 'lost' }))], ['The link to Studio is not open, so nothing was typed there.', 'The link to Studio is not open, so nothing was typed there.'])
+  ok('a session that ended says that instead', /session ended on Studio/.test(remoteTypeVerdict(v({ state: 'ended' })) ?? ''))
+  ok('a grant that only watches is refused, and says watching is what it may do', /watch this session, not type into it/.test(remoteTypeVerdict(v({ mode: 'view', typeOnly: false })) ?? ''))
+  ok('a host that never said typeOnly is asked to update, never sent words it would Enter', /older Stoke that cannot take dictation/.test(remoteTypeVerdict(v({ typeOnly: false })) ?? ''))
+  check('the rule can be asked before there are words', remoteTypeVerdict(v()), null)
+  ok('a runaway transcript is refused whole rather than typed for minutes', /too long/.test(remoteTypeVerdict(v(), 'x'.repeat(REMOTE_TYPE_MAX + 1)) ?? '') && remoteTypeVerdict(v(), 'x'.repeat(REMOTE_TYPE_MAX)) === null)
+  ok('no tab at all: no longer linked', /no longer linked/.test(remoteTypeVerdict(null) ?? ''))
+  const submitFrame = (enter: boolean): RelayInnerFrame => ({ t: 'ws-msg', id: 1, data: JSON.stringify({ type: 'submit', text: 'hi', enter }) })
+  check('a host lets a typed transcript through a full grant only', [relayFrameVerdict('full', submitFrame(false), '/ws?ptyId=pty-a1').ok, relayFrameVerdict('view', submitFrame(false), '/ws?ptyId=pty-a1').ok], [true, false])
+
+  const hostM = machine(A)
+  const guestM = machine(B)
+  hostM.sessions = [stubRow()]
+  hostM.sharing = true
+  for (const m of [hostM, guestM]) m.remote.onOnline([A.id, B.id])
+  const tab = await served(hostM, guestM)
+  check('the tab knows its grant and that the host types', [tabOf(guestM, tab)?.mode, tabOf(guestM, tab)?.typeOnly], ['full', true])
+  const words = 'make the button blue\nand the border thinner'
+  check('a transcript is sent', guestM.remote.type(tab, words), { ok: true })
+  await until(() => hostM.submits.length)
+  check('the host’s pty socket gets the phone’s submit frame with enter: false, for that session', hostM.submits, [{ ptyId: 'pty-a1', text: words, enter: false }])
+  check('and nothing raw: no keystrokes, so no bracketed paste and no Enter of the guest’s own', hostM.ptyInput, [])
+  ok('the hub carried none of it in the clear', !hubBytes.some((b) => b.includes(Buffer.from('button blue'))))
+  check('nothing to type sends nothing', [guestM.remote.type(tab, '   '), hostM.submits.length], [{ ok: true }, 1])
+  check('a runaway is refused and sends nothing', [guestM.remote.type(tab, 'y'.repeat(REMOTE_TYPE_MAX + 1)).ok, hostM.submits.length], [false, 1])
+  check('an unknown tab is refused', guestM.remote.type('rt-nope', 'hello').ok, false)
+
+  // The link drops while the speech service is still working: the words come back to a tab that is not open.
+  const r = relays.get(lastRelay)!
+  r.host.close(1000)
+  await until(() => tabOf(guestM, tab)?.state !== 'open')
+  const dropped = guestM.remote.type(tab, 'spoken while the link was down')
+  check('a link that dropped mid-transcript refuses it with the sentence, for the strip to keep the words', [dropped.ok, dropped.ok ? '' : dropped.message], [false, 'The link to Studio is not open, so nothing was typed there.'])
+  await tick(50)
+  check('and never queues them for a later connection', hostM.submits.length, 1)
+  guestM.remote.close(tab)
+  hostM.remote.reset()
+  guestM.remote.reset()
+}
+{
+  // A grant to watch only: served, but nothing dictated is ever sent.
+  const hostM = machine(A)
+  const guestM = machine(B)
+  hostM.sessions = [stubRow()]
+  hostM.sharing = true
+  hostM.grants = { [B.id]: { mode: 'view', label: 'Laptop', at: clock } }
+  for (const m of [hostM, guestM]) m.remote.onOnline([A.id, B.id])
+  const tab = await served(hostM, guestM)
+  check('a tab served to watch says so', [tabOf(guestM, tab)?.state, tabOf(guestM, tab)?.mode, tabOf(guestM, tab)?.typeOnly], ['open', 'view', false])
+  const res = guestM.remote.type(tab, 'let me in')
+  check('dictation there is refused with the watching sentence', [res.ok, !res.ok && /watch this session, not type into it/.test(res.message)], [false, true])
+  await tick(50)
+  check('and the host typed nothing', hostM.submits, [])
+  guestM.remote.close(tab)
+  hostM.remote.reset()
+  guestM.remote.reset()
+}
+{
+  // A host from before dictation over remote tabs: it would type the words and then press Enter.
+  const hostM = machine(A, { noTyping: true })
+  const guestM = machine(B)
+  hostM.sessions = [stubRow()]
+  hostM.sharing = true
+  for (const m of [hostM, guestM]) m.remote.onOnline([A.id, B.id])
+  const tab = await served(hostM, guestM)
+  const res = guestM.remote.type(tab, 'do not send this')
+  check('a host that never said typeOnly is sent no transcript', [tabOf(guestM, tab)?.typeOnly, res.ok, !res.ok && /older Stoke/.test(res.message)], [false, false, true])
+  guestM.remote.input(tab, 'keys-still-work\r')
+  await until(() => hostM.ptyInput.includes('keys-still-work\r'))
+  check('while keys still reach it', [hostM.submits.length, hostM.ptyInput.includes('keys-still-work\r')], [0, true])
+  guestM.remote.close(tab)
+  hostM.remote.reset()
+  guestM.remote.reset()
+}
+
+{
+  /*
+   * The wire the fake pty socket above stands in for (gotcha 31): the phone
+   * server really honours `enter: false`, this machine really says `typeOnly`,
+   * and the renderer's request really reaches HubRemote.type.
+   */
+  const src = (rel: string): string => readFileSync(new URL(`../${rel}`, import.meta.url), 'utf8')
+  const server = src('src/main/remote/server.ts')
+  const mainSrc = src('src/main/index.ts')
+  const serviceSrc = src('src/main/hub/service.ts')
+  check('the phone server types a submit with no Enter when the frame says enter: false', /msg\.type === 'submit' && typeof msg\.text === 'string'\)[\s\S]{0,240}manager\.submit\(ptyId, msg\.text, \{ enter: msg\.enter !== false \}\)/.test(server), true)
+  check('this machine’s ready says typeOnly (main wires the dep)', /followsResize: true,[\s\S]{0,200}typeOnly: true,/.test(mainSrc), true)
+  check('the renderer’s request reaches HubRemote.type through the service, and answers', /ipcMain\.handle\(CH\.hubRemoteType,[\s\S]{0,120}hubClient\.remoteType\(str\(tab\), str\(text\)\)/.test(mainSrc) && /remoteType\(tab: string, text: string\): HubResult \{[\s\S]{0,200}return this\.remote\.type\(tab, text\)/.test(serviceSrc), true)
 }
 
 /* ============================================================ chat history (spec 2026-10-03 §3) */

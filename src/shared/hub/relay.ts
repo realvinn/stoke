@@ -165,6 +165,11 @@ export type RelayMode = 'view' | 'full'
  *   resize (last active wins, shared/sizeClaim.ts). A host from before that
  *   sends no `sizes`, and its own tab keeps its old grid while the pty takes
  *   the guest's, so a guest sends such a host no resize (`HubRemote.resize`).
+ *   `typeOnly: true` says the host's pty socket takes `{type:'submit', text,
+ *   enter: false}` — types the text as Claude Code takes typing and presses
+ *   no Enter — which is how a guest's dictation reaches the session
+ *   (`HubRemote.type`). A host from before it would press Enter after the
+ *   words, so a guest sends such a host no transcript at all.
  * - `part`: a piece of the JSON text of the NEXT frame, every piece but the
  *   last carrying `more: true` (`relayFrameParts`). A pty's `attached` frame
  *   replays up to 512 K characters of scrollback and a transcript can be
@@ -179,7 +184,7 @@ export type RelayMode = 'view' | 'full'
 export type RelayInnerFrame =
   | { t: 'attach'; kind?: 'session'; ptyId: string }
   | { t: 'attach'; kind: 'chats' }
-  | { t: 'ready'; mode: RelayMode; host: { label: string; platform: string }; sizes?: boolean }
+  | { t: 'ready'; mode: RelayMode; host: { label: string; platform: string }; sizes?: boolean; typeOnly?: boolean }
   | { t: 'refused'; reason: string; code?: RelayRefusalCode }
   | { t: 'status'; status: unknown }
   | { t: 'req'; id: number; method: 'GET' | 'POST'; path: string; body?: unknown }

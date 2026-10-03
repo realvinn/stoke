@@ -2983,6 +2983,12 @@ export class HubService {
     this.remote?.input(tab, data)
   }
 
+  /** This computer's dictation for a remote tab's session: typed there, no Enter (`HubRemote.type`). */
+  remoteType(tab: string, text: string): HubResult {
+    if (!this.remote) return { ok: false, message: 'Other machines are not available here, so nothing was typed.' }
+    return this.remote.type(tab, text)
+  }
+
   remoteResize(tab: string, cols: number, rows: number): void {
     this.remote?.resize(tab, cols, rows)
   }
