@@ -17,7 +17,7 @@ import {
   type UploadFailureKind,
   type UploadNoun
 } from '../shared/imageUpload.ts'
-import { buildUploadArgs, sshExecutable } from './ssh.ts'
+import { buildUploadArgs, sshChildEnv, sshExecutable } from './ssh.ts'
 
 /**
  * Sending an image or a file to an SSH host: the bytes go over a SECOND ssh
@@ -152,7 +152,8 @@ export function spawnWithInput(exe: string, args: string[], input: UploadInput, 
     }
     let proc: ReturnType<typeof spawn>
     try {
-      proc = spawn(exe, args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
+      // `sshChildEnv`: inside a Windows ssh login, ssh.exe given 160 KB on stdin hung with nothing back (gotcha 153).
+      proc = spawn(exe, args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, env: sshChildEnv() })
     } catch (e) {
       finish({ code: null, error: e instanceof Error ? e.message : 'ssh could not be started.' })
       return

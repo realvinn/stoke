@@ -59,6 +59,7 @@ import {
   identityFilesFromSshG,
   sshConfigHostPattern,
   sshConfigPath,
+  sshChildEnv,
   sshCopyIdExecutable,
   sshExecutable
 } from './ssh.ts'
@@ -123,12 +124,16 @@ export interface EnrollCommand {
 
 /* ---------------------------------------------------------------- defaults */
 
+/**
+ * Every program run here is OpenSSH's (`ssh -G`, `ssh-keygen`, the probes), so
+ * each gets `sshChildEnv` (gotcha 153).
+ */
 function defaultExec(file: string, args: string[], timeoutMs: number): Promise<ExecResult> {
   return new Promise((resolve) => {
     execFile(
       file,
       args,
-      { timeout: timeoutMs, maxBuffer: MAX_BUFFER, encoding: 'utf8', windowsHide: true },
+      { timeout: timeoutMs, maxBuffer: MAX_BUFFER, encoding: 'utf8', windowsHide: true, env: sshChildEnv() },
       (err, stdout, stderr) => {
         const out = stdout ?? ''
         const errOut = stderr ?? ''

@@ -45,7 +45,9 @@ import {
   parseRemoteSessionList,
   sshHostArgs
 } from '../src/main/ssh.ts'
-import { endRemoteSession, listRemoteSessions, type RunResult } from '../src/main/sshSessions.ts'
+import { endRemoteSession, listRemoteSessions, runSsh, type RunResult } from '../src/main/sshSessions.ts'
+import { OPENSSH_PARENT_VARS, sshChildEnv } from '../src/main/ssh.ts'
+import { identityFilesFor } from '../src/main/hub/sshKeys.ts'
 import { buildUploadArgs, buildUploadBody } from '../src/main/ssh.ts'
 import {
   inspectUploadFile,
@@ -97,6 +99,20 @@ import type { SshHost } from '../src/shared/types.ts'
 const execFileAsync = promisify(execFile)
 
 let failures = 0
+
+/*
+ * Gotcha 153. Inside a no-pty Windows ssh login every process inherits sshd's
+ * description of ITS stdio (`OPENSSH_PARENT_VARS`), and an ssh.exe started
+ * with pipes then hangs after its first write: run on a Windows desktop over
+ * ssh, the first `ssh -G` below timed out and the suite died. The suite's own
+ * ssh runs must not carry it. The checks of Stoke's runners near the end put
+ * it back on purpose, to show the runners take it off themselves.
+ */
+const inheritedSshVars = OPENSSH_PARENT_VARS.filter((k) => process.env[k] !== undefined)
+for (const k of OPENSSH_PARENT_VARS) delete process.env[k]
+if (inheritedSshVars.length) {
+  console.log(`NOTE  this run is inside a Windows ssh login (${inheritedSshVars.join(', ')}); removed for the suite's own ssh calls`)
+}
 
 /**
  * Windows OpenSSH refuses to read an *Include*d config file whose ACL grants any
@@ -2312,6 +2328,136 @@ console.log('\nan image sent to the machine: the path typed, and where the keybo
     true
   )
   same('every strip root carries the ref', (hook.match(/className="image-strip"[^>]*ref=\{act\.ref\}/g) ?? []).length, 4)
+}
+
+/* ----------------- gotcha 153: the stdio description a Windows ssh login leaves */
+
+/*
+ * Every OpenSSH program Stoke runs without a terminal gets `sshChildEnv`, and
+ * every tab and headless run `STRIP_ENV`, so none inherits Win32-OpenSSH's
+ * `…_POSIX_FD_STATE`. With it, ssh.exe treats node's synchronous pipes as
+ * overlapped ones and hangs after its first write (measured on
+ * OpenSSH_for_Windows_9.5p2: `ssh -G`, a host-key failure, a refused login and
+ * a 4 MB `type` all hung; without it each exited in 80–290 ms, a refused port
+ * in 2 s).
+ *
+ * What each platform can measure: everywhere, the env a runner's child really
+ * gets (the upload runner's child is node; `runSsh`'s is ssh's ProxyCommand,
+ * which inherits ssh's env, off Windows). On Windows, the hang itself, with the
+ * value sshd hands every login planted in this process: `runSsh` and the hub's
+ * `ssh -G` must answer at once. A control first shows this ssh.exe does hang
+ * when handed it. Mutated back (no `env:`), the Windows desktop run went red
+ * on 8 checks with all five runners stripped of it, the Mac on 4 with
+ * sshSessions and sshUpload stripped.
+ */
+console.log('\nOpenSSH run without a terminal never inherits a Windows ssh login’s stdio description (gotcha 153)')
+
+{
+  const FD = 'c28fc6f98a2c44abbbd89d6a3037d0d9_POSIX_FD_STATE'
+  const CHROOT = 'c28fc6f98a2c44abbbd89d6a3037d0d9_POSIX_CHROOT'
+  // What sshd puts in every login's environment: stdin, stdout, stderr all type 2 (overlapped).
+  const SSHD_SAYS = 'AAAAAAICAgA='
+  same('both of Win32-OpenSSH’s parent-to-child names are dropped', OPENSSH_PARENT_VARS, [FD, CHROOT])
+
+  const source: Record<string, string | undefined> = { PATH: '/bin', HOME: '/h', SSH_AUTH_SOCK: '/a', [FD]: SSHD_SAYS, [CHROOT]: 'C:/jail', GONE: undefined }
+  const env = sshChildEnv(source)
+  same('sshChildEnv keeps everything else', env, { PATH: '/bin', HOME: '/h', SSH_AUTH_SOCK: '/a' })
+  check('the name is deleted, never set to "" (an empty one crashed ssh.exe, 0xC0000005)', !(FD in env) && !(CHROOT in env), '')
+  same('in another case it is the same name on Windows, and goes too', Object.keys(sshChildEnv({ [FD.toLowerCase()]: SSHD_SAYS, KEEP: '1' })), ['KEEP'])
+  same('the source is left as it was', source[FD], SSHD_SAYS)
+
+  // Every place that starts an OpenSSH program without a terminal passes it.
+  for (const file of ['sshSessions.ts', 'sshTranscript.ts', 'sshEnroll.ts', 'sshUpload.ts', 'hub/sshKeys.ts']) {
+    const text = readFileSync(new URL(`../src/main/${file}`, import.meta.url), 'utf8')
+    const calls = [...text.matchAll(/\b(?:execFile|spawn)\(/g)].map((m) => text.slice(m.index, (m.index ?? 0) + 400))
+    check(`${file}: each execFile/spawn passes env: sshChildEnv()`, calls.length > 0 && calls.every((c) => /env: sshChildEnv\(\)/.test(c)), `${calls.length} call(s)`)
+  }
+  // And no tab or headless run inherits it (gotcha 1's two lists, read as text as verify:cli does).
+  for (const file of ['pty.ts', 'agent.ts']) {
+    const m = /const STRIP_ENV = \[([\s\S]*?)\]/.exec(readFileSync(new URL(`../src/main/${file}`, import.meta.url), 'utf8'))
+    const names = m ? [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1]) : []
+    check(`${file}: STRIP_ENV takes both`, OPENSSH_PARENT_VARS.every((k) => names.includes(k)), names.slice(-2).join(', '))
+  }
+
+  const plant = (): void => {
+    process.env[FD] = SSHD_SAYS
+    process.env.STOKE_SSH_MARK = 'kept'
+  }
+  const unplant = (): void => {
+    delete process.env[FD]
+    delete process.env.STOKE_SSH_MARK
+  }
+
+  // The upload runner's child: node, printing what it was handed.
+  plant()
+  try {
+    const shown = `process.stdout.write(JSON.stringify([process.env[${JSON.stringify(FD)}] ?? null, process.env.STOKE_SSH_MARK ?? null]))`
+    const r = await spawnWithInput(process.execPath, ['-e', shown], new Uint8Array(0), { timeoutMs: 15_000 })
+    same('the upload runner’s child gets the environment without it', [r.code, r.stdout], [0, JSON.stringify([null, 'kept'])])
+  } finally {
+    unplant()
+  }
+
+  const work = await mkdtemp(join(tmpdir(), 'stoke-ssh-fdstate-'))
+  try {
+    if (process.platform !== 'win32') {
+      // ssh hands its own environment to a ProxyCommand: dump it, and connect to nothing.
+      const dump = join(work, 'proxy-env.txt')
+      const cfg = join(work, 'config')
+      // Through /bin/sh: `env > file` straight after ssh's own `exec` wrote an empty file here.
+      await writeFile(cfg, `Host stoke-env-probe\n  HostName 127.0.0.1\n  ProxyCommand /bin/sh -c "env > '${dump}'"\n`, 'utf8')
+      plant()
+      let seen = ''
+      try {
+        await runSsh(['-F', cfg, '-o', 'BatchMode=yes', 'stoke-env-probe', 'true'])
+        seen = await readFile(dump, 'utf8').catch(() => '')
+      } finally {
+        unplant()
+      }
+      check('runSsh: ssh ran a ProxyCommand that saw this process’s env', seen.includes('STOKE_SSH_MARK=kept'), seen ? '' : 'no dump written')
+      check('runSsh: and it held no POSIX_FD_STATE', !seen.includes(FD), '')
+    } else {
+      const control = await execFileAsync(sshExecutable(), ['-F', 'NUL', '-G', 'stoke-env-probe'], {
+        encoding: 'utf8',
+        timeout: 5000,
+        windowsHide: true,
+        env: { ...process.env, [FD]: SSHD_SAYS }
+      }).then(
+        () => 'exited',
+        (e: { killed?: boolean }) => (e.killed ? 'hung' : 'exited')
+      )
+      if (control === 'hung') console.log('  PASS  control: this ssh.exe, handed the variable over pipes, hangs (what follows guards against)')
+      else console.log('  NOTE  this ssh.exe did not hang when handed the variable, so the timing checks below cannot fail here; the env checks above still hold the rule')
+
+      plant()
+      try {
+        const t0 = Date.now()
+        const r = await runSsh(['-F', 'NUL', '-G', 'stoke-env-probe'])
+        same('runSsh: `ssh -G` answers in full, inside a Windows ssh login', [r.code, /hostname stoke-env-probe/.test(r.stdout), r.error], [0, true, ''])
+        console.log(`        (${Date.now() - t0} ms)`)
+
+        const cfg = join(work, 'config')
+        // `~` rather than a Windows path in the file: ssh -G prints it back as written.
+        const key = join(work, '.ssh', 'probe_ed25519')
+        await writeFile(cfg, 'Host stoke-env-probe\n  IdentityFile ~/.ssh/probe_ed25519\n', 'utf8')
+        await lockDown([{ path: cfg, dir: false }])
+        const t1 = Date.now()
+        const files = await identityFilesFor('stoke-env-probe', { dir: work, config: cfg, home: work })
+        check('the hub’s `ssh -G` (identityFilesFor) answers too', Array.isArray(files) && files.includes(key), `${JSON.stringify(files)} in ${Date.now() - t1} ms`)
+        /*
+         * The enroll runner and the transcript fetch are held by the text check
+         * only: every run of theirs that hangs connects or reads the user's own
+         * ~/.ssh/config, which a suite must not. (Their `ssh-keygen` cannot
+         * stand in: it prints through the C runtime, not ssh's logger, and
+         * finished in 35 ms WITH the variable, measured.)
+         */
+      } finally {
+        unplant()
+      }
+    }
+  } finally {
+    await rm(work, { recursive: true, force: true })
+  }
 }
 
 /* ------------------------------------------------------------------------ */

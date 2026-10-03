@@ -336,6 +336,50 @@ export function sshExecutable(): string {
   return isWin ? 'ssh.exe' : 'ssh'
 }
 
+/**
+ * Win32-OpenSSH's private parent-to-child channel, which must never reach a
+ * child of Stoke's (gotcha 153).
+ *
+ * A Win32-OpenSSH program that starts another (sshd starting a login's shell)
+ * describes the child's stdio in `…_POSIX_FD_STATE` (and a chroot in
+ * `…_POSIX_CHROOT`); the child reads it at startup and clears it from its OWN
+ * environment only. Anything in between that is not OpenSSH (PowerShell, cmd,
+ * node, Electron) passes it on untouched, so every process inside a Windows
+ * ssh login with no pty (`ssh host <command>`) carries `AAAAAAICAgA=` —
+ * "stdin, stdout and stderr are overlapped pipes" — and a grandchild
+ * `ssh.exe` applies that to handles it does not describe. (A `-t` login had
+ * none, measured.) Node's `'pipe'` and .NET's redirects are SYNCHRONOUS pipes, so
+ * ssh.exe writes to them with `WriteFileEx`, the bytes go out, the completion
+ * never comes, and the next write — or the exit, which waits for it — waits
+ * forever. Measured on OpenSSH_for_Windows_9.5p2 (2026-10-03): with the
+ * variable, `ssh -G`, a host-key failure, a refused login and a successful
+ * 4 MB `type` all hung with only their first write delivered; without it,
+ * each exited in 80–290 ms with everything (a refused port: 2 s, Windows' own
+ * connect retry). The source says so itself
+ * (w32fd.c: "the posix child process may misinterpret POSIX_FD_STATE set by
+ * grand parent").
+ */
+export const OPENSSH_PARENT_VARS = [
+  'c28fc6f98a2c44abbbd89d6a3037d0d9_POSIX_FD_STATE',
+  'c28fc6f98a2c44abbbd89d6a3037d0d9_POSIX_CHROOT'
+]
+
+/**
+ * The environment for any OpenSSH program Stoke runs without a terminal: this
+ * process's own, minus `OPENSSH_PARENT_VARS` (compared case-insensitively, as
+ * Windows names are). DELETED, never set to '': an empty `POSIX_FD_STATE` made
+ * ssh.exe crash at startup (0xC0000005, measured).
+ */
+export function sshChildEnv(source: Record<string, string | undefined> = process.env): Record<string, string> {
+  const drop = new Set(OPENSSH_PARENT_VARS.map((k) => k.toUpperCase()))
+  const env: Record<string, string> = {}
+  for (const [k, v] of Object.entries(source)) {
+    if (v === undefined || drop.has(k.toUpperCase())) continue
+    env[k] = v
+  }
+  return env
+}
+
 /* --------------------------------------------------------------- the argv */
 
 /**

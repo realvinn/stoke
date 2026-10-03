@@ -5,6 +5,7 @@ import {
   MAX_REMOTE_TRANSCRIPT_BYTES,
   buildTranscriptArgs,
   splitTranscriptOutput,
+  sshChildEnv,
   sshExecutable
 } from './ssh.ts'
 import type { SshHost } from '@shared/types'
@@ -74,12 +75,16 @@ function runSsh(host: SshHost, sessionId: string | null, timeoutMs: number): Pro
    * *remote* login shell to interpret. Nothing local may touch them — and
    * nothing does, because ssh is a real executable rather than one of the `.cmd`
    * shims that get routed through `cmd.exe /c` (see spawnSpec in cli.ts).
+   *
+   * `sshChildEnv` (gotcha 153): inside a Windows ssh login, an inherited stdio
+   * description made ssh.exe deliver its FIRST write and hang, so this resolved
+   * at the timeout with a few bytes of transcript as if they were all of it.
    */
   return new Promise((resolve, reject) => {
     execFile(
       sshExecutable(),
       buildTranscriptArgs(host, sessionId),
-      { timeout: timeoutMs, maxBuffer: MAX_BUFFER, encoding: 'utf8', windowsHide: true },
+      { timeout: timeoutMs, maxBuffer: MAX_BUFFER, encoding: 'utf8', windowsHide: true, env: sshChildEnv() },
       (err, stdout) => {
         // A non-zero exit with usable output still answers the question: the
         // remote `if` prints nothing and exits 0 when there is no transcript, so
