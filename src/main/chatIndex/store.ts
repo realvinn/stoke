@@ -39,7 +39,7 @@ import {
   type ChatSourceStatus
 } from '../../shared/chatIndex.ts'
 import { isInside, pathRulesFor } from '../../shared/paths.ts'
-import { cleanText, planTrim, REDACTION_VERSION, redactSecrets, type ChatMessage, type ChatMeta } from './parse.ts'
+import { cleanText, FIRST_PROMPT_MAX, planTrim, REDACTION_VERSION, redactCutTail, redactMarkedCut, redactSecrets, type ChatMessage, type ChatMeta } from './parse.ts'
 
 export const STORE_FILE = 'index.sqlite'
 
@@ -491,9 +491,21 @@ export class ChatStore {
    * `cleanText` is idempotent on stored text with no byte cap (the cap's
    * ` …` would be added again), and a message `[redacted]` made longer stays
    * longer — the chat's text cap is the pass's to keep, not this.
+   *
+   * Text stored raw was cut at its cap BEFORE anything judged it, so a key
+   * straddling the cap left its first part, which no pattern knows for a key
+   * (`ghp_Ab1Cd2Ef3Gh4Ij5Kl …`): a message or title that ends in the cap's
+   * mark, and a first prompt at its length cap (`FIRST_PROMPT_MAX`, cut with
+   * no mark by a raw pass's `firstPromptOf`), has a token-shaped last word
+   * made `[redacted]` before the chat is raised (`redactMarkedCut`,
+   * `redactCutTail`; re-review of 62b4ae6).
    */
   recleanChat(chatId: number): boolean {
-    const clean = (t: string): string => cleanText(t, { redact: true, maxBytes: Infinity })
+    const clean = (t: string): string => redactMarkedCut(cleanText(t, { redact: true, maxBytes: Infinity }))
+    const cleanFirst = (t: string): string => {
+      const c = cleanText(t, { redact: true, maxBytes: Infinity })
+      return t.length >= FIRST_PROMPT_MAX ? redactCutTail(c) : c
+    }
     return this.tx(() => {
       const c = this.q('SELECT title, first_prompt FROM chat WHERE id = CAST(? AS INTEGER)').get(chatId) as { title?: unknown; first_prompt?: unknown } | undefined
       if (!c) return false
@@ -512,7 +524,7 @@ export class ChatStore {
       const first = strOrNull(c.first_prompt)
       this.q('UPDATE chat SET title = ?, first_prompt = ?, text_bytes = text_bytes + ?, redact_level = ? WHERE id = CAST(? AS INTEGER)').run(
         title === null ? null : clean(title) || null,
-        first === null ? null : clean(first) || null,
+        first === null ? null : cleanFirst(first) || null,
         delta,
         REDACTION_VERSION,
         chatId

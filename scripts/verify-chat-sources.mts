@@ -57,7 +57,7 @@ import {
 } from '../src/shared/chatIndex.ts'
 import { agentLaunchPlan, DEFAULT_ENDPOINT } from '../src/shared/agents.ts'
 import { isSafeResumeId, resumableClis, type CodingCliId } from '../src/shared/codingClis.ts'
-import { cleanText, cutBytes, planTrim } from '../src/main/chatIndex/parse.ts'
+import { cleanText, clineMeta, cutBytes, firstPromptOf, MESSAGE_MAX_BYTES, planTrim, redactSecrets } from '../src/main/chatIndex/parse.ts'
 import { ChatStore, skipFolders } from '../src/main/chatIndex/store.ts'
 import { mergeMeta, recleanStale, runPass, type PassHooks } from '../src/main/chatIndex/scan.ts'
 import {
@@ -149,6 +149,11 @@ section('text: what is kept')
  * tell a fixture from a leak.
  */
 const fake = (prefix: string, n: number, alphabet = 'Ab3Cd5Ef7Gh9Jk2Mn4Pq6Rs8Tu'): string => prefix + Array.from({ length: n }, (_, i) => alphabet[(i * 7) % alphabet.length]).join('')
+/**
+ * Slack's webhook host, built from pieces: GitHub's push protection reads a literal webhook URL
+ * in a commit as a leaked secret, its well-known all-zero placeholder included, and refuses the push.
+ */
+const SLACK_HOOKS = 'hooks.' + 'slack.com/services/'
 const b64url = (o: unknown): string => Buffer.from(JSON.stringify(o)).toString('base64url')
 const FAKE_JWT = `${b64url({ alg: 'HS256', typ: 'JWT' })}.${b64url({ sub: '1234567890', name: 'Fixture Person', iat: 1516239022 })}.${fake('', 43)}`
 /** The signature's opening: one FTS token (letters and digits only), so a prefix search finds it while it is stored. */
@@ -338,6 +343,79 @@ section('redaction 3: the shapes 2 had no rule for')
   }
 }
 
+/*
+ * Rule set 4 (re-review of 62b4ae6). Each `takes` below passed through 3 whole;
+ * each `leaves` is code, a placeholder or a how-to that 4 must not take.
+ */
+section('redaction 4: escaped JSON, keyed secrets, dotted assignments, command lines and four shapes')
+{
+  const red = (s: string): string => cleanText(s, { redact: true })
+  const takes = (what: string, text: string, want: string): void => check(`takes ${what}`, red(text), want)
+  const leaves = (what: string, text: string): void => check(`leaves ${what}`, red(text), text)
+
+  // Escaped JSON: a quote escaped in the separator and around the value.
+  takes('an escaped-JSON password', '{\\"user\\":\\"lena\\",\\"password\\":\\"c0rrect horse\\"}', '{\\"user\\":\\"lena\\",\\"password\\":\\"[redacted]\\"}')
+  takes('an escaped-JSON api_key and access_token', `{\\"api_key\\": \\"9f8e7d6c5b4a3210\\", \\"access_token\\":\\"${fake('ya29.', 30)}\\"}`, '{\\"api_key\\": \\"[redacted]\\", \\"access_token\\":\\"[redacted]\\"}')
+  takes('an escaped-JSON Authorization header', `{\\"Authorization\\": \\"Bearer ${fake('', 32)}\\"}`, '{\\"Authorization\\": \\"Bearer [redacted]\\"}')
+  leaves('an escaped-JSON placeholder or empty value', '{\\"password\\":\\"\\", \\"api_key\\": \\"${API_KEY}\\"}')
+
+  // Keyed secrets, by the same literal test as the other keyed rules.
+  takes('a secret and every name ending in it', `NEXTAUTH_SECRET=${fake('', 32)} JWT_SECRET=supersecretkey "appSecret": "${fake('', 20)}"`, 'NEXTAUTH_SECRET=[redacted] JWT_SECRET=[redacted] "appSecret": "[redacted]"')
+  takes('SECRET_KEY and secret_key', `SECRET_KEY = 'django-insecure-${fake('', 20)}' and secret_key: ${fake('', 16)}`, "SECRET_KEY = '[redacted]' and secret_key: [redacted]")
+  takes('a private key by its name', `PRIVATE_KEY=0x${fake('', 64, '0123456789abcdef')} and "privateKey": "${fake('', 44)}"`, 'PRIVATE_KEY=[redacted] and "privateKey": "[redacted]"')
+  for (const code of [
+    'secret: Uint8Array',
+    'secret: Uint8Array<ArrayBuffer>',
+    'secret: Option<String>',
+    'secret: process.env.NEXTAUTH_SECRET',
+    'secret: ${VAR}',
+    'secret: "your-secret-here"',
+    'SECRET_KEY=YOURSECRETKEYGOESHERE',
+    'const id = `stoke-secret:v1:${path}`',
+    'privateKey: string',
+    'private_key = load_key(path)',
+    'isSecret: false',
+    'secret_key_base: <%= ENV["SECRET_KEY_BASE"] %>',
+    'secrets: inherit'
+  ]) {
+    leaves(`code or a placeholder: ${code}`, code)
+  }
+
+  // A dotted value after `password=` with no space: a value, unless its last segment names the credential or is a constant. Other names keep 3's reading.
+  takes('a lower-case keyed password with = and a dotted value', 'db_password=correct.horse.battery9 and smtp.password=hunter.two.x', 'db_password=[redacted] and smtp.password=[redacted]')
+  for (const code of ['password=self.password,', 'db_password=args.db_password', 'token=self.token', 'api_key=settings.API_KEY', 'password=cfg.db.pass', 'password: req.body.user', 'api_key=config.openai_client', 'token=response.json_payload']) {
+    leaves(`code: ${code}`, code)
+  }
+
+  // Command lines, where the shape is unmistakable.
+  takes('a password flag with a space', 'tool --password hunter2x --verbose', 'tool --password [redacted] --verbose')
+  takes('a token and an api-key flag, words before them, quoted too', `gh --github-token ${fake('', 40)} and x --api-key '0123abcd4567efgh'`, "gh --github-token [redacted] and x --api-key '[redacted]'")
+  takes('mysql -pX, a bare word too', 'mysql -h db -u root -pS3cret!x app; mysqldump -uroot -proot app', 'mysql -h db -u root -p[redacted] app; mysqldump -uroot -p[redacted] app')
+  takes('curl -u user:pass, and --user=', `curl -u admin:Hunter22 https://x and curl --user=me:${fake('', 20)} https://y`, 'curl -u admin:[redacted] https://x and curl --user=me:[redacted] https://y')
+  for (const code of [
+    'use the --password flag',
+    'gh auth --token $GITHUB_TOKEN',
+    'tool --password <pw>',
+    'docker login --password-stdin',
+    'tool --token YOUR_TOKEN',
+    'mysql -u root -p app',
+    'mysql -u root -p"$MYSQL_PWD" app',
+    'curl -u $USER:$PASS https://x',
+    'curl -u user:pass https://x',
+    'curl --user-agent "a:b" https://x',
+    'psql -p 5432 and ssh -p 2222 host'
+  ]) {
+    leaves(`a how-to, a prompt or a placeholder: ${code}`, code)
+  }
+
+  // Four shapes.
+  takes('a Slack webhook URL', `https://${SLACK_HOOKS}T0ABCDEF1/B0ABCDEF2/${fake('', 24)}`, `https://${SLACK_HOOKS}[redacted]`)
+  takes('an Azure account key', `DefaultEndpointsProtocol=https;AccountName=x;AccountKey=${fake('', 86)}==;EndpointSuffix=core.windows.net`, 'DefaultEndpointsProtocol=https;AccountName=x;AccountKey=[redacted];EndpointSuffix=core.windows.net')
+  takes('a Telegram bot token', `bot ${'1234567' + '89'}:${fake('AA', 33)} here`, 'bot [redacted] here')
+  takes('an upper-case AUTHORIZATION header', `AUTHORIZATION: Bearer ${fake('', 32)}`, 'AUTHORIZATION: Bearer [redacted]')
+  leaves('their placeholders', `https://${SLACK_HOOKS}T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX and AccountKey=<key> and 12345678:short and AUTHORIZATION: Bearer $TOKEN`)
+}
+
 section('redaction 3: cleaning cleaned text again changes nothing')
 {
   // `recleanChat` cleans stored text in place, so every rule's output must be a fixed point.
@@ -366,7 +444,19 @@ section('redaction 3: no input makes a rule backtrack (64 KB, each under a secon
     'an escaped newline run': 'password=a' + fill('\\n'),
     'a dotted path run': 'apiKey: ' + fill('a9b.'),
     'a query run': 'https://x/?' + fill('token=abcdefghijkl&'),
-    'compact JSON': fill('"next_page_token":null},')
+    'compact JSON': fill('"next_page_token":null},'),
+    // Rule set 4's shapes, each a run of the thing it looks for.
+    'escaped quotes after a key': 'password\\":' + fill('\\"'),
+    'escaped JSON pairs': fill('\\"secret\\":\\"\\",'),
+    'a run of password flags': fill('--password '),
+    'a run of flag prefixes': fill('--a-b-c-d-e-'),
+    'mysql and -p, no value': fill('mysql -p '),
+    'curl and -u, no password': fill('curl -u a '),
+    'digits and colons': fill('123456789:'),
+    'webhook prefixes': fill(`${SLACK_HOOKS}TABCDEF1/BABCDEF2/`),
+    'an account key run': 'AccountKey=' + fill('A'),
+    'secret names glued': fill('NEXTAUTH_SECRET'),
+    'dotted assignment run': 'db_password=' + fill('a.')
   }
   const slow: string[] = []
   for (const [name, text] of Object.entries(worst)) {
@@ -1765,6 +1855,70 @@ try {
     check('...and only now is it served as cleaned, title and first prompt too', [v3.staleCount(), served.map((h) => [h.title, h.firstPrompt])], [0, [['Keys api_key=[redacted]', 'v2word DB_PASSWORD=[redacted]']]])
     check('...including its stored copy', openChat(v3, vid, gone, { redact: 'force', fileBytes: 1 << 20 })?.from, 'store')
     v3.close()
+  }
+
+  section('a key a raw pass cut at a cap is not left half there by the clean that raises the chat')
+  {
+    /*
+     * Re-review of 62b4ae6: text stored raw was cut at its cap before anything judged it, so a key that
+     * straddled the cap kept its first part, which no pattern knows for a key — and `recleanChat` raised
+     * the chat to today's level with that part in it, searchable and served to another computer.
+     */
+    const GH = 'ghp_Ab1Cd2Ef3Gh4Ij5Kl6Mn7Op8Qr9St0Uv1Wx'
+    const PART = GH.slice(0, 21)
+    const cs = ChatStore.open(join(root, 'cut-index'))
+    // A message at the 64 KB cap, a title at its 1 KB cap and a first prompt at its 300, each cut 21 characters into the key.
+    // Words, so no run of it is a blob (`[data]`); `bytes` long, a space last.
+    const pad = (lead: string, bytes: number): string => `${lead} ${'word '.repeat(Math.ceil(bytes / 5))}`.slice(0, bytes - 1) + ' '
+    const msg = cleanText(`${pad('cutword', MESSAGE_MAX_BYTES - 21)}${GH} after`, { redact: false })
+    const title = cleanText(`${pad('Title', 1024 - 21)}${GH} after`, { redact: false, maxBytes: 1024 })
+    const oldFirst = `${pad('cutword', 300 - 21)}${GH} after`.slice(0, 300)
+    check('(control: what a raw pass stored ends in the key’s first part, which the patterns pass)', [msg.endsWith(`${PART} …`), title.endsWith(`${PART} …`), oldFirst.endsWith(PART), redactSecrets(PART)], [true, true, true, PART])
+    const cid = cs.upsertChat('claude', 'cut-raw', { title, firstPrompt: oldFirst, cwd: '/w', gitBranch: null, model: null, createdMs: T0, updatedMs: T0 }, { subagent: false, dedupeKey: null, whole: true, redact: false })
+    cs.appendMessages(cid, [
+      { role: 'user', text: msg, atMs: T0 },
+      { role: 'assistant', text: 'cutword the end of a short one …', atMs: T0 + 1 }
+    ])
+    check('(control: stored raw, the part is searchable)', words(cs, PART), ['claude:cut-raw'])
+    await recleanStale(cs, hooks())
+    const texts = cs.messages(cid).map((m) => m.text)
+    const hit = cs.search('cutword', 50, { redact: 'force' })[0]
+    check(
+      'cleaned again: the token a cap cut is [redacted] before the mark, in a message and a title, and at a first prompt’s cap',
+      [texts[0].endsWith(' [redacted] …'), hit?.title?.endsWith(' [redacted] …'), hit?.firstPrompt?.endsWith(' [redacted]'), words(cs, PART), JSON.stringify([texts, hit]).includes('ghp_')],
+      [true, true, true, [], false]
+    )
+    check('...a short last word before a mark stays, and a second clean changes nothing', [texts[1], cs.recleanChat(cid) && cs.messages(cid).map((m) => m.text).join('\n') === texts.join('\n')], ['cutword the end of a short one …', true])
+    cs.close()
+
+    // A Cline chat with no title takes its RAW prompt's opening as one, and was cleaned only after the cut.
+    const prompt = `${pad('clineword', 300 - 21)}${GH} after`
+    const meta = clineMeta({ prompt })
+    check('a first prompt is cut at a space, never inside a word: a Cline title holds no part of a key', [meta.title?.includes('ghp_'), meta.title?.startsWith('clineword word'), firstPromptOf(prompt).length < 300], [false, true, true])
+    check('...and one long word is still cut at the cap', firstPromptOf('z'.repeat(400)).length, 300)
+  }
+
+  section('a chat cleaned under rule set 3 is cleaned again under 4 before it is served as cleaned')
+  {
+    const v4Dir = join(root, 'v3-level-index')
+    const vs = ChatStore.open(v4Dir)
+    const meta = { title: 'v3word keys', firstPrompt: 'v3word keys', cwd: '/w', gitBranch: null, model: null, createdMs: T0, updatedMs: T0 }
+    const vid = vs.upsertChat('claude', 'cleaned-v3', meta, { subagent: false, dedupeKey: null, whole: true, redact: true })
+    // What rule set 3 stored whole: a keyed secret, escaped JSON, a flag with a space.
+    const NA = fake('', 32)
+    vs.appendMessages(vid, [{ role: 'user', text: `v3word NEXTAUTH_SECRET=${NA} {\\"password\\":\\"Esc4ped9pw\\"} tool --password Fl4gPass9`, atMs: T0 }])
+    vs.close()
+    const raw = new DatabaseSync(join(v4Dir, 'index.sqlite'))
+    raw.exec('UPDATE chat SET redact_level = 3')
+    raw.close()
+    const v4 = ChatStore.open(v4Dir)
+    check('a chat at level 3 counts as not cleaned under 4, and a cleaned-only search leaves it out', [v4.staleCount(), v4.search('v3word', 50, { redact: 'force' })], [1, []])
+    check('a pass cleans it again in place', await recleanStale(v4, hooks()), 1)
+    check('...what 3 left whole is gone, and only now is it served as cleaned', [v4.messages(vid).map((m) => m.text), v4.search('v3word', 50, { redact: 'force' }).length], [
+      ['v3word NEXTAUTH_SECRET=[redacted] {\\"password\\":\\"[redacted]\\"} tool --password [redacted]'],
+      1
+    ])
+    v4.close()
   }
 
   section('a chat’s cleaned level only goes down on a write, and what leaves is cleaned once more')

@@ -98,9 +98,17 @@ export const REDACTED = '[redacted]'
  * segments (2 left any value that began `word.word`: `SENDGRID_API_KEY=SG.…`),
  * and adds SendGrid, Mapbox, `Authorization:` headers, AWS secret access keys,
  * GitLab, Hugging Face, npm, Stripe webhook secrets, and keyed client secrets
- * and tokens.
+ * and tokens. 4 (re-review of 62b4ae6) reads a keyed value in escaped JSON
+ * (`{\"password\":\"…\"}`), takes keyed secrets (`secret`, `NEXTAUTH_SECRET`,
+ * `SECRET_KEY`, `PRIVATE_KEY`), a dotted value after `name=` with no space
+ * unless its last segment names the credential (`db_password=correct.horse.battery9`
+ * was code to 3), command-line flags (`--password X`, `mysql -pX`,
+ * `curl -u user:pass`), Slack webhooks, Azure account keys, Telegram bot
+ * tokens and an upper-case `AUTHORIZATION:`; and leaves a value with a
+ * template in it, a `YOUR…` placeholder, a credential's own name and a typed
+ * array's.
  */
-export const REDACTION_VERSION = 3
+export const REDACTION_VERSION = 4
 
 /*
  * A keyed value — `password=…`, `"apiKey": "…"`, `DB_PASSWORD: …` — is only a
@@ -187,7 +195,37 @@ function secretSegment(s: string): boolean {
   return /[a-z][0-9]+[a-z]/.test(s)
 }
 
-function literalSecret(value: string, quoted: boolean, min: number, literal: boolean): boolean {
+/** A credential's own name as its value: a how-to's placeholder. */
+const PLACEHOLDER_WORDS = new Set(['password', 'passwd', 'pass', 'pwd', 'secret', 'token', 'apikey', 'api_key'])
+
+/** A typed array's name: what `secret: Uint8Array` declares, never a value. */
+const TYPED_ARRAY = /^(?:Big)?(?:Uint|Int|Float)(?:8|16|32|64)(?:Clamped)?Array$/
+
+/** A path segment that names what the key holds (`self.password`, `args.api_key`, `cfg.db_pw`) or a constant (`settings.API_KEY`). */
+const NAMES_CREDENTIAL = /pass|pwd|pw|secret|key|token|auth|cred/i
+const CONSTANT = /^[A-Z][A-Z0-9_]*$/
+
+/**
+ * Is a dotted value a property path in code? Not when any segment has a
+ * secret's shape (`secretSegment`). In `name=value` written with no space —
+ * a `.env`, a properties file, a shell, `db_password=correct.horse.battery9`
+ * — it is code only when its last segment names the credential or a constant
+ * (`password=self.password`, `api_key=settings.API_KEY`); anywhere else
+ * (`password: req.body.pw`, `token = this.x.y`) any such path is code.
+ */
+function codePath(head: string, assign: boolean): boolean {
+  const segs = head.split(PATH_SEP)
+  if (segs.some(secretSegment)) return false
+  if (!assign) return true
+  const last = segs[segs.length - 1]
+  return NAMES_CREDENTIAL.test(last) || CONSTANT.test(last)
+}
+
+/**
+ * `literal`: a bare word IS the value (a shell or `.env` assignment in capitals, a URL query, `mysql -p…`).
+ * `assign`: written `name=value` with no space round the `=` (`codePath`).
+ */
+function literalSecret(value: string, quoted: boolean, min: number, literal: boolean, assign = false): boolean {
   /*
    * Already taken, or a blob: the marker alone is left. Anything glued on
    * after it is the rest of a value an older rule set cut short (2 stopped at
@@ -199,21 +237,25 @@ function literalSecret(value: string, quoted: boolean, min: number, literal: boo
   // Masked, or a template / variable standing in for the value.
   if (/^(?:\*+|•+|x+|X+|\.{3,}|…+)$/.test(value)) return false
   if (/^(?:\$+\{|\{\{|\$\(|<[^<>]*>$|&lt;.*&gt;$|%[\w.]+%$|\$[A-Za-z_][\w-]*$)/.test(value)) return false
-  if (/^your[-_ ]/i.test(value)) return false
+  // A template anywhere in it: code building a string (`stoke-secret:v1:${path}`), never a value.
+  if (value.includes('${') || value.includes('{{')) return false
+  if (/^your[-_ ]/i.test(value) || /^(?:YOUR|[Yy]our)[A-Z]/.test(value)) return false
+  // The name standing in for itself (`curl -u user:pass`, `-p password` in a how-to).
+  if (PLACEHOLDER_WORDS.has(value)) return false
   if (quoted) return !/^\s|\s$/.test(value)
   if (value.startsWith('\\')) return false
   const v = trimTail(value, CLOSING)
   if (v.length < min) return false
   // A word with no digit or symbol: a type, a keyword, a variable (`string`, `None`, `required`).
   if (/^[A-Za-z_-]+$/.test(v)) return literal && !TYPE_WORDS.has(v)
-  // A constant's name: `OPENROUTER_KEY_2`.
-  if (/^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/.test(v)) return false
+  // A constant's name: `OPENROUTER_KEY_2`; a typed array's: `Uint8Array`.
+  if (/^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/.test(v) || TYPED_ARRAY.test(v)) return false
   const head = PATH_HEAD.exec(v)?.[0] ?? ''
   const rest = v.slice(head.length)
-  // A call, an index or an operator after a name or a path: `getpass()`, `z.string().min(8)`, `os.environ['X']`, `env.X||'d'`.
-  if (head && /^(?:[([{]|\|\||\?\?|&&)/.test(rest)) return false
+  // A call, an index, a type's parameters or an operator after a name or a path: `getpass()`, `z.string().min(8)`, `os.environ['X']`, `Option<String>`, `env.X||'d'`.
+  if (head && /^(?:[([{<]|\|\||\?\?|&&)/.test(rest)) return false
   // A property path whose every segment is a name's: `process.env.X`, `req.body.password`.
-  if (!literal && rest === '' && PATH_SEP.test(head) && !head.split(PATH_SEP).some(secretSegment)) return false
+  if (!literal && rest === '' && PATH_SEP.test(head) && codePath(head, assign)) return false
   // A path: a shell's `PWD=/Users/…`, a file the value is read from.
   if (/^(?:\/|~\/|\.\.?\/|[A-Za-z]:\\)/.test(v)) return false
   if (v.startsWith('{') || v.startsWith('[') || v.startsWith('(')) return false
@@ -232,7 +274,8 @@ const BT = '`'
 /** One character of an unquoted value: not a space or a quote, and not an escaped `\n`, `\r` or `\t` — a line's end in JSON-escaped text. */
 const CH = String.raw`(?:[^\s"'${BT}\\]|\\(?![nrt]))`
 const VALUE =
-  String.raw`(?:"([^"\n]*)"|'([^'\n]*)'` +
+  // A value in escaped quotes first: JSON inside a JSON string (`{\"password\":\"…\"}`), a log line's.
+  String.raw`(?:\\"([^"\\\n]*)\\"|"([^"\n]*)"|'([^'\n]*)'` +
   // A URL query's value ends at the next `&`, `;` or `#`, or a bracket that closes the link around it
   // (`badge.svg?token=x)](https://…)`); a connection string's at the next `;`.
   String.raw`|((?<=[?&]${QUERY_KEY})[^\s"'${BT}\\&;#()<>[\]{}]+|(?<=;${QUERY_KEY})(?:(?!;)${CH})+)` +
@@ -243,19 +286,22 @@ const VALUE =
 
 /**
  * A rule for `<name> = <value>` in the ways code and config write it:
- * `name=v`, `name: v`, `"name": "v"`, `'name' => 'v'`, `name := "v"`. The name
- * is kept, so "password" is still searchable; only a literal value goes.
+ * `name=v`, `name: v`, `"name": "v"`, `'name' => 'v'`, `name := "v"`, and
+ * escaped JSON's `\"name\":\"v\"`. The name is kept, so "password" is still
+ * searchable; only a literal value goes. `dottedAssign`: a dotted value after
+ * `name=` with no space is judged by its last segment (`codePath`) — the
+ * password rule's alone, as measured; elsewhere `api_key=config.openai` is code.
  */
-function keyed(name: string, keyPattern: string, min: number): SecretRule {
+function keyed(name: string, keyPattern: string, min: number, dottedAssign = false): SecretRule {
   return {
     name,
     // The lookbehind is bounded: unbounded, it re-scanned a whole identifier run at every name inside it (0.8 s for 64 KB).
-    re: new RegExp(String.raw`(?<!\$\{[A-Za-z0-9_.-]{0,64})(${keyPattern})(["']?(?::(?!=)|[ \t]*(?:=>|:=|=))[ \t]*)` + VALUE, 'g'),
-    to: (match, key, sep, dq, sq, query, bare) => {
-      const quoted = dq ?? sq
+    re: new RegExp(String.raw`(?<!\$\{[A-Za-z0-9_.-]{0,64})(${keyPattern})((?:\\?["'])?(?::(?!=)|[ \t]*(?:=>|:=|=))[ \t]*)` + VALUE, 'g'),
+    to: (match, key, sep, edq, dq, sq, query, bare) => {
+      const quoted = edq ?? dq ?? sq
       const v = quoted ?? query ?? bare ?? ''
-      if (!literalSecret(v, quoted !== undefined, min, query !== undefined || (sep === '=' && !/[a-z]/.test(key)))) return match
-      const q = dq !== undefined ? '"' : sq !== undefined ? "'" : ''
+      if (!literalSecret(v, quoted !== undefined, min, query !== undefined || (sep === '=' && !/[a-z]/.test(key)), dottedAssign && sep === '=')) return match
+      const q = edq !== undefined ? '\\"' : dq !== undefined ? '"' : sq !== undefined ? "'" : ''
       const kept = quoted === undefined ? v.slice(trimTail(v, STRUCTURE).length) : ''
       return `${key}${sep}${q}${REDACTED}${q}${kept}`
     }
@@ -264,6 +310,53 @@ function keyed(name: string, keyPattern: string, min: number): SecretRule {
 
 /** A shaped value after a name that says what it is: the name and its separator stay. */
 const keepName = (_m: string, name: string): string => `${name}${REDACTED}`
+
+/** The value after a command-line flag: quoted, or the run to the next space. */
+const ARG = String.raw`(?:"([^"\n]*)"|'([^'\n]*)'|([^\s"'${BT}]+))`
+
+/** A flag's value as `[redacted]`, its quotes and the structure after it kept, when `literalSecret` says it is one. */
+function flagValue(prefix: string, dq: string | undefined, sq: string | undefined, bare: string | undefined, min: number, literal: boolean, match: string): string {
+  const quoted = dq ?? sq
+  const v = quoted ?? bare ?? ''
+  if (!literalSecret(v, quoted !== undefined, min, literal)) return match
+  const q = dq !== undefined ? '"' : sq !== undefined ? "'" : ''
+  const kept = quoted === undefined ? v.slice(trimTail(v, STRUCTURE).length) : ''
+  return `${prefix}${q}${REDACTED}${q}${kept}`
+}
+
+/*
+ * A secret on a command line, in the three shapes that cannot be mistaken
+ * for anything else. The `--name=value` form is the keyed rules' already.
+ * - `--password X`, `--token X`, `--api-key X`, and those with words before
+ *   them (`--db-password`, `--github-token`): judged as a keyed value is, so
+ *   `--token $GITHUB_TOKEN`, `--password <pw>` and a bare word stay.
+ * - `mysql -pX` (and `mysqldump`, `mysqladmin`, `mariadb`): whatever is glued
+ *   to `-p` IS the password (`-p` alone, then a space, asks for it), a bare
+ *   word included, as in a `.env`.
+ * - `curl -u user:pass` (`--user`): the user stays, the password goes, a
+ *   bare word included.
+ * Each looks for its command at most 200 characters back on the same line.
+ */
+const COMMAND_LINE_RULES: readonly SecretRule[] = [
+  {
+    name: 'cli-flag',
+    re: new RegExp(
+      String.raw`(?<![\w-])(--(?:[A-Za-z0-9]+-){0,4}(?:password|passwd|pass|pwd|token|secret|(?:api|secret|access|private|auth)-key|apikey))(?![\w-])([ \t]{1,4})` + ARG,
+      'g'
+    ),
+    to: (m, flag, sp, dq, sq, bare) => flagValue(`${flag}${sp}`, dq, sq, bare, /pass|pwd/.test(flag) ? 4 : /token/.test(flag) ? 12 : 8, false, m)
+  },
+  {
+    name: 'mysql',
+    re: new RegExp(String.raw`(\b(?:mysql|mysqldump|mysqladmin|mariadb)\b[^\n]{0,200}?[ \t]-p)(?:"([^"\n]*)"|'([^'\n]*)'|([^\s"'${BT}-][^\s"'${BT}]*))`, 'g'),
+    to: (m, pre, dq, sq, bare) => flagValue(pre, dq, sq, bare, 1, true, m)
+  },
+  {
+    name: 'curl-user',
+    re: new RegExp(String.raw`(\bcurl\b[^\n]{0,200}?[ \t](?:-u[ \t]{0,4}|--user(?:[ \t]{1,4}|=))["']?[^\s:"'@]*:)([^\s"'${BT}]+)`, 'g'),
+    to: (m, pre, bare) => flagValue(pre, undefined, undefined, bare, 1, true, m)
+  }
+]
 
 export const SECRET_RULES: readonly SecretRule[] = [
   { name: 'private-key', re: /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g, to: REDACTED },
@@ -301,14 +394,15 @@ export const SECRET_RULES: readonly SecretRule[] = [
   { name: 'jwt', re: /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]*/g, to: REDACTED },
   /*
    * An `Authorization` header's credentials (`Proxy-Authorization` too, any
-   * case): a Bearer or Token value of 20+ token characters with a digit in it
+   * case, `AUTHORIZATION` too, escaped JSON's `\"Authorization\": \"Bearer …`):
+   * a Bearer or Token value of 20+ token characters with a digit in it
    * (a word-only `YOUR_ACCESS_TOKEN_HERE` is a placeholder), or Basic's
    * base64 of 16+. A JWT or a shaped key the rules above took reads
    * `[redacted]` and is not a token any more.
    */
   {
     name: 'authorization',
-    re: /([Aa]uthorization["']?[ \t]*[:=][ \t]*["']?(?:[Bb]earer|[Tt]oken|BEARER)[ \t]+)(?=[A-Za-z_.~+/-]*[0-9])[\w.~+/-]{20,}=*|([Aa]uthorization["']?[ \t]*[:=][ \t]*["']?(?:[Bb]asic|BASIC)[ \t]+)[A-Za-z0-9+/]{16,}={0,2}/g,
+    re: /((?:[Aa]uthorization|AUTHORIZATION)(?:\\?["'])?[ \t]*[:=][ \t]*(?:\\?["'])?(?:[Bb]earer|[Tt]oken|BEARER|TOKEN)[ \t]+)(?=[A-Za-z_.~+/-]*[0-9])[\w.~+/-]{20,}=*|((?:[Aa]uthorization|AUTHORIZATION)(?:\\?["'])?[ \t]*[:=][ \t]*(?:\\?["'])?(?:[Bb]asic|BASIC)[ \t]+)[A-Za-z0-9+/]{16,}={0,2}/g,
     to: (_m, bearer, basic) => `${bearer ?? basic}${REDACTED}`
   },
   /*
@@ -319,12 +413,19 @@ export const SECRET_RULES: readonly SecretRule[] = [
    */
   {
     name: 'aws-secret',
-    re: /((?:aws\\?_secret\\?_access\\?_key|AWS\\?_SECRET\\?_ACCESS\\?_KEY|[Ss]ecretAccessKey)["']?[ \t]{0,4}(?::|=>|=)[ \t]{0,4}["']?)[A-Za-z0-9/+]{40}(?![A-Za-z0-9/+])/g,
+    re: /((?:aws\\?_secret\\?_access\\?_key|AWS\\?_SECRET\\?_ACCESS\\?_KEY|[Ss]ecretAccessKey)(?:\\?["'])?[ \t]{0,4}(?::|=>|=)[ \t]{0,4}(?:\\?["'])?)[A-Za-z0-9/+]{40}(?![A-Za-z0-9/+])/g,
     to: keepName
   },
   // `scheme://user:pass@host`: the scheme and host stay, the user and password go.
   // The match starts at the `://` (the scheme is a lookbehind), so the engine scans for a literal, not a class.
   { name: 'credential-url', re: /(?<=\b[A-Za-z][A-Za-z0-9+.-]{1,30}):\/\/[^\s:@/?#'"<>]*:[^\s@/?#'"<>]+@(?=[A-Za-z0-9[])/g, to: `://${REDACTED}@` },
+  // A Slack incoming webhook: the path after `services/` is the credential. A docs placeholder (`XXXX…`, no digit) is not one.
+  { name: 'slack-webhook', re: /(hooks\.slack\.com\/services\/)T[A-Z0-9]{6,}\/B[A-Z0-9]{6,}\/(?=[A-Za-z]{0,63}[0-9])(?=[0-9]{0,63}[A-Za-z])[A-Za-z0-9]{16,}/g, to: keepName },
+  // An Azure storage or Service Bus connection string's key (`AccountKey=`, `SharedAccessKey=`): base64 of 40+.
+  { name: 'azure', re: /((?:Account|SharedAccess)Key=)[A-Za-z0-9+/]{40,}={0,2}/g, to: keepName },
+  // A Telegram bot token: the bot's id, a colon, 35 base64url characters.
+  { name: 'telegram', re: /(?<![\w:])\d{8,10}:[A-Za-z0-9_-]{35}(?![\w-])/g, to: REDACTED },
+  ...COMMAND_LINE_RULES,
   /*
    * `password`, `passwd`, `pwd`, and whatever is glued in front of them stays
    * outside the match (`PGPASSWORD`, `dbPassword`, `DB_PWD`,
@@ -335,9 +436,18 @@ export const SECRET_RULES: readonly SecretRule[] = [
    * rules: `GOOGLE_CLIENT_SECRET`, `access_token`, `refreshToken`,
    * `GITHUB_TOKEN` all end in the name the rule looks for.
    */
-  keyed('password', String.raw`[Pp]ass(?:word|wd)|PASS(?:WORD|WD)|[Pp]wd|PWD`, 4),
+  keyed('password', String.raw`[Pp]ass(?:word|wd)|PASS(?:WORD|WD)|[Pp]wd|PWD`, 4, true),
   keyed('api-key', String.raw`[Aa][Pp][Ii]\\?[_-]?[Kk][Ee][Yy]`, 8),
   keyed('client-secret', String.raw`[Cc]lient\\?[_-]?[Ss]ecret|CLIENT\\?[_-]?SECRET`, 12),
+  /*
+   * `secret`, and every name that ends in it (`NEXTAUTH_SECRET`, `JWT_SECRET`,
+   * `appSecret`), `secret_key`/`SECRET_KEY`, and a private key's own name
+   * (`PRIVATE_KEY=0x…`, `privateKey: "…"`): a literal of 8+. Code says these
+   * with a type or a lookup on the right (`secret: Uint8Array`,
+   * `privateKey: process.env.KEY`), which `literalSecret` leaves; the PEM rules
+   * above have already taken a whole key block.
+   */
+  keyed('secret', String.raw`[Ss]ecret(?:\\?[_-]?[Kk]ey)?|SECRET(?:\\?_?KEY)?|[Pp]rivate\\?[_-]?[Kk]ey|PRIVATE\\?_?KEY`, 8),
   /*
    * `token`, `access_token`, `refreshToken`, `GITHUB_TOKEN`: only a literal of
    * 12+, which keeps counts, ids and code's short names out (`eos_token: 2`,
@@ -360,6 +470,9 @@ export function redactSecrets(text: string): string {
 // eslint-disable-next-line no-control-regex
 const CONTROLS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g
 
+/** What `cleanText` puts where it cut a text at its byte cap. */
+export const CUT_MARK = ' …'
+
 /**
  * Text as it is stored: controls gone, blobs gone, credentials gone (when
  * asked), blank-line runs squeezed, cut at `maxBytes` on a character boundary.
@@ -372,8 +485,33 @@ export function cleanText(raw: string, opts: { redact: boolean; maxBytes?: numbe
   if (opts.redact) t = redactSecrets(t)
   t = t.replace(/\n{3,}/g, '\n\n').trim()
   const max = opts.maxBytes ?? MESSAGE_MAX_BYTES
-  if (Buffer.byteLength(t, 'utf8') > max) t = cutBytes(t, max) + ' …'
+  if (Buffer.byteLength(t, 'utf8') > max) t = cutBytes(t, max) + CUT_MARK
   return t
+}
+
+/** A run with no space of at least this many characters is shaped like a token: a key, or what a cut left of one. */
+const TOKEN_TAIL_MIN = 8
+
+/**
+ * `text` with its last word made `[redacted]` when that word is shaped like a
+ * token (no space in it, `TOKEN_TAIL_MIN` characters or more); a shorter one
+ * stays. For text that was CUT right after that word: whatever the cut left
+ * of a key is no key to any pattern — `ghp_Ab1Cd2Ef3Gh4Ij5Kl` is too short for
+ * the GitHub rule, and the first 17 characters of one all the same. Text
+ * stored with redaction on was cleaned whole before its cut, so it never
+ * needs this; text stored raw, or under an older rule set, is cleaned again
+ * only AFTER its cut (`ChatStore.recleanChat`), and does. `[redacted]` is
+ * itself token-shaped, so this is a fixed point.
+ */
+export function redactCutTail(text: string): string {
+  let start = text.length
+  while (start > 0 && !/\s/.test(text[start - 1])) start--
+  return text.length - start >= TOKEN_TAIL_MIN ? text.slice(0, start) + REDACTED : text
+}
+
+/** `text` stored at a cap `cleanText` marked: its tail before the mark through `redactCutTail`; anything else as it is. */
+export function redactMarkedCut(text: string): string {
+  return text.endsWith(CUT_MARK) ? redactCutTail(text.slice(0, -CUT_MARK.length)) + CUT_MARK : text
 }
 
 /*
@@ -415,8 +553,24 @@ export function note(meta: ChatMeta, at: number | null): void {
   if (meta.updatedMs === null || at > meta.updatedMs) meta.updatedMs = at
 }
 
+/** A first prompt's length at most, in UTF-16 units. */
+export const FIRST_PROMPT_MAX = 300
+
+/**
+ * A chat's first prompt: one line, at most `FIRST_PROMPT_MAX`, and when it is
+ * cut, cut back to its last space — never inside a word. A Cline chat with no
+ * title takes this of its RAW prompt as its title and cleans it only after
+ * (`clineMeta`, `mergeMeta`), so a cut inside a key kept the key's first part
+ * whole past every pattern (re-review of 62b4ae6). A cut one is therefore
+ * shorter than the cap unless it is one long word, which is what
+ * `recleanChat` reads a first prompt AT the cap as: cut inside a word.
+ */
 export function firstPromptOf(text: string): string {
-  return text.replace(/\s+/g, ' ').trim().slice(0, 300)
+  const t = text.replace(/\s+/g, ' ').trim()
+  if (t.length <= FIRST_PROMPT_MAX) return t
+  const cut = t.slice(0, FIRST_PROMPT_MAX)
+  const space = cut.lastIndexOf(' ')
+  return space > 0 ? cut.slice(0, space) : cut
 }
 
 /** One message, cleaned (`cleanText`); nothing when no text is left. The first user message is the first prompt. */

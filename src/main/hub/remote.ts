@@ -1614,7 +1614,7 @@ export class HubRemote {
     this.touchChats()
     const others = ctx.active.filter((a) => a.id !== ctx.me.id)
     const results = await Promise.all(
-      others.map((a) => this.searchOne(a, `/api/chats/search?q=${encoded}&limit=${CHAT_HITS_MAX}`))
+      others.map((a) => this.searchOne(a, `/api/chats/search?q=${encoded}&limit=${CHAT_HITS_MAX}`, query))
     )
     return results.sort((a, b) => a.label.localeCompare(b.label) || a.device.localeCompare(b.device))
   }
@@ -1660,7 +1660,7 @@ export class HubRemote {
     this.chatsIdle.unref?.()
   }
 
-  private async searchOne(a: { id: string; label: string; platform: string }, path: string): Promise<RemoteChatsResult> {
+  private async searchOne(a: { id: string; label: string; platform: string }, path: string, query: string): Promise<RemoteChatsResult> {
     const label = this.statuses[a.id]?.name || a.label
     const base = { device: a.id, label, platform: a.platform, hits: [] }
     const reach = await this.reachChats(a)
@@ -1668,7 +1668,7 @@ export class HubRemote {
     const answer = await this.chatRequest(reach.peer, path, this.chatsMs('requestMs', CHATS_REQUEST_MS))
     const failed = this.failedAnswer(reach.peer, answer, `${label} could not search its chat history.`)
     if (failed) return { ...base, ...failed }
-    const hits = parseRemoteChatHits(answer!.body)
+    const hits = parseRemoteChatHits(answer!.body, query)
     if (!hits) return { ...base, state: 'error', message: `${label} answered with something that is not a search.`, code: null }
     return { ...base, state: 'ok', message: null, code: null, hits }
   }

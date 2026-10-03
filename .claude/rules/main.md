@@ -759,3 +759,32 @@ byte of the guest's page.
 >   `searchCleaned`), and `sharedChats` asks for `CHAT_HITS_MAX` and cuts to the guest's limit only
 >   after its own filters. Over-fetching alone would still leak at the 50th place. verify:chat-sources
 >   (store and worker), verify:hub-relay.
+
+> **Checked against the code on 2026-10-04 (re-review of 62b4ae6)** — three ways a key still left whole,
+> each reasoned from the code and held by a suite case shown red by mutating its fix back:
+> - **Shaping joined what the patterns had seen apart.** The index keeps a bare `\r` (`CONTROLS` spares
+>   it), so `sk-ant-api03-\r<40>` is two words to every pattern; `chatText` (shared/hub/remote.ts) then
+>   DELETED controls after `sharedChats` had redacted, and B's viewer got the key whole. Shaping makes a
+>   control a space now, host and guest, one for one; `sharedChats` runs its belt over what
+>   `remoteChatHitFrom`/`remoteChatFrom` return, the bytes that leave (so `password=\r…` reads
+>   `password= …` and is taken); a snippet shaping moved is marked afresh against the query, the guest's
+>   too. verify:hub-relay, through the real relay.
+> - **A raw pass cuts before anything judges.** A key straddling a message's 64 KB cap, a title's 1 KB
+>   or a first prompt's 300 left its first part (`ghp_Ab1Cd2Ef3Gh4Ij5Kl …`), and `recleanChat` raised
+>   the chat with it. A re-clean now makes a token-shaped last word (no space, 8+) before the cap's mark
+>   `[redacted]` (`redactMarkedCut`), and at a first prompt's length cap too (`redactCutTail`).
+>   `firstPromptOf` cuts back to a space, because a Cline chat's title is its RAW prompt's opening,
+>   cleaned only after the cut. verify:chat-sources.
+> - **Rule set 4** (`REDACTION_VERSION`): escaped JSON, keyed `secret`/`*_SECRET`/`SECRET_KEY`/
+>   `PRIVATE_KEY`, a dotted `password=value` unless its last segment names the credential (the password
+>   rule's alone: `api_key=config.openai_client` stays code), `--password X`,
+>   `mysql -pX`, `curl -u user:pass`, Slack webhooks, Azure account keys, Telegram bot tokens, upper-case
+>   `AUTHORIZATION`. Measured per rule against rule set 3 on a read-only copy of this Mac's index (8,485
+>   messages), this repo's src/ (299 files) and node_modules' markdown (704): the index gained 1 take (a
+>   quoted `secret:`) and lost none; src/ 2 (parse.ts's own comments quoting its example); node_modules 8, all one README's
+>   quoted `'X-TOKEN-SECRET': 'SuperSecretToken'`. That was after three leaves the first cut lacked: a
+>   template anywhere in a value (`stoke-secret:v1:${path}`, 2 in src/), a `YOUR…` placeholder with no
+>   separator (4 in node_modules) and a credential's own name as its value (`curl -u user:pass`, which
+>   also leaves 2 that set 3 took). The command-line, Slack, Azure, Telegram and `AUTHORIZATION` rules
+>   matched nothing in any of the three, so their false-positive rate is unmeasured beyond zero hits. Each
+>   new 64 KB worst case cleans in under 10 ms.

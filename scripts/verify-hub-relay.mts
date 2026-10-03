@@ -1522,7 +1522,23 @@ console.log('\nchat history: the host’s rules, the scope, and what may leave')
 
   check('a folder leaves by its last segment only, on either separator; a root names none', [folderName('/Users/v/dev/stoke'), folderName('C:\\Users\\v\\work\\proj\\'), folderName('/'), folderName('C:\\'), folderName(null)], ['stoke', 'proj', null, null, null])
   const hit = remoteChatHitFrom({ source: 'claude', nativeId: 'abc-1', title: null, firstPrompt: 'Fix the relay', cwd: '/Users/v/secret-client/stoke', updatedMs: 5, role: 'assistant', snippet: { text: 'the relay\u0007 frame', ranges: [[4, 9], [2, 3], [8, 99]] } })
-  check('a hit as it leaves: folder name, the first prompt standing in for a title, controls out, bad ranges dropped', hit, { source: 'claude', nativeId: 'abc-1', title: 'Fix the relay', folder: 'stoke', updatedMs: 5, role: 'assistant', snippet: 'the relay frame', ranges: [[4, 9]] })
+  check('a hit as it leaves: folder name, the first prompt standing in for a title, a control a space, bad ranges dropped', hit, { source: 'claude', nativeId: 'abc-1', title: 'Fix the relay', folder: 'stoke', updatedMs: 5, role: 'assistant', snippet: 'the relay  frame', ranges: [[4, 9]] })
+  {
+    // Re-review of 62b4ae6: shaping DELETED controls, so text moved under its ranges, and a key split by one was joined.
+    const moved = remoteChatHitFrom({ source: 'claude', nativeId: 'abc-1', title: null, firstPrompt: null, cwd: null, updatedMs: 5, role: 'user', snippet: { text: 'a\u0007b\rc the relay', ranges: [[10, 15]] } }, 'relay')
+    check('a control before the hit: the text keeps its length and the highlight still marks the word', [moved.snippet, moved.ranges.map(([x, y]) => moved.snippet.slice(x, y))], ['a b c the relay', ['relay']])
+    const long = `${'x'.repeat(994)} relaying`
+    const cut = remoteChatHitFrom({ source: 'claude', nativeId: 'abc-1', title: null, firstPrompt: null, cwd: null, updatedMs: 5, role: 'user', snippet: { text: long, ranges: [[995, long.length]] } }, 'relay')
+    check('a snippet cut at its cap is marked afresh: the word the cut left is still the hit', [cut.snippet.length, cut.ranges], [1000, [[995, 1000]]])
+    const guest = parseRemoteChatHits({ hits: [{ ...cut, snippet: long, ranges: [[995, long.length]] }] }, 'relay')?.[0]
+    check('...and the same on the guest, which marks what its own cut left', guest?.ranges, [[995, 1000]])
+    const CR = `sk-ant-api03-\r${'Q7xK2m'.repeat(7).slice(0, 40)}`
+    check(
+      'the guest never joins what a control split: a snippet, a message',
+      [parseRemoteChatHits({ hits: [{ ...hit, snippet: `key ${CR}` }] })?.[0].snippet.includes('api03- Q7xK'), parseRemoteChat({ source: 'claude', nativeId: 'abc-1', messages: [{ role: 'user', text: CR, atMs: 1 }] })?.messages[0].text.includes('api03- Q7xK')],
+      [true, true]
+    )
+  }
   ok('and nothing of its path', !JSON.stringify(hit).includes('/Users') && !JSON.stringify(hit).includes('secret-client'))
   const parsed = parseRemoteChatHits({ hits: [hit, { ...hit, source: '../etc' }, { ...hit, nativeId: 'a\nb' }, { ...hit, role: 'system' }, ...Array.from({ length: 60 }, () => hit)] })
   check('another machine’s hits are checked: a bad source, id or role dropped, and only the first 50 looked at', [parsed?.length, parseRemoteChatHits({ hits: 'x' }), parseRemoteChatHits(null)], [47, null, null])
@@ -1715,6 +1731,37 @@ console.log('\nchat history between two machines: ask, allow, search, open; ever
   await until(() => last(guestM).chatPeers[0]?.state === 'open')
   check('Always: kept in A’s chatGrants only — never A’s session grants, never on B', [hostM.chatGrants, hostM.grants, guestM.chatGrants, guestM.grants], [{ [B.id]: 'always' }, {}, {}, {}])
   check('Settings lists it with the device’s name and fingerprint', last(hostM).chatGrants.map((g) => [g.device, g.label, g.fingerprint.split(' ').length]), [[B.id, 'Laptop', 4]])
+  {
+    /*
+     * Re-review of 62b4ae6: the index keeps a bare `\r`, so a key stored split by one is two words to every
+     * secret pattern; the host's shaping then DELETED the `\r` after its patterns had run, and the key reached
+     * B's viewer whole. Shaping makes a control a space now, and the patterns judge the shaped bytes:
+     * `password=\r…` reads `password= …` once shaped, which the patterns take.
+     */
+    const ANT = `sk-ant-api03-${'Q7xK2mZp9L'.repeat(4)}`
+    const GH = `ghp_${'Ab1Cd2Ef3G'}${'h4Ij5Kl6Mn7Op8Qr9St0Uv1Wx2Y'.slice(0, 26)}`
+    const split = (k: string, at: number): string => `${k.slice(0, at)}\r${k.slice(at)}`
+    hostM.chats.push({
+      chatId: 9,
+      source: 'claude',
+      nativeId: 'n-9',
+      title: 'Keys password=\nCrTitle9pw',
+      cwd: '/Users/owner/dev/keys',
+      text: `the keys ${split(ANT, 13)} and ${split(GH, 14)} then password=\rCrBelt9pw for crsplit`
+    })
+    res = await guestM.remote.searchChats('crsplit')
+    const crHit = byDevice(res, A.id)?.hits[0]
+    const crOpen = await guestM.remote.openRemoteChat(A.id, 'claude', 'n-9')
+    const seen = JSON.stringify([res, crOpen])
+    check('a key stored split by a bare CR reaches B in two halves, never whole: search and open', [crHit?.nativeId, seen.includes(ANT), seen.includes(GH), seen.includes('api03- Q7xK'), seen.includes(`${GH.slice(0, 14)} ${GH.slice(14)}`)], ['n-9', false, false, true, true])
+    check(
+      'what the patterns judged is what was sent: a value a CR kept from its name is taken once shaped, title too',
+      [seen.includes('CrBelt9pw'), seen.includes('CrTitle9pw'), crHit?.snippet.includes('password= [redacted]'), crHit?.title, crOpen.ok && crOpen.chat.title],
+      [false, false, true, 'Keys password= [redacted]', 'Keys password= [redacted]']
+    )
+    check('and the hit is marked on the text that was sent', crHit && crHit.ranges.map(([x, y]) => crHit.snippet.slice(x, y)), ['crsplit'])
+    hostM.chats.pop()
+  }
   hostM.chatGrants = {}
   res = await guestM.remote.searchChats('relay')
   check('the grant gone from A’s settings: the next request is refused as denied', byDevice(res, A.id)?.state, 'denied')
