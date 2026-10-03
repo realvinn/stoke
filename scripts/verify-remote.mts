@@ -97,7 +97,7 @@ import {
   type KeyObject
 } from 'node:crypto'
 import { encryptPush, generateVapidKeys, isVapidPair, sendPush, VAPID_SUBJECT, vapidJwt } from '../src/main/remote/push.ts'
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { runInNewContext } from 'node:vm'
 import { tmpdir } from 'node:os'
 import { transcribe } from '../src/main/stt.ts'
@@ -1746,12 +1746,21 @@ console.log('\nthe places themselves (remoteFolderBases)')
 /*
  * The same rules against a real disk: a real symlink out of a place, a real
  * sibling prefix, a file, a dot-folder, and more folders than one answer lists.
- * Everything lives under a fresh temp dir (resolved, since macOS's own
- * `$TMPDIR` is a symlink) and is removed afterwards.
+ * Everything lives under a fresh temp dir and is removed afterwards. The dir is
+ * resolved the way the product resolves a place (`realpathFolder` is
+ * `fs/promises`' realpath, the native call): macOS's own `$TMPDIR` is a
+ * symlink, and GitHub's Windows runner's is the 8.3 `C:\Users\RUNNER~1\…`,
+ * which node's JS `realpathSync` keeps as spelled while the native call
+ * expands it. Built on the JS answer, every expected path was the short
+ * spelling of a place the product had rightly stored long, and the missing
+ * folder below went 403: a path that does not exist cannot be resolved, so it
+ * is judged as spelled, outside the long place. The phone never sends that
+ * spelling (it asks only for paths the server listed, all long), so the
+ * product answer is right and the test's spelling was not.
  */
 console.log('\nbrowsing a real folder (GET /api/folders)')
 {
-  const tmp = realpathSync(mkdtempSync(join(tmpdir(), 'stoke-browse-')))
+  const tmp = realpathSync.native(mkdtempSync(join(tmpdir(), 'stoke-browse-')))
   try {
     const place = join(tmp, 'projects')
     const outside = join(tmp, 'projects-old')
@@ -1792,8 +1801,15 @@ console.log('\nbrowsing a real folder (GET /api/folders)')
     check('a file: 400', file.ok ? 'served' : file.status, 400)
     const traversal = await browseRemoteFolder(`${place}/../projects-old`, bases, process.platform)
     check('a traversal: 400, never resolved', traversal.ok ? 'served' : traversal.status, 400)
-    const etc = await browseRemoteFolder('/etc', bases, process.platform)
-    check('/etc: 403', etc.ok ? 'served' : etc.status, 403)
+    /*
+     * A real system folder outside every place. Not `/etc` on Windows: there a
+     * path with no drive letter is malformed (`isAbsoluteFor`), a 400 before
+     * anything resolves it. Its existence is part of the check, or this would
+     * quietly repeat "a missing folder outside" above.
+     */
+    const system = process.platform === 'win32' ? (process.env.SystemRoot ?? 'C:\\Windows') : '/etc'
+    const sys = await browseRemoteFolder(system, bases, process.platform)
+    check(`${system}, a real folder outside every place: 403`, [existsSync(system), sys.ok ? 'served' : sys.status], [true, 403])
 
     const crowd = join(place, 'crowd')
     for (let i = 0; i < 205; i++) mkdirSync(join(crowd, `d${i}`), { recursive: true })
