@@ -1106,7 +1106,8 @@ npm run verify:hub-client     # the hub CLIENT: what each tier offers and what n
                               # for a double press, throttled with the hub's wait, no answer, a
                               # challenge page or a bare 200 never ok, an old hub told to update,
                               # pending and never-signed-in refused, the password kept nowhere,
-                              # and the sheet's sentences
+                              # the sheet's sentences, and its consent drop (`leaveVerifySheet`,
+                              # plus the sheet's wiring to it, read from its source)
 npm run verify:hub-relay      # "Other machines": two RelayChannels through an in-memory relay
                               # that plays the hub — forwarding, and dropping, repeating,
                               # reordering, reflecting and rewriting frames, swapping the host's
@@ -1316,6 +1317,9 @@ src/main/         Electron main process
                       connection string's to its `&`/`;`); no rule backtracks (the suite
                       times 64 KB worst cases).
                       `REDACTION_VERSION` names the rule set a stored chat was cleaned with
+                      (4). A re-clean makes a token-shaped last word a size cap cut
+                      `[redacted]` (`redactMarkedCut`, `redactCutTail`), and `firstPromptOf`
+                      cuts back to a space (gotcha 156)
     scan.ts           one pass: list everything, fold Cline's copies into originals their tool
                       still has, admit the newest per source then in all (a file holding no
                       chat takes no slot; nothing at or below the store ceiling's remembered
@@ -1689,7 +1693,9 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     this computer before it opens something up to the account's other ones
                     (spec 2026-10-03 §2). Calls `window.stoke.hub.verifyPassword` itself and
                     `onConfirmed` only on the hub's yes; says the three sentences
-                    (`verifyPasswordSentence`). A portal into <body> above the Settings sheet,
+                    (`verifyPasswordSentence`). Leaving without using the yes (Cancel, Escape,
+                    the scrim, an unmount) asks main to drop it (`leaveVerifySheet`,
+                    `HubService.cancelVerify`). A portal into <body> above the Settings sheet,
                     registered with `useFloatingLayer`; Tab trapped, Escape its Cancel. The
                     field is uncontrolled, so the password is never React state or a DOM
                     attribute, and is emptied on the press and on close. Mounted only while

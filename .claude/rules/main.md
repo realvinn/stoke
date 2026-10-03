@@ -788,3 +788,11 @@ byte of the guest's page.
 >   also leaves 2 that set 3 took). The command-line, Slack, Azure, Telegram and `AUTHORIZATION` rules
 >   matched nothing in any of the three, so their false-positive rate is unmeasured beyond zero hits. Each
 >   new 64 KB worst case cleans in under 10 ms.
+>
+> Merged the same day with four cases for checks the re-review could delete with every suite green,
+> each shown red by mutating it back: the sheet's consent drop (the rule is now `leaveVerifySheet` in
+> shared/hub/client.ts, the sheet's wiring pinned by its source text; verify:hub-client),
+> `revokeChatGrant` ending relays before its write lands, `sharedChats`' own re-check after the index's
+> await (503 `redaction-off`/`history-off`, nothing read leaving) and `chainChanged`'s `not-in-vault`
+> against `not-a-device` (verify:hub-relay). Still open: a key a control split reaches the guest as two
+> halves with a space between, never joined but readable, and no rule recognises a split key.

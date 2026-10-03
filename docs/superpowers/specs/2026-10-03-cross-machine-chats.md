@@ -53,6 +53,13 @@ In `src/main/chatIndex/` (parse/scan/store/sources, whatever holds `cleanText` a
   ids, `glpat-`/`hf_`/`npm_`/`whsec_` tokens and keyed `client_secret`/`token` values join the list. Rows
   cleaned under 2 count as not cleaned, so a guest finds them only once a pass re-cleans them
   (`recleanStale`). No rule may backtrack: the suite times 64 KB worst cases.
+- **Rule set 4** (`REDACTION_VERSION` 4, re-review of 62b4ae6): keyed values inside escaped JSON, keyed
+  `secret`/`*_SECRET`/`SECRET_KEY`/`PRIVATE_KEY`, a dotted `password=` value unless its last segment names
+  the credential, `--password`/`--token`/`--api-key X`, `mysql -pX`, `curl -u user:pass`, Slack webhooks,
+  Azure `AccountKey=`/`SharedAccessKey=`, Telegram bot tokens and upper-case `AUTHORIZATION:`; a value
+  holding a template, a `YOUR…` placeholder or a credential's own name is left. A re-clean redacts a
+  token-shaped last word a size cap cut. Shaping for the wire turns a control into a space (never deletes
+  it), and `sharedChats`' second belt judges the shaped text, the bytes that leave (gotcha 156).
 
 ### 2. The password check (hub + client)
 
