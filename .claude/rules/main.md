@@ -796,3 +796,36 @@ byte of the guest's page.
 > await (503 `redaction-off`/`history-off`, nothing read leaving) and `chainChanged`'s `not-in-vault`
 > against `not-a-device` (verify:hub-relay). Still open: a key a control split reaches the guest as two
 > halves with a space between, never joined but readable, and no rule recognises a split key.
+
+> **Checked against the code on 2026-10-04 (review of 166e84f)** — five more ways a key left whole, each
+> held by a suite case shown red by mutating its fix back:
+> - **A Cline title the old `firstPromptOf` cut** (300 raw characters, no mark, cleaned after the cut)
+>   kept 39 of an npm token's 40, and `recleanChat` raised it: a title with no mark at the cap or past it
+>   now gets `redactCutTail` too. Codex's threads listing cut its raw `first_user_message` inside a word
+>   the same way; both now take `rawFirstPromptOf` (back to a space; one word past the cap is
+>   `[redacted]`). Not caught: a title an earlier redaction SHORTENED below the cap.
+> - **The Telegram rule missed its Bot API URL** (`/bot<id>:<token>/`), the commonest form.
+> - **An invisible character inside a key** (zero-width space, soft hyphen, word joiner, BOM; the
+>   joiners, direction marks and variation selectors only between two ASCII characters, so emoji and
+>   Persian keep theirs) made two words of it: `dropInvisible` (shared/chatIndex.ts) runs in `cleanText`
+>   before the patterns and in `chatText`/`clip` before the belt.
+> - **A key split right after its prefix by a line break** sent its whole body as the "second half", and
+>   verify:hub-relay asserted the halves were sent. `split-key` takes a known prefix, up to 24 more
+>   key-like characters, a break or space and a key-like run; the suite now requires neither half.
+> - **Rule set 5** (`REDACTION_VERSION`): PGP private key blocks (an unterminated one to the end),
+>   `sshpass -p`, `redis-cli -a`, `docker login -p`, the mongo tools' `-p`, `mysql --password=`,
+>   `openssl pass:`, `vault login`, `--passphrase`, keyed `pass`/`DB_PASS`/`passphrase`,
+>   `SECRET_KEY_BASE`/`secret_access_key`, Groq, Google's `GOCSPX-`/`ya29.`, Vault `hvs.`, Slack
+>   `xapp-`/`xoxe`, Discord webhooks, Azure SAS `sig=`, Laravel `APP_KEY`, `Authorization: Bot`, a
+>   cookie header's session values, `.pgpass` lines, PHP `print_r`. Measured per rule against set 4 on a
+>   read-only copy of this Mac's index (8,887 texts), src/ (299), node_modules markdown (704) and, new
+>   this round, node_modules code (9,251): the index gained 5 takes, all real (a Groq key, four SAS
+>   signatures in file URLs) and lost none; src/ 3, parse.ts's own comments; node_modules 7 doc
+>   passphrases (`'passphrase1'`, `'top secret'`), and lost set 4's `USERNAME_PASSWORD: 0x02`. The first
+>   cut took 17 more the shipped rules leave (prose "integration pass: a/b", `STENCIL_PASS_DEPTH_PASS:
+>   0x0B96`, `SECRET_VALUE = "secretValue"`, `passphrase: <string>}`, `'client_key_passphrase'`, a
+>   regex's `pass:|…`). Every other new rule matched nothing in any of the four, so its false-positive
+>   rate is unmeasured beyond zero hits. The slowest of 45 64 KB worst cases cleans in about 13 ms.
+>
+> Still open: a key split further in than 24 characters, or inside its prefix, leaves as two halves
+> (neither a key to any pattern), and `split-key` knows only the listed prefixes.

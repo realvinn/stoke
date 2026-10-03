@@ -1317,9 +1317,13 @@ src/main/         Electron main process
                       connection string's to its `&`/`;`); no rule backtracks (the suite
                       times 64 KB worst cases).
                       `REDACTION_VERSION` names the rule set a stored chat was cleaned with
-                      (4). A re-clean makes a token-shaped last word a size cap cut
-                      `[redacted]` (`redactMarkedCut`, `redactCutTail`), and `firstPromptOf`
-                      cuts back to a space (gotcha 156)
+                      (5). Invisible characters inside a word go before any pattern judges
+                      (`dropInvisible`, shared with the relay's shaping); a key split after
+                      its prefix by a line break goes whole (`split-key`). A re-clean makes a
+                      token-shaped last word a size cap cut `[redacted]` (`redactMarkedCut`,
+                      `redactCutTail`; a title at the first prompt's cap too), and
+                      `firstPromptOf` cuts back to a space (`rawFirstPromptOf` for raw text,
+                      Cline's title and Codex's listing) (gotcha 156)
     scan.ts           one pass: list everything, fold Cline's copies into originals their tool
                       still has, admit the newest per source then in all (a file holding no
                       chat takes no slot; nothing at or below the store ceiling's remembered

@@ -60,6 +60,16 @@ In `src/main/chatIndex/` (parse/scan/store/sources, whatever holds `cleanText` a
   holding a template, a `YOUR…` placeholder or a credential's own name is left. A re-clean redacts a
   token-shaped last word a size cap cut. Shaping for the wire turns a control into a space (never deletes
   it), and `sharedChats`' second belt judges the shaped text, the bytes that leave (gotcha 156).
+- **Rule set 5** (`REDACTION_VERSION` 5, review of 166e84f): an invisible character inside a word (zero-width
+  space, soft hyphen, word joiner, BOM; joiners and direction marks only between ASCII characters) is dropped
+  before any pattern judges, in `cleanText` and in the wire's shaping; a key split after its prefix by a line
+  break or space is taken whole (`split-key`); Telegram's Bot API URL, PGP private key blocks, the password
+  flags of `sshpass`/`redis-cli`/`docker login`/`openssl`/the mongo tools/`mysql --password=`, `vault login`,
+  `--passphrase`, keyed `pass`/`DB_PASS`/`passphrase`, `SECRET_KEY_BASE`/`secret_access_key`, Groq, Google
+  `GOCSPX-`/`ya29.`, Vault `hvs.`, Slack `xapp-`/`xoxe`, Discord webhooks, Azure SAS `sig=`, Laravel
+  `APP_KEY`, `Authorization: Bot`, a cookie header's session values, `.pgpass` lines and PHP `print_r` join
+  the list. A re-clean also redacts the cut word of a title at the first prompt's cap, and a raw first
+  prompt (Cline's title, Codex's listing) is cut back to a space before it is cleaned.
 
 ### 2. The password check (hub + client)
 
