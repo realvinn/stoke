@@ -360,32 +360,29 @@ function relayRemote(): RemoteServer {
 }
 
 /**
- * THE SEAM: the chat index as another of the owner's computers reaches it,
- * through a chats relay the host has judged (hub/remote.ts) and the relay
- * instance's two routes (hub/chatShare.ts, which redacts every string again,
- * names folders by their last segment and keeps hidden folders' chats here).
- * Every field is read per call (gotcha 111).
+ * The chat index as another of the owner's computers reaches it, through a
+ * chats relay the host has judged (hub/remote.ts) and the relay instance's two
+ * routes (hub/chatShare.ts, which redacts every string again, names folders by
+ * their last segment and keeps hidden folders' chats here). Every field is
+ * read per call (gotcha 111).
  *
- * TODO(integrate): point `search` and `open` at the chat index's forced-
- * redaction API (spec §1, built in parallel in src/main/chatIndex/): hits and
- * chats from CLEANED text whatever `chatIndexOptions.redact` says, including
- * rows stored while it was off and `open`'s fallback to the store's copy.
- * Then `storedRedacted` can answer `true` (chatShare.ts refuses every search
- * while it is false, because a search over raw text answers yes or no for any
- * prefix of a secret, however the snippets are redacted).
+ * Search and open go through the index's CLEANED reads (spec 2026-10-03 §1),
+ * never `search`/`open`: whatever `chatIndexOptions.redact` says, a search
+ * covers only rows cleaned by today's rules (a prefix search over raw text
+ * would confirm a secret one character at a time, however the snippets were
+ * redacted), and an open re-reads the tool's file with redaction forced, or
+ * serves the index's copy only if that was cleaned. verify:remote holds this
+ * wiring by its text.
  */
 function chatIndexForGuests(): ChatIndexAccess {
   return {
     indexOn: () => getSettings().chatIndex === 'on',
-    storedRedacted: () => getSettings().chatIndexOptions.redact,
     hidden: (cwd) => {
       const rules = pathRulesFor(process.platform)
       return getSettings().hiddenProjects.some((p) => isInside(p, cwd, rules))
     },
-    search: (q, limit) => chatHost().search(q, limit),
-    find: (source, nativeId) => chatHost().find(source, nativeId),
-    // Redaction forced on for the re-read from the tool's own copy, whatever the setting says.
-    open: (chatId) => chatHost().open(chatId, chatEnv(), true, getSettings().chatIndexOptions.caps.fileMb),
+    search: (q, limit) => chatHost().searchCleaned(q, limit),
+    open: (source, nativeId) => chatHost().openCleaned(source, nativeId, chatEnv(), getSettings().chatIndexOptions.caps.fileMb),
     redact: redactSecrets
   }
 }

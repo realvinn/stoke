@@ -1277,24 +1277,36 @@ try {
   ok('nor any item path (the hub sees opaque ids)', !bytes.includes(Buffer.from('providers.anthropicApiKey')) && !bytes.includes(Buffer.from('t4/ssh-key')))
 
   /* ------------------------------------------ the chats tick (spec 2026-10-03 §2, §3) */
-  // Only the computer being searched turns it on, with the hub password confirmed THERE
-  // (`noteChatConsent`, which `verifyPassword` calls once integrated); off is instant.
+  // Only the computer being searched turns it on, with the hub password confirmed THERE: the one
+  // way to the consent is `verifyPassword` answering ok (`noteChatConsent` is private). Off is instant.
   {
     const aId = A.svc.view().device.id
     const dId = D.svc.view().device.id
+    const WRONG = `still not the hub password ${Math.random().toString(36).slice(2)}`
+    secretsSeen.push(WRONG)
+    // Off spends any consent the checks above left (each `ok` there gave one).
+    await A.svc.setShareChats(false)
     A.set({ chatIndex: 'on' } as Partial<Settings>)
     const noConsent = await A.svc.setShareChats(true, [dId])
     check('the chats tick does not go on without the password confirmed on this computer', [noConsent.ok, !noConsent.ok && /password/.test(noConsent.message), A.settings().hub.shareChats], [false, true, false])
+    await A.svc.verifyPassword(WRONG)
+    check('a wrong password confirms nothing', [(await A.svc.setShareChats(true, [dId])).ok, A.settings().hub.shareChats], [false, false])
+    A.intercept = (url) => (v1(url) === '/v1/auth/verify' ? json({ error: 'throttled', message: 'Too many tries.', retryAfterMs: 60_000 }, 429) : null)
+    await A.svc.verifyPassword(PASSWORD)
+    A.intercept = (url) => (v1(url) === '/v1/auth/verify' ? new Response('<html>Just a moment…</html>', { status: 200, headers: { 'content-type': 'text/html' } }) : null)
+    await A.svc.verifyPassword(PASSWORD)
+    A.intercept = null
+    check('nor does a throttled check, or a 200 that is not the hub’s yes', [(await A.svc.setShareChats(true, [dId])).ok, A.settings().hub.shareChats], [false, false])
     A.set({ chatIndex: 'off' } as Partial<Settings>)
-    A.svc.noteChatConsent()
+    check('the right password confirms it', (await A.svc.verifyPassword(PASSWORD)).kind, 'ok')
     const indexOff = await A.svc.setShareChats(true, [dId])
-    check('nor while chat history is off', [indexOff.ok, !indexOff.ok && /Chat history/.test(indexOff.message), A.settings().hub.shareChats], [false, true, false])
+    check('but not while chat history is off', [indexOff.ok, !indexOff.ok && /Chat history/.test(indexOff.message), A.settings().hub.shareChats], [false, true, false])
     A.set({ chatIndex: 'on' } as Partial<Settings>)
     const on = await A.svc.setShareChats(true, [dId, aId, 'd0000000000000000', 7])
     check('confirmed, with chat history on: on, and only ticked OTHER devices of the chain get Always', [on.ok, A.settings().hub.shareChats, A.settings().hub.chatGrants], [true, true, { [dId]: 'always' }])
     check('the confirmation is spent: another turn-on asks for the password again', (await A.svc.setShareChats(true, [dId])).ok, false)
     check('off is instant, needs nothing, and takes every chats grant with it', [(await A.svc.setShareChats(false)).ok, A.settings().hub.shareChats, A.settings().hub.chatGrants], [true, false, {}])
-    A.svc.noteChatConsent()
+    await A.svc.verifyPassword(PASSWORD)
     await A.svc.setShareChats(true, [dId])
     check('Remove takes one device’s chats Always', [(await A.svc.revokeChatGrant(dId)).ok, A.settings().hub.chatGrants, A.settings().hub.shareChats], [true, {}, true])
     await A.svc.setShareChats(false)

@@ -998,7 +998,10 @@ export class HubService {
     this.verifying = true
     try {
       const res = await this.req('POST', '/v1/auth/verify', { password })
-      return res.ok === true ? { kind: 'ok' } : { kind: 'unreachable', message: 'The hub answered, but not with a yes or a no. Check that the address is your hub.' }
+      if (res.ok !== true) return { kind: 'unreachable', message: 'The hub answered, but not with a yes or a no. Check that the address is your hub.' }
+      // The one consent the chats tick takes (spec 2026-10-03 §2): typed HERE, and the hub said yes.
+      this.noteChatConsent()
+      return { kind: 'ok' }
     } catch (err) {
       if (err instanceof HubRequestError) return verifyResultFor(err.code, err.retryAfterMs, err.message)
       if (err instanceof Stop) return { kind: 'not-signed-in' }
@@ -2852,11 +2855,10 @@ export class HubService {
   /**
    * The hub said the password typed HERE is right: the chats tick may go on
    * within `CHAT_CONSENT_MS`, once (spec 2026-10-03 §2: only the computer
-   * being searched consents, on its own screen).
-   * TODO(integrate): call this from `verifyPassword`'s `ok` branch (built in
-   * parallel); until then `setShareChats(true, …)` is always refused.
+   * being searched consents, on its own screen). Called from `verifyPassword`'s
+   * `ok` and nowhere else; private, so no IPC can mint it.
    */
-  noteChatConsent(): void {
+  private noteChatConsent(): void {
     this.chatConsentAt = this.now()
   }
 

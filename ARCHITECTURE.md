@@ -400,8 +400,10 @@ session — and its scope is exactly `GET /api/chats/search` and `GET /api/chats
 relay instance of the phone server answers (`serveChats`, `chatsRouteFor`). Every request re-checks
 the tick, chat history, the guest by its pinned key and the grant; the tick off ends every chats
 relay and drops every chats grant, and `chainChanged` drops a removed device's. What leaves is
-`hub/chatShare.ts`'s: redacted again with the index's own patterns, a folder by its last segment,
-nothing from a hidden folder, and nothing at all while the store keeps unredacted text.
+`hub/chatShare.ts`'s, over the index's CLEANED reads whatever the local redaction setting says
+(`searchCleaned` finds only rows cleaned by today's rules, `openCleaned` re-reads with redaction
+forced): redacted again with the index's own patterns, a folder by its last segment, nothing from a
+hidden folder.
 
 ## Remote access
 
@@ -1447,9 +1449,10 @@ src/main/         Electron main process
                     import. verify:hub-relay
   hub/chatShare.ts  what another computer may read of this one's chat history: the relay
                     instance's two routes (`answerChatsRoute`) over `sharedChats`, which redacts
-                    every string again, names a folder by its last segment, keeps hidden folders'
-                    chats here and refuses an unredacted store. The chat index reaches it through
-                    `chatIndexForGuests` in index.ts. No electron import. verify:hub-relay
+                    every string again, names a folder by its last segment and keeps hidden
+                    folders' chats here. The chat index reaches it through `chatIndexForGuests`
+                    in index.ts, which hands it `searchCleaned`/`openCleaned` only (verify:remote
+                    holds that by text). No electron import. verify:hub-relay
   accounts.ts       an agent account's folder, `~/.stoke/accounts/<cli>-<slug>` (not userData:
                     dev and packaged differ, and the `stoke` command reads it with no app),
                     realpath'd once — Claude's Keychain item is named after that exact string

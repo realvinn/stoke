@@ -5,10 +5,15 @@
  * `chatsRouteFor` says `relay`), and what they read (`sharedChats`).
  *
  * The rules this file keeps, whatever the chat index's own settings say:
- * - everything that leaves is redacted: the index's own secret patterns
- *   (`redact`, chatIndex/parse.ts `redactSecrets`) run again over every title,
- *   snippet and message, and a snippet whose text that changes gets its
- *   highlight ranges recomputed on the redacted text;
+ * - everything that leaves was cleaned AT THE SOURCE: the index searches only
+ *   chats stored cleaned by today's rules and re-reads an opened chat with
+ *   redaction forced (`ChatIndexHost.searchCleaned`/`openCleaned`, spec §1),
+ *   whatever the local redaction setting says. A search over raw stored text
+ *   would answer yes or no for any prefix of a secret however its snippets
+ *   were redacted afterwards, so that is the guarantee; the index's secret
+ *   patterns (`redact`, chatIndex/parse.ts `redactSecrets`) then run again
+ *   over every title, snippet and message as a second belt, and a snippet
+ *   whose text that changes gets its highlight ranges recomputed;
  * - a folder leaves by its last segment only (`folderName`), never a path;
  * - a chat in a folder the owner hid (`hiddenProjects`) is neither found nor
  *   opened: the same 404 as a chat that does not exist, so the route is no
@@ -21,7 +26,7 @@
  * No electron import, so `verify:hub-relay` runs it against a real
  * `redactSecrets`. Imports only src/shared by relative `.ts` path (gotcha 78).
  */
-import { CHAT_SEARCH_MIN_CHARS, highlightRanges, type ChatSearchHit, type ChatTranscript } from '../../shared/chatIndex.ts'
+import { CHAT_SEARCH_MIN_CHARS, highlightRanges, isChatOrigin, type ChatOrigin, type ChatSearchHit, type ChatTranscript } from '../../shared/chatIndex.ts'
 import { CHAT_HITS_MAX, CHAT_QUERY_MAX, isChatNativeId, isChatSource } from '../../shared/hub/relay.ts'
 import { remoteChatFrom, remoteChatHitFrom, type RemoteChat, type RemoteChatHit } from '../../shared/hub/remote.ts'
 
@@ -40,35 +45,25 @@ export interface SharedChats {
 export interface ChatIndexAccess {
   /** `settings.chatIndex === 'on'`. */
   indexOn(): boolean
-  /**
-   * The index's own "Leave out anything that looks like an API key"
-   * (`chatIndexOptions.redact`). While it is off the store holds text as it
-   * was typed, and a search over it answers yes or no for any prefix of a
-   * secret even when every snippet is redacted on the way out — so nothing is
-   * searched from another computer until the store serves cleaned text.
-   * TODO(integrate): drop this guard once `search`/`open` below ask the
-   * store for cleaned rows whatever this setting says (spec §1's forced
-   * redaction, built in parallel in src/main/chatIndex/).
-   */
-  storedRedacted(): boolean
   /** A chat whose folder the owner hid (`hiddenProjects`, `isInside`): it never leaves. */
   hidden(cwd: string): boolean
-  /** The index's search, best hit per chat (`ChatIndexHost.search`). */
+  /**
+   * The index's search over CLEANED rows only, best hit per chat
+   * (`ChatIndexHost.searchCleaned`): a chat stored while redaction was off is
+   * not found until a pass with it on has cleaned it, never served raw.
+   */
   search(q: string, limit: number): Promise<ChatSearchHit[]>
-  /** A chat's index id by its tool and the tool's own id (`ChatIndexHost.find`), or null. */
-  find(source: string, nativeId: string): Promise<number | null>
-  /** One chat as the viewer reads it, redaction forced on (`ChatIndexHost.open`). */
-  open(chatId: number): Promise<ChatTranscript | null>
+  /**
+   * One chat by its tool and the tool's own id, re-read with redaction forced
+   * on, or the index's copy only if that was cleaned by today's rules
+   * (`ChatIndexHost.openCleaned`); null for anything else.
+   */
+  open(source: ChatOrigin, nativeId: string): Promise<ChatTranscript | null>
   /** The index's own secret patterns (chatIndex/parse.ts `redactSecrets`). */
   redact(text: string): string
 }
 
 const OFF: ChatsRefusal = { ok: false, status: 503, error: 'Chat history is off on that computer.' }
-const UNREDACTED: ChatsRefusal = {
-  ok: false,
-  status: 503,
-  error: 'That computer keeps its chat history with keys left in, so it isn’t searched from other computers. Tick “Leave out anything that looks like an API key” in its Settings › Chat history.'
-}
 const MISSING: ChatsRefusal = { ok: false, status: 404, error: 'That chat isn’t on that computer any more.' }
 
 /** The guarded, redacted reader the relay instance serves (`RemoteServer.serveChats`). */
@@ -76,7 +71,6 @@ export function sharedChats(a: ChatIndexAccess): SharedChats {
   return {
     async search(q, limit) {
       if (!a.indexOn()) return OFF
-      if (!a.storedRedacted()) return UNREDACTED
       const query = q.slice(0, CHAT_QUERY_MAX)
       if (query.trim().length < CHAT_SEARCH_MIN_CHARS) return { ok: true, hits: [] }
       const found = await a.search(query, Math.max(1, Math.min(CHAT_HITS_MAX, Math.floor(limit))))
@@ -100,11 +94,8 @@ export function sharedChats(a: ChatIndexAccess): SharedChats {
     },
     async open(source, nativeId) {
       if (!a.indexOn()) return OFF
-      if (!a.storedRedacted()) return UNREDACTED
-      if (!isChatSource(source) || !isChatNativeId(nativeId)) return MISSING
-      const id = await a.find(source, nativeId)
-      if (id === null) return MISSING
-      const t = await a.open(id)
+      if (!isChatSource(source) || !isChatOrigin(source) || !isChatNativeId(nativeId)) return MISSING
+      const t = await a.open(source, nativeId)
       if (!a.indexOn()) return OFF
       if (!t || (t.cwd && a.hidden(t.cwd))) return MISSING
       const redacted: ChatTranscript = {

@@ -568,7 +568,6 @@ interface Machine {
   /** Its chat index: what `ChatIndexHost` would answer, behind the real `sharedChats`. */
   chats: FakeChat[]
   hidden: string[]
-  storedRedacted: boolean
 }
 /** One chat in a fake index: its search hit's fields and its transcript. */
 interface FakeChat {
@@ -586,7 +585,6 @@ const vkShared = randomU8(32)
 function chatAccess(m: Machine): ChatIndexAccess {
   return {
     indexOn: () => m.indexOn,
-    storedRedacted: () => m.storedRedacted,
     hidden: (cwd) => m.hidden.some((h) => cwd === h || cwd.startsWith(`${h}/`)),
     search: async (q, limit) =>
       m.chats
@@ -607,11 +605,10 @@ function chatAccess(m: Machine): ChatIndexAccess {
             snippet: { text: c.text, ranges: [[at, at + q.length]] }
           }
         }),
-    find: async (source, nativeId) => m.chats.find((c) => c.source === source && c.nativeId === nativeId)?.chatId ?? null,
-    open: async (chatId) => {
-      const c = m.chats.find((x) => x.chatId === chatId)
+    open: async (source, nativeId) => {
+      const c = m.chats.find((x) => x.source === source && x.nativeId === nativeId)
       return c
-        ? { chatId, source: c.source as ChatTranscript['source'], title: c.title, cwd: c.cwd, createdMs: 1, updatedMs: 2, messages: [{ role: 'user', text: c.text, atMs: 1 }, { role: 'assistant', text: `re: ${c.text}`, atMs: 2 }], from: 'source', fallback: null, partial: false }
+        ? { chatId: c.chatId, source: c.source as ChatTranscript['source'], title: c.title, cwd: c.cwd, createdMs: 1, updatedMs: 2, messages: [{ role: 'user', text: c.text, atMs: 1 }, { role: 'assistant', text: `re: ${c.text}`, atMs: 2 }], from: 'source', fallback: null, partial: false }
         : null
     },
     redact: redactSecrets
@@ -619,7 +616,7 @@ function chatAccess(m: Machine): ChatIndexAccess {
 }
 
 function machine(d: Dev, opts: { keepAlive?: { pingMs: number; pongWaitMs: number }; olderHost?: boolean; chatsTiming?: { idleMs?: number; waitMs?: number; retryMs?: number; requestMs?: number } } = {}): Machine {
-  const m = { dev: d, active: [...ACTIVE], out: false, sharing: false, grants: {}, views: [], frames: [], ptyInput: [], sockets: [], requests: [], sessions: [], resizes: [], status: {}, statusAsked: [], shareChats: false, chatGrants: {}, indexOn: true, chats: [], hidden: [], storedRedacted: true } as unknown as Machine
+  const m = { dev: d, active: [...ACTIVE], out: false, sharing: false, grants: {}, views: [], frames: [], ptyInput: [], sockets: [], requests: [], sessions: [], resizes: [], status: {}, statusAsked: [], shareChats: false, chatGrants: {}, indexOn: true, chats: [], hidden: [] } as unknown as Machine
   const chatShare = sharedChats(chatAccess(m))
   const ctx = (): RemoteContext | null => m.out ? null : ({
     account: ACCOUNT,
@@ -1461,7 +1458,7 @@ console.log('\nchat history: the host’s rules, the scope, and what may leave')
 console.log('\nchat history: what the relay instance reads is redacted, named by folder, and kept from hidden folders')
 {
   const KEY = 'sk-ant-api03-chatcanary0123456789abcdef'
-  const m = { indexOn: true, storedRedacted: true, hidden: ['/Users/v/hidden'], chats: [
+  const m = { indexOn: true, hidden: ['/Users/v/hidden'], chats: [
     { chatId: 1, source: 'claude', nativeId: 'c-1', title: `About ${KEY}`, cwd: '/Users/v/dev/stoke', text: `use the key ${KEY} for the relay` },
     { chatId: 2, source: 'codex', nativeId: 'c-2', title: 'Hidden one', cwd: '/Users/v/hidden/proj', text: 'the relay in a hidden folder' }
   ] } as unknown as Machine
@@ -1474,13 +1471,18 @@ console.log('\nchat history: what the relay instance reads is redacted, named by
   check('the highlight is marked afresh on the redacted text', h0.ranges.map(([a, b]) => h0.snippet.slice(a, b)), ['relay'])
   const opened = await answerChatsRoute(share, 'open', new URLSearchParams({ source: 'claude', id: 'c-1' }))
   ok('an open answers the chat, every message redacted, the folder by name, no path', opened.status === 200 && !JSON.stringify(opened.body).includes('chatcanary') && !JSON.stringify(opened.body).includes('/Users') && (opened.body as { folder: string }).folder === 'stoke', JSON.stringify(opened.body).slice(0, 300))
+  {
+    const asked: string[] = []
+    const base = chatAccess(m)
+    const watched = sharedChats({ ...base, open: async (source, nativeId) => (asked.push(source), base.open(source, nativeId)) })
+    const status = (await answerChatsRoute(watched, 'open', new URLSearchParams({ source: 'claude-x', id: 'c-1' }))).status
+    check('a source no chat index knows is a missing chat, never handed to the index', [status, asked], [404, []])
+  }
   check('a hidden folder’s chat answers exactly as a missing one: 404, no existence probe', [(await answerChatsRoute(share, 'open', new URLSearchParams({ source: 'codex', id: 'c-2' }))).status, (await answerChatsRoute(share, 'open', new URLSearchParams({ source: 'claude', id: 'nope' }))).status], [404, 404])
   check('bad queries are 400 at the handler too', [(await answerChatsRoute(share, 'search', new URLSearchParams({ q: 'x'.repeat(201) }))).status, (await answerChatsRoute(share, 'search', new URLSearchParams({ q: 'relay', limit: '0' }))).status, (await answerChatsRoute(share, 'open', new URLSearchParams({ source: 'claude' }))).status], [400, 400, 400])
   m.indexOn = false
   check('chat history off: nothing is read, 503', [(await answerChatsRoute(share, 'search', new URLSearchParams({ q: 'relay' }))).status, (await answerChatsRoute(share, 'open', new URLSearchParams({ source: 'claude', id: 'c-1' }))).status], [503, 503])
   m.indexOn = true
-  m.storedRedacted = false
-  check('a store kept with keys in (its own setting off) is not searched from another computer: a prefix search would be an oracle', (await answerChatsRoute(share, 'search', new URLSearchParams({ q: 'chatcan' }))).status, 503)
   check('the phone’s instance serves no chats route; only the relay’s does', [chatsRouteFor('phone', 'GET', '/api/chats/search'), chatsRouteFor('relay', 'GET', '/api/chats/search'), chatsRouteFor('relay', 'POST', '/api/chats/search')], ['none', 'search', 'none'])
 }
 
