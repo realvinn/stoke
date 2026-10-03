@@ -14,7 +14,11 @@
  *   patterns (`redact`, chatIndex/parse.ts `redactSecrets`) then run again
  *   over every title, snippet, message, folder name and id as a second belt,
  *   and a snippet whose text that changes gets its highlight ranges
- *   recomputed. A chat whose id the patterns would change is not sent at all:
+ *   recomputed. The belt runs AFTER the text is cut to shape
+ *   (`remoteChatHitFrom`, `remoteChatFrom`), over the bytes that are sent:
+ *   shaping once DELETED control characters after the patterns had run, so a
+ *   key the index stored split by a bare `\r` left joined and whole
+ *   (re-review of 62b4ae6). A chat whose id the patterns would change is not sent at all:
  *   it could not be opened by the id it would leave under;
  * - nothing answers while chat history is off, nor while its "Leave out
  *   anything that looks like an API key" is: chats stored then are raw, the
@@ -107,17 +111,12 @@ export function sharedChats(a: ChatIndexAccess): SharedChats {
         .filter((h) => (!h.cwd || !a.hidden(h.cwd)) && a.redact(h.nativeId) === h.nativeId)
         .slice(0, want)
         .map((h) => {
-          const text = a.redact(h.snippet.text)
-          // The ranges point into the text as stored: once redaction moves it, mark the redacted text afresh.
-          const ranges = text === h.snippet.text ? h.snippet.ranges : highlightRanges(text, query)
-          return named(
-            remoteChatHitFrom({
-              ...h,
-              title: h.title === null ? null : a.redact(h.title),
-              firstPrompt: h.firstPrompt === null ? null : a.redact(h.firstPrompt),
-              snippet: { text, ranges }
-            })
-          )
+          // Shaped first, judged after: the patterns see exactly the bytes that leave.
+          const shaped = remoteChatHitFrom(h, query)
+          const snippet = a.redact(shaped.snippet)
+          // The ranges point into the shaped text: once redaction moves it, mark the redacted text afresh.
+          const ranges = snippet === shaped.snippet ? shaped.ranges : highlightRanges(snippet, query)
+          return named({ ...shaped, title: shaped.title === null ? null : a.redact(shaped.title), snippet, ranges })
         })
       return { ok: true, hits }
     },
@@ -129,12 +128,14 @@ export function sharedChats(a: ChatIndexAccess): SharedChats {
       const after = shut()
       if (after) return after
       if (!t || (t.cwd && a.hidden(t.cwd))) return MISSING
-      const redacted: ChatTranscript = {
-        ...t,
-        title: t.title === null ? null : a.redact(t.title),
-        messages: t.messages.map((m) => ({ ...m, text: a.redact(m.text) }))
+      // Shaped first (controls, the size cut), judged after: the patterns see exactly the bytes that leave.
+      const shaped = remoteChatFrom(t, nativeId)
+      const chat: RemoteChat = {
+        ...shaped,
+        title: shaped.title === null ? null : a.redact(shaped.title),
+        messages: shaped.messages.map((m) => ({ ...m, text: a.redact(m.text) }))
       }
-      return { ok: true, chat: named(remoteChatFrom(redacted, nativeId)) }
+      return { ok: true, chat: named(chat) }
     }
   }
 }

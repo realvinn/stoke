@@ -32,7 +32,7 @@
  * Pure (gotcha 27); imports only src/shared by relative `.ts` path (gotcha 78).
  */
 import type { UsageWindow } from '../types.ts'
-import type { ChatSearchHit, ChatTranscript } from '../chatIndex.ts'
+import { highlightRanges, type ChatSearchHit, type ChatTranscript } from '../chatIndex.ts'
 import { isId, isRecord } from './codec.ts'
 import {
   CHAT_HITS_MAX,
@@ -889,22 +889,49 @@ function cleanRanges(v: unknown, len: number): [number, number][] {
   return out
 }
 
-/** Chat text: every control character but tab and newline goes (it is drawn as text on another machine). */
-function chatText(v: unknown, max: number): string {
+/**
+ * Chat text as it is drawn on another machine: every control character but
+ * tab and newline becomes a SPACE, never nothing, and the whole is cut to
+ * `max`. One for one, so an offset into the text still points where it did.
+ *
+ * Never deleted (re-review of 62b4ae6): the index keeps a bare `\r`, so a
+ * stored `sk-ant-api03-\r<40 characters>` is two words to every secret
+ * pattern — and deleting the `\r` here, after the host's patterns had run,
+ * joined it into a whole key on the guest's screen. A space keeps the two
+ * halves apart, and the host judges the text only after this has shaped it
+ * (`sharedChats`), so what the patterns saw is what is sent.
+ */
+export function chatText(v: unknown, max: number): string {
   if (typeof v !== 'string') return ''
   // eslint-disable-next-line no-control-regex
-  const t = v.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, '')
+  const t = v.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, ' ')
   return t.length > max ? t.slice(0, max) : t
+}
+
+/**
+ * A snippet shaped by `chatText`, and where the query is marked in it: the
+ * ranges it came with while shaping left the text as it was, else marked
+ * afresh against the query (when there is one to mark), so a highlight never
+ * points into text that moved under it.
+ */
+function shapedSnippet(text: unknown, ranges: unknown, query: string | undefined): { snippet: string; ranges: [number, number][] } {
+  const snippet = chatText(text, SNIPPET_MAX)
+  if (snippet !== text && query !== undefined) return { snippet, ranges: cleanRanges(highlightRanges(snippet, query), snippet.length) }
+  return { snippet, ranges: cleanRanges(ranges, snippet.length) }
 }
 
 /**
  * The host's side: one of its own search hits as it may leave this machine.
  * The folder becomes its name; the chat-index id and the path stay here, and
- * the first prompt only stands in for a missing title. The text must already
- * be redacted (`sharedChats`, main): this only cuts it to shape.
+ * the first prompt only stands in for a missing title. This only cuts it to
+ * shape: the caller (`sharedChats`, main) runs its secret patterns over what
+ * this returns, the bytes that are sent.
  */
-export function remoteChatHitFrom(hit: Pick<ChatSearchHit, 'source' | 'nativeId' | 'title' | 'firstPrompt' | 'cwd' | 'updatedMs' | 'role' | 'snippet'>): RemoteChatHit {
-  const snippet = chatText(hit.snippet.text, SNIPPET_MAX)
+export function remoteChatHitFrom(
+  hit: Pick<ChatSearchHit, 'source' | 'nativeId' | 'title' | 'firstPrompt' | 'cwd' | 'updatedMs' | 'role' | 'snippet'>,
+  query?: string
+): RemoteChatHit {
+  const { snippet, ranges } = shapedSnippet(hit.snippet.text, hit.snippet.ranges, query)
   const title = clip(hit.title ?? hit.firstPrompt ?? '', 200)
   return {
     source: String(hit.source),
@@ -914,7 +941,7 @@ export function remoteChatHitFrom(hit: Pick<ChatSearchHit, 'source' | 'nativeId'
     updatedMs: stamp(hit.updatedMs),
     role: hit.role,
     snippet,
-    ranges: cleanRanges(hit.snippet.ranges, snippet.length)
+    ranges
   }
 }
 
@@ -922,14 +949,15 @@ export function remoteChatHitFrom(hit: Pick<ChatSearchHit, 'source' | 'nativeId'
  * The guest's side: a search answer another machine sent, as this machine
  * will draw it, or null for anything that is not one. At most
  * `CHAT_HITS_MAX` hits; a hit that does not parse is dropped, not trusted.
+ * `query` is what this machine asked, for marking a snippet its shaping moved.
  */
-export function parseRemoteChatHits(body: unknown): RemoteChatHit[] | null {
+export function parseRemoteChatHits(body: unknown, query?: string): RemoteChatHit[] | null {
   if (!isRecord(body) || !Array.isArray(body.hits)) return null
   const out: RemoteChatHit[] = []
   for (const h of body.hits.slice(0, CHAT_HITS_MAX)) {
     if (!isRecord(h) || !isChatSource(h.source) || !isChatNativeId(h.nativeId)) continue
     if (h.role !== 'user' && h.role !== 'assistant' && h.role !== 'title') continue
-    const snippet = chatText(h.snippet, SNIPPET_MAX)
+    const { snippet, ranges } = shapedSnippet(h.snippet, h.ranges, query)
     const title = typeof h.title === 'string' ? clip(h.title, 200) : ''
     out.push({
       source: h.source,
@@ -939,7 +967,7 @@ export function parseRemoteChatHits(body: unknown): RemoteChatHit[] | null {
       updatedMs: stamp(h.updatedMs),
       role: h.role,
       snippet,
-      ranges: cleanRanges(h.ranges, snippet.length)
+      ranges
     })
   }
   return out
@@ -986,9 +1014,10 @@ function fitMessages(ms: readonly RemoteChatMessage[], cap: number): { messages:
 }
 
 /**
- * The host's side: a chat its viewer read (`openChat`, already redacted by
- * `sharedChats`) as it may leave this machine: the folder by name, no
- * chat-index id, no path, at most `REMOTE_CHAT_MAX_BYTES` of text.
+ * The host's side: a chat its viewer read (`openCleaned`) as it may leave this
+ * machine: the folder by name, no chat-index id, no path, at most
+ * `REMOTE_CHAT_MAX_BYTES` of text. Shape only: `sharedChats` (main) runs its
+ * secret patterns over what this returns, the bytes that are sent.
  */
 export function remoteChatFrom(
   t: Pick<ChatTranscript, 'source' | 'title' | 'cwd' | 'createdMs' | 'updatedMs' | 'messages' | 'partial' | 'fallback'>,
