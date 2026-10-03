@@ -7,7 +7,9 @@
  * and text rules a pass uses (`readJsonl` + `lineFolder`, `readOpencode`,
  * `readZed`, `readCline`), so what the viewer shows and what search matched
  * follow one rule — a subagent's transcript read as its own thread
- * (`foldClaudeLine`'s `subagentFile`), redaction as the setting says.
+ * (`foldClaudeLine`'s `subagentFile`), redaction as the setting says, or
+ * always with `redact: 'force'` (what leaves this computer, spec 2026-10-03
+ * §1).
  *
  * The path is the one the store remembered, and it is only read if it is
  * still inside that tool's own named root (`isInside`) — the store is 0600,
@@ -21,10 +23,11 @@ import {
   CHAT_VIEW_MAX_BYTES,
   chatSourceInfo,
   isChatImportKind,
+  type ChatOrigin,
   type ChatTranscript,
   type ChatTranscriptMessage
 } from '../../shared/chatIndex.ts'
-import { planTrim } from './parse.ts'
+import { planTrim, REDACTION_VERSION, redactSecrets } from './parse.ts'
 import {
   claudeRoots,
   clineRoot,
@@ -44,7 +47,15 @@ import {
 import type { ChatStore, StoredChat } from './store.ts'
 
 export interface ViewOptions {
-  redact: boolean
+  /**
+   * `true`/`false` is the local setting. `'force'` is for another computer:
+   * the original is re-read with redaction on, and the index's copy is shown
+   * only if it was cleaned with the rules in force now — never cleaned on the
+   * way out from a copy stored while redaction was off (a message cut at the
+   * text cap may have lost the END of a key with it). Not cleaned means null:
+   * nothing, rather than something less clean than the search that found it.
+   */
+  redact: boolean | 'force'
   /** Bytes read from one file, as the pass reads it (`fileMb`): past it, a head and a tail. */
   fileBytes: number
   /** A suite shrinks it. */
@@ -60,7 +71,7 @@ function bounded(messages: ChatTranscriptMessage[], maxBytes: number): { message
 type Read = { ok: true; ex: Extracted } | { ok: false; why: string }
 
 /** Re-read a local chat from where the store says it came from, if that is still inside its tool's root. */
-function readSource(c: StoredChat, env: SourceEnv, opts: ViewOptions): Read {
+function readSource(c: StoredChat, env: SourceEnv, opts: ViewOptions & { redact: boolean }): Read {
   const label = chatSourceInfo(c.source as never).label
   if (!c.locator) return { ok: false, why: `${label} no longer lists this chat, so this is the index’s copy.` }
   const rules = pathRulesFor(env.platform)
@@ -107,23 +118,36 @@ function readSource(c: StoredChat, env: SourceEnv, opts: ViewOptions): Read {
 export function openChat(store: ChatStore, chatId: number, env: SourceEnv, opts: ViewOptions): ChatTranscript | null {
   const c = store.chat(chatId)
   if (!c) return null
+  const force = opts.redact === 'force'
+  const redact = opts.redact === true || force
+  // Forced: the index's copy is shown only if it was cleaned with today's rules.
+  const storeServable = !force || c.redactLevel >= REDACTION_VERSION
   const maxBytes = opts.maxBytes ?? CHAT_VIEW_MAX_BYTES
   const stored = (): ChatTranscriptMessage[] =>
     store
       .messages(chatId)
       .filter((m) => m.role === 'user' || m.role === 'assistant')
       .map((m) => ({ role: m.role as 'user' | 'assistant', text: m.text, atMs: m.atMs }))
-  const base = { chatId, source: c.source, title: c.title, cwd: c.cwd, createdMs: c.createdMs, updatedMs: c.updatedMs }
+  const title = force && c.title !== null ? redactSecrets(c.title) : c.title
+  const base = { chatId, source: c.source, title, cwd: c.cwd, createdMs: c.createdMs, updatedMs: c.updatedMs }
   if (isChatImportKind(c.source)) {
+    if (!storeServable) return null
     const b = bounded(stored(), maxBytes)
     return { ...base, messages: b.messages, from: 'store', fallback: null, partial: b.cut || c.truncated }
   }
-  const read = readSource(c, env, opts)
+  const read = readSource(c, env, { ...opts, redact })
   if (read.ok && read.ex.fold.messages.length > 0) {
     const b = bounded(read.ex.fold.messages, maxBytes)
     return { ...base, messages: b.messages, from: 'source', fallback: null, partial: b.cut || read.ex.truncated }
   }
+  if (!storeServable) return null
   const why = read.ok ? `${chatSourceInfo(c.source as never).label}’s copy of this chat has no text in it now, so this is the index’s copy.` : read.why
   const b = bounded(stored(), maxBytes)
   return { ...base, messages: b.messages, from: 'store', fallback: why, partial: b.cut || c.truncated }
+}
+
+/** One chat by its tool's own id, for another computer (`/api/chats/open?source=&id=`): always `redact: 'force'`. */
+export function openChatCleaned(store: ChatStore, source: ChatOrigin, nativeId: string, env: SourceEnv, opts: Omit<ViewOptions, 'redact'>): ChatTranscript | null {
+  const chatId = store.chatId(source, nativeId)
+  return chatId === null ? null : openChat(store, chatId, env, { ...opts, redact: 'force' })
 }

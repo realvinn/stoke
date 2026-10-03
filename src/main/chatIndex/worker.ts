@@ -17,7 +17,7 @@ import { ChatStore, STORE_FILE } from './store.ts'
 import { runPass, STORE_MAX_TEXT_BYTES } from './scan.ts'
 import { detectSource, discovery } from './sources.ts'
 import { importExport } from './importer.ts'
-import { openChat } from './viewer.ts'
+import { openChat, openChatCleaned } from './viewer.ts'
 import type { WorkerData, WorkerEvent, WorkerReply, WorkerRequest } from './protocol.ts'
 
 const port = parentPort
@@ -118,7 +118,7 @@ port.on('message', async (msg: WorkerRequest) => {
       }
       case 'search': {
         const s = openStore(false)
-        reply(msg.id, s ? s.search(msg.query, msg.limit) : [])
+        reply(msg.id, s ? s.search(msg.query, msg.limit, { redact: msg.redact }) : [])
         return
       }
       case 'status':
@@ -167,6 +167,11 @@ port.on('message', async (msg: WorkerRequest) => {
       case 'open': {
         const s = openStore(false)
         reply(msg.id, s ? openChat(s, msg.chatId, msg.env, { redact: msg.redact, fileBytes: Math.max(64, Math.floor(msg.fileMb * 1024 * 1024)) }) : null)
+        return
+      }
+      case 'openCleaned': {
+        const s = openStore(false)
+        reply(msg.id, s ? openChatCleaned(s, msg.source, msg.nativeId, msg.env, { fileBytes: Math.max(64, Math.floor(msg.fileMb * 1024 * 1024)) }) : null)
         return
       }
       case 'removeImport': {

@@ -42,7 +42,7 @@ import {
   type ChatPassSummary,
   type ChatSourceId
 } from '../../shared/chatIndex.ts'
-import { planTrim, type ChatMeta } from './parse.ts'
+import { cleanText, firstPromptOf, planTrim, type ChatMeta } from './parse.ts'
 import type { ChatStore, SourceStateRow } from './store.ts'
 import {
   discovery,
@@ -93,14 +93,53 @@ function keyOf(source: string, nativeId: string): string {
   return `${source}:${nativeId}`
 }
 
-/** The listing's fields win where it has them (Codex's thread name, a Cowork title); the read's fill the rest. */
-function mergeMeta(read: ChatMeta, listed: Partial<ChatMeta>): ChatMeta {
+/**
+ * The listing's fields win where it has them (Codex's thread name, a Cowork
+ * title); the read's fill the rest.
+ *
+ * A title and a first prompt from a tool's OWN listing are text like any
+ * message — Codex's `first_user_message` is the user's first words verbatim,
+ * and a Cline title is often its prompt — so they go through `cleanText` as
+ * the read's do (`foldClaudeLine`'s ai-title, `push`'s first prompt). They did
+ * not: a key pasted into a Codex chat's first message was redacted in the
+ * message and stored whole as the chat's first prompt, which search hands
+ * back on every hit.
+ */
+export function mergeMeta(read: ChatMeta, listed: Partial<ChatMeta>, redact: boolean): ChatMeta {
   const out = { ...read }
   for (const k of Object.keys(listed) as (keyof ChatMeta)[]) {
     const v = listed[k]
     if (v !== null && v !== undefined) (out[k] as unknown) = v
   }
+  if (listed.title) out.title = cleanText(listed.title, { redact, maxBytes: 1024 }) || read.title
+  if (listed.firstPrompt) out.firstPrompt = firstPromptOf(cleanText(listed.firstPrompt, { redact })) || read.firstPrompt
   return out
+}
+
+/**
+ * Clean every chat the store holds that was not cleaned with the rules in
+ * force now (`ChatStore.staleChatIds`), one chat per transaction, giving the
+ * thread back between two (a search is answered there) and stopping where a
+ * cancel or the pass's deadline says — the next pass carries on from the
+ * oldest left. Returns how many it cleaned.
+ */
+export async function recleanStale(
+  store: ChatStore,
+  hooks: Pick<PassHooks, 'now' | 'yieldTurn' | 'cancelled'> & { deadline?: number }
+): Promise<number> {
+  let done = 0
+  // A chat named twice was not raised by its clean: stop rather than spin on it for the rest of the pass.
+  const tried = new Set<number>()
+  for (;;) {
+    const ids = store.staleChatIds(50).filter((id) => !tried.has(id))
+    if (ids.length === 0) return done
+    for (const id of ids) {
+      tried.add(id)
+      if (hooks.cancelled() || (hooks.deadline !== undefined && hooks.now() >= hooks.deadline)) return done
+      if (store.recleanChat(id)) done++
+      await hooks.yieldTurn()
+    }
+  }
 }
 
 interface SourcePlan {
@@ -150,6 +189,16 @@ export async function runPass(store: ChatStore, plan: PassPlan, hooks: PassHooks
     })
   }
   const cutMs = store.storeCutMs() ?? -Infinity
+
+  /*
+   * 0b. Redaction on: every chat stored without it — while it was off, or by
+   * an older rule set — is cleaned again first, in place, before this pass
+   * reads anything (`recleanStale`). Without this a chat whose file had not
+   * changed since redaction was turned back on kept its keys in the index for
+   * as long as the file stayed unchanged: a pass only re-reads what changed.
+   */
+  let recleaned = 0
+  if (redact) recleaned = await recleanStale(store, { ...hooks, deadline })
 
   /* 1. List. A source switched off leaves the store entirely. */
   const listed: { id: ChatSourceId; listing: Listing }[] = []
@@ -298,7 +347,7 @@ export async function runPass(store: ChatStore, plan: PassPlan, hooks: PassHooks
             })
             continue
           }
-          const meta = mergeMeta(ex.fold.meta, c.meta)
+          const meta = mergeMeta(ex.fold.meta, c.meta, redact)
           const whole = ex.mode === 'replace'
           const known = store.chatId(p.id, c.nativeId)
           if (ex.fold.messages.length === 0 && !meta.title && (whole || known === null)) {
@@ -324,7 +373,7 @@ export async function runPass(store: ChatStore, plan: PassPlan, hooks: PassHooks
           const drop = new Set(planTrim(ex.fold.messages.map((m) => Buffer.byteLength(m.text, 'utf8')), chatBytes))
           const messages = drop.size ? ex.fold.messages.filter((_, k) => !drop.has(k)) : ex.fold.messages
           store.tx(() => {
-            const chatId = store.upsertChat(p.id, c.nativeId, meta, { subagent: c.subagent || ex.fold.subagent, dedupeKey: c.dedupeKey, whole })
+            const chatId = store.upsertChat(p.id, c.nativeId, meta, { subagent: c.subagent || ex.fold.subagent, dedupeKey: c.dedupeKey, whole, redact })
             if (whole) store.clearMessages(chatId)
             store.appendMessages(chatId, messages)
             store.trimChat(chatId, chatBytes)
@@ -370,7 +419,7 @@ export async function runPass(store: ChatStore, plan: PassPlan, hooks: PassHooks
   const evicted = store.evictToText(maxTextBytes)
   for (const s of evicted.sources) store.setCappedBy(s, 'store')
   if (evicted.newestMs !== null) store.setStoreCutMs(Math.max(evicted.newestMs, cutMs))
-  store.tidy(chatsUpdated > 50)
+  store.tidy(chatsUpdated + recleaned > 50)
   const summary: ChatPassSummary = {
     startedMs: started,
     ms: hooks.now() - started,

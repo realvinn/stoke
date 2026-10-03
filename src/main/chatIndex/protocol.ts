@@ -2,7 +2,16 @@
  * The chat-index worker's wire: what main asks, what the worker answers, and
  * what it pushes unasked. Types only, so both ends import it at no cost.
  */
-import type { ChatDetection, ChatImportResult, ChatIndexOptions, ChatIndexStatus, ChatPassSummary, ChatSearchHit, ChatTranscript } from '../../shared/chatIndex.ts'
+import type {
+  ChatDetection,
+  ChatImportResult,
+  ChatIndexOptions,
+  ChatIndexStatus,
+  ChatOrigin,
+  ChatPassSummary,
+  ChatSearchHit,
+  ChatTranscript
+} from '../../shared/chatIndex.ts'
 import type { PassPlan } from './scan.ts'
 import type { SourceEnv } from './sources.ts'
 
@@ -14,7 +23,8 @@ export interface WorkerData {
 export type WorkerRequest =
   | { id: number; op: 'detect'; env: SourceEnv; subagents: boolean }
   | { id: number; op: 'scan'; plan: PassPlan }
-  | { id: number; op: 'search'; query: string; limit: number }
+  /** `redact: 'force'`: only chats cleaned with the rules in force now, whatever the setting (store.ts `search`). */
+  | { id: number; op: 'search'; query: string; limit: number; redact?: 'force' }
   | { id: number; op: 'status' }
   | { id: number; op: 'cancel' }
   | { id: number; op: 'delete' }
@@ -22,7 +32,9 @@ export type WorkerRequest =
   /** An account export the user handed over, read and written into the store (importer.ts). */
   | { id: number; op: 'import'; path: string; options: ChatIndexOptions }
   /** One chat for the viewer: a local one re-read from its source, an import from the store (viewer.ts). */
-  | { id: number; op: 'open'; chatId: number; env: SourceEnv; redact: boolean; fileMb: number }
+  | { id: number; op: 'open'; chatId: number; env: SourceEnv; redact: boolean | 'force'; fileMb: number }
+  /** One chat by its tool's own id, always cleaned (viewer.ts `openChatCleaned`): what another computer opens. */
+  | { id: number; op: 'openCleaned'; source: ChatOrigin; nativeId: string; env: SourceEnv; fileMb: number }
   | { id: number; op: 'removeImport'; importId: number }
   /** Every local chat and read position gone, imports kept; the next pass reads the tools again. */
   | { id: number; op: 'rebuild' }
@@ -39,6 +51,7 @@ export interface WorkerResults {
   close: null
   import: ChatImportResult
   open: ChatTranscript | null
+  openCleaned: ChatTranscript | null
   removeImport: null
   rebuild: null
 }

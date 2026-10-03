@@ -59,7 +59,7 @@ import { agentLaunchPlan, DEFAULT_ENDPOINT } from '../src/shared/agents.ts'
 import { isSafeResumeId, resumableClis, type CodingCliId } from '../src/shared/codingClis.ts'
 import { cleanText, cutBytes, planTrim } from '../src/main/chatIndex/parse.ts'
 import { ChatStore } from '../src/main/chatIndex/store.ts'
-import { runPass, type PassHooks } from '../src/main/chatIndex/scan.ts'
+import { mergeMeta, recleanStale, runPass, type PassHooks } from '../src/main/chatIndex/scan.ts'
 import {
   claudeRoots,
   codexHome,
@@ -78,7 +78,7 @@ import { hydrateSettings } from '../src/main/settingsSchema.ts'
 import { closeZip, openZip, readZipEntry, ZipError, type ZipLimits } from '../src/main/chatIndex/zip.ts'
 import { forEachArrayObject, foldChatgptConversation, foldClaudeAiConversation } from '../src/main/chatIndex/exports.ts'
 import { importExport, type ImportHooks } from '../src/main/chatIndex/importer.ts'
-import { openChat } from '../src/main/chatIndex/viewer.ts'
+import { openChat, openChatCleaned } from '../src/main/chatIndex/viewer.ts'
 import { crc32, deflateRawSync } from 'node:zlib'
 
 let failures = 0
@@ -140,6 +140,104 @@ section('text: what is kept')
   check('a byte cut never splits a character', cutBytes('日本語', 4), '日')
   check('planTrim keeps the head and the tail, drops the middle', planTrim([10, 10, 10, 10, 10, 10, 10, 10], 40), [3, 4, 5, 6])
   check('planTrim leaves what fits alone', planTrim([10, 10], 40), [])
+}
+
+/*
+ * Every fake credential below is BUILT when the suite runs, never written out
+ * whole: this file is pushed, and a secret scanner (or GitHub's push
+ * protection, which blocks a push carrying a Stripe live key's shape) cannot
+ * tell a fixture from a leak.
+ */
+const fake = (prefix: string, n: number, alphabet = 'Ab3Cd5Ef7Gh9Jk2Mn4Pq6Rs8Tu'): string => prefix + Array.from({ length: n }, (_, i) => alphabet[(i * 7) % alphabet.length]).join('')
+const b64url = (o: unknown): string => Buffer.from(JSON.stringify(o)).toString('base64url')
+const FAKE_JWT = `${b64url({ alg: 'HS256', typ: 'JWT' })}.${b64url({ sub: '1234567890', name: 'Fixture Person', iat: 1516239022 })}.${fake('', 43)}`
+/** The signature's opening: one FTS token (letters and digits only), so a prefix search finds it while it is stored. */
+const JWT_TAIL = FAKE_JWT.split('.')[2].slice(0, 16)
+
+section('redaction: each rule takes its own shape, and leaves code and placeholders alone')
+{
+  const red = (s: string): string => cleanText(s, { redact: true })
+  const takes = (what: string, text: string, want: string): void => check(`takes ${what}`, red(text), want)
+  const leaves = (what: string, text: string): void => check(`leaves ${what}`, red(text), text)
+
+  // credential-url: the scheme and host stay searchable.
+  takes('a credential URL’s user and password', `DATABASE_URL=postgres://admin:${fake('', 12)}@db.internal:5432/app`, 'DATABASE_URL=postgres://[redacted]@db.internal:5432/app')
+  takes('a token in a clone URL', `git clone https://x-access-token:${fake('', 30)}@github.com/o/r.git`, 'git clone https://[redacted]@github.com/o/r.git')
+  leaves('a user with no password', 'ssh://git@github.com/o/r.git')
+  leaves('an @ after a port and a path', 'http://localhost:3000/a@b and https://example.com:443/users/@me')
+
+  // password: the name stays, a literal value goes.
+  takes('password=', 'export password=Tr0ub4dor3x', 'export password=[redacted]')
+  takes('a JSON password with a space in it', '{"user": "lena", "password": "c0rrect horse"}', '{"user": "lena", "password": "[redacted]"}')
+  takes('a shell assignment of a plain word', 'docker run -e POSTGRES_PASSWORD=postgres pg', 'docker run -e POSTGRES_PASSWORD=[redacted] pg')
+  takes('a name glued on in capitals', 'PGPASSWORD=s3cretpw psql -h db', 'PGPASSWORD=[redacted] psql -h db')
+  takes('a dotted property name', 'spring.datasource.password=abc123xyz', 'spring.datasource.password=[redacted]')
+  takes('pwd=', 'mysql pwd=Zq9x!long', 'mysql pwd=[redacted]')
+  takes('passwd:', 'passwd: Kq7#vv21', 'passwd: [redacted]')
+  takes('a camel-case name, single quotes', "dbPassword: 'hunter22'", "dbPassword: '[redacted]'")
+  takes('=> and :=', `'password' => 'p4ssw0rd' and password := "g0pher!x"`, `'password' => '[redacted]' and password := "[redacted]"`)
+  for (const code of [
+    'password: string',
+    'password=password',
+    'password: process.env.DB_PASSWORD',
+    'password: z.string().min(8)',
+    'password = getpass()',
+    'chromeKey(password: string): Buffer',
+    'PWD=/Users/me/dev',
+    'OLDPWD=/Users/me',
+    'env: { PWD: cwd, HOME: home }',
+    'DB_PASSWORD: str',
+    'DB_PASSWORD=None',
+    'password: ""',
+    'password: "${DB_PASSWORD}"',
+    'password: "*****"',
+    'password_hash: "$2b$10$abcdefghijklmnopqrstuv"',
+    'PW=${STOKE_SSH_PASSWORD:?set it}',
+    "mode === 'up' ? 'new-password' : 'current-password'",
+    'print("Password: " + pw + "!")',
+    '1446:%s@%s\'s password:\\n1449:Enter'
+  ]) {
+    leaves(`code, a placeholder or a path: ${code}`, code)
+  }
+
+  // api-key
+  takes('api_key=', 'api_key=9f8e7d6c5b4a3210', 'api_key=[redacted]')
+  takes('a JSON apiKey', '{"apiKey": "k9-abcdefgh-1234"}', '{"apiKey": "[redacted]"}')
+  takes('an X-API-Key header', 'curl -H X-API-Key: 0123abcd4567efgh https://x', 'curl -H X-API-Key: [redacted] https://x')
+  takes('an env name ending in API_KEY', 'OPENAI_API_KEY=abc12345xyz9', 'OPENAI_API_KEY=[redacted]')
+  takes('a key a shaped rule took first, once', 'api_key=sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUV', 'api_key=[redacted]')
+  for (const code of ['apiKey: string', 'api_key=None', 'apiKey: process.env.OPENAI_API_KEY', 'PEXELS_API_KEY=...', 'apiKey: "your-api-key"', 'api_key: str | None = None', 'openrouterApiKey: OPENROUTER_KEY_2', "apiKey: '$${CUSTOM_API_KEY}'"]) {
+    leaves(`code or a placeholder: ${code}`, code)
+  }
+
+  // jwt
+  takes('a JWT', `Authorization: Bearer ${FAKE_JWT}`, 'Authorization: Bearer [redacted]')
+  leaves('a JWT header alone', `the header ${b64url({ alg: 'none' })} decodes to that`)
+
+  // stripe: secret and restricted keys; the publishable one is public by design.
+  takes('a Stripe live secret key', `key ${fake('sk_' + 'live_', 24)} here`, 'key [redacted] here')
+  takes('a Stripe restricted key', `key ${fake('rk_' + 'live_', 24)} here`, 'key [redacted] here')
+  takes('a Stripe test key', `key ${fake('sk_' + 'test_', 24)} here`, 'key [redacted] here')
+  leaves('a publishable key, and a docs placeholder', `${fake('pk_' + 'live_', 24)} and sk_test_xxx`)
+
+  // notion
+  takes('a Notion secret_ token', `NOTION_TOKEN ${fake('secret_', 43)}`, 'NOTION_TOKEN [redacted]')
+  takes('a Notion ntn_ token', `token ${fake('ntn_', 46)}`, 'token [redacted]')
+  leaves('an identifier that starts secret_', 'secret_key_base and ntn_short')
+
+  // clickup: pk_<user id>_<32 upper-case letters and digits>
+  takes('a ClickUp token', `CLICKUP ${fake('pk_81234567_', 32, 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789')}`, 'CLICKUP [redacted]')
+  leaves('pk_ with no user id', 'pk_123_abc and pk_test')
+
+  // cloudflare: the scannable prefixes
+  for (const p of ['cfut_', 'cfat_', 'cfk_', 'cfast_']) takes(`a Cloudflare ${p} credential`, `CF ${fake(p, 48)}`, 'CF [redacted]')
+  leaves('a Cloudflare API path', '/accounts/abc/cfd_tunnel/123/configurations')
+
+  // private-key-cut: a key whose END was cut off (the message cap, a first prompt) or never pasted.
+  const body = [fake('', 64), fake('', 64, 'Zy8Xw6Vu4Ts2Rq0Po9Nm7Lk5'), fake('', 40)]
+  takes('a private key cut before its END line', `here:\n-----BEGIN OPENSSH PRIVATE KEY-----\n${body.join('\n')}`, 'here:\n[redacted]')
+  takes('...and squeezed onto one line, as a first prompt is', `here -----BEGIN RSA PRIVATE KEY----- ${body.join(' ')} …`, 'here [redacted] …')
+  leaves('the marker in a sentence', 'the file starts with -----BEGIN OPENSSH PRIVATE KEY----- and then the body')
 }
 
 section('opening a hit')
@@ -804,9 +902,9 @@ try {
     // One conversation that says a word hundreds of times must not crowd out the others.
     const crowd = ChatStore.open(join(root, 'crowd-index'))
     const meta = { title: null, firstPrompt: null, cwd: '/w', gitBranch: null, model: null, createdMs: T0, updatedMs: T0 }
-    const loud = crowd.upsertChat('claude', 'loud', meta, { subagent: false, dedupeKey: null, whole: true })
+    const loud = crowd.upsertChat('claude', 'loud', meta, { subagent: false, dedupeKey: null, whole: true, redact: true })
     crowd.appendMessages(loud, Array.from({ length: 600 }, (_, k) => ({ role: 'assistant' as const, text: `crowdword crowdword again ${k}`, atMs: T0 })))
-    const quiet = crowd.upsertChat('codex', 'quiet', meta, { subagent: false, dedupeKey: null, whole: true })
+    const quiet = crowd.upsertChat('codex', 'quiet', meta, { subagent: false, dedupeKey: null, whole: true, redact: true })
     crowd.appendMessages(quiet, [{ role: 'user', text: 'one crowdword here', atMs: T0 }])
     check('one hit per chat, and a loud chat cannot crowd a quiet one out', crowd.search('crowdword').map((h) => h.nativeId).sort(), ['loud', 'quiet'])
     crowd.close()
@@ -1352,6 +1450,191 @@ try {
     vs.close()
   }
 
+  section('a tool’s own listing: its title and first prompt are cleaned like any message')
+  {
+    const read = { title: 'From the read', firstPrompt: 'read prompt', cwd: '/w', gitBranch: null, model: null, createdMs: T0, updatedMs: T0 }
+    const listed = { title: `Deploy with ${FAKE_JWT} \u0002now\u0003\u0000`, firstPrompt: 'my   DB_PASSWORD=hunter22 and\n\nmore' }
+    const on = mergeMeta(read, listed, true)
+    check('redaction on: the listing’s title and first prompt are redacted and stripped of controls', [on.title, on.firstPrompt], ['Deploy with [redacted] now', 'my DB_PASSWORD=[redacted] and more'])
+    const off = mergeMeta(read, listed, false)
+    check('redaction off: kept, but still no controls or snippet marks', [off.title?.includes(FAKE_JWT), /[\u0000\u0002\u0003]/.test(off.title ?? ''), off.firstPrompt], [true, false, 'my DB_PASSWORD=hunter22 and more'])
+    check('nothing listed: the read’s own fields stand', mergeMeta(read, {}, true), read)
+
+    // Through a pass: Codex's threads table hands the first message over verbatim as `first_user_message`.
+    const lHome = join(root, 'listing-home')
+    const lEnv: SourceEnv = { home: lHome, env: {}, platform: process.platform }
+    const lId = '019f456c-bbbb-7e83-927d-f3b8ad5ac6cf'
+    const lRollout = join(lHome, '.codex', 'sessions', '2026', '09', '28', `rollout-2026-09-28T16-02-23-${lId}.jsonl`)
+    write(
+      lRollout,
+      jl([
+        { timestamp: iso(codexT), type: 'session_meta', payload: { id: lId, cwd: '/tmp/listing', timestamp: iso(codexT), source: 'vscode' } },
+        { timestamp: iso(codexT + 1), type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'listingword question' }] } },
+        { timestamp: iso(codexT + 2), type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'listingword answer' }] } }
+      ]),
+      codexT + 10_000
+    )
+    const ldb = new DatabaseSync(join(lHome, '.codex', 'state_5.sqlite'))
+    ldb.exec(`CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+      source TEXT NOT NULL, cwd TEXT NOT NULL, title TEXT NOT NULL, archived INTEGER NOT NULL DEFAULT 0, git_branch TEXT,
+      first_user_message TEXT NOT NULL DEFAULT '', model TEXT, created_at_ms INTEGER, updated_at_ms INTEGER, name TEXT)`)
+    ldb
+      .prepare('INSERT INTO threads VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+      .run(lId, lRollout, codexT / 1000, codexT / 1000, 'vscode', '/tmp/listing', 't', 0, null, `use api_key=9f8e7d6c5b4a3210 please`, null, codexT, codexT + 10_000, `Thread ${FAKE_JWT}`)
+    ldb.close()
+    const ls = ChatStore.open(join(root, 'listing-index'))
+    await runPass(ls, { env: lEnv, options: options({ sources: { claude: false, opencode: false, 'claude-cowork': false, zed: false, cline: false } }) }, hooks())
+    const lh = ls.search('listingword')[0]
+    check('a pass stores the listing’s title and first prompt cleaned', [lh?.title, lh?.firstPrompt], ['Thread [redacted]', 'use api_key=[redacted] please'])
+    check('...and the title’s search row holds no part of the key', words(ls, JWT_TAIL), [])
+    ls.close()
+  }
+
+  section('redaction turned on cleans what was stored without it — before anything is served as cleaned')
+  {
+    const rHome = join(root, 'reclean-home')
+    const rEnv: SourceEnv = { home: rHome, env: {}, platform: process.platform }
+    const rDir = join(rHome, '.claude', 'projects', '-tmp-reclean')
+    const secretFile = join(rDir, `${uuid(701)}.jsonl`)
+    const plainFile = join(rDir, `${uuid(702)}.jsonl`)
+    write(
+      secretFile,
+      jl([
+        { type: 'user', message: { role: 'user', content: 'recleanword: run PGPASSWORD=s3cretpw psql and key sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUV' }, cwd: '/tmp/reclean', timestamp: iso(T0), sessionId: uuid(701) },
+        { type: 'assistant', timestamp: iso(T0 + 1000), message: { model: 'm', content: [{ type: 'text', text: `recleanword done, token ${FAKE_JWT}` }] } },
+        { type: 'ai-title', aiTitle: `Login with ${FAKE_JWT}` }
+      ]),
+      T0 + 1000
+    )
+    write(plainFile, claudeChat(702, '/tmp/reclean', 'recleanword bystander'), T0 + 2000)
+    const onlyClaude = { sources: { codex: false, opencode: false, 'claude-cowork': false, zed: false, cline: false } }
+    const rs = ChatStore.open(join(root, 'reclean-index'))
+    await runPass(rs, { env: rEnv, options: options({ ...onlyClaude, redact: false }) }, hooks())
+    const sid = rs.chatId('claude', uuid(701))!
+    const jwtTail = JWT_TAIL
+    check('redaction off: the text is stored as written, and searchable', [words(rs, 's3cretpw'), words(rs, jwtTail)], [[`claude:${uuid(701)}`], [`claude:${uuid(701)}`]])
+    check('...and every chat written so is counted as not cleaned', rs.staleCount(), 2)
+    check('a cleaned-only search leaves those chats out, whatever matches', [rs.search('recleanword', 50, { redact: 'force' }), rs.search('s3cretpw', 50, { redact: 'force' })], [[], []])
+    check('...while the local search, under the local setting, still has them', words(rs, 'recleanword').length, 2)
+
+    // Forced open of a chat stored raw: re-read from its file with redaction on, the stored title cleaned on the way out.
+    const view = { fileBytes: 256 * 1024 * 1024 }
+    const fo = openChat(rs, sid, rEnv, { ...view, redact: 'force' })!
+    const all = (t: { title: string | null; messages: { text: string }[] }): string => [t.title, ...t.messages.map((m) => m.text)].join('\n')
+    check('a forced open re-reads the original with redaction on, whatever the setting', [fo.from, /s3cretpw|ABCDEFGHIJKLMNOPQRSTUV/.test(all(fo)), all(fo).includes(jwtTail)], ['source', false, false])
+    check('...where the setting’s own open shows it as written', all(openChat(rs, sid, rEnv, { ...view, redact: false })!).includes('s3cretpw'), true)
+    check('...and by the tool’s own id', openChatCleaned(rs, 'claude', uuid(701), rEnv, view)?.messages.length, 2)
+    check('...an id the index does not hold is null', openChatCleaned(rs, 'claude', uuid(799), rEnv, view), null)
+    renameSync(secretFile, `${secretFile}.away`)
+    check('an original that is gone: the index’s RAW copy is never served as cleaned', openChat(rs, sid, rEnv, { ...view, redact: 'force' }), null)
+    check('...though the local open still falls back to it', openChat(rs, sid, rEnv, { ...view, redact: false })?.from, 'store')
+    renameSync(`${secretFile}.away`, secretFile)
+
+    // Redaction on, files unchanged: nothing is re-read, and the stored text is cleaned in place.
+    const pass = await runPass(rs, { env: rEnv, options: options(onlyClaude) }, hooks())
+    check('turning redaction on re-read no file (both are unchanged)', pass.filesRead, 0)
+    check('...yet the stored text is cleaned: the password, the key and the token are gone from search', [words(rs, 's3cretpw'), words(rs, 'ABCDEFGHIJKLMNOPQRSTUV'), words(rs, jwtTail)], [[], [], []])
+    const msgs = rs.messages(sid).map((m) => m.text)
+    check('...and from the text, with the names and the words around them kept', msgs, [
+      'recleanword: run PGPASSWORD=[redacted] psql and key [redacted]',
+      'recleanword done, token [redacted]'
+    ])
+    const hit = rs.search('recleanword', 50, { redact: 'force' }).find((h) => h.nativeId === uuid(701))
+    check('...its title and first prompt too, and a cleaned-only search now finds both chats', [hit?.title, hit?.firstPrompt?.includes('s3cretpw'), rs.search('recleanword', 50, { redact: 'force' }).length], [
+      'Login with [redacted]',
+      false,
+      2
+    ])
+    check('...and none is counted as not cleaned', rs.staleCount(), 0)
+    check('the bystander chat’s text is untouched', rs.messages(rs.chatId('claude', uuid(702))!).map((m) => m.text)[0], `hello chat702 about topic702 recleanword bystander`)
+    {
+      // A second connection: the FTS index agrees with the rows it indexes, and the byte counts with the text.
+      const peek = new DatabaseSync(rs.file)
+      let integrity = 'ok'
+      try {
+        peek.exec("INSERT INTO message_fts(message_fts, rank) VALUES ('integrity-check', 1)")
+      } catch (err) {
+        integrity = (err as Error).message
+      }
+      const bytes = peek.prepare('SELECT c.text_bytes AS t, (SELECT COALESCE(SUM(m.bytes), 0) FROM message m WHERE m.chat_id = c.id AND m.ord >= 0) AS s FROM chat c').all() as { t: number; s: number }[]
+      peek.close()
+      check('the search index was rewritten with the rows (FTS5 integrity-check against its content)', integrity, 'ok')
+      check('...and each chat’s byte count is its messages’ sum again', bytes.every((b) => Number(b.t) === Number(b.s)), true)
+    }
+    check('the index’s copy, cleaned now, is served to a forced open when the original is gone', (() => {
+      renameSync(secretFile, `${secretFile}.away`)
+      const t = openChat(rs, sid, rEnv, { ...view, redact: 'force' })
+      renameSync(`${secretFile}.away`, secretFile)
+      return [t?.from, t ? /s3cretpw|ABCDEFGHIJKLMNOPQRSTUV/.test(all(t)) : null]
+    })(), ['store', false])
+
+    // Off again, and the chat grows: it is not clean any more, and a cleaned-only search drops it until redaction is back.
+    appendFileSync(secretFile, jl([{ type: 'user', message: { role: 'user', content: 'recleanword later password=Later9pw!' }, cwd: '/tmp/reclean', timestamp: iso(T0 + 5000) }]))
+    utimesSync(secretFile, (T0 + 5000) / 1000, (T0 + 5000) / 1000)
+    await runPass(rs, { env: rEnv, options: options({ ...onlyClaude, redact: false }) }, hooks())
+    check('an append written with redaction off makes the chat not cleaned again', [rs.staleCount(), rs.search('recleanword', 50, { redact: 'force' }).map((h) => h.nativeId)], [1, [uuid(702)]])
+    await runPass(rs, { env: rEnv, options: options(onlyClaude) }, hooks())
+    check('...and the next pass with it on cleans the append too', [rs.staleCount(), words(rs, 'Later9pw')], [0, []])
+    rs.close()
+  }
+
+  section('a store cleaned by an older rule set is cleaned again before it is served as cleaned')
+  {
+    const oDir = join(root, 'v2-index')
+    const o = ChatStore.open(oDir)
+    const meta = { title: `Old title ${FAKE_JWT}`, firstPrompt: 'old prompt', cwd: '/w', gitBranch: null, model: null, createdMs: T0, updatedMs: T0 }
+    const oid = o.upsertChat('claude', 'old-v2', meta, { subagent: false, dedupeKey: null, whole: true, redact: true })
+    // Text as the eight-rule set stored it: a JWT and a credential URL were not secrets to it.
+    o.appendMessages(oid, [{ role: 'user', text: `oldword connect postgres://app:${fake('', 12)}@db:5432/x with ${FAKE_JWT}`, atMs: T0 }])
+    o.close()
+    // Back to schema 2 as it shipped: no level column, no update trigger.
+    const raw = new DatabaseSync(join(oDir, 'index.sqlite'))
+    raw.exec(`DROP INDEX chat_redact; ALTER TABLE chat DROP COLUMN redact_level; DROP TRIGGER message_au; UPDATE meta SET value = '2' WHERE key = 'schema'`)
+    raw.close()
+    const up = ChatStore.open(oDir)
+    check('opened, it gains the level at 0: every chat in it counts as not cleaned', [up.staleCount(), up.search('oldword', 50, { redact: 'force' })], [1, []])
+    const n = await recleanStale(up, hooks())
+    const t = up.messages(oid)[0]?.text
+    check('cleaned again in place under today’s rules', [n, t, up.staleCount()], [1, 'oldword connect postgres://[redacted]@db:5432/x with [redacted]', 0])
+    check('...title too, and now it is served as cleaned', up.search('oldword', 50, { redact: 'force' }).map((h) => h.title), ['Old title [redacted]'])
+    up.close()
+    // A chat its clean does not raise (it can only be a fault) is tried once, never spun on for the rest of the pass.
+    let asks = 0
+    const stuck = { staleChatIds: () => [7], recleanChat: () => true } as unknown as ChatStore
+    const spun = await recleanStale(stuck, { ...hooks(), cancelled: () => ++asks > 1000 })
+    check('a chat the clean does not raise is tried once, not spun on', spun, 1)
+  }
+
+  section('a chat’s cleaned level only goes down on a write, and what leaves is cleaned once more')
+  {
+    const lv = ChatStore.open(join(root, 'level-index'))
+    const meta = { title: null, firstPrompt: null, cwd: '/w', gitBranch: null, model: null, createdMs: T0, updatedMs: T0 }
+    const a = lv.upsertChat('claude', 'mixed', meta, { subagent: false, dedupeKey: null, whole: true, redact: false })
+    lv.appendMessages(a, [{ role: 'user', text: 'levelword raw password=Raw9pw!x', atMs: T0 }])
+    // A later append written with redaction on (a pass whose clean-up was stopped before it reached this chat).
+    lv.upsertChat('claude', 'mixed', meta, { subagent: false, dedupeKey: null, whole: false, redact: true })
+    lv.appendMessages(a, [{ role: 'assistant', text: 'levelword clean', atMs: T0 }])
+    check('an append cleaned on top of raw text leaves the chat not cleaned', [lv.staleCount(), lv.search('levelword', 50, { redact: 'force' })], [1, []])
+    // A title the store was handed dirty under a cleaned flag: the way out cleans it again.
+    lv.upsertChat('codex', 'handed', { ...meta, title: `Handed ${FAKE_JWT}`, firstPrompt: `first ${FAKE_JWT}` }, { subagent: false, dedupeKey: null, whole: true, redact: true })
+    lv.appendMessages(lv.chatId('codex', 'handed')!, [{ role: 'user', text: 'handedword', atMs: T0 }])
+    const out = lv.search('handedword', 50, { redact: 'force' })[0]
+    check('a cleaned-only search cleans the title and first prompt once more on the way out', [out?.title, out?.firstPrompt], ['Handed [redacted]', 'first [redacted]'])
+    lv.close()
+  }
+
+  section('an import: cleaned with the setting it ran under, and again when redaction comes on')
+  {
+    const iDir = join(root, 'import-reclean-index')
+    const is = ChatStore.open(iDir)
+    const r = await importExport(is, { path: claudeZip, options: options({ redact: false }), maxTextBytes: BIG_TEXT }, importHooks())
+    const cid = is.chatId('export-claude', 'ca-1')!
+    check('imported with redaction off: not cleaned, and never served as cleaned', [r.ok, is.staleCount() > 0, openChat(is, cid, env, { redact: 'force', fileBytes: 1 << 20 })], [true, true, null])
+    await recleanStale(is, hooks())
+    check('...cleaned in place, then served', [is.staleCount(), openChat(is, cid, env, { redact: 'force', fileBytes: 1 << 20 })?.from], [0, 'store'])
+    is.close()
+  }
+
   section('the worker: main asks, the worker reads, the main loop keeps turning')
   // A big transcript, so a pass is long enough to measure what it blocks.
   const heavy = join(projDir, `${uuid(900)}.jsonl`)
@@ -1405,6 +1688,21 @@ try {
   )
   check('a second scan while one runs is queued, not doubled', await Promise.all([host.scan({ env, options: options() }), host.scan({ env, options: options() })]).then((r) => r.filter((x) => x === null).length >= 1), true)
   check('search through the worker', (await host.search('wombat', 10)).map((h) => h.source), ['codex'])
+  check('a cleaned-only search through the worker (what another computer asks)', (await host.searchCleaned('wombat', 10)).map((h) => `${h.source}:${h.nativeId}`), [`codex:${codexId}`])
+  {
+    const opened = await host.openCleaned('codex', codexId, env, 256)
+    check('...and a cleaned open by the tool’s own id', [opened?.from, opened?.messages.map((m) => m.text)], ['source', ['codex question about quokka', 'codex answer wombat']])
+    check('...null for an id the index does not hold', await host.openCleaned('codex', 'no-such-thread', env, 256), null)
+    // A store indexed with redaction OFF, through a worker of its own: the cleaned paths must not see it.
+    const rawEnv: SourceEnv = { home: join(root, 'reclean-home'), env: {}, platform: process.platform }
+    const rawHost = new ChatIndexHost({ workerPath: fileURLToPath(new URL('../src/main/chatIndex/worker.ts', import.meta.url)), dir: join(userData, 'worker-raw'), onStatus: () => undefined })
+    const onlyClaude = { sources: { codex: false, opencode: false, 'claude-cowork': false, zed: false, cline: false } }
+    await rawHost.scan({ env: rawEnv, options: options({ ...onlyClaude, redact: false }) })
+    check('redaction off: the local search finds the raw chats, a cleaned-only one finds none', [(await rawHost.search('recleanword', 10)).length, (await rawHost.searchCleaned('recleanword', 10)).length], [2, 0])
+    const rawOpen = await rawHost.openCleaned('claude', uuid(701), rawEnv, 256)
+    check('...and a cleaned open re-reads the original with redaction on', [rawOpen?.from, rawOpen?.messages.some((m) => m.text.includes('s3cretpw'))], ['source', false])
+    await rawHost.stop()
+  }
   {
     // A second, reading connection beside the worker's (WAL allows it): the big chat's text is held to its cap.
     const peek = ChatStore.open(workerDir)
