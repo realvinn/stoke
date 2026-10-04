@@ -6,7 +6,11 @@ export default defineConfig({
   main: {
     plugins: [externalizeDepsPlugin()],
     resolve: {
-      alias: { '@shared': resolve(__dirname, 'src/shared') }
+      alias: {
+        '@shared': resolve(__dirname, 'src/shared'),
+        // Its package.json names a `module` file (lib/xterm.mjs) the package does not ship.
+        '@xterm/headless': resolve(__dirname, 'node_modules/@xterm/headless/lib-headless/xterm-headless.js')
+      }
     },
     build: {
       rollupOptions: { input: { index: resolve(__dirname, 'src/main/index.ts') } }

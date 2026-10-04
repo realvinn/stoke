@@ -49,6 +49,8 @@ import {
   submitFrames,
   trackBracketedPaste
 } from '../shared/remotePhone.ts'
+import { ReplayModes } from '../shared/replayModes.ts'
+import { ScreenMirror } from './screenMirror.ts'
 
 /**
  * How long after `submit()` writes the last chunk of text before it writes the
@@ -166,6 +168,10 @@ interface Session {
   /** Retained output so a client joining late can replay the session. */
   chunks: string[]
   length: number
+  /** The modes in force where `chunks` begins, read from what was dropped (`historyFor`'s fallback). */
+  head: ReplayModes
+  /** The screen as it is now, for a terminal attaching late (`historyFor`). */
+  mirror: ScreenMirror
   /**
    * Context window as stated by the CLI's own startup banner, once seen.
    *
@@ -774,6 +780,10 @@ export class PtyManager {
       installFile,
       chunks: [],
       length: 0,
+      head: new ReplayModes(),
+      mirror: new ScreenMirror(Math.max(20, opts.cols || 120), Math.max(5, opts.rows || 30), {
+        scrollOnEraseInDisplay: !!opts.remoteSession
+      }),
       bannerWindow: null,
       bannerScanned: 0,
       hostId: opts.host?.id ?? null,
@@ -807,13 +817,16 @@ export class PtyManager {
     }
 
     proc.onData((data) => {
+      session.mirror.write(data)
       session.chunks.push(data)
       session.length += data.length
       session.lastActivityAt = Date.now()
       session.bracketedPaste = trackBracketedPaste(data, session.bracketedPaste)
-      // Drop whole chunks so a replay never starts mid-escape-sequence.
+      // Drop whole chunks so a replay never starts mid-escape-sequence, noting the modes they set.
       while (session.length > MAX_HISTORY && session.chunks.length > 1) {
-        session.length -= (session.chunks.shift() as string).length
+        const gone = session.chunks.shift() as string
+        session.length -= gone.length
+        session.head.feed(gone)
       }
       /*
        * Read the context window off the banner, which the CLI prints in its
@@ -884,7 +897,10 @@ export class PtyManager {
       // (gotcha 73).
       releaseSessionFiles(session.statusKey, session.ptyId)
       // A private chat keeps no ended row: its scrollback goes with it.
-      if (session.private && this.sessions.get(ptyId) === session) this.sessions.delete(ptyId)
+      if (session.private && this.sessions.get(ptyId) === session) {
+        this.sessions.delete(ptyId)
+        session.mirror.dispose()
+      }
       this.onExit(ptyId, exitCode, signal, session.sessionId, session.login ? session.login.settled : null)
       for (const fn of this.exitSubscribers) fn(ptyId, exitCode)
     })
@@ -1008,6 +1024,7 @@ export class PtyManager {
       s.proc.resize(c, r)
       s.cols = c
       s.rows = r
+      s.mirror.resize(c, r)
     } catch {
       /* resizing a dead pty throws on Windows */
     }
@@ -1022,6 +1039,7 @@ export class PtyManager {
       /* already gone */
     }
     this.sessions.delete(ptyId)
+    s.mirror.dispose()
     /*
      * Quitting the app is the ordinary way a session ends, and it does not
      * give proc.onExit a reliable chance to run: killAll() calls this
@@ -1211,10 +1229,18 @@ export class PtyManager {
     return () => this.exitSubscribers.delete(fn)
   }
 
-  /** Everything this session has printed so far, for replay on attach. */
+  /**
+   * What a terminal attaching now is written to show this session: the screen
+   * as it is (`ScreenMirror`). Raw output was not enough once a session
+   * outgrew `MAX_HISTORY`: a full-screen Claude replay lost its alternate
+   * screen and mouse reporting, and everything drawn before the cut. Only a
+   * mirror that has failed falls back to the raw tail, led by the modes in
+   * force where it begins (`ReplayModes`).
+   */
   historyFor(ptyId: string): string {
     const s = this.sessions.get(ptyId)
-    return s ? s.chunks.join('') : ''
+    if (!s) return ''
+    return s.mirror.snapshot() ?? s.head.preamble() + s.chunks.join('')
   }
 
   /**
@@ -1260,6 +1286,7 @@ export class PtyManager {
     for (const [id, s] of this.sessions) {
       if (s.exited && isEndedExpired(s.endedAt, now)) {
         this.sessions.delete(id)
+        s.mirror.dispose()
       }
     }
   }

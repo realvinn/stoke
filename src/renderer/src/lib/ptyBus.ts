@@ -11,6 +11,7 @@
  * makes the terminal component safe to unmount and rebuild at will.
  */
 
+import { ReplayModes } from '@shared/replayModes'
 import { looksTyped } from './tabs'
 
 type Sink = (data: string) => void
@@ -21,6 +22,8 @@ const MAX_HISTORY = 1_000_000
 interface Entry {
   chunks: string[]
   length: number
+  /** The modes in force where `chunks` begins, read from what was dropped. */
+  head: ReplayModes
   sink: Sink | null
   exit: { code: number; signal?: number; loggedIn?: boolean | null } | null
   exitSink: ExitSink | null
@@ -38,7 +41,7 @@ let started = false
 function entry(ptyId: string): Entry {
   let e = entries.get(ptyId)
   if (!e) {
-    e = { chunks: [], length: 0, sink: null, exit: null, exitSink: null }
+    e = { chunks: [], length: 0, head: new ReplayModes(), sink: null, exit: null, exitSink: null }
     entries.set(ptyId, e)
   }
   return e
@@ -52,9 +55,11 @@ export function initPtyBus(): void {
     const e = entry(ptyId)
     e.chunks.push(data)
     e.length += data.length
-    // Drop whole chunks so we never slice through an escape sequence.
+    // Drop whole chunks so we never slice through an escape sequence, noting the modes they set.
     while (e.length > MAX_HISTORY && e.chunks.length > 1) {
-      e.length -= (e.chunks.shift() as string).length
+      const gone = e.chunks.shift() as string
+      e.length -= gone.length
+      e.head.feed(gone)
     }
     e.sink?.(data)
   })
@@ -68,10 +73,15 @@ export function initPtyBus(): void {
 
 /**
  * Attach a terminal to a process. Everything received so far is replayed
- * synchronously first, so the caller must pass a freshly-cleared terminal.
+ * synchronously first, so the caller must pass a freshly-cleared terminal. A
+ * session past `MAX_HISTORY` has lost the front of its output, so the replay
+ * starts by setting the modes that front had switched on (`ReplayModes`): a
+ * full-screen Claude session's alternate screen and mouse reporting.
  */
 export function attachSink(ptyId: string, sink: Sink): () => void {
   const e = entry(ptyId)
+  const modes = e.head.preamble()
+  if (modes) sink(modes)
   for (const chunk of e.chunks) sink(chunk)
   e.sink = sink
   return () => {

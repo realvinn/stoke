@@ -69,6 +69,10 @@ import {
   typingChunks,
   type PromptTrack
 } from '../src/shared/remotePhone.ts'
+import { ReplayModes } from '../src/shared/replayModes.ts'
+import { ScreenMirror } from '../src/main/screenMirror.ts'
+// Default import: @xterm/headless is CJS and exposes no named ESM exports.
+import headless from '@xterm/headless'
 import {
   folderDepth,
   isPlainFolderPath,
@@ -532,6 +536,130 @@ check('DECSET 2004 on is read from the stream', trackBracketedPaste('\u001b[?200
 check('and off turns it back off', trackBracketedPaste('\u001b[?2004l', true), false)
 check('the last one in a chunk wins', trackBracketedPaste('\u001b[?2004h text \u001b[?2004l', true), false)
 check('a chunk with neither leaves it alone', trackBracketedPaste('just output', true), true)
+
+{
+  console.log('\na replay that lost its front still starts in the modes it had (ReplayModes)')
+  const modesAfter = (...chunks: string[]): string => {
+    const m = new ReplayModes()
+    for (const c of chunks) m.feed(c)
+    return m.preamble()
+  }
+  check('nothing set: no preamble at all', modesAfter('plain output\r\n', '\u001b[2J\u001b[H'), '')
+  check(
+    "Claude's full-screen start: the alternate screen first, then its mouse protocol, encoding and flags",
+    modesAfter('\u001b[?2004h\u001b[?1004h\u001b[?1049h\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h\u001b[?25l'),
+    '\u001b[?1049;1003;1006;1004;2004h\u001b[?25l'
+  )
+  check('one protocol: the last one set wins', modesAfter('\u001b[?1003h\u001b[?1000h'), '\u001b[?1000h')
+  check('resetting any protocol turns tracking off, as xterm does', modesAfter('\u001b[?1003h\u001b[?1000l'), '')
+  check('several modes in one sequence', modesAfter('\u001b[?1049;1002;1006h'), '\u001b[?1049;1002;1006h')
+  check('leaving the alternate screen is remembered too', modesAfter('\u001b[?1049h', 'x', '\u001b[?1049l'), '')
+  check('RIS puts everything back', modesAfter('\u001b[?1049h\u001b[?1003h', '\u001bc'), '')
+  check('a sequence split across two chunks still counts', modesAfter('frame \u001b[?10', '49h more'), '\u001b[?1049h')
+  check('and one split right after the ESC', modesAfter('frame \u001b', '[?2004h'), '\u001b[?2004h')
+  check('an ordinary CSI is not mistaken for one', modesAfter('\u001b[38;5;1mred\u001b[0m\u001b[c\u001b[>0q'), '')
+
+  // Through a real terminal: a Claude-like stream cut the way pty.ts and ptyBus cut it.
+  const { Terminal } = headless
+  const replay = async (text: string): Promise<{ screen: string; mouse: string; paste: boolean; focus: boolean }> => {
+    const t = new Terminal({ cols: 40, rows: 6, allowProposedApi: true })
+    await new Promise<void>((r) => t.write(text, r))
+    const out = { screen: t.buffer.active.type, mouse: t.modes.mouseTrackingMode, paste: t.modes.bracketedPasteMode, focus: t.modes.sendFocusMode }
+    t.dispose()
+    return out
+  }
+  const start = '\u001b[?2004h\u001b[?1004h\u001b[?1049h\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h'
+  const frames = Array.from({ length: 40 }, (_, i) => `\u001b[H\u001b[2Kframe ${i}\u001b[6;1H\u001b[2K> prompt`)
+  const chunks = [start, ...frames]
+  const MAX = frames.slice(-10).join('').length
+  const kept = [...chunks]
+  let length = kept.join('').length
+  const head = new ReplayModes()
+  while (length > MAX && kept.length > 1) {
+    const gone = kept.shift() as string
+    length -= gone.length
+    head.feed(gone)
+  }
+  check('(the cut dropped the launch sequences, as a long session does)', kept[0].includes('\u001b[?1049h'), false)
+  const whole = await replay(chunks.join(''))
+  check('the whole stream ends on the alternate screen with any-event mouse', [whole.screen, whole.mouse, whole.paste, whole.focus], ['alternate', 'any', true, true])
+  check('the cut replay WITHOUT the preamble lands on the normal screen with no mouse (the bug)', [await replay(kept.join(''))].map((r) => [r.screen, r.mouse]), [['normal', 'none']])
+  check('the cut replay with it matches the whole stream', await replay(head.preamble() + kept.join('')), whole)
+
+  // The wire (gotcha 31): both replays feed what they drop and lead with the preamble.
+  const ptySrc = readFileSync(join(import.meta.dirname, '../src/main/pty.ts'), 'utf8')
+  const busSrc = readFileSync(join(import.meta.dirname, '../src/renderer/src/lib/ptyBus.ts'), 'utf8')
+  check('pty.ts notes the modes of every chunk it drops', ptySrc.includes('session.head.feed(gone)'), true)
+  check('ptyBus notes the modes of every chunk it drops', busSrc.includes('e.head.feed(gone)'), true)
+  check('and attachSink replays them first', /attachSink[\s\S]{0,200}e\.head\.preamble\(\)[\s\S]{0,80}if \(modes\) sink\(modes\)/.test(busSrc), true)
+}
+
+{
+  console.log('\na late attach gets the screen as it is now (ScreenMirror)')
+  const { Terminal } = headless
+  const COLS = 60
+  const ROWS = 8
+  /** A terminal fed `text` to the end: what a viewer replaying it shows. */
+  const shown = async (text: string, cols = COLS, rows = ROWS): Promise<{ rows: string[]; screen: string; mouse: string; cursorHidden: boolean }> => {
+    const t = new Terminal({ cols, rows, allowProposedApi: true })
+    await new Promise<void>((r) => t.write(text, r))
+    const b = t.buffer.active
+    const out: string[] = []
+    for (let i = b.viewportY; i < b.viewportY + t.rows; i++) out.push(b.getLine(i)?.translateToString(true) ?? '')
+    const core = (t as unknown as { _core?: { coreService?: { isCursorHidden?: boolean } } })._core
+    const res = { rows: out, screen: b.type, mouse: t.modes.mouseTrackingMode, cursorHidden: core?.coreService?.isCursorHidden === true }
+    t.dispose()
+    return res
+  }
+  // Claude's full screen: one full paint at launch, then only the line that changes, for a long time.
+  const launch =
+    '\u001b[?2004h\u001b[?1004h\u001b[?1049h\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h\u001b[?25l' +
+    '\u001b[H\u001b[2J\u001b[1;1HClaude Code\u001b[6;1H\u001b[38;5;244m────────\u001b[0m\u001b[7;1H> \u001b[8;1H\u001b[2m⏵⏵ auto mode on\u001b[0m'
+  const diffs = Array.from({ length: 3000 }, (_, i) => `\u001b[3;1H\u001b[2Kworking ${i}`)
+  const stream = [launch, ...diffs]
+  const live = await shown(stream.join(''))
+  check('(the live screen holds the footer drawn once at launch)', live.rows[7], '⏵⏵ auto mode on')
+
+  const mirror = new ScreenMirror(COLS, ROWS)
+  for (const c of stream) mirror.write(c)
+  // At once: nothing parsed yet, the whole stream is still queued.
+  const early = mirror.snapshot() ?? ''
+  check('a snapshot taken before the copy has parsed anything still shows the live screen', await shown(early), live)
+  await new Promise((r) => setTimeout(r, 200))
+  const late = mirror.snapshot() ?? ''
+  check('and one taken after, too', await shown(late), live)
+  // Halfway: the first half parsed and serialized, the second still raw behind it.
+  const half = new ScreenMirror(COLS, ROWS)
+  for (const c of stream.slice(0, 1500)) half.write(c)
+  await new Promise((r) => setTimeout(r, 200))
+  for (const c of stream.slice(1500)) half.write(c)
+  check('and one taken halfway through parsing, too', await shown(half.snapshot() ?? ''), live)
+  half.dispose()
+  check('which is far smaller than the bytes that drew it', late.length < stream.join('').length / 20, true)
+  check('the mouse encoding the serializer leaves out is set again (SGR, 1006)', /\u001b\[\?[\d;]*1006[\d;]*h/.test(late), true)
+
+  // The old replay: the tail of the raw bytes, even with ReplayModes' preamble.
+  const tail = stream.slice(-200)
+  const head = new ReplayModes()
+  for (const c of stream.slice(0, -200)) head.feed(c)
+  const raw = await shown(head.preamble() + tail.join(''))
+  check('a raw tail loses everything drawn before the cut: the footer is blank (the bug)', raw.rows[7], '')
+
+  // A resize between writes: the snapshot is at the new size.
+  mirror.resize(80, 10)
+  mirror.write('\u001b[10;1Hbottom row')
+  const resized = await shown(mirror.snapshot() ?? '', 80, 10)
+  check('after a resize the snapshot fits the new grid', [resized.rows[9], resized.screen], ['bottom row', 'alternate'])
+
+  mirror.dispose()
+  check('a disposed copy has no snapshot, so historyFor falls back to the raw tail', mirror.snapshot(), null)
+
+  const ptySrc = readFileSync(join(import.meta.dirname, '../src/main/pty.ts'), 'utf8')
+  check('pty.ts feeds the copy every chunk', /proc\.onData\(\(data\) => \{\s*session\.mirror\.write\(data\)/.test(ptySrc), true)
+  check('resizes it with the pty', /s\.proc\.resize\(c, r\)[\s\S]{0,80}s\.mirror\.resize\(c, r\)/.test(ptySrc), true)
+  check('and historyFor serves its snapshot, the raw tail only when it has none', /historyFor[\s\S]{0,700}s\.mirror\.snapshot\(\) \?\? s\.head\.preamble\(\) \+ s\.chunks\.join\(''\)/.test(ptySrc), true)
+  check('every place a session is dropped frees its copy', (ptySrc.match(/mirror\.dispose\(\)/g) ?? []).length, 3)
+}
 
 check('/api/* stays gated', isGatedRemotePath('/api/sessions'), true)
 check('the shell is public', isGatedRemotePath('/'), false)
