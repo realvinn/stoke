@@ -13,6 +13,10 @@ paths:
   - "src/shared/remotePhone.ts"
   - "src/shared/phoneUi.ts"
   - "src/shared/cfAccess.ts"
+  - "src/shared/replayModes.ts"
+  - "src/main/screenMirror.ts"
+  - "src/renderer/src/lib/ptyBus.ts"
+  - "src/renderer/src/components/RemoteTerminal.tsx"
 ---
 
 # Phone access and cloudflared
@@ -549,3 +553,62 @@ each of which a plausible first version gets wrong with every suite green:
 >   Chrome's own registration, not a subscription of Stoke's — `subscribe` was stubbed and every
 >   endpoint Stoke POSTed to was the loopback fake — but it is a call to a real Google endpoint,
 >   and no flag tried stopped it.
+
+## 159. A replay of raw output is not a screen: a late attach gets the mirror's snapshot
+
+**Reported 2026-10-04 as "sometimes I get back to my claude … it's mid scroll, or the chat is on the
+very top", after "how do we deal with scrolling, missing status bar" about remote sessions.** A local
+tab was not it: driven in the built app against real Claude Code 2.1.289 (full screen, this
+machine's default), a tab switch, a pane narrowed and widened while hidden, the window down to 6 rows
+and back, three blurs and refocuses, and a quit-and-Resume all left Claude's view where it was,
+scrolled up or at the bottom. xterm's wheel sends at most one report per event, so it is not
+oversensitive either.
+
+The phone and the hub's remote tabs build their terminal from `historyFor` on every attach AND
+every reconnect, and that was the last 512 KB of raw output (`MAX_HISTORY`). Two things go missing
+once a session outgrows it, and a working session does within minutes:
+
+- **The launch modes.** Claude's full screen sends `CSI ?1049h` once per session: recorded from a
+  tab's first byte through a resize and a refocus, one, while it re-sent mouse reporting on three
+  later redraws. A replay cut after it drew Claude's frames on the NORMAL screen with no mouse
+  reporting, so the wheel scrolled stale frames instead of reaching Claude, taking the input box
+  and the status line off the bottom. Measured on a 744 KB session: the replay (523,665 bytes)
+  rebuilt a terminal reading `normal`, mouse `none`.
+- **Everything drawn before the cut that has not changed since.** Claude repaints only what moves,
+  so the same replay's bottom three rows were blank where the live tab showed `❯`, the rule and
+  the footer. A remote tab that reconnects claims nothing (gotcha 151), so no resize made Claude
+  repaint: the view stayed broken until something changed there.
+
+**The fix is a screen, not bytes.** `ScreenMirror` (src/main/screenMirror.ts) is a headless xterm
+per session fed every chunk, and `historyFor` serves its `snapshot()`: xterm's own serializer over
+the normal screen (2000 lines of history, `MIRROR_SCROLLBACK`), the alternate screen when up, the
+cursor and the modes. VS Code reconnects its terminals the same way. After, on a 724 KB session:
+a 1,792-byte replay whose every row equals the live tab's, `alternate`, mouse `any`. Each of these
+is load-bearing and `verify:remote` turns red without it:
+
+- **A snapshot is synchronous; parsing is not.** `write` queues and the parser runs on a later
+  turn, so each chunk stays in `unparsed` until its write callback (xterm runs it right after that
+  chunk, before the next) and a snapshot is the serialized part plus the raw rest. An attach can
+  then still send the replay and subscribe in one turn. xterm's `writeSync` would also do it, and
+  is marked deprecated and unreliable: do not.
+- **The serializer leaves modes out**: the mouse ENCODING (SGR 1006 is not on the public `modes`),
+  cursor visibility, 2031. `ReplayModes` (src/shared/replayModes.ts), which follows xterm's own
+  DECSET rules (one protocol, last set wins, any protocol reset turns tracking off, RIS resets),
+  reads every chunk and its preamble closes the snapshot, without the screen.
+- **Widths are xterm's defaults**, because the terminals replaying it (the phone's, RemoteTerminal)
+  load no Unicode addon; a row serialized under other widths lands shifted there.
+- A mirror whose write throws (xterm refuses past 50 MB queued) returns null, and `historyFor` falls
+  back to the raw tail led by `ReplayModes`' preamble for the modes the dropped front set.
+
+Two packaging traps: the add-on's typings import @xterm/xterm's, whose `/// <reference
+lib="dom"/>` broke `fetch`'s types across main (remote/push.ts), so it is imported by its `.mjs`
+path with the API declared in src/main/addonSerialize.d.ts; and @xterm/headless's package.json
+names a `module` file it does not ship, so main's build aliases it to `lib-headless`. Cost: about
+40 MB/s of parsing in main, in xterm's 12 ms slices (a Claude session prints KB a second); a
+snapshot of 2000 log lines is 139 KB and 8 ms.
+
+The renderer's own replay (`ptyBus`, 1 MB, on a TerminalView remount, which keys on `tab.id` and is
+rare) gets only the `ReplayModes` preamble, so it keeps the right screen and mouse but can still
+miss what was drawn before its cut. The old raw tail could carry a phone more inline history than
+2000 lines. Not driven: RemoteTerminal over a real hub and a real phone (the built app was attached
+through the phone socket and its replay rebuilt in a headless xterm), and Windows.

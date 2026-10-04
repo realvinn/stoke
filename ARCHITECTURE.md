@@ -663,7 +663,8 @@ React 19, hand-written CSS, no component library.
   mode (`itemAttr: 'tbItem'`), whose widths differ, so neighbours are placed by their own
   widths (`previewLefts`), which for tabs is exactly the old slot lefts.
 - `lib/ptyBus.ts` retains output per process and replays it on attach, which also makes the
-  component safe under React StrictMode's double-mount.
+  component safe under React StrictMode's double-mount. A replay past its 1 MB cap starts with
+  the modes the dropped front had set (`ReplayModes`, gotcha 159).
 - Shortcuts (`lib/shortcuts.ts`) use Cmd on macOS and **Ctrl+Shift** elsewhere, because bare
   `Ctrl+K`/`Ctrl+W`/`Ctrl+T` are readline bindings Claude Code's own prompt uses. Matching is
   on `event.code` so holding Shift does not break it.
@@ -1280,6 +1281,12 @@ src/main/         Electron main process
   pty.ts            PTY sessions, env sanitising, scrollback, fan-out. A session's
                     `sessionId` is where it is NOW (`rebind`); its `statusKey` is where its
                     files are, and never moves. `stop()` kills and waits for the exit, capped at 3s
+  screenMirror.ts   a headless xterm per session, fed every byte, so `historyFor` hands a late
+                    attach (the phone, another machine's remote tab, on every reconnect) the
+                    screen as it is now, serialized, instead of the last 512 KB of raw output.
+                    Gotcha 159
+  addonSerialize.d.ts  the part of @xterm/addon-serialize screenMirror uses: the package's own
+                    typings pull the DOM lib into main. Gotcha 159
   sessionRegistry.ts  reads Claude Code's own `<config dir>/sessions/<pid>.json` for every
                     live local Claude pty: the session it is on now (a `/clear` moves it) and
                     whether a turn is running. No electron import and the fs is injected, so
@@ -1990,6 +1997,10 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
   phoneUi.ts        the phone UI's decisions: sections, answer-option parsing, the resize
                     policy, the queued-send state, connect input, transcript folding.
                     verify:phone-ui
+  replayModes.ts    the DEC private modes in force at a point of a pty's output (alternate
+                    screen, mouse protocol and encoding, cursor, focus, bracketed paste, 2031),
+                    read as xterm reads them, so a replay that lost its front can set them
+                    again. Gotcha 159
   sizeClaim.ts      who sizes a pty two machines show: the side being used, last active wins.
                     `claimCounts` (focus, key, click; a pane change only right after a person
                     acted), `claimVerdict` (debounced, held while the other side's resize

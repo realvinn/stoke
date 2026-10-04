@@ -410,6 +410,8 @@ rule file named on the group line.
   (`stampServiceWorker`), off /api and /ws, and its shell URL-less (`keepShell`): a cached Response keeps its `?k=`.
 - **136.** POST pushes only to a real push service (`pushEndpointOk`) under the key in force (`keyTag`); a new prompt is
   `samePrompt`, never a re-minted answer id; On is the computer's word (`confirm`); RFC 8291's vector; never FCM.
+- **159.** Serve a late attach the screen, not bytes: `historyFor` is `ScreenMirror.snapshot()` (headless xterm, the
+  unparsed tail, `ReplayModes` for what the serializer omits); a raw tail lost Claude's alt screen and footer.
 
 **Claude Code's own config** — `.claude/rules/claude-config.md`
 - **37.** Turn Claude Code's Remote Control off with `remoteControlAtStartup: false` in
