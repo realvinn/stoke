@@ -1408,6 +1408,16 @@ export function TerminalView({
   }
 
   const closeMenu = useCallback(() => setMenu(null), [])
+  /*
+   * A menu goes with its pane. A keyboard tab switch hides the pane and fires
+   * none of ContextMenu's close events (a press, the wheel, a blur, a resize),
+   * so the menu stayed mounted out of sight: it took the next Escape from the
+   * terminal in front — Claude's interrupt — and held the full-screen reveal's
+   * shell where it was (`holding` in App.tsx, gotcha 105).
+   */
+  useEffect(() => {
+    if (!active) setMenu(null)
+  }, [active])
 
   return (
     <div
