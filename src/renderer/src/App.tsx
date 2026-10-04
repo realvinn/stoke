@@ -10,7 +10,7 @@ import type { CodingCliDetection, CodingCliId } from '@shared/codingClis'
 import { installedAgents, resolveDefaultAgent, visibleAgents } from '@shared/agents'
 import { agentSeed, paintAgentColors, type AgentColors } from '@shared/agentColors'
 import { accountSeed, accountsOf, DEFAULT_ACCOUNT_ID } from '@shared/accounts'
-import { nextReveal, REVEAL_ENTRY_GRACE_MS } from '@shared/fullScreenReveal'
+import { nextReveal, REVEAL_ENTRY_GRACE_MS, revealKeyCounts } from '@shared/fullScreenReveal'
 import type { RevealInfo, RevealInput, RevealState } from '@shared/fullScreenReveal'
 import { AgentPicker } from './components/AgentPicker'
 import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
@@ -4429,8 +4429,8 @@ export function App(): React.JSX.Element {
    * and on macOS 27 it does so on entering full screen and stays. `revealInset`
    * is how far it reaches (main measures it); `fullScreenReveal` is what to do.
    * `reserve` keeps that room free for all of full screen. `follow` slides the
-   * whole shell down by it while the pointer is up on the reveal, and back a few
-   * seconds after the pointer has gone below the title bar, with `nextReveal` as
+   * whole shell down by it once the pointer is up on the reveal, and back a
+   * moment after the pointer has gone below the title bar, with `nextReveal` as
    * the rule. It rests by `top`, never by resizing a row, so a trip to the tabs
    * resizes no pty, and slides by a transform (below); BrowserPanel walks the
    * native view along with the slide.
@@ -4474,7 +4474,9 @@ export function App(): React.JSX.Element {
     let state: RevealState = {
       shifted: revealOnEntry && enteredAt !== null && performance.now() - enteredAt < REVEAL_ENTRY_GRACE_MS,
       releaseAt: null,
-      onReveal: null
+      onReveal: null,
+      leftAt: null,
+      edgeAt: null
     }
     setRevealShift(state.shifted)
     let timer: ReturnType<typeof setTimeout> | undefined
@@ -4485,6 +4487,16 @@ export function App(): React.JSX.Element {
      * countdown coming due mid-drag would otherwise read the last move's 0.
      */
     let held = 0
+    /*
+     * An open context menu holds the shell where it is, as a held button does.
+     * It is `position: fixed` inside `.app`, so the slide's transform carries
+     * it, and a release with one open — the pointer drifting off its edge for
+     * the linger — left it hanging 62px below the tab it was opened on. Only
+     * one that is drawn: a menu inside a hidden pane would hold it forever.
+     */
+    const menuOpen = (): boolean =>
+      Array.from(appRef.current?.querySelectorAll('.context-menu') ?? []).some((m) => m.getClientRects().length > 0)
+    const holding = (buttons: number): number => buttons || (menuOpen() ? 1 : 0)
 
     // Where the bar RESTS once shifted, not its live rect, which is mid-slide.
     const shiftedBarBottom = (): number =>
@@ -4510,7 +4522,7 @@ export function App(): React.JSX.Element {
         clearTimeout(timer)
         const due = next.releaseAt
         if (due !== null) {
-          timer = setTimeout(() => update({ kind: 'tick', buttons: held }, due), Math.max(0, due - now))
+          timer = setTimeout(() => update({ kind: 'tick', buttons: holding(held) }, due), Math.max(0, due - now))
         }
       }
       if (next.shifted !== state.shifted) setRevealShift(next.shifted)
@@ -4518,7 +4530,7 @@ export function App(): React.JSX.Element {
     }
     const onMove = (e: MouseEvent): void => {
       held = e.buttons
-      update({ kind: 'move', y: e.clientY, buttons: e.buttons, onTitleBar: onTitleBar(e.target) })
+      update({ kind: 'move', y: e.clientY, buttons: holding(e.buttons), onTitleBar: onTitleBar(e.target) })
     }
     const onDown = (e: PointerEvent): void => {
       held = e.buttons
@@ -4526,19 +4538,20 @@ export function App(): React.JSX.Element {
     // The end of a drag is where a countdown that came due under it releases.
     const onUp = (e: PointerEvent): void => {
       held = e.buttons
-      update({ kind: 'move', y: e.clientY, buttons: e.buttons, onTitleBar: onTitleBar(e.target) })
+      update({ kind: 'move', y: e.clientY, buttons: holding(e.buttons), onTitleBar: onTitleBar(e.target) })
     }
     // Typing means done with the tabs — unless it is into the title bar itself
-    // (renaming a tab, a popover's field) or a context menu.
+    // (renaming a tab, a popover's field) or a context menu, or only a
+    // modifier: Ctrl or Cmd held for a click on a tab.
     const onKey = (e: KeyboardEvent): void => {
-      if (!onTitleBar(e.target)) update({ kind: 'key', buttons: held })
+      if (!onTitleBar(e.target) && revealKeyCounts(e.key)) update({ kind: 'key', buttons: holding(held) })
     }
     const onOut = (e: MouseEvent): void => {
       if (e.relatedTarget !== null) return
       update({
         kind: 'leave',
         y: e.clientY,
-        buttons: e.buttons,
+        buttons: holding(e.buttons),
         overNativeView: overBrowser(e.clientX, e.clientY),
         throughEdge: e.clientX <= 0 || e.clientX >= window.innerWidth - 1 || e.clientY >= window.innerHeight - 1
       })

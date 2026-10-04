@@ -16,7 +16,11 @@
  * `relatedTarget` the moment the pointer is over the strip or the menu bar
  * (at the pointer's own clientY — 0, 45, 61 all arrived), and a `mouseover`
  * the moment it is back on the page (63 was already the page). So the reveal
- * is inferred from where the pointer went, and the shell moves down under it.
+ * is inferred from where the pointer went, and the shell moves down under it —
+ * once the pointer is ON the reveal, never in anticipation of it: macOS waits
+ * before revealing, so a pointer that only touched the top edge moved the tabs
+ * for a menu bar that never came ("my mouse hasn't even activated the top menu
+ * bar and stoke already moved", the owner, 2026-10-05).
  *
  * Pure, with the geometry passed in, so `scripts/verify-fullscreen.mts` can run
  * the rule without a window, a screen or a pointer.
@@ -116,21 +120,65 @@ export interface RevealState {
   releaseAt: number | null
   /**
    * The pointer was last seen going up onto the reveal, so the tabs are under
-   * it right now: `edge` pressed against the top, `leave` left the page inside
-   * the band. A `leave` is only a guess — any window there reads the same —
-   * and the page seeing the pointer back inside the band undoes it.
+   * it right now: `edge` pressed against the top while already shifted (the
+   * reveal on its way back), `leave` left the page inside the band. A `leave`
+   * is only a guess — any window there reads the same — and the page seeing
+   * the pointer back inside the band undoes it.
    */
   onReveal: 'edge' | 'leave' | null
+  /** When that `leave` came: inside `REVEAL_SLIDE_MS` of it, the page seeing the pointer in the band is macOS's slide. */
+  leftAt: number | null
+  /** Unshifted, when the pointer last pressed against the top edge: within `REVEAL_EDGE_MEMORY_MS`, a corner trip. */
+  edgeAt: number | null
 }
 
-export const REVEAL_IDLE: RevealState = { shifted: false, releaseAt: null, onReveal: null }
+export const REVEAL_IDLE: RevealState = { shifted: false, releaseAt: null, onReveal: null, leftAt: null, edgeAt: null }
 
 /**
- * How long the shell stays down after the pointer leaves the tabs. Asked for:
- * snapping straight back read as jumpy, and a pointer that dips below the bar
- * on its way along it should not send the tabs away.
+ * How long the shell stays down after the pointer leaves the tabs: long enough
+ * that a pointer dipping below the bar on its way along it does not send them
+ * away, and no longer than macOS keeps the menu bar out once the pointer has
+ * left it. Measured on macOS 27 (2026-10-05, the pointer and the menu bar's
+ * window sampled every 8ms): the reveal starts back up about 260ms after the
+ * pointer drops out of it, and is gone about 140ms later. It was 3 seconds,
+ * asked for when the first cut snapped back the moment the pointer came off
+ * the reveal ("a bit too jumpy"); with the slide, the owner then found the
+ * shell hanging down long after the menu bar had gone ("the top menu bar hides
+ * so much quicker than stoke hides").
  */
-export const REVEAL_LINGER_MS = 3000
+export const REVEAL_LINGER_MS = 250
+
+/**
+ * How long macOS's reveal takes to slide in or out, with room to spare
+ * (measured about 145ms each way, the same sampling). While it slides, its
+ * moving bottom edge can pass a moving pointer, so the page sees the pointer
+ * inside the band without the reveal being gone: a pointer heading down as
+ * the reveal arrives outruns it, and one nudged up into the strip as it leaves
+ * is left behind. Read as "some other window", either undid the shift and
+ * bounced the tabs.
+ */
+export const REVEAL_SLIDE_MS = 250
+
+/**
+ * How long after pressing against the top edge a leave through a SIDE edge
+ * still counts as the reveal. Pinned in a top corner, the pointer slides down
+ * the side while macOS waits (14px in the measured trip), so the leave for the
+ * reveal comes at clientX 0 or the last column, below clientY 0. Longer than
+ * the measured ~270ms wait plus its ~145ms slide.
+ */
+export const REVEAL_EDGE_MEMORY_MS = 1000
+
+/**
+ * Keys that are only modifiers. Pressed on their own, they are the start of a
+ * Cmd- or Ctrl-click on a tab, not typing, so they must not start the countdown
+ * that would slide the tab away before the click lands.
+ */
+const MODIFIER_KEYS = new Set(['Shift', 'Control', 'Alt', 'AltGraph', 'Meta', 'OS', 'Super', 'Hyper', 'Fn', 'FnLock', 'CapsLock'])
+
+/** Whether a keydown's `key` counts as typing for the reveal: anything but a bare modifier. */
+export function revealKeyCounts(key: string): boolean {
+  return !MODIFIER_KEYS.has(key)
+}
 
 /**
  * How soon after entering full screen the shell may start shifted, where
@@ -151,12 +199,21 @@ function patched(state: RevealState, patch: Partial<RevealState>): RevealState {
  * The shell's state after one input. Returns `state` itself when nothing
  * changed, so a caller can compare by identity.
  *
- * Down: the pointer pressed against the top edge (macOS is about to reveal),
- * or left the page inside the band the reveal covers (it is on the reveal).
- * Undone at once if the page then sees the pointer inside that band: the real
- * reveal spans the whole width of the band, so the pointer cannot be both on
- * it and on the page there — whatever was, it was some other window (a
- * notification banner, detached DevTools).
+ * Down: the pointer left the page inside the band the reveal covers, so it is
+ * on the reveal. Not when it is merely pressed against the top edge: macOS
+ * waits before it reveals (about 270ms, measured), and a pointer that touches
+ * the edge and comes away gets no reveal at all, so shifting there moved the
+ * tabs for nothing. When the reveal does come, the pointer's next move is over
+ * it and the page sees it leave. A leave through a side edge is another
+ * display, except from a top corner: pinned there — the Apple menu's, Control
+ * Center's — the pointer leaves for the reveal at clientX 0 or the last
+ * column, at the top or a little down the side (`REVEAL_EDGE_MEMORY_MS`).
+ * Undone if the page then sees the pointer inside that band more
+ * than `REVEAL_SLIDE_MS` after the leave: the real reveal spans the whole width
+ * of the band, so once it is out the pointer cannot be both on it and on the
+ * page there — whatever was, it was some other window (a notification banner,
+ * detached DevTools). Sooner than that, it may be the reveal's own edge
+ * sliding past the pointer, so the guess is kept, not undone and not dropped.
  *
  * Back up: only after the pointer has been below the SHIFTED title bar for
  * `lingerMs` — never the moment it comes off the reveal, because macOS hides
@@ -188,13 +245,14 @@ export function nextReveal(
   const due = state.shifted && state.releaseAt !== null && now >= state.releaseAt
   // Below the bar, one way or another: count down, or go up if the count is out.
   const below = (): RevealState =>
-    due ? REVEAL_IDLE : patched(state, { releaseAt: state.releaseAt ?? now + lingerMs, onReveal: null })
+    due ? REVEAL_IDLE : patched(state, { releaseAt: state.releaseAt ?? now + lingerMs, onReveal: null, leftAt: null })
 
   if (input.kind === 'tick') return due ? REVEAL_IDLE : state
   if (!state.shifted) {
-    if (input.kind === 'move' && input.y < 1) return { shifted: true, releaseAt: null, onReveal: 'edge' }
-    if (input.kind === 'leave' && input.y < geometry.inset && !input.overNativeView && !input.throughEdge) {
-      return { shifted: true, releaseAt: null, onReveal: 'leave' }
+    if (input.kind === 'move') return patched(state, { edgeAt: input.y < 1 ? now : state.edgeAt })
+    const fromCorner = input.kind === 'leave' && (input.y < 1 || (state.edgeAt !== null && now - state.edgeAt < REVEAL_EDGE_MEMORY_MS))
+    if (input.kind === 'leave' && input.y < geometry.inset && !input.overNativeView && (!input.throughEdge || fromCorner)) {
+      return { shifted: true, releaseAt: null, onReveal: 'leave', leftAt: now, edgeAt: null }
     }
     return state
   }
@@ -202,10 +260,13 @@ export function nextReveal(
   if (input.kind === 'leave') {
     if (input.overNativeView) return below()
     if (input.throughEdge) return input.y >= geometry.inset ? below() : state
-    return input.y < geometry.inset ? patched(state, { releaseAt: null, onReveal: 'leave' }) : below()
+    return input.y < geometry.inset ? patched(state, { releaseAt: null, onReveal: 'leave', leftAt: now }) : below()
   }
-  if (input.y < 1) return patched(state, { releaseAt: null, onReveal: 'edge' })
-  if (state.onReveal === 'leave' && input.y < geometry.inset) return REVEAL_IDLE
+  if (input.y < 1) return patched(state, { releaseAt: null, onReveal: 'edge', leftAt: null })
+  if (state.onReveal === 'leave' && input.y < geometry.inset) {
+    const sliding = state.leftAt !== null && now - state.leftAt < REVEAL_SLIDE_MS
+    return sliding ? patched(state, { releaseAt: null }) : REVEAL_IDLE
+  }
   if (!input.onTitleBar && input.y >= geometry.barBottom) return below()
-  return patched(state, { releaseAt: null, onReveal: null })
+  return patched(state, { releaseAt: null, onReveal: null, leftAt: null })
 }

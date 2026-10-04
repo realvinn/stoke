@@ -87,7 +87,7 @@ const ZOOM_TARGET_LABELS: { id: ZoomTarget; label: string; hint: string }[] = [
  * only taken while the menu bar is actually out.
  */
 const FULL_SCREEN_REVEAL_LABELS: { id: FullScreenReveal; label: string; hint: string }[] = [
-  { id: 'follow', label: 'Move tabs down', hint: 'The tabs slide below the menu bar while it is out, and back up a few seconds after you leave them' },
+  { id: 'follow', label: 'Move tabs down', hint: 'The tabs slide below the menu bar while it is out, and back up as you move away from them' },
   { id: 'reserve', label: 'Keep room', hint: 'Always leave the menu bar its own space, so the tabs never move' },
   { id: 'off', label: 'Cover tabs', hint: "macOS's own behaviour: the menu bar slides over the tabs" }
 ]

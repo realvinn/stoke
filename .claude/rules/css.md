@@ -355,6 +355,58 @@ rule is gated on `revealsOnEntry` (macOS ≥ 27, the only version measured doing
 measured with warps and a window list; this machine has no Accessibility permission to post real
 pointer events and no Screen Recording permission to screenshot native chrome.
 
+> **Checked against the code on 2026-10-05.** A person has now used it, and both timings were
+> wrong. The owner: "my mouse hasn't even activated the top menu bar and stoke already moved and
+> the top menu bar hides so much quicker than stoke hides".
+>
+> **Measured that day on macOS 27.** A passive sampler read `NSEvent.mouseLocation` and the window
+> list's bounds every 8 ms. Neither needs a permission. It caught the owner's own trip to the top
+> of another full-screen app:
+> - **The reveal:** the menu bar began to slide about 270 ms after the pointer reached y=0, and
+>   was in about 145 ms later. By then the pointer had already drifted to y=14, so the old edge
+>   rule led macOS by a quarter of a second.
+> - **The hide:** it began about 260 ms after the pointer dropped out of the reveal, and took
+>   about 140 ms. The old linger kept Stoke down about 2.7 s longer.
+> - **Sampling it again:** nothing here can post pointer events, so wait for real use. The
+>   full-screen menu bar is a `Window Server` window at layer 24, at y=-62 parked (-74 under
+>   a 44pt toolbar strip) and 0 revealed.
+>
+> **What changed:**
+> - **No shift on an edge press.** `nextReveal` shifts only on a `leave` inside the band, which
+>   means the pointer is on the reveal. A press at the edge while ALREADY shifted still holds the
+>   shift (`onReveal: 'edge'`).
+> - **Corners count.** A leave through a side edge counts as the reveal at clientY < 1, or within
+>   `REVEAL_EDGE_MEMORY_MS` (1 s) of an edge press (`edgeAt`). Pinned in a top corner, the
+>   pointer leaves at clientX 0 or the last column, a little way down the side if it slid there
+>   while macOS waited, and `throughEdge` alone would refuse it. Two adversarial reviews caught
+>   this regression; the edge rule had been what rescued corner trips.
+> - **`REVEAL_LINGER_MS` is 250**, which is macOS's own hide delay.
+> - **The band undo waits `REVEAL_SLIDE_MS` (250).** The reveal's moving edge passes a moving
+>   pointer: a pointer heading down outruns the arrival, and one nudged into the strip is left
+>   behind as it goes. Undoing then bounced the shift. Inside that time a band move keeps the
+>   `leave` guess as it is, and the first band move after it still undoes it. Dropping the guess
+>   instead left a shift a quick brush over a banner had caused.
+> - **Bare modifiers are not typing** (`revealKeyCounts`). With a short linger, the Ctrl of a
+>   Ctrl+click on a tab slid the tab away first.
+> - **An open `.context-menu` holds the shell like a button** (`holding` in App.tsx). It is
+>   `position: fixed` inside `.app`, so a release under it left it 62px below its tab. Only a
+>   DRAWN menu counts (`getClientRects`). A terminal's menu also closes with its pane now: a
+>   keyboard tab switch fires none of ContextMenu's close events, so the hidden menu froze the
+>   reveal AND took the next Escape from the terminal in front, which is Claude's interrupt.
+>
+> **Reported by the reviews, left as they were, all older than this change:**
+> - A leave up through the window's top on a notched Mac, under "menu bar: never hide", or with
+>   a display above, is still read as the reveal.
+> - A `leave` shift is not released by typing, only by the pointer. After using a menu-bar menu
+>   without moving the mouse, the band stays empty until it moves.
+> - A shift that starts with the pointer over the docked browser never ends until the pointer
+>   comes back onto Stoke's page.
+> - BrowserPanel sends the slide's END rect one frame before App starts the FLIP, so the native
+>   view jumps 62px for a frame.
+> - A context menu opened DURING a release slide paints offset and glides with it.
+> - Whether a `mouseout` arrives when the reveal slides in under a pointer that is not moving is
+>   still unmeasured. If it does not, the shift waits for the pointer's first move.
+
 ## 114. A pane shadow set outright erases every other one: the frame hid the drop ring
 
 **`.term-host` carries three shadows with three owners, and each used to be a `box-shadow` of its

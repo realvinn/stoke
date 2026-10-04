@@ -10,13 +10,17 @@
  *
  *   node scripts/verify-fullscreen.mts
  */
+import { readFileSync } from 'node:fs'
 import {
   FALLBACK_MENU_BAR,
   FALLBACK_TITLE_BAR,
   nextReveal,
   REVEAL_IDLE,
+  REVEAL_EDGE_MEMORY_MS,
   REVEAL_LINGER_MS,
+  REVEAL_SLIDE_MS,
   revealInsetFor,
+  revealKeyCounts,
   revealsOnEntry,
   type RevealGeometry,
   type RevealInput,
@@ -63,7 +67,8 @@ function run(
   steps: [number, RevealInput][],
   g: (shifted: boolean) => RevealGeometry = geometry
 ): boolean[] {
-  let state: RevealState = typeof start === 'boolean' ? { shifted: start, releaseAt: null, onReveal: null } : start
+  let state: RevealState =
+    typeof start === 'boolean' ? { shifted: start, releaseAt: null, onReveal: null, leftAt: null, edgeAt: null } : start
   return steps.map(([t, input]) => {
     state = nextReveal(state, input, g(state.shifted), t)
     return state.shifted
@@ -72,6 +77,8 @@ function run(
 /** The same, one step every 100ms, for sequences where time does not matter. */
 const at = (...inputs: RevealInput[]): [number, RevealInput][] => inputs.map((e, i) => [i * 100, e])
 const L = REVEAL_LINGER_MS
+/** Past macOS's slide: the page seeing the pointer in the band is evidence again. */
+const S = REVEAL_SLIDE_MS
 
 console.log('\nhow far the reveal reaches')
 check('macOS 27, no notch: menu bar + title strip', revealInsetFor({ windowTop: 0, menuBar: 30, titleBar: 32 }), 62)
@@ -105,9 +112,49 @@ check(
 
 console.log('\ngoing up to the tabs')
 check(
-  'pressing the top edge shifts before macOS has even slid it down',
-  run(false, at(move(300), move(120), move(20), move(0))),
-  [false, false, false, true]
+  'pressing the top edge moves nothing by itself: macOS has not revealed anything yet',
+  run(false, at(move(300), move(120), move(20), move(0), move(0))),
+  [false, false, false, false, false]
+)
+check(
+  'touching the top edge and coming away, so no reveal ever comes, moves nothing however long it rests there',
+  run(false, [
+    [0, move(0)],
+    [800, move(0)],
+    [1600, move(40)],
+    [5000, tick]
+  ]),
+  [false, false, false, false]
+)
+check(
+  'once the reveal is under the pointer its next move leaves the page there, and that shifts',
+  run(false, at(move(0), leave(0))),
+  [false, true]
+)
+check(
+  'pinned in a top corner (the Apple menu, Control Center), the leave is through a side at clientY 0 — and is the reveal',
+  run(false, at(move(0), leaveEdge(0))),
+  [false, true]
+)
+check(
+  'and a corner trip that slid down the side while macOS waited (14px, measured) leaves lower — still the reveal',
+  run(false, [
+    [0, move(0)],
+    [150, move(6)],
+    [270, move(14)],
+    [310, leaveEdge(14)],
+    [600, move(70)]
+  ]),
+  [false, false, false, true, true]
+)
+check(
+  'long after the edge press, a sideways leave in the band is a display beside this one again',
+  run(false, [
+    [0, move(0)],
+    [100, move(200)],
+    [REVEAL_EDGE_MEMORY_MS + 100, leaveEdge(20)]
+  ]),
+  [false, false, false]
 )
 check(
   'approaching from below while it is already out: leaving the page at its bottom edge (61) shifts',
@@ -138,7 +185,7 @@ check(
   'moving about below does not restart the linger',
   run(true, [
     [0, move(300)],
-    [L - 500, move(400)],
+    [L / 2, move(400)],
     [L, tick]
   ]),
   [true, true, false]
@@ -147,7 +194,7 @@ check(
   'coming back onto the tabs inside the linger cancels it',
   run(true, [
     [0, move(300)],
-    [1000, move(90)],
+    [L / 2, move(90)],
     [L, tick],
     [L + 5000, tick]
   ]),
@@ -157,18 +204,28 @@ check(
   'and leaving again starts a fresh one',
   run(true, [
     [0, move(300)],
-    [1000, move(90)],
-    [2000, move(300)],
-    [L + 1000, tick],
-    [L + 2000, tick]
+    [L / 3, move(90)],
+    [(2 * L) / 3, move(300)],
+    [L, tick],
+    [(2 * L) / 3 + L, tick]
   ]),
   [true, true, true, true, false]
+)
+check(
+  'a dip below the bar shorter than the linger, on the way along it, keeps the tabs',
+  run(true, [
+    [0, move(90)],
+    [50, move(115)],
+    [L, move(95)],
+    [L + 1000, tick]
+  ]),
+  [true, true, true, true]
 )
 check(
   'going back over the reveal inside the linger cancels it too',
   run(true, [
     [0, move(300)],
-    [1000, leave(40)],
+    [L / 2, leave(40)],
     [L, tick]
   ]),
   [true, true, true]
@@ -183,13 +240,13 @@ check(
 )
 check(
   'the timer is the clock: a tick for the due instant releases even if it fired early',
-  nextReveal({ shifted: true, releaseAt: 5000, onReveal: null }, tick, geometry(true), 5000),
+  nextReveal({ shifted: true, releaseAt: 5000, onReveal: null, leftAt: null, edgeAt: null }, tick, geometry(true), 5000),
   REVEAL_IDLE
 )
 check(
   'an unchanged state is the same object, so the caller can skip the render',
   (() => {
-    const s: RevealState = { shifted: true, releaseAt: null, onReveal: null }
+    const s: RevealState = { shifted: true, releaseAt: null, onReveal: null, leftAt: null, edgeAt: null }
     return nextReveal(s, move(80), geometry(true), 0) === s
   })(),
   true
@@ -206,6 +263,49 @@ check(
   [true, false, false, false, true]
 )
 
+console.log('\ngoing back up with the menu bar')
+check(
+  'straight down off the reveal, through the tabs and into the terminal: up a moment after it',
+  run(false, [
+    [0, leave(10)],
+    [60, move(70)],
+    [100, move(200)],
+    [100 + L - 1, tick],
+    [100 + L, tick]
+  ]),
+  [true, true, true, true, false]
+)
+check(
+  'the linger is no longer than macOS keeps the menu bar out after the pointer leaves it (260ms, measured)',
+  REVEAL_LINGER_MS <= 300,
+  true
+)
+check('but long enough that a dip below the bar is not a departure', REVEAL_LINGER_MS >= 150, true)
+
+console.log('\nmacOS sliding its reveal past the pointer (about 145ms each way, measured)')
+check('the grace covers the slide', REVEAL_SLIDE_MS >= 145, true)
+check(
+  'heading down as the reveal arrives, the pointer outruns its edge and is covered again: no bounce',
+  run(false, [
+    [0, leave(4)],
+    [60, move(22)],
+    [120, leave(30)],
+    [200, move(63)],
+    [260, move(80)]
+  ]),
+  [true, true, true, true, true]
+)
+check(
+  'nudged up into the strip as it slides away, the pointer is left in the band: the tabs stay put',
+  run(true, [
+    [0, move(66)],
+    [300, leave(58)],
+    [350, move(56)],
+    [400, move(70)]
+  ]),
+  [true, true, true, true]
+)
+
 console.log('\nwhat is not the reveal')
 check(
   'the fullscreen transition itself (out at 385, measured) is not the reveal',
@@ -217,7 +317,16 @@ check(
   run(false, at(leave(50, true))),
   [false]
 )
-check('a tab drag pressed into the top edge moves nothing', run(false, at(move(0, 1))), [false])
+check(
+  'a tab drag pressed into the top edge neither cancels nor restarts a running countdown',
+  run(true, [
+    [0, move(300)],
+    [L / 2, move(0, 1)],
+    [L, tickHeld],
+    [L + 100, move(300)]
+  ]),
+  [true, true, true, false]
+)
 check('a selection dragged out over the reveal moves nothing', run(false, at(leave(20, false, 1))), [false])
 check(
   'a drag below the shifted bar starts no linger under itself',
@@ -231,7 +340,7 @@ check(
   'a countdown due mid-drag waits for the button, then releases on the first buttonless event',
   run(true, [
     [0, move(300)],
-    [1000, move(320, 1)],
+    [L / 2, move(320, 1)],
     [L, tickHeld],
     [L + 800, move(400, 1)],
     [L + 900, move(400)]
@@ -247,7 +356,7 @@ check(
   'leaving sideways below the band while shifted keeps a countdown going',
   run(true, [
     [0, move(300)],
-    [1000, leaveEdge(300)],
+    [L / 2, leaveEdge(300)],
     [L, tick]
   ]),
   [true, true, false]
@@ -283,7 +392,7 @@ check(
   'a popover cancels a countdown already running, like the tabs themselves',
   run(true, [
     [0, move(300)],
-    [1000, moveOnBar(250)],
+    [L / 2, moveOnBar(250)],
     [L, tick]
   ]),
   [true, true, true]
@@ -303,7 +412,7 @@ check(
   'a key inside a running linger does not restart it',
   run(true, [
     [0, move(300)],
-    [2000, key],
+    [L / 2, key],
     [L, tick]
   ]),
   [true, true, false]
@@ -318,8 +427,8 @@ check(
   [true, true, true]
 )
 check(
-  'and so does one with the pointer pressed against the top edge',
-  run(false, [
+  'and so does one with the pointer pressed against the top edge, the reveal coming back',
+  run(true, [
     [0, move(0)],
     [500, key],
     [500 + L, tick]
@@ -335,12 +444,54 @@ check(
   [true, false]
 )
 check('a key while not shifted does nothing', run(false, at(key, tick)), [false, false])
+check(
+  'a bare modifier is not typing — Ctrl or Cmd held for a click on a tab must not send it away',
+  ['Control', 'Meta', 'Shift', 'Alt', 'CapsLock', 'Fn'].map(revealKeyCounts),
+  [false, false, false, false, false, false]
+)
+check('anything else is', ['a', 'Enter', 'Escape', 'ArrowDown', ' '].map(revealKeyCounts), [true, true, true, true, true])
+
+console.log('\nthe wire (App.tsx)')
+const app = readFileSync(new URL('../src/renderer/src/App.tsx', import.meta.url), 'utf8')
+check('a keydown asks revealKeyCounts before it counts', /revealKeyCounts\(e\.key\)\)\s*update\(\{ kind: 'key'/.test(app), true)
+check(
+  'an open context menu holds the shell like a button: every input reads holding()',
+  [
+    /kind: 'tick', buttons: holding\(held\)/,
+    /kind: 'move', y: e\.clientY, buttons: holding\(e\.buttons\)/,
+    /kind: 'key', buttons: holding\(held\)/,
+    /kind: 'leave',\s*y: e\.clientY,\s*buttons: holding\(e\.buttons\)/,
+    /querySelectorAll\('\.context-menu'\)[^\n]*getClientRects\(\)\.length > 0/,
+    /buttons \|\| \(menuOpen\(\) \? 1 : 0\)/
+  ].map((re) => re.test(app)),
+  [true, true, true, true, true, true]
+)
+const terminalView = readFileSync(new URL('../src/renderer/src/components/TerminalView.tsx', import.meta.url), 'utf8')
+check(
+  'and a terminal menu closes with its pane, so a hidden one never holds it (or takes Escape)',
+  /if \(!active\) setMenu\(null\)\s*\}, \[active\]\)/.test(terminalView),
+  true
+)
 
 console.log('\nsome other window in the band')
 check(
   'a banner reached inside the band shifts, and the page seeing the pointer in the band undoes it',
-  run(false, at(move(200), leave(30), move(35))),
+  run(false, [
+    [0, move(200)],
+    [100, leave(30)],
+    [100 + S, move(35)]
+  ]),
   [false, true, false]
+)
+check(
+  'brushed past quickly, inside the slide grace: the guess is kept, and the next band move after it undoes',
+  run(false, [
+    [0, move(200)],
+    [100, leave(30)],
+    [180, move(40)],
+    [100 + S + 10, move(50)]
+  ]),
+  [false, true, true, false]
 )
 check(
   'the real reveal: back onto the moved tabs is the page below the band, and keeps the shift',
@@ -353,9 +504,13 @@ check(
   [true, true, true]
 )
 check(
-  'an edge press followed by a move into the band is not undone — the reveal may still be coming',
-  run(false, at(move(0), move(30))),
-  [true, true]
+  'shifted, an edge press then a move into the band is not undone — the reveal may be coming back',
+  run(false, [
+    [0, leave(10)],
+    [S + 100, move(0)],
+    [S + 200, move(30)]
+  ]),
+  [true, true, true]
 )
 
 console.log('\nwhich macOS slides it down on entry')
