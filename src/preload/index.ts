@@ -48,7 +48,8 @@ const api: StokeApi = {
     info: () => ipcRenderer.invoke(CH.cliInfo),
     detect: (opts?: { fresh?: boolean }) => ipcRenderer.invoke(CH.cliDetect, opts),
     skills: () => ipcRenderer.invoke(CH.skillsScan),
-    mcpServers: () => ipcRenderer.invoke(CH.mcpCatalog)
+    mcpServers: () => ipcRenderer.invoke(CH.mcpCatalog),
+    probeMcp: (spec) => ipcRenderer.invoke(CH.mcpProbe, spec)
   },
 
   accounts: {

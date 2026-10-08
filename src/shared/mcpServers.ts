@@ -158,7 +158,7 @@ function isHeaderName(k: string): boolean {
  * dotted key could never be sealed — its value would stay in settings.json in
  * plain text. No real header needs one.
  */
-function isStoredHeaderName(k: string): boolean {
+export function isStoredHeaderName(k: string): boolean {
   return isHeaderName(k) && !k.includes('.')
 }
 

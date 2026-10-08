@@ -48,6 +48,8 @@ import {
 import { Spinner } from './Spinner'
 import { ColorField } from './ColorField'
 import { FieldHint } from './FieldHint'
+import { McpServerEditor } from './McpServerEditor'
+import { removeMcpServer } from '@shared/mcpSetup'
 import { agentMark } from '../lib/agentColor'
 import { agentRowId, type SettingsLocation } from '@shared/settingsIndex'
 import { EFFORT_LEVELS, MODEL_OPTIONS, PERMISSION_MODES, ULTRACODE_HINT } from '../lib/permissions'
@@ -557,6 +559,12 @@ export function AgentSettingsPage(props: AgentPagesProps & { agent: CodingCliId 
             ticks={mcpTicksFor(agents.mcp, current.id)}
             extra={agents.mcp.extra}
             onTick={(name, on) => setMcpTick(current.id, name, on)}
+            onSave={(spec, enabled) => {
+              let mcp = { ...agentsRef.current.mcp, extra: { ...agentsRef.current.mcp.extra, [spec.name]: spec } }
+              if (capsFor(current.id).mcp !== 'none') mcp = withMcpTick(mcp, current.id, spec.name, enabled)
+              patchAgents({ ...agentsRef.current, mcp })
+            }}
+            onRemove={(name) => patchAgents({ ...agentsRef.current, mcp: removeMcpServer(agentsRef.current.mcp, name) })}
           />
         }
         claude={isClaudeCode(current.id) ? <ClaudeParts onGo={onGo} /> : null}
@@ -1091,16 +1099,21 @@ function AgentTools({
   catalog,
   ticks,
   extra,
-  onTick
+  onTick,
+  onSave,
+  onRemove
 }: {
   cli: CodingCli
   catalog: McpCatalog | null
   ticks: readonly string[]
   extra: Record<string, McpServerSpec>
   onTick: (name: string, on: boolean) => void
+  onSave: (spec: McpServerSpec, enabled: boolean) => void
+  onRemove: (name: string) => void
 }): React.JSX.Element {
   const route = capsFor(cli.id).mcp
   const off = route === 'none'
+  const [editor, setEditor] = useState<{ name: string | null } | null>(null)
   const claude = isClaudeCode(cli.id)
   const own = new Set(catalog?.own[cli.id] ?? [])
   const on = new Set(ticks)
@@ -1240,8 +1253,27 @@ function AgentTools({
             )}
           </>
         )}
-        {extraNames.map((name) => row(name, kind(extra[name].transport, 'held by Stoke')))}
+        {extraNames.map((name) => (
+          <div className="mcp-held-row" key={name}>
+            {row(name, kind(extra[name].transport, 'held by Stoke'))}
+            <div className="mcp-editor-actions">
+              <button className="btn" onClick={() => setEditor({ name })}>Edit credentials</button>
+              <button className="btn" title="Remove this Stoke-held server and its selection from every agent" onClick={() => {
+                if (editor?.name === name) setEditor(null)
+                onRemove(name)
+              }}>Remove from Stoke</button>
+            </div>
+          </div>
+        ))}
       </div>
+      {editor ? (
+        <McpServerEditor key={editor.name ?? 'new'} server={editor.name ? extra[editor.name] ?? null : null}
+          existingNames={[...listed, ...own]} enableLabel={off ? null : cli.label}
+          initiallyEnabled={editor.name ? on.has(editor.name) : !off}
+          onSave={(spec, enabled) => { onSave(spec, enabled); setEditor(null) }} onCancel={() => setEditor(null)} />
+      ) : (
+        <button className="btn" disabled={extraNames.length >= 64} onClick={() => setEditor({ name: null })}>Add MCP server</button>
+      )}
       {catalog === null && <span className="field-hint">Reading Claude Code’s servers…</span>}
       {catalog?.error && (
         <span className="field-hint" data-tone="warning">

@@ -8557,6 +8557,50 @@ button.color-field-swatch[aria-expanded='true'] {
 }
 
 /* The sidebar's "In conversations" group. */
+.mcp-editor {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+  padding: var(--space-12);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-sunken);
+}
+.mcp-editor > label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.mcp-editor > .check-row {
+  flex-direction: row;
+}
+.mcp-credentials {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  min-width: 0;
+  margin: 0;
+  padding: var(--space-8);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+}
+.mcp-credential-row,
+.mcp-editor-actions {
+  display: flex;
+  gap: var(--space-8);
+  flex-wrap: wrap;
+  align-items: center;
+}
+.mcp-credential-row .input {
+  flex: 1 1 8rem;
+  min-width: 0;
+}
+.mcp-held-row {
+  padding-bottom: var(--space-8);
+}
+.mcp-held-row .mcp-editor-actions {
+  padding-left: var(--space-24);
+}
 .chat-filters {
   border: 1px solid var(--border);
   border-radius: var(--r-sm);

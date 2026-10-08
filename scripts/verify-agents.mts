@@ -167,6 +167,9 @@ import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { delimiter, dirname, join, resolve } from 'node:path'
 import { gitBashPath } from '../src/main/statusLine.ts'
+import { createServer } from 'node:http'
+import { probeMcp } from '../src/main/mcpProbe.ts'
+import { removeMcpServer, validateMcpSetup } from '../src/shared/mcpSetup.ts'
 
 let failures = 0
 
@@ -2849,6 +2852,75 @@ console.log('\nMCP: a second Claude account gets the Default account’s user-sc
     'the launch hands the mirror only to a login account, through claudeAccountServers, before claudeMcpConfigs',
     /account\?\.kind === 'login'[\s\S]{0,400}claudeAccountServers\(servers, mirror\)[\s\S]{0,120}claudeMcpConfigs\(servers,/.test(main)
   )
+}
+
+console.log('\nGuided MCP setup and connection tests')
+{
+  const http = { name: 'mock', transport: 'http', command: '', args: [], env: {}, url: 'https://example.com/mcp', headers: {}, bearer: 'fixture-secret-token' }
+  ok('a bearer endpoint validates', validateMcpSetup(http).ok)
+  ok('a credential in a URL is refused by the guided form', !validateMcpSetup({ ...http, url: 'https://example.com/mcp?key=fixture-secret-token' }).ok)
+  ok('header credentials cannot inject a second header', !validateMcpSetup({ ...http, headers: { 'X-Key': 'key\r\nInjected: secret' } }).ok)
+  ok('a dotted header that the vault cannot seal is refused', !validateMcpSetup({ ...http, headers: { 'X.Key': 'secret' } }).ok)
+  ok('two competing authorization values are refused', !validateMcpSetup({ ...http, headers: { authorization: 'other' } }).ok)
+  const stdio = { ...http, transport: 'stdio', command: process.execPath, args: [], env: { API_TOKEN: 'fixture-secret-token' } }
+  ok('a local command keeps credentials in environment values', validateMcpSetup(stdio).ok)
+  ok('an invalid variable is refused instead of silently discarding its key', !validateMcpSetup({ ...stdio, env: { 'API.TOKEN': 'secret' } }).ok)
+  check('removing a server clears only its ticks across agents', removeMcpServer({ extra: { mock: http as McpServerSpec }, perAgent: { codex: ['stoke', 'mock'], claude: ['mock'], cursor: [] } }, 'mock'), { extra: {}, perAgent: { codex: ['stoke'], claude: [], cursor: [] } })
+
+  const methods: string[] = []
+  let authenticated = true
+  let redirected = false
+  let deleted = false
+  const server = createServer(async (req, res) => {
+    if (req.url === '/redirected') { redirected = true; res.writeHead(500).end(); return }
+    if (req.url === '/redirect') { res.writeHead(302, { Location: '/redirected' }).end(); return }
+    if (req.url === '/deny') { res.writeHead(401).end('fixture-secret-token'); return }
+    if (req.url === '/slow') return
+    if (req.url === '/large') { res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ oversized: 'x'.repeat(2 * 1024 * 1024 + 1) })); return }
+    authenticated &&= req.headers.authorization === 'Bearer fixture-secret-token'
+    if (req.method === 'DELETE') { deleted = true; res.writeHead(200).end(); return }
+    if (req.method !== 'POST') { res.writeHead(405).end(); return }
+    let text = ''
+    for await (const chunk of req) text += chunk
+    const message = JSON.parse(text)
+    methods.push(message.method)
+    if (message.id === undefined) { res.writeHead(202).end(); return }
+    const result = message.method === 'initialize'
+      ? { protocolVersion: message.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: 'fixture-secret-token', version: 'fixture-secret-token' } }
+      : { tools: [{ name: 'test_tool', description: 'Synthetic tool', inputSchema: { type: 'object' } }] }
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Mcp-Session-Id': 'fixture-session' }).end(JSON.stringify({ jsonrpc: '2.0', id: message.id, result }))
+  })
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const address = server.address() as { port: number }
+  const base = `http://127.0.0.1:${address.port}`
+  try {
+    const result = await probeMcp({ ...http, url: `${base}/mcp` }, process.env.PATH ?? '')
+    check('HTTP test authenticates, initializes and counts tools without echoing server secrets', result, { ok: true, server: 'mock', version: 'unknown', tools: 1, moreTools: false })
+    ok('credentials reach only the configured endpoint', authenticated)
+    ok('the test never calls a tool', !methods.includes('tools/call'))
+    ok('the test ends its server session', deleted)
+    const denied = await probeMcp({ ...http, url: `${base}/deny` }, process.env.PATH ?? '')
+    ok('unauthorized errors are useful without echoing the response token', !denied.ok && denied.message.includes('authentication') && !denied.message.includes('fixture-secret-token'))
+    const redirect = await probeMcp({ ...http, url: `${base}/redirect` }, process.env.PATH ?? '')
+    ok('a redirect cannot forward credentials to a different endpoint', !redirect.ok && !redirected)
+    const started = Date.now()
+    const timeout = await probeMcp({ ...http, url: `${base}/slow` }, process.env.PATH ?? '', 250)
+    ok('an unresponsive endpoint is bounded', !timeout.ok && Date.now() - started < 2000)
+    const oversized = await probeMcp({ ...http, url: `${base}/large` }, process.env.PATH ?? '')
+    ok('an oversized response is refused without returning its body', !oversized.ok && oversized.message.length < 250)
+  } finally {
+    const closed = new Promise<void>((resolve) => server.close(() => resolve()))
+    server.closeAllConnections()
+    await closed
+  }
+  const home = scratchHome('stoke-mcp-probe-')
+  try {
+    const file = join(home, 'mock-server.cjs')
+    writeFileSync(file, `const readline = require('node:readline');\nconst r = readline.createInterface({ input: process.stdin });\nr.on('line', line => { const m = JSON.parse(line); if (m.id === undefined) return; const result = m.method === 'initialize' ? { protocolVersion: m.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: process.env.API_TOKEN, version: '1.0.0' } } : { tools: [] }; process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: m.id, result }) + '\\n'); });\nprocess.stdin.on('end', () => process.exit(0));\n`)
+    check('stdio test starts a short-lived local process with its environment credential', await probeMcp({ ...stdio, args: [file] }, process.env.PATH ?? ''), { ok: true, server: 'mock', version: '1.0.0', tools: 0, moreTools: false })
+    const missing = await probeMcp({ ...stdio, command: join(home, 'absent-executable') }, process.env.PATH ?? '')
+    ok('a missing executable gives a useful error', !missing.ok && missing.message.includes('not found'))
+  } finally { rmSync(home, { recursive: true, force: true }) }
 }
 
 console.log(failures ? `\n${failures} FAILED` : '\nall pass')

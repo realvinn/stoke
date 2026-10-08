@@ -28,6 +28,7 @@ export interface ImportResult {
 import type { SkillDirScan } from './skills'
 import type { GitStatus } from './gitStatus'
 import type { AccountMcpSummary, McpCatalog } from './mcpServers'
+import type { McpProbeResult } from './mcpSetup'
 import type { MicAccess } from './voiceRoute'
 import type { SttConfig } from './speechProviders'
 import type { CreateProfileInput, ProfilePlan } from './profiles'
@@ -553,6 +554,8 @@ export interface StokeApi {
      * header. Read from `~/.claude.json` afresh (a stat when it has not moved).
      */
     mcpServers(): Promise<McpCatalog>
+    /** Explicit connection test of a draft server; no tools are invoked. */
+    probeMcp(spec: unknown): Promise<McpProbeResult>
   }
 
   /**

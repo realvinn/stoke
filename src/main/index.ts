@@ -3239,6 +3239,15 @@ function registerIpc(): void {
   ipcMain.handle(CH.accountsIdentify, () => identifyAccounts())
   ipcMain.handle(CH.accountsMcp, () => accountsMcp())
   ipcMain.handle(CH.mcpCatalog, () => readMcpCatalog(claudeConfigReader))
+  let probingMcp = false
+  ipcMain.handle(CH.mcpProbe, async (_event, spec: unknown) => {
+    if (probingMcp) return { ok: false, message: 'Another MCP connection test is running.' }
+    probingMcp = true
+    try {
+      const { probeMcp } = await import('./mcpProbe.ts')
+      return await probeMcp(spec, await buildEnvPath())
+    } finally { probingMcp = false }
+  })
   ipcMain.handle(CH.cliDetect, (_e, opts?: { fresh?: boolean }) => {
     if (opts?.fresh === true) {
       forgetLoginPath()

@@ -46,6 +46,7 @@ export const CH = {
    * only, never a value (shared/mcpServers.ts `mcpCatalog`). Read-only.
    */
   mcpCatalog: 'mcp:catalog',
+  mcpProbe: 'mcp:probe',
 
   /*
    * Agent accounts (shared/accounts.ts). Made and removed by main only: a

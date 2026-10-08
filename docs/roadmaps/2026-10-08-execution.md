@@ -32,6 +32,14 @@ Span is labeled an estimate because some source dates fall back to file timestam
 
 Validation: the focused chat-index and settings-search suites, typecheck and the full `npm run check` gate pass (desktop and remote builds included). Tests cover a 23-hour Melbourne DST day, exclusive date ends, unknown versus zero metrics, filter-before-limit behavior, literal folder text, compacted snapshots and hidden projects. Visual verification remains pending.
 
+## Guided MCP credentials
+
+Implemented: Settings › Agents › Tools (MCP) now adds and edits Stoke-held HTTP endpoints and local commands, with argument fields, masked environment/header values and a bearer-token field. Existing vault paths seal credentials. Each agent keeps its own server selection; removing a held server removes its stale selections across agents. Native agent configurations and OAuth sessions remain owned by their agents.
+
+An explicit connection test starts a local command or connects to the entered endpoint, initializes MCP and lists tools without invoking them. It bounds time and response size, closes the test session, refuses redirects and returns credential-free errors. Embedded URL credentials and query parameters are refused in this guided editor. Windows batch-shim tests refuse shell syntax and explain the executable/Node-entry alternative.
+
+Validation: focused agent, secret-store and settings-search suites, typecheck and the full `npm run check` gate pass (desktop and remote builds included). Real local HTTP and stdio mock servers exercise authentication, credential echoes, redirects, denied access, timeouts, oversized responses and missing executables. Visual verification remains pending.
+
 ## Remaining implementation
 
-Every roadmap wave still has open acceptance criteria. Guided MCP credentials, remote transfers, agent updates, the Work/Notion plugin, privilege helpers and the terminal companion are still to be implemented. Live verification and platform-specific proof remain open where called out above.
+Every roadmap wave still has open acceptance criteria. Remote transfers, agent updates, the Work/Notion plugin, privilege helpers and the terminal companion are still to be implemented. Live verification and platform-specific proof remain open where called out above.
