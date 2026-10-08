@@ -40,12 +40,20 @@ An explicit connection test starts a local command or connects to the entered en
 
 Validation: focused agent, secret-store and settings-search suites, typecheck and the full `npm run check` gate pass (desktop and remote builds included). Real local HTTP and stdio mock servers exercise authentication, credential echoes, redirects, denied access, timeouts, oversized responses and missing executables. Visual verification remains pending.
 
-## Remaining implementation
-
 ## Installer fire
 
 Implemented: the shared animation clock slows from 125 ms to 180 ms per frame. Every stage now varies its lower flame rows, while the two hearth rows remain identical. Download progress still chooses the stage; no animation-only wait was added. The shell and PowerShell blocks are regenerated from the shared source.
 
 Validation: all twelve plain frames were inspected before updating the four color-tier snapshots. The focused campfire and installer suites and the full `npm run check` gate pass. The actual POSIX shell harness reproduces the art byte for byte. Native terminal recordings and a real Windows console run remain pending.
 
-Every roadmap wave still has open acceptance criteria. Remote transfers, agent updates, the Work/Notion plugin, privilege helpers and the terminal companion are still to be implemented. Live verification and platform-specific proof remain open where called out above.
+## Native agent updates
+
+Implemented: non-Claude agent pages inspect the installed executable and version, identify a verified native updater or the owning npm/Homebrew prefix, and show the exact update command. An explicit update rechecks the reviewed path/version, serializes updates and refuses active local sessions or pending launches/sign-ins. Other agents can keep running. The launch guard remains claimed through asynchronous preparation and PTY creation.
+
+The updater probes the installed version afterward and distinguishes changed, unchanged, failed and unverified outcomes. It never restarts sessions, guesses an unknown updater or inherits running agents’ provider keys. Unknown installers remain actionable through their original package manager. Claude Code keeps its existing channel-aware updater.
+
+Validation: installation fixtures cover native, npm and Homebrew ownership, mismatched prefixes, no-op/failing/unverifiable updates and concurrent launch claims. A real Node subprocess emulates an update and subsequent version probe; another proves timeout reporting. Read-only inspection on this Mac correctly recognizes Codex 0.161.0 as a native install and OpenCode 1.18.34 as Homebrew-owned. No real agent installation was updated. The full `npm run check` gate passes, including desktop and remote builds. Live vendor updates, Windows installer ownership and visual verification remain open. Live model/context/usage adapters are the next part of R17.
+
+## Remaining implementation
+
+Every roadmap wave still has open acceptance criteria. Remote transfers, live agent telemetry, the Work/Notion plugin, privilege helpers and the terminal companion are still to be implemented. Live verification and platform-specific proof remain open where called out above.

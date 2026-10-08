@@ -130,7 +130,8 @@ console.log('every row the sheet marks is in the index, and every row in the ind
     'components/BackupSettings.tsx': ['backup'],
     'components/AccountSyncSettings.tsx': ['account'],
     'components/RemoteSettings.tsx': ['remote', 'updates'],
-    'components/AgentsSettings.tsx': ['agents', 'agent', 'claude-launch']
+    'components/AgentsSettings.tsx': ['agents', 'agent', 'claude-launch'],
+    'components/AgentUpdater.tsx': ['agents', 'agent']
   }
   const misplaced: string[] = []
   for (const [id, files] of marks) {
@@ -485,7 +486,8 @@ console.log('\nevery control the sheet labels is found by its label, on its own 
     'components/BackupSettings.tsx': ['backup'],
     'components/AccountSyncSettings.tsx': ['account'],
     'components/RemoteSettings.tsx': ['remote', 'updates'],
-    'components/AgentsSettings.tsx': ['agents', 'agent', 'claude-launch']
+    'components/AgentsSettings.tsx': ['agents', 'agent', 'claude-launch'],
+    'components/AgentUpdater.tsx': ['agents', 'agent']
   }
   const unfindable = new Map<string, string>([
     ['components/SettingsSheet.tsx: Launch defaults', "Sessions' signpost to Agents › Claude Code › Launch defaults, which the search finds itself"],

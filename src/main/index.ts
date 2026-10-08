@@ -21,6 +21,7 @@ import { pathToFileURL } from 'node:url'
 import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, isAbsolute, join } from 'node:path'
 import { CH } from '@shared/ipc'
+import { AgentLifecycleGate } from '../shared/agentLifecycle.ts'
 import { activeThemeId, resolveTheme } from '@shared/themes'
 import { revealInsetFor, revealsOnEntry } from '@shared/fullScreenReveal'
 import { DEFAULT_BROWSER_PROFILE_ID, newProfileId, nextProfileLabel } from '@shared/browserProfiles'
@@ -54,6 +55,7 @@ import {
   buildEnvPath,
   detectCodingClis,
   findClaude,
+  findCli,
   forgetIdentities,
   forgetLoginPath,
   loginShellPathValue,
@@ -284,6 +286,7 @@ const TITLEBAR_H = 44
 let win: BrowserWindow | null = null
 let browser: EmbeddedBrowser | null = null
 let ptys: PtyManager | null = null
+const agentLifecycle = new AgentLifecycleGate()
 let watcher: ContextWatcher | null = null
 let registry: RegistryPoller | null = null
 /**
@@ -1141,6 +1144,19 @@ async function transcriptExists(sessionId: string): Promise<boolean> {
  * point 10 / audit PX-9 / F3.
  */
 async function launchSession(
+  requested: LaunchOptions,
+  origin: 'desktop' | 'remote' = 'desktop'
+): Promise<StartResult> {
+  const account = requested.accountLogin ? getSettings().accounts[requested.accountLogin.accountId] : null
+  const cli = account?.cli ?? cliIdOf(requested.cli)
+  const local = !requested.host && !requested.enroll
+  const release = local ? agentLifecycle.beginLaunch(cli) : () => {}
+  if (!release) throw new Error('This agent is being updated. Wait for the update to finish before launching it.')
+  try { return await startSession(requested, origin) }
+  finally { release() }
+}
+
+async function startSession(
   requested: LaunchOptions,
   origin: 'desktop' | 'remote' = 'desktop'
 ): Promise<StartResult> {
@@ -3239,6 +3255,32 @@ function registerIpc(): void {
   ipcMain.handle(CH.accountsIdentify, () => identifyAccounts())
   ipcMain.handle(CH.accountsMcp, () => accountsMcp())
   ipcMain.handle(CH.mcpCatalog, () => readMcpCatalog(claudeConfigReader))
+  const runningAgentSessions = (id: CodingCliId): number => ptys?.list().filter((session) => session.cli === id && !session.exited && ptys?.launchFacts(session.ptyId)?.hostId === null).length ?? 0
+  const inspectAgent = async (id: CodingCliId) => {
+    const path = await findCli(id)
+    if (!path) return null
+    const { inspectAgentInstallation } = await import('./agentLifecycle.ts')
+    const info = await inspectAgentInstallation(id, path, await buildEnvPath())
+    return { ...info, runningSessions: runningAgentSessions(id) }
+  }
+  ipcMain.handle(CH.agentInstallation, (_event, id: unknown) => isCodingCliId(id) && !isClaudeCode(id) ? inspectAgent(id) : null)
+  ipcMain.handle(CH.agentUpdate, async (_event, raw: unknown) => {
+    const input = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
+    const blocked = (message: string) => ({ outcome: 'blocked' as const, before: null, after: null, output: '', message })
+    if (!isCodingCliId(input.cli) || isClaudeCode(input.cli)) return blocked('Choose an installed agent. Claude Code uses its existing updater.')
+    const id = input.cli
+    if (!agentLifecycle.beginUpdate(id)) return blocked('An update or a launch for this agent is in progress. Wait for it to finish.')
+    try {
+      const info = await inspectAgent(id)
+      if (!info) return blocked('This agent could not be found. Inspect its installation again.')
+      if (info.resolvedPath !== input.expectedPath || info.version !== input.expectedVersion) return blocked('The installation changed since it was inspected. Check it again before updating.')
+      if (runningAgentSessions(id)) return blocked('Close this agent’s local sessions and sign-in tabs before updating its installation. Other agents can keep running.')
+      const { runAgentUpdate } = await import('./agentLifecycle.ts')
+      const result = await runAgentUpdate(info, await buildEnvPath())
+      forgetIdentities()
+      return result
+    } finally { agentLifecycle.endUpdate(id) }
+  })
   let probingMcp = false
   ipcMain.handle(CH.mcpProbe, async (_event, spec: unknown) => {
     if (probingMcp) return { ok: false, message: 'Another MCP connection test is running.' }

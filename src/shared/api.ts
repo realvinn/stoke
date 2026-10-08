@@ -29,6 +29,7 @@ import type { SkillDirScan } from './skills'
 import type { GitStatus } from './gitStatus'
 import type { AccountMcpSummary, McpCatalog } from './mcpServers'
 import type { McpProbeResult } from './mcpSetup'
+import type { AgentInstallation, AgentUpdateResult } from './agentLifecycle'
 import type { MicAccess } from './voiceRoute'
 import type { SttConfig } from './speechProviders'
 import type { CreateProfileInput, ProfilePlan } from './profiles'
@@ -556,6 +557,8 @@ export interface StokeApi {
     mcpServers(): Promise<McpCatalog>
     /** Explicit connection test of a draft server; no tools are invoked. */
     probeMcp(spec: unknown): Promise<McpProbeResult>
+    agentInstallation(cli: CodingCliId): Promise<AgentInstallation | null>
+    updateAgent(input: { cli: CodingCliId; expectedPath: string; expectedVersion: string }): Promise<AgentUpdateResult>
   }
 
   /**

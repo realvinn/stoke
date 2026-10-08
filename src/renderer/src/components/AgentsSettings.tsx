@@ -49,6 +49,7 @@ import { Spinner } from './Spinner'
 import { ColorField } from './ColorField'
 import { FieldHint } from './FieldHint'
 import { McpServerEditor } from './McpServerEditor'
+import { AgentUpdater } from './AgentUpdater'
 import { removeMcpServer } from '@shared/mcpSetup'
 import { agentMark } from '../lib/agentColor'
 import { agentRowId, type SettingsLocation } from '@shared/settingsIndex'
@@ -621,9 +622,10 @@ function AgentWhere({
         </span>
       )}
       {path ? (
-        <span className="field-hint mono" style={{ overflowWrap: 'anywhere' }}>
-          {path}
-        </span>
+        <>
+          <span className="field-hint mono" style={{ overflowWrap: 'anywhere' }}>{path}</span>
+          {!isClaudeCode(cli.id) && <AgentUpdater key={cli.id} cli={cli} path={path} />}
+        </>
       ) : !checking ? (
         installCommand ? (
           <span className="field-hint">

@@ -8566,6 +8566,12 @@ button.color-field-swatch[aria-expanded='true'] {
   border-radius: var(--r-sm);
   background: var(--bg-sunken);
 }
+.agent-update-output {
+  max-height: 16rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .mcp-editor > label {
   display: flex;
   flex-direction: column;

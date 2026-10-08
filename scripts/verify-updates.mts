@@ -15,7 +15,7 @@
  *   node scripts/verify-updates.mts
  */
 import { execFile } from 'node:child_process'
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -34,6 +34,8 @@ import {
 } from '../src/main/updates.ts'
 import { describeExecError } from '../src/main/updates.ts'
 import { channelLagNotice, updateButton, updateVerdict } from '../src/renderer/src/lib/updateVerdict.ts'
+import { AgentLifecycleGate, agentNpmPackages, agentVersion, nativeUpdaterInHelp } from '../src/shared/agentLifecycle.ts'
+import { inspectAgentInstallation, runAgentUpdate, agentCommandRunner, agentUpdateEnv, type AgentCommandRunner } from '../src/main/agentLifecycle.ts'
 
 const execFileAsync = promisify(execFile)
 
@@ -958,6 +960,95 @@ console.log('\nthe background download of Stoke itself')
   )
   check('not off a check that failed', shouldAutoDownload({ ...found, error: 'Could not reach GitHub.' }, true), false)
   check('not from source, where there is nothing to replace', shouldAutoDownload({ ...found, supported: false }, true), false)
+}
+
+console.log('\nAgent lifecycle: update ownership and verification')
+{
+  const gate = new AgentLifecycleGate()
+  const release = gate.beginLaunch('codex')!
+  check('a pending launch blocks its updater before any session exists', gate.beginUpdate('codex'), false)
+  release(); release()
+  check('the launch claim releases exactly once', gate.beginUpdate('codex'), true)
+  check('new launches of the updating agent are refused', gate.beginLaunch('codex'), null)
+  check('another updater is serialized too', gate.beginUpdate('opencode'), false)
+  const other = gate.beginLaunch('opencode')
+  check('another agent can still launch', !!other, true)
+  other?.(); gate.endUpdate('codex')
+  check('an update releases its claim', !!gate.beginLaunch('codex'), true)
+  check('version parsing retains native date/build suffixes', [agentVersion('codex-cli 0.161.0'), agentVersion('2026.09.30-build123'), agentVersion('not a version')], ['0.161.0', '2026.09.30-build123', null])
+  check('an update verb must be a declared command, not a mention in prose', [nativeUpdaterInHelp('codex', '  update            Update Codex'), nativeUpdaterInHelp('codex', 'Your updater is disabled.'), nativeUpdaterInHelp('grok', '  update            Do something')], [true, false, false])
+  check('legacy Codex npm package is recognized', agentNpmPackages('codex'), ['@openai/codex'])
+  check('the updater never inherits a running agent’s API key', agentUpdateEnv('/fixture/bin').ANTHROPIC_API_KEY, undefined)
+  const home = mkdtempSync(join(tmpdir(), 'stoke-agent-lifecycle-'))
+  try {
+    const native = join(home, 'codex')
+    writeFileSync(native, '')
+    let version = '1.0.0'
+    const calls: string[][] = []
+    const run: AgentCommandRunner = async (file, args) => {
+      calls.push([file, ...args])
+      if (args[0] === '--version') return { ok: true, output: version }
+      if (args[0] === '--help') return { ok: true, output: '  update            Update Codex' }
+      version = '1.1.0'
+      return { ok: true, output: 'Updated' }
+    }
+    const info = await inspectAgentInstallation('codex', native, home, run)
+    check('a verified native updater uses that exact executable', [info.method, info.command?.file, info.command?.args], ['native', native, ['update']])
+    const updated = await runAgentUpdate(info, home, run)
+    check('a successful update is verified by another version probe', [updated.outcome, updated.before, updated.after, calls.at(-1)?.[1]], ['updated', '1.0.0', '1.1.0', '--version'])
+    const noop = await runAgentUpdate(info, home, async (_file, args) => ({ ok: true, output: args[0] === '--version' ? '1.0.0' : 'Already current' }))
+    check('exit zero with the same version is reported as unchanged', noop.outcome, 'unchanged')
+    const failed = await runAgentUpdate(info, home, async (_file, args) => ({ ok: args[0] === '--version', output: args[0] === '--version' ? '1.0.0' : 'Failure' }))
+    check('nonzero is failed, with the installed version still checked', [failed.outcome, failed.after], ['failed', '1.0.0'])
+    const missing = await runAgentUpdate(info, home, async (_file, args) => ({ ok: true, output: args[0] === '--version' ? 'unknown' : 'Done' }))
+    check('exit zero without a readable version stays unverified', missing.outcome, 'unverified')
+
+    const prefix = join(home, 'brew-prefix')
+    const bin = join(prefix, 'bin')
+    const keg = join(prefix, 'Cellar', 'opencode', '1.0.0', 'bin')
+    mkdirSync(bin, { recursive: true }); mkdirSync(keg, { recursive: true })
+    writeFileSync(join(bin, process.platform === 'win32' ? 'brew.exe' : 'brew'), '')
+    const brewAgent = join(keg, 'opencode')
+    writeFileSync(brewAgent, '')
+    const brewRun: AgentCommandRunner = async (_file, args) => ({ ok: true, output: args[0] === '--prefix' ? prefix : '1.0.0' })
+    const brewed = await inspectAgentInstallation('opencode', brewAgent, bin, brewRun)
+    check('Homebrew-owned binaries use Homebrew, not the native installer', [brewed.method, brewed.command?.args], ['brew', ['upgrade', 'opencode']])
+    const wrongBrew = await inspectAgentInstallation('opencode', brewAgent, bin, async (_file, args) => ({ ok: true, output: args[0] === '--prefix' ? join(home, 'different-brew') : '1.0.0' }))
+    check('a different Homebrew prefix cannot update this installation', wrongBrew.command, null)
+
+    const npmBin = join(home, 'npm-bin')
+    const npmRoot = join(home, 'global', 'node_modules')
+    const packageDir = join(npmRoot, '@openai', 'codex')
+    mkdirSync(npmBin, { recursive: true }); mkdirSync(join(packageDir, 'bin'), { recursive: true })
+    writeFileSync(join(npmBin, process.platform === 'win32' ? 'npm.exe' : 'npm'), '')
+    writeFileSync(join(packageDir, 'package.json'), JSON.stringify({ name: '@openai/codex' }))
+    const npmAgent = join(packageDir, 'bin', 'codex')
+    writeFileSync(npmAgent, '')
+    const npmRun: AgentCommandRunner = async (_file, args) => ({ ok: true, output: args[0] === 'root' ? npmRoot : '1.0.0' })
+    const installed = await inspectAgentInstallation('codex', npmAgent, npmBin, npmRun)
+    check('npm ownership is matched to its global root before building the update', [installed.method, installed.command?.args], ['npm', ['install', '--global', '@openai/codex@latest']])
+    const wrongNpm = await inspectAgentInstallation('codex', npmAgent, npmBin, async (_file, args) => ({ ok: true, output: args[0] === 'root' ? join(home, 'different-npm-root') : '1.0.0' }))
+    check('another npm prefix cannot update this package', wrongNpm.command, null)
+    const foreign = await inspectAgentInstallation('grok', native, home, run)
+    check('an unverified installation offers no guessed update command', foreign.command, null)
+
+    const fixture = join(home, 'updater.mjs')
+    const state = join(home, 'version.txt')
+    writeFileSync(state, '1.0.0')
+    writeFileSync(fixture, `import { readFileSync, writeFileSync } from 'node:fs';
+const state = ${JSON.stringify(state)};
+if (process.argv[2] === '--version') console.log(readFileSync(state, 'utf8'));
+else if (process.argv[2] === '--help') console.log('  update            Update Codex');
+else { writeFileSync(state, '1.2.0'); console.log('Updated fake agent'); }
+`)
+    const commandRunner = agentCommandRunner(home)
+    const realRunner: AgentCommandRunner = (_file, args, timeout) => commandRunner(process.execPath, [fixture, ...args], timeout)
+    const fakeInfo = await inspectAgentInstallation('codex', native, home, realRunner)
+    const realResult = await runAgentUpdate(fakeInfo, home, realRunner)
+    check('the real subprocess path updates an emulated agent and reads its new version', [realResult.outcome, realResult.after, readFileSync(state, 'utf8')], ['updated', '1.2.0', '1.2.0'])
+    const timed = await commandRunner(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], 150)
+    check('a real timed-out process stays distinguishable from success', [timed.ok, timed.timedOut], [false, true])
+  } finally { rmSync(home, { recursive: true, force: true }) }
 }
 
 console.log(`\n${failures === 0 ? 'All checks passed.' : `${failures} check(s) FAILED.`}`)

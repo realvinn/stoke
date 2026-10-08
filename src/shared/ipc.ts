@@ -47,6 +47,8 @@ export const CH = {
    */
   mcpCatalog: 'mcp:catalog',
   mcpProbe: 'mcp:probe',
+  agentInstallation: 'agents:installation',
+  agentUpdate: 'agents:update',
 
   /*
    * Agent accounts (shared/accounts.ts). Made and removed by main only: a
