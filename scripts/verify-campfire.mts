@@ -24,7 +24,7 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, w
 import { tmpdir } from 'node:os'
 import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { ALPHABET, CANVAS, ESC, FLAME_ROWS, FLICKER, HEARTH, RESET, SGR, STAGES, STAGE_THRESHOLDS, colorFor, colorMode, decileOf, decodeRow, degradedReason, encodeRow, frameFor, inAlphabet, paint, plainProgress, renderPlan, stageFor, type ColorKey, type ColorMode, type Terminal } from '../src/shared/campfire.ts'
+import { ALPHABET, CANVAS, ESC, FLAME_ROWS, FLICKER, FRAME_MS, HEARTH, RESET, SGR, STAGES, STAGE_THRESHOLDS, colorFor, colorMode, decileOf, decodeRow, degradedReason, encodeRow, frameFor, inAlphabet, paint, plainProgress, renderPlan, stageFor, type ColorKey, type ColorMode, type Terminal } from '../src/shared/campfire.ts'
 import { BEGIN_MARK, END_MARK, extractBlock, ps1ArtBlock, shArtBlock } from './gen-installer-art.mts'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -74,6 +74,8 @@ ok(
 )
 
 console.log('\nthe hearth never moves')
+ok('the flicker clock is slower than the former 8 fps without extending an install', FRAME_MS >= 170 && FRAME_MS <= 200)
+ok('every stage moves its lower flame instead of only its sparks', STAGES.every((stage) => new Set(stage.frames.map((frame) => frame.slice(-2).join('\n'))).size === stage.frames.length))
 /*
  * This is the assertion a screenshot cannot make. The fire growing only reads
  * as growth because the ground under it is byte-identical in all twelve frames;
@@ -450,16 +452,16 @@ console.log('\nthe golden sheet')
  * `node scripts/campfire-demo.mts --sweep --mode=<tier>` and look at it.
  */
 const GOLDEN: Record<ColorMode, string> = {
-  // Re-cut for the 10-row fire. Looked at with
+  // Re-cut after inspecting all twelve frames with the moving lower flame. Looked at with
   // `node scripts/campfire-demo.mts --sweep --mode=none` first, as the note
   // above says to, rather than pasted from the failure output — a golden hash
   // updated without looking is a golden hash that pins whatever broke. The
   // segmentation was read back per row as well, because this round moved
   // FLAME_ROWS: the hearth must come out one `L` run, not glyph-coloured.
-  truecolor: '1163dbfebb2b1df5ab645d2e45c021488f98abecc8bbbcef989bf5b8fc4d00aa',
-  ansi256: '355814d67c0ddd5ffb3a0ee7281a708f547d3c56044d2f4dca6917e77fea1004',
-  ansi16: '7da17b9889b1c4ddae70342bb1051b4e7841a74f53f267bbbf9504b4fb6d41cd',
-  none: '29f48d24dbd65b378ab903cb4b724bdefb002ab89fd4571a923d83f948d90315'
+  truecolor: '2b589b5d763e520092d6099fec6290e1874f1d3ce606c4007a96b3d511d2c7d5',
+  ansi256: '00bd0d92d6135782383a6f78b275c24c8dc88d6918fea06ff4fb3085c4b5aa3d',
+  ansi16: '80215718a8be956d06b6b8ba7a1faf41636dd4ef0abdd95a0c6c31628d1c3ab1',
+  none: '4f95c833a8838ab5d1218e6f326721d63ffcb22ffd7485a6d754f3b8de2a5191'
 }
 for (const mode of MODES) {
   const sheet = FRAMES.map((f) => paint(f, mode)).join('\n--\n')

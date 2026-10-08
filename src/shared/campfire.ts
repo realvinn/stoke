@@ -20,7 +20,7 @@
 
 /**
  * Fixed for every frame, and load-bearing rather than cosmetic. Redraw in place
- * is `ESC[7A` and nothing else, so a frame with fewer rows would walk the cursor
+ * is `ESC[10A` and nothing else, so a frame with fewer rows would walk the cursor
  * up a line per tick and smear the fire up the screen. Short stages are padded
  * with EMPTY rows, never shortened.
  */
@@ -83,32 +83,32 @@ export const STAGES: readonly { name: StageName; frames: readonly (readonly stri
     name: 'spark',
     frames: [
       ['', '', '', '', '', '  *     .', '         ^', '         (#)'],
-      ['', '', '', '', '', '   .         *', '          ^', '         (#)'],
-      ['', '', '', '', '', ' ,    ^', '        ^', '         (#)']
+      ['', '', '', '', '', '   .         *', '          ^', '        (+#)'],
+      ['', '', '', '', '', ' ,    ^', '        ^', '         (#~)']
     ]
   },
   {
     name: 'kindling',
     frames: [
       ['', '', '', '', '  *     .      ,', '         (~)', '        (+~)', '       (+#+)'],
-      ['', '', '', '', '   .         *  ^', '          (~)', '        (+~)', '       (+#+)'],
-      ['', '', '', '', ' ,    ^       *', '        (~)', '        (+~)', '       (+#+)']
+      ['', '', '', '', '   .         *  ^', '          (~)', '       (++~)', '      (++#+)'],
+      ['', '', '', '', ' ,    ^       *', '        (~)', '        (~+)', '       (+#~)']
     ]
   },
   {
     name: 'burning',
     frames: [
       ['', '', '  *     .      ,', '          (~)', '         (+~)', '        (++~)', '   (~) (+#+)', '      (++#++)'],
-      ['', '', '   .         *  ^', '           (~)', '          (+~)', '        (++~)', '   (~) (+#+)', '      (++#++)'],
-      ['', '', ' ,    ^       *', '         (~)', '        (+~)', '        (++~)', '   (~) (+#+)', '      (++#++)']
+      ['', '', '   .         *  ^', '           (~)', '          (+~)', '        (++~)', '    (+)(~#+)', '     (+###++)'],
+      ['', '', ' ,    ^       *', '         (~)', '        (+~)', '        (++~)', '   (+~)(+#+)', '      (+###~)']
     ]
   },
   {
     name: 'roaring',
     frames: [
       ['  *     .      ,', '         ~    .', '           (~)', '         (+~)', '        (++~)', '   (~) (+#+)', '   (+)(++#++)', '     (++###++)'],
-      ['   .         *  ^', '           ~   .', '            (+~~', '          (+~)', '         (++~)', '   (~) (+#+)', '   (+)(++#++)', '     (++###++)'],
-      [' ,    ^       *', '       ~     .', '          ~~+)', '        (+~)', '       (++~)', '   (~) (+#+)', '   (+)(++#++)', '     (++###++)']
+      ['   .         *  ^', '           ~   .', '            (+~~', '          (+~)', '         (++~)', '    (+)(~#+)', '  (+~)(++#+)', '     (+####+~)'],
+      [' ,    ^       *', '       ~     .', '          ~~+)', '        (+~)', '       (++~)', '   (+~)(+#+)', '   (+)(+##+~)', '    (~++###++)']
     ]
   }
 ]
@@ -127,8 +127,8 @@ export const FLICKER: readonly number[] = [0, 1, 2, 1, 0, 2]
  */
 export const STAGE_THRESHOLDS: readonly number[] = [0.08, 0.35, 0.75]
 
-/** Milliseconds between frames. 8 fps: faster reads as frantic, slower as laggy. */
-export const FRAME_MS = 125
+/** A quieter 180 ms flicker; growth still follows the download rather than delaying it. */
+export const FRAME_MS = 180
 
 function clamp01(progress: number): number {
   if (!(progress > 0)) return 0 // also catches NaN
@@ -161,9 +161,9 @@ export function stageFor(progress: number): StageName {
 }
 
 /**
- * The seven rows on screen for a progress fraction and a tick counter: five
+ * The ten rows on screen for a progress fraction and a tick counter: eight
  * flame rows (right-trimmed, possibly empty) and the two hearth rows. Always
- * seven, for the reason `CANVAS` gives.
+ * ten, for the reason `CANVAS` gives.
  */
 export function frameFor(progress: number, tick: number): string[] {
   const stage = STAGES[stageIndexFor(progress)]
@@ -219,7 +219,7 @@ export function segmentRow(row: string, rowIndex: number): { key: ColorKey; text
  *
  * The point of pre-segmenting at generation time is that the draw loop then
  * forks nothing: per-glyph colour normally means an `awk` or `sed` per frame,
- * and forking eight times a second beside a download is both slow and noisy.
+ * and forking several times a second beside a download is both slow and noisy.
  * The cost is 539 bytes of plain art becoming ~1.2 KB encoded, paid once.
  */
 export function encodeRow(row: string, rowIndex: number): string {
@@ -460,7 +460,7 @@ export function decileOf(done: number, total: number | null): number {
  * `decileOf(done, total)` — which is why that is exported — every time this
  * returns a line, and never otherwise.
  *
- * The loop ticks eight times a second; this prints on a decile change and
+ * The loop ticks several times a second; this prints on a decile change and
  * nothing else, so a 40-second install leaves eleven lines in a CI log rather
  * than 320. Append-only, no `\r`, no escape byte: `tee`, `| less`, a CI log
  * viewer and a support paste all show the same thing afterwards.

@@ -42,4 +42,10 @@ Validation: focused agent, secret-store and settings-search suites, typecheck an
 
 ## Remaining implementation
 
+## Installer fire
+
+Implemented: the shared animation clock slows from 125 ms to 180 ms per frame. Every stage now varies its lower flame rows, while the two hearth rows remain identical. Download progress still chooses the stage; no animation-only wait was added. The shell and PowerShell blocks are regenerated from the shared source.
+
+Validation: all twelve plain frames were inspected before updating the four color-tier snapshots. The focused campfire and installer suites and the full `npm run check` gate pass. The actual POSIX shell harness reproduces the art byte for byte. Native terminal recordings and a real Windows console run remain pending.
+
 Every roadmap wave still has open acceptance criteria. Remote transfers, agent updates, the Work/Notion plugin, privilege helpers and the terminal companion are still to be implemented. Live verification and platform-specific proof remain open where called out above.

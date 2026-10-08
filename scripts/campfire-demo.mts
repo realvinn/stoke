@@ -98,7 +98,7 @@ if (flag('plain') !== undefined) {
       last = decileOf(got, total)
     }
   }
-  // 137 ticks, as a real 17-second download at 8 fps would produce.
+  // A long sample of ticks, so repeated percentages stay quiet.
   for (let i = 0; i <= 137; i++) emit(Math.min(total, Math.round((total * i) / 137)))
   // And once more when it finishes: the 100% line belongs to the download being
   // over, not to a tick happening to land on the last byte.

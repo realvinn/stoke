@@ -81,7 +81,7 @@ STOKE_PS1_URL='https://stoke.vinn.dev/install.ps1'
 # printf "$row" -- the art is full of backslashes and % is not escaped here.
 FIRE_ROWS=10
 FIRE_COLS=17
-FIRE_MS=125
+FIRE_MS=180
 FIRE_FLICKER='0 1 2 1 0 2'
 FIRE_STAGE_PCT='8 35 75'
 FIRE_F0='
@@ -99,7 +99,7 @@ FIRE_F1='
 
 _:   |S:.|_:         |C:*
 _:          |S:^
-_:         |B:(|C:#|B:)'
+_:        |B:(+|C:#|B:)'
 FIRE_F2='
 
 
@@ -107,7 +107,7 @@ FIRE_F2='
 
 _: |S:,|_:    |S:^
 _:        |S:^
-_:         |B:(|C:#|B:)'
+_:         |B:(|C:#|B:~)'
 FIRE_F3='
 
 
@@ -122,16 +122,16 @@ FIRE_F4='
 
 _:   |S:.|_:         |C:*|_:  |S:^
 _:          |B:(~)
-_:        |B:(+~)
-_:       |B:(+|C:#|B:+)'
+_:       |B:(++~)
+_:      |B:(++|C:#|B:+)'
 FIRE_F5='
 
 
 
 _: |S:,|_:    |S:^|_:       |C:*
 _:        |B:(~)
-_:        |B:(+~)
-_:       |B:(+|C:#|B:+)'
+_:        |B:(~+)
+_:       |B:(+|C:#|B:~)'
 FIRE_F6='
 
 _:  |C:*|_:     |S:.|_:      |S:,
@@ -146,16 +146,16 @@ _:   |S:.|_:         |C:*|_:  |S:^
 _:           |M:(~)
 _:          |B:(+~)
 _:        |B:(++~)
-_:   |B:(~)|_: |B:(+|C:#|B:+)
-_:      |B:(++|C:#|B:++)'
+_:    |B:(+)(~|C:#|B:+)
+_:     |B:(+|C:###|B:++)'
 FIRE_F8='
 
 _: |S:,|_:    |S:^|_:       |C:*
 _:         |M:(~)
 _:        |B:(+~)
 _:        |B:(++~)
-_:   |B:(~)|_: |B:(+|C:#|B:+)
-_:      |B:(++|C:#|B:++)'
+_:   |B:(+~)(+|C:#|B:+)
+_:      |B:(+|C:###|B:~)'
 FIRE_F9='_:  |C:*|_:     |S:.|_:      |S:,
 _:         |S:~|_:    |S:.
 _:           |M:(~)
@@ -169,17 +169,17 @@ _:           |S:~|_:   |S:.
 _:            |M:(+~~
 _:          |M:(+~)
 _:         |B:(++~)
-_:   |B:(~)|_: |B:(+|C:#|B:+)
-_:   |B:(+)(++|C:#|B:++)
-_:     |B:(++|C:###|B:++)'
+_:    |B:(+)(~|C:#|B:+)
+_:  |B:(+~)(++|C:#|B:+)
+_:     |B:(+|C:####|B:+~)'
 FIRE_F11='_: |S:,|_:    |S:^|_:       |C:*
 _:       |S:~|_:     |S:.
 _:          |M:~~+)
 _:        |M:(+~)
 _:       |B:(++~)
-_:   |B:(~)|_: |B:(+|C:#|B:+)
-_:   |B:(+)(++|C:#|B:++)
-_:     |B:(++|C:###|B:++)'
+_:   |B:(+~)(+|C:#|B:+)
+_:   |B:(+)(+|C:##|B:+~)
+_:    |B:(~++|C:###|B:++)'
 FIRE_FH='L:(===-.,___,.-===)
 L:_,.-=========-.,_'
 FIRE_M0='
@@ -197,7 +197,7 @@ FIRE_M1='
 
    .         *
           ^
-         (#)'
+        (+#)'
 FIRE_M2='
 
 
@@ -205,7 +205,7 @@ FIRE_M2='
 
  ,    ^
         ^
-         (#)'
+         (#~)'
 FIRE_M3='
 
 
@@ -220,16 +220,16 @@ FIRE_M4='
 
    .         *  ^
           (~)
-        (+~)
-       (+#+)'
+       (++~)
+      (++#+)'
 FIRE_M5='
 
 
 
  ,    ^       *
         (~)
-        (+~)
-       (+#+)'
+        (~+)
+       (+#~)'
 FIRE_M6='
 
   *     .      ,
@@ -244,16 +244,16 @@ FIRE_M7='
            (~)
           (+~)
         (++~)
-   (~) (+#+)
-      (++#++)'
+    (+)(~#+)
+     (+###++)'
 FIRE_M8='
 
  ,    ^       *
          (~)
         (+~)
         (++~)
-   (~) (+#+)
-      (++#++)'
+   (+~)(+#+)
+      (+###~)'
 FIRE_M9='  *     .      ,
          ~    .
            (~)
@@ -267,17 +267,17 @@ FIRE_M10='   .         *  ^
             (+~~
           (+~)
          (++~)
-   (~) (+#+)
-   (+)(++#++)
-     (++###++)'
+    (+)(~#+)
+  (+~)(++#+)
+     (+####+~)'
 FIRE_M11=' ,    ^       *
        ~     .
           ~~+)
         (+~)
        (++~)
-   (~) (+#+)
-   (+)(++#++)
-     (++###++)'
+   (+~)(+#+)
+   (+)(+##+~)
+    (~++###++)'
 FIRE_MH='(===-.,___,.-===)
 _,.-=========-.,_'
 # The palette, as the bytes AFTER ESC. ESC itself comes from `printf '\033'`
@@ -522,7 +522,7 @@ fire_set_tier() {
 # The encoding is `KEY:text|KEY:text`; neither delimiter can appear in the art,
 # which is what makes this split unambiguous. The whole point of the art being
 # pre-segmented by the generator is that this loop forks NOTHING: per-glyph
-# colour otherwise means an awk or a sed per frame, eight times a second, beside
+# colour otherwise means an awk or a sed per frame, several times a second, beside
 # a download.
 #
 # `set -f` is not optional. The art contains `*`, and an unquoted expansion of
@@ -741,7 +741,7 @@ fetch_quiet() {
 # Fetch $1 to $2 with the fire burning against a known total of $3 bytes.
 #
 # The byte counter is `wc -c` on the part-written file, once per frame. That is
-# one fork eight times a second — against the fifty a per-glyph `awk` colouring
+# one fork several times a second — against the fifty a per-glyph `awk` colouring
 # pass would cost — and it is the only thing a POSIX shell can ask about a file's
 # size at all.
 fetch_loud() {
