@@ -12,4 +12,6 @@ Validation: focused agent, settings-search and restore suites, typecheck, and th
 
 ## Remaining implementation
 
+Implemented: reconnect snapshots preserve reading positions on phone and desktop relay views; managed SSH bookmarks follow the remote shell across PTY replacement. All viewers and the host screen mirror now share Unicode grapheme widths. Phone reconnects recover closed links immediately on network return and replace potentially stale OPEN sockets after background suspension. Remote panes support the local terminal's macOS Option/Shift selection gestures. The remote regression suite and full gate pass; actual phone and SSH drop/sleep/wake proof remains pending.
+
 All roadmap waves remain open. The existing baseline passes the full repository gate. No requested remote, scratch, search, plugin, Notion, privilege-helper or terminal-companion feature is claimed complete by this record.

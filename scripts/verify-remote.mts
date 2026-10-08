@@ -73,6 +73,8 @@ import { ReplayModes } from '../src/shared/replayModes.ts'
 import { ScreenMirror } from '../src/main/screenMirror.ts'
 // Default import: @xterm/headless is CJS and exposes no named ESM exports.
 import headless from '@xterm/headless'
+import { captureTerminalViewport, restoreTerminalViewport } from '../src/shared/terminalViewport.ts'
+import { UnicodeGraphemesAddon } from '../node_modules/@xterm/addon-unicode-graphemes/lib/addon-unicode-graphemes.mjs'
 import {
   folderDepth,
   isPlainFolderPath,
@@ -595,6 +597,38 @@ check('a chunk with neither leaves it alone', trackBracketedPaste('just output',
 }
 
 {
+  console.log('\nreading position survives a reconnect snapshot')
+  const term = new headless.Terminal({ cols: 60, rows: 8, scrollback: 100, allowProposedApi: true })
+  const mirror = new ScreenMirror(60, 8)
+  const write = (text: string) => new Promise<void>((resolve) => term.write(text, resolve))
+  const lines = Array.from({ length: 70 }, (_, i) => `build output ${i}\r\n`).join('')
+  await write(lines)
+  mirror.write(lines)
+  term.scrollToLine(24)
+  const bookmark = captureTerminalViewport(term)
+  const empty = new headless.Terminal({ cols: 60, rows: 8, allowProposedApi: true })
+  check('SSH waits for captured history instead of restoring against a login banner', restoreTerminalViewport(empty, bookmark, true), false)
+  empty.dispose()
+  // Several more rows arrive while the connection is down, and old buffer
+  // row numbers no longer describe the same distance from the live bottom.
+  mirror.write('new output A\r\nnew output B\r\n')
+  term.reset()
+  await write(mirror.snapshot() ?? '')
+  restoreTerminalViewport(term, bookmark)
+  check('the same line stays at the top after new output and replay', term.buffer.active.getLine(term.buffer.active.viewportY)?.translateToString(true), 'build output 24')
+  await write('live output\r\n')
+  check('live output leaves a reader in scrollback', term.buffer.active.viewportY, 24)
+  term.scrollToBottom()
+  const following = captureTerminalViewport(term)
+  term.reset()
+  await write(mirror.snapshot() ?? '')
+  restoreTerminalViewport(term, following)
+  check('a reader at the live bottom keeps following', term.buffer.active.viewportY, term.buffer.active.baseY)
+  term.dispose()
+  mirror.dispose()
+}
+
+{
   console.log('\na late attach gets the screen as it is now (ScreenMirror)')
   const { Terminal } = headless
   const COLS = 60
@@ -602,6 +636,8 @@ check('a chunk with neither leaves it alone', trackBracketedPaste('just output',
   /** A terminal fed `text` to the end: what a viewer replaying it shows. */
   const shown = async (text: string, cols = COLS, rows = ROWS): Promise<{ rows: string[]; screen: string; mouse: string; cursorHidden: boolean }> => {
     const t = new Terminal({ cols, rows, allowProposedApi: true })
+    t.loadAddon(new UnicodeGraphemesAddon())
+    t.unicode.activeVersion = '15-graphemes'
     await new Promise<void>((r) => t.write(text, r))
     const b = t.buffer.active
     const out: string[] = []
@@ -628,6 +664,12 @@ check('a chunk with neither leaves it alone', trackBracketedPaste('just output',
   await new Promise((r) => setTimeout(r, 200))
   const late = mirror.snapshot() ?? ''
   check('and one taken after, too', await shown(late), live)
+  const unicode = new ScreenMirror(COLS, ROWS)
+  const emoji = '👩🏽‍💻 🧑‍🚀 🫨 e\u0301 end'
+  unicode.write(emoji)
+  await new Promise((r) => setTimeout(r, 20))
+  check('grapheme widths survive the serialized mirror replay', await shown(unicode.snapshot() ?? ''), await shown(emoji))
+  unicode.dispose()
   // Halfway: the first half parsed and serialized, the second still raw behind it.
   const half = new ScreenMirror(COLS, ROWS)
   for (const c of stream.slice(0, 1500)) half.write(c)

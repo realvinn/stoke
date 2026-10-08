@@ -18,6 +18,8 @@
  * to leave another resize handler refitting a disposed terminal).
  */
 import { Terminal } from '@xterm/xterm'
+import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes'
+import { captureTerminalViewport, restoreTerminalViewport } from '@shared/terminalViewport'
 import '@xterm/xterm/css/xterm.css'
 import { contextPercent, contextLevel } from '@shared/contextLevel'
 import {
@@ -312,6 +314,8 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
     minimumContrastRatio: phoneTermContrast(theme?.contrastBoost)
   })
   term.open(inner)
+  term.loadAddon(new UnicodeGraphemesAddon())
+  term.unicode.activeVersion = '15-graphemes'
   // The desktop switched theme while this was open: repaint in place.
   window.addEventListener(
     THEME_EVENT,
@@ -482,6 +486,12 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
   let ws: WebSocket | null = null
   let ready = false
   let everAttached = false
+  let interaction = 0
+  const touched = (): void => { interaction++ }
+  wrap.addEventListener('wheel', touched, { passive: true, signal })
+  wrap.addEventListener('touchstart', touched, { passive: true, signal })
+  wrap.addEventListener('pointerdown', touched, { signal })
+  wrap.addEventListener('keydown', touched, { signal })
   let backoff = 1000
   let retry: ReturnType<typeof setTimeout> | null = null
   let leaving = false
@@ -497,7 +507,13 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
     ws = socket
     socket.addEventListener('message', (ev) => {
       if (ws !== socket) return
-      onFrame(JSON.parse(String(ev.data)) as Frame)
+      try {
+        const frame: unknown = JSON.parse(String(ev.data))
+        if (!frame || typeof frame !== 'object' || typeof (frame as Frame).type !== 'string') throw new Error('Invalid frame')
+        onFrame(frame as Frame)
+      } catch {
+        socket.close(1002, 'Invalid terminal frame')
+      }
     })
     socket.addEventListener('close', (ev) => {
       if (ws !== socket) return
@@ -531,6 +547,10 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
 
   const onFrame = (msg: Frame): void => {
     if (msg.type === 'attached') {
+      const saved = everAttached ? captureTerminalViewport(term) : null
+      const outerTop = wrap.scrollTop
+      const wasSticking = stick
+      const revision = interaction
       backoff = 1000
       linkStrip.hidden = true
       paintHeader()
@@ -545,9 +565,14 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
       if (everAttached) term.reset()
       everAttached = true
       term.write(msg.history ?? '', () => {
-        term.scrollToBottom()
-        stick = true
-        stickToBottom()
+        if (leaving) return
+        if (revision === interaction) {
+          if (saved) restoreTerminalViewport(term, saved)
+          else term.scrollToBottom()
+          stick = wasSticking
+          if (stick) stickToBottom()
+          else wrap.scrollTop = outerTop
+        }
         refreshTray()
       })
       ready = true
@@ -1297,13 +1322,35 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
 
   /* ------------------------------------------------------------ lifecycle */
 
+  const reconnect = (): void => {
+    if (leaving || ended) return
+    // Invalidate first: a late close/message from this socket cannot alter
+    // the replacement connection or flush a message twice.
+    const previous = ws
+    ws = null
+    previous?.close()
+    ready = false
+    sendState = sendLost(sendState)
+    paintQueued()
+    linkStrip.hidden = false
+    backoff = 1000
+    connect()
+  }
+  let hiddenAt: number | null = null
+  window.addEventListener('online', () => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) reconnect()
+  }, { signal })
+
   document.addEventListener(
     'visibilitychange',
     () => {
-      if (document.visibilityState === 'visible' && !leaving && !ended && ws && ws.readyState > WebSocket.OPEN) {
-        backoff = 1000
-        connect()
-      }
+      if (document.visibilityState !== 'visible') { hiddenAt = Date.now(); return }
+      // Mobile browsers can keep an OPEN socket after suspending its network.
+      // Reattach after a sustained background interval rather than trusting
+      // that stale state. Uncertain sends retain their delivery warning.
+      const suspended = hiddenAt !== null && Date.now() - hiddenAt >= 15_000
+      hiddenAt = null
+      if (suspended || !ws || ws.readyState > WebSocket.OPEN) reconnect()
     },
     { signal }
   )

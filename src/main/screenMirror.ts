@@ -30,15 +30,16 @@
  *   its encoding (SGR, 1006, is not on xterm's public `modes`), nor cursor
  *   visibility, nor 2031, so `ReplayModes` reads every chunk too and its
  *   preamble, minus the screen, closes the snapshot.
- * - **Widths are xterm's defaults.** The terminals replaying this (the
- *   phone's, RemoteTerminal) load no Unicode addon, so a row serialized under
- *   other widths would land shifted there.
+ * - **Widths match all three viewers.** Local, phone and remote terminals
+ *   use the same Unicode 15 grapheme addon, including this mirror. Mixing
+ *   width tables shifts emoji and the cells following them on replay.
  *
  * CLAUDE.md gotcha 159.
  */
 import * as headlessModule from '@xterm/headless'
 // The ES module file by path: the package's typings would pull the DOM into main (addonSerialize.d.ts).
 import { SerializeAddon } from '@xterm/addon-serialize/lib/addon-serialize.mjs'
+import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes/lib/addon-unicode-graphemes.mjs'
 import { ReplayModes } from '../shared/replayModes.ts'
 
 /*
@@ -73,6 +74,8 @@ export class ScreenMirror {
       scrollOnEraseInDisplay: opts.scrollOnEraseInDisplay === true
     })
     this.serializer = new SerializeAddon()
+    this.term.loadAddon(new UnicodeGraphemesAddon())
+    this.term.unicode.activeVersion = '15-graphemes'
     this.term.loadAddon(this.serializer)
   }
 

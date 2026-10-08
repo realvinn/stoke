@@ -5,6 +5,8 @@ import { SearchAddon } from '@xterm/addon-search'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes'
+import { captureTerminalViewport, restoreTerminalViewport } from '@shared/terminalViewport'
+import { rememberSshViewport, takeSshViewport } from '../lib/sshViewport'
 import type { ClipboardPeek } from '@shared/api'
 import type { SshHost, TerminalSettings, Theme, VoiceSettings } from '@shared/types'
 import { dropText, imagePasteKeys } from '@shared/drop'
@@ -539,6 +541,20 @@ export function TerminalView({
     termRef.current = term
     fitRef.current = fit
 
+    const viewportKey = tab.hostId && tab.remoteSession ? `${tab.hostId}:${tab.remoteSession}` : null
+    let bookmark = viewportKey ? takeSshViewport(viewportKey) : undefined
+    let viewportDisposed = false
+    const cancelBookmark = (): void => { bookmark = undefined }
+    host.addEventListener('wheel', cancelBookmark, { passive: true })
+    host.addEventListener('pointerdown', cancelBookmark, true)
+    host.addEventListener('keydown', cancelBookmark, true)
+    // SSH prints the tmux history only after authentication, asynchronously.
+    // Wait for the visible line to arrive; never restore against the banner.
+    const viewportDeadline = bookmark ? setTimeout(() => {
+      if (!viewportDisposed && bookmark) restoreTerminalViewport(term, bookmark)
+      bookmark = undefined
+    }, 15_000) : undefined
+
     const detach = attachSink(tab.ptyId, (data) => {
       /*
        * Track whether the child has asked to be told about colour-scheme
@@ -558,7 +574,9 @@ export function TerminalView({
        */
       if (data.includes('\x1b[?2031h')) themeNotifyRef.current = true
       if (data.includes('\x1b[?2031l')) themeNotifyRef.current = false
-      term.write(data)
+      term.write(data, () => {
+        if (!viewportDisposed && bookmark && restoreTerminalViewport(term, bookmark, true)) bookmark = undefined
+      })
     })
     const onInput = term.onData((data) => {
       // Noted before the write: an automatic relaunch must not kill a session
@@ -1098,6 +1116,12 @@ export function TerminalView({
 
     return () => {
       clearTimeout(webglTimer)
+      viewportDisposed = true
+      clearTimeout(viewportDeadline)
+      if (viewportKey) rememberSshViewport(viewportKey, bookmark ?? captureTerminalViewport(term))
+      host.removeEventListener('wheel', cancelBookmark)
+      host.removeEventListener('pointerdown', cancelBookmark, true)
+      host.removeEventListener('keydown', cancelBookmark, true)
       fitNowRef.current = () => {}
       ro.disconnect()
       claimer.dispose()

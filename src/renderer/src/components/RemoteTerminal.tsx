@@ -1,6 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
+import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes'
+import { captureTerminalViewport, restoreTerminalViewport } from '@shared/terminalViewport'
 import type { TerminalSettings, Theme, VoiceSettings } from '@shared/types'
 import type { RemoteBarMode } from '@shared/ui'
 import { remoteTypeVerdict, type RemoteTabFrame, type RemoteTabView } from '@shared/hub/remote'
@@ -13,6 +15,7 @@ import { SizeClaimer, isGrid, type ClaimTrigger, type Grid } from '@shared/sizeC
 import { terminalTheme } from '../lib/theme'
 import { recentlyUsed } from '../lib/lastInput'
 import { platformName } from '../lib/hubRemote'
+import { installShiftSelection } from '../lib/terminalSelection'
 import type { Tab } from '../types'
 import { RemoteFab } from './RemoteFab'
 import { useDictation } from './Dictation'
@@ -164,12 +167,18 @@ export function RemoteTerminal({ tab, view, active, theme, fontFamily, fontSize,
       scrollback: 20_000,
       allowTransparency: true,
       macOptionIsMeta: true,
+      macOptionClickForcesSelection: true,
+      altClickMovesCursor: false,
+      allowProposedApi: true,
       theme: terminalTheme(theme, accent, alpha)
     })
     // Measures this pane's grid for a claim; never fits the terminal itself: its grid is the pty's.
     const fit = new FitAddon()
     term.loadAddon(fit)
+    term.loadAddon(new UnicodeGraphemesAddon())
+    term.unicode.activeVersion = '15-graphemes'
     term.open(host)
+    const removeSelection = installShiftSelection(host, term, window.stoke.platform === 'darwin')
     termRef.current = term
     remoteTerms.set(remoteId, term)
     /** The pty's grid as the other machine last said it. */
@@ -214,15 +223,27 @@ export function RemoteTerminal({ tab, view, active, theme, fontFamily, fontSize,
       })
     }
     const num = (v: unknown, dflt: number): number => (typeof v === 'number' && Number.isInteger(v) && v > 0 && v <= 1000 ? v : dflt)
+    let attached = false
+    let disposed = false
+    let interaction = 0
+    const touched = (): void => { interaction++ }
+    host.addEventListener('wheel', touched, { passive: true })
+    host.addEventListener('pointerdown', touched, true)
+    host.addEventListener('keydown', touched, true)
     const offFrame = window.stoke.hub.remote.onFrame((id, frame: RemoteTabFrame) => {
       if (id !== remoteId) return
       switch (frame.type) {
         case 'attached': {
+          const saved = attached ? captureTerminalViewport(term) : null
+          const revision = interaction
+          attached = true
           const cols = num(frame.cols, 100)
           const rows = num(frame.rows, 30)
           term.reset()
           sizeTo({ cols, rows }, { cols: num(frame.desktopCols, cols), rows: num(frame.desktopRows, rows) })
-          if (typeof frame.history === 'string') term.write(frame.history)
+          term.write(typeof frame.history === 'string' ? frame.history : '', () => {
+            if (!disposed && saved && interaction === revision) restoreTerminalViewport(term, saved)
+          })
           break
         }
         case 'data':
@@ -273,6 +294,10 @@ export function RemoteTerminal({ tab, view, active, theme, fontFamily, fontSize,
     })
     ro.observe(host, { box: 'border-box' })
     return () => {
+      disposed = true
+      host.removeEventListener('wheel', touched)
+      host.removeEventListener('pointerdown', touched, true)
+      host.removeEventListener('keydown', touched, true)
       ro.disconnect()
       host.removeEventListener('focusin', onFocus)
       host.removeEventListener('keydown', onKey, true)
@@ -281,6 +306,7 @@ export function RemoteTerminal({ tab, view, active, theme, fontFamily, fontSize,
       claimerRef.current = null
       offFrame()
       offData.dispose()
+      removeSelection()
       remoteTerms.delete(remoteId)
       termRef.current = null
       term.dispose()
