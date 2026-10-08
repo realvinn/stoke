@@ -177,6 +177,7 @@ export const DEFAULT_SETTINGS: Settings = {
     colors: {},
     // Every agent on its own sign-in: the implicit Default account (accounts.ts).
     defaultAccount: {},
+    access: {},
     // Nothing stored to upgrade (agents.ts AGENTS_FORMAT).
     format: DEFAULT_AGENTS.format
   },

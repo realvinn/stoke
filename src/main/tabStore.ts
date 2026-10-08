@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node
 import { dirname, join } from 'node:path'
 import type { EffortLevel, PermissionMode, StoredTab, StoredTabs } from '../shared/types.ts'
 import { cliIdOf } from '../shared/codingClis.ts'
+import { agentAccessOption } from '../shared/agentAccess.ts'
 import { isSafeRemoteSessionName } from '../shared/sshPersist.ts'
 import { cliOfAccountId } from '../shared/accounts.ts'
 
@@ -113,6 +114,7 @@ function tabOf(v: unknown): StoredTab | null {
     // Absent unless the user gave the tab a name — an empty string is no name.
     ...(nullableStr(v.customTitle) ? { customTitle: nullableStr(v.customTitle) as string } : {}),
     permissionMode: permissionModeOf(v.permissionMode),
+    ...(agentAccessOption(cliId, v.agentAccess) ? { agentAccess: agentAccessOption(cliId, v.agentAccess)!.id } : {}),
     model: str(v.model),
     effort: effortOf(v.effort),
     // Strictly true: a file written before this field existed, or edited by

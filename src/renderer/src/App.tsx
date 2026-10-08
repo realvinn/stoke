@@ -1575,6 +1575,7 @@ export function App(): React.JSX.Element {
           projectName: info.name,
           title: info.name,
           permissionMode: info.permissionMode,
+          ...(info.agentAccess ? { agentAccess: info.agentAccess } : {}),
           model: info.model,
           effort: info.effort,
           ultracode: false,
@@ -2307,6 +2308,7 @@ export function App(): React.JSX.Element {
        * omits these and gets today's globals, unchanged.
        */
       permissionMode?: PermissionMode
+      agentAccess?: import('@shared/agentAccess').AgentAccessMode
       model?: string
       effort?: EffortLevel
       ultracode?: boolean
@@ -2370,6 +2372,7 @@ export function App(): React.JSX.Element {
           ...(opts.private ? { private: true } : {}),
           accountId: opts.install?.length ? undefined : opts.accountId,
           permissionMode,
+          agentAccess: opts.agentAccess,
           model: sessionModel,
           effort: sessionEffort,
           ultracode: sessionUltracode,
@@ -2400,6 +2403,7 @@ export function App(): React.JSX.Element {
           projectName: opts.name,
           title: opts.title ?? opts.name,
           permissionMode,
+          ...(res.agentAccess ? { agentAccess: res.agentAccess } : {}),
           /*
            * Claude Code's is the model this launch sent. Another agent's is the
            * one main's launch plan asked for (`res.model`: its endpoint's, or
@@ -2714,6 +2718,7 @@ export function App(): React.JSX.Element {
           // Same reasoning as the host branch above: the tab's own stored
           // values, so the tab the user sees paused is the tab they get back.
           permissionMode: tab.permissionMode,
+          agentAccess: tab.agentAccess,
           model: tab.model,
           effort: tab.effort,
           ultracode: tab.ultracode,
@@ -3951,6 +3956,7 @@ export function App(): React.JSX.Element {
         name: tab.projectName,
         replaceTabId: tab.id,
         permissionMode: tab.permissionMode,
+        agentAccess: tab.agentAccess,
         model: tab.model,
         effort: tab.effort,
         ultracode: tab.ultracode
@@ -4054,6 +4060,7 @@ export function App(): React.JSX.Element {
           resume: !plan.fresh,
           replaceTabId: tab.id,
           permissionMode: tab.permissionMode,
+          agentAccess: tab.agentAccess,
           model: tab.model,
           effort: tab.effort,
           ultracode: tab.ultracode,
@@ -6289,6 +6296,15 @@ export function App(): React.JSX.Element {
               onLookAgain={() => refreshAgents(true)}
               otherClis={otherClis}
               onMakeDefaultAgent={makeDefaultAgent}
+              agentAccess={settings?.agents.access[primaryCli] ?? 'default'}
+              onAgentAccess={(mode) => {
+                const agents = settingsRef.current?.agents
+                if (!agents) return
+                const access = { ...agents.access }
+                if (mode === 'default') delete access[primaryCli]
+                else access[primaryCli] = mode
+                void patchSettings({ agents: { ...agents, access } })
+              }}
               accounts={launcherAccounts}
               accountId={launcherAccountId}
               onPickAccount={pickAccount}

@@ -205,6 +205,7 @@ export interface StartResult {
    * whose model is the one the renderer chose and sent.
    */
   model?: string
+  agentAccess?: import('./agentAccess').AgentAccessMode
   /**
    * The account the launch was resolved to (`resolveLaunchAccount`): an
    * account id, or `'default'`. The tab stores THIS, not what it asked for,
@@ -356,6 +357,7 @@ export interface RemoteState {
  * `App.tsx` can adopt it as a tab — phone contract point 10 / PX-9 / F3.
  */
 export interface RemoteSessionStarted {
+  agentAccess?: import('./agentAccess').AgentAccessMode
   ptyId: string
   sessionId: string
   cwd: string

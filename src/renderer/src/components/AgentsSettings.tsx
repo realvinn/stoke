@@ -25,6 +25,7 @@ import {
 import type { EffortLevel, PermissionMode, Settings } from '@shared/types'
 import { CLAUDE_SHARED_PLUGIN, SHARED_SKILLS_DIR, skillReport, type SkillDirScan } from '@shared/skills'
 import { AGENT_SEEDS, agentSeed } from '@shared/agentColors'
+import { agentAccessOptions, type AgentAccessMode } from '@shared/agentAccess'
 import {
   ACCOUNT_KEY_ENV,
   ACCOUNT_LABEL_MAX,
@@ -535,6 +536,20 @@ export function AgentSettingsPage(props: AgentPagesProps & { agent: CodingCliId 
             onSignIn={onSignIn}
           />
         }
+        access={
+          !isClaudeCode(current.id) && (
+            <AgentAccess
+              id={current.id}
+              value={agents.access[current.id] ?? 'default'}
+              onChange={(mode) => {
+                const access = { ...agentsRef.current.access }
+                if (mode === 'default') delete access[current.id]
+                else access[current.id] = mode
+                patchAgents({ ...agentsRef.current, access })
+              }}
+            />
+          )
+        }
         tools={
           <AgentTools
             cli={current}
@@ -546,6 +561,28 @@ export function AgentSettingsPage(props: AgentPagesProps & { agent: CodingCliId 
         }
         claude={isClaudeCode(current.id) ? <ClaudeParts onGo={onGo} /> : null}
       />
+    </div>
+  )
+}
+
+function AgentAccess({ id, value, onChange }: {
+  id: CodingCliId
+  value: AgentAccessMode
+  onChange: (value: AgentAccessMode) => void
+}): React.JSX.Element {
+  const options = agentAccessOptions(id)
+  const current = options.find((option) => option.id === value) ?? options[0]
+  return (
+    <div className="agent-brief" data-setting="agent.access">
+      <label className="field-label" htmlFor={`agent-access-${id}`}>Default access</label>
+      <select className="select" id={`agent-access-${id}`} value={current.id} disabled={options.length === 1}
+        onChange={(event) => onChange(event.target.value as AgentAccessMode)}>
+        {options.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+      </select>
+      <span className="field-hint">
+        {options.length === 1 ? 'Stoke has no verified permission override for this agent. Use its own controls.' : current.hint}
+        {' '}Applies on the next launch. OS administrator privileges are separate.
+      </span>
     </div>
   )
 }
@@ -630,6 +667,7 @@ function AgentPage({
   tagLabel,
   onTagLabel,
   accounts,
+  access,
   tools,
   claude
 }: {
@@ -664,6 +702,7 @@ function AgentPage({
   claude: React.ReactNode
   /** Its accounts (`AgentAccounts`), under where it sends requests. */
   accounts: React.ReactNode
+  access: React.ReactNode
 }): React.JSX.Element {
   const caps = capsFor(cli.id)
   return (
@@ -707,6 +746,7 @@ function AgentPage({
       {claude ?? <AgentEndpointFields cli={cli} endpoint={endpoint} onEndpoint={onEndpoint} openrouterKey={openrouterKey} />}
 
       {accounts}
+      {access}
       {tools}
 
       <AgentLook

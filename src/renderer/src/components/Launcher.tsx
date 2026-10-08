@@ -31,6 +31,7 @@ import { launcherActivationAllowed, launcherHoldingFocus, onDeliberate } from '.
 import { EFFORT_LEVELS, PERMISSION_MODES, ULTRACODE_HINT } from '../lib/permissions'
 import { useFloatingLayer } from '../lib/floatingLayers'
 import { agentMark } from '../lib/agentColor'
+import { agentAccessOptions, type AgentAccessMode } from '@shared/agentAccess'
 
 const NO_LAUNCH_FLAGS = { permissionMode: false, effort: false, model: false } as const
 
@@ -108,6 +109,8 @@ interface Props {
   onStartCli: (id: CodingCliId) => void
   /** Make this agent the one Start starts, from the caret menu. */
   onMakeDefaultAgent: (id: CodingCliId) => void
+  agentAccess?: AgentAccessMode
+  onAgentAccess?: (mode: AgentAccessMode) => void
   /**
    * The primary agent's accounts, its own sign-in first (shared/accounts.ts),
    * and the one Start uses. The pill shows only when there is a choice — more
@@ -130,7 +133,7 @@ interface Props {
   above?: React.ReactNode
 }
 
-type Pop = 'switcher' | 'agents' | 'account' | 'mode' | 'model' | 'effort' | 'ultracode' | null
+type Pop = 'switcher' | 'agents' | 'account' | 'mode' | 'model' | 'effort' | 'ultracode' | 'access' | null
 
 export function Launcher(props: Props): React.JSX.Element {
   const {
@@ -220,7 +223,10 @@ export function Launcher(props: Props): React.JSX.Element {
    */
   const flags = claudeHere ? capsFor('claude').launchFlags : NO_LAUNCH_FLAGS
   const showUltracode = claudeHere && flags.effort
-  const anyChip = flags.permissionMode || flags.model || flags.effort || showUltracode
+  const accessOptions = agentAccessOptions(primary.id)
+  const showAccess = !isClaude && accessOptions.length > 1 && !!props.onAgentAccess
+  const access = accessOptions.find((option) => option.id === (props.agentAccess ?? 'default')) ?? accessOptions[0]
+  const anyChip = flags.permissionMode || flags.model || flags.effort || showUltracode || showAccess
   const bypass = flags.permissionMode && launch.permissionMode.choice === 'bypassPermissions'
 
   // A new target starts with a clean list.
@@ -643,6 +649,16 @@ export function Launcher(props: Props): React.JSX.Element {
             role="group"
             aria-label={isClaude ? 'Launch options' : 'Claude Code launch options'}
           >
+            {showAccess && (
+              <Chip open={pop === 'access'} onOpen={(open) => setPop(open ? 'access' : null)}
+                label={`${primary.label} · ${access.label}`} danger={access.danger ?? false}
+                changed={false} title={`${access.hint} Changes the default for new launches.`}>
+                <Options name={`${primary.label} access`} value={access.id}
+                  options={accessOptions.map(({ id, label, hint, danger }) => ({ id, label, hint, danger }))}
+                  onPick={(id) => { props.onAgentAccess?.(id as AgentAccessMode); setPop(null) }} />
+                <span className="field-hint">Default for new launches. Existing sessions keep their permissions.</span>
+              </Chip>
+            )}
             {flags.permissionMode && (
               <Chip
                 open={pop === 'mode'}

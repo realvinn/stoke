@@ -55,6 +55,7 @@ import {
   type LaunchPlanInput
 } from '../src/shared/agents.ts'
 import { CLI_CAPS, CODING_CLIS, type CodingCliId } from '../src/shared/codingClis.ts'
+import { hydrateAgentAccess } from '../src/shared/agentAccess.ts'
 import type { AgentAccount } from '../src/shared/accounts.ts'
 import {
   accountMcpLines,
@@ -289,6 +290,22 @@ const plan = (id: CodingCliId, endpoint: AgentEndpoint | undefined, over: Partia
   })
 const planOk = (r: ReturnType<typeof plan>) => (r.ok ? r.plan : { args: ['<refused>'], env: {} as Record<string, string> })
 
+console.log('\nlaunch-scoped permissions')
+check('Codex full access retains approvals and precedes resume', planOk(plan('codex', undefined, { access: 'full-access', continueLast: true })).args,
+  ['--sandbox', 'danger-full-access', '--ask-for-approval', 'on-request', 'resume', '--last'])
+check('Codex YOLO bypasses approvals and sandbox explicitly', planOk(plan('codex', undefined, { access: 'yolo' })).args,
+  ['--dangerously-bypass-approvals-and-sandbox'])
+check('a default launch adds no permission flags', planOk(plan('codex', undefined)).args, [])
+check('an unsupported override refuses instead of silently launching with different permissions', plan('pi', undefined, { access: 'yolo' }).ok, false)
+check('Cursor YOLO keeps deny rules while disabling its sandbox', planOk(plan('cursor', undefined, { access: 'yolo' })).args,
+  ['--sandbox', 'disabled', '--force'])
+check('Kimi distinguishes routine approvals from never ask',
+  [planOk(plan('kimi', undefined, { access: 'yolo' })).args, planOk(plan('kimi', undefined, { access: 'auto' })).args],
+  [['--yolo'], ['--auto']])
+check('only supported stored modes survive, without arbitrary argv', hydrateAgentAccess({ codex: 'yolo', cursor: 'full-access', pi: 'yolo', grok: '--evil', banana: 'auto' }),
+  { codex: 'yolo', cursor: 'full-access' })
+check('permissions survive settings persistence', hydrateSettings({ agents: { access: { codex: 'full-access' } } }).agents.access, { codex: 'full-access' })
+
 /**
  * No secret may appear in argv: `ps` shows every argument of every process.
  * Every MCP secret too — a bearer, a header, a stdio server's environment —
@@ -314,6 +331,7 @@ check('nothing stored is never asked', hydrateAgents(undefined), {
   tag: { show: true, labels: {} },
   colors: {},
   defaultAccount: {},
+  access: {},
   format: AGENTS_FORMAT
 })
 check('junk is never asked, not "nothing chosen"', hydrateAgents({ chosen: 'codex' }).chosen, null)

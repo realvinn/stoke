@@ -1243,7 +1243,7 @@ async function launchSession(
    * enrollment runs no agent. Headless worklog runs never come through here
    * (agent.ts, gotcha 15).
    */
-  const localAgent = !opts.host && !opts.install?.length
+  const localAgent = !opts.host && !opts.install?.length && !opts.accountLogin
   mcpFiles ??= new McpFileStore(join(app.getPath('userData'), 'agents'))
   const launchMcp: LaunchMcp = localAgent ? await launchMcpFor(cliId, opts.cwd) : { servers: [], own: [], keep: [] }
   let agentPlan: LaunchPlan | null = null
@@ -1252,6 +1252,7 @@ async function launchSession(
     const input = {
       id: cliId,
       endpoint,
+      access: opts.agentAccess ?? settings.agents.access[cliId],
       openrouterKey: settings.providers.openrouterApiKey,
       continueLast: opts.continueLast === true,
       // A chat found by search, reopened by its own id (`resumeArgs`); the
@@ -1375,7 +1376,10 @@ async function launchSession(
    * or '' when the agent picks. Never the renderer's Claude default, which it
    * sends with every launch and which nothing here passed to this binary.
    */
-  const planned: StartResult = agentPlan ? { ...started, model: agentPlan.model } : started
+  const planned: StartResult = agentPlan ? {
+    ...started, model: agentPlan.model,
+    agentAccess: opts.agentAccess ?? settings.agents.access[cliId] ?? 'default'
+  } : started
   const result: StartResult = accountId ? { ...planned, accountId } : planned
   // A brand-new row for /ws/events, whichever side started it — a phone
   // watching the list should see a desktop-started session appear too.
@@ -1398,6 +1402,7 @@ async function launchSession(
         : (opts.cwd.split(/[\\/]/).filter(Boolean).pop() ?? opts.cwd),
       cli: opts.host ? 'claude' : cliId,
       permissionMode: opts.permissionMode ?? 'default',
+      ...(result.agentAccess ? { agentAccess: result.agentAccess } : {}),
       model: agentPlan ? agentPlan.model : (opts.model ?? ''),
       effort: opts.effort ?? 'default',
       hostId: opts.host?.id ?? null,

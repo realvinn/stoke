@@ -28,6 +28,7 @@ export type TabKind = 'session' | 'new' | 'remote'
 
 /** A live terminal tab. Distinct from Claude's own session record. */
 export interface Tab {
+  agentAccess?: import('@shared/agentAccess').AgentAccessMode
   id: string
   kind: TabKind
   /**

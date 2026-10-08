@@ -46,6 +46,7 @@ export function toStored(
       // byte-for-byte what it always was.
       ...(t.customTitle ? { customTitle: t.customTitle } : {}),
       permissionMode: t.permissionMode,
+      ...(t.agentAccess ? { agentAccess: t.agentAccess } : {}),
       model: t.model,
       effort: t.effort,
       ultracode: t.ultracode,
@@ -90,6 +91,7 @@ export function fromStored(state: StoredTabs): { tabs: Tab[]; activeId: string |
     title: s.title,
     ...(s.customTitle ? { customTitle: s.customTitle } : {}),
     permissionMode: s.permissionMode,
+    ...(s.cliId !== 'claude' ? { agentAccess: s.agentAccess ?? 'default' } : {}),
     /*
      * Another agent's paused tab comes back with no model. Its Resume asks
      * main's launch plan again, from today's settings, and the tab takes the

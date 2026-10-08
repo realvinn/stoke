@@ -51,6 +51,7 @@ import {
   type InstallPlatform
 } from './codingClis.ts'
 import { hydrateAgentColors, type AgentColors } from './agentColors.ts'
+import { agentAccessOption, hydrateAgentAccess, type AgentAccessMode } from './agentAccess.ts'
 import { accountEnv, accountProblem, hydrateDefaultAccounts, type AgentAccount } from './accounts.ts'
 import {
   codexMcp,
@@ -153,6 +154,8 @@ export interface AgentSettings {
    * account has since been removed.
    */
   defaultAccount: Partial<Record<CodingCliId, string>>
+  /** Permissions for new launches; absent leaves the CLI's own settings alone. */
+  access: Partial<Record<CodingCliId, AgentAccessMode>>
   /**
    * The shape this block was written in (`AGENTS_FORMAT`). Absent in every
    * file from before it existed, which reads as 1. Always this build's number
@@ -222,6 +225,7 @@ export const DEFAULT_AGENTS: AgentSettings = {
   tag: { show: true, labels: {} },
   colors: {},
   defaultAccount: {},
+  access: {},
   format: AGENTS_FORMAT
 }
 
@@ -318,7 +322,8 @@ export function hydrateAgents(raw: unknown): AgentSettings {
       mcp: hydrateAgentMcp(undefined, isCodingCliId),
       tag: hydrateAgentTag(undefined),
       colors: {},
-      defaultAccount: {}
+      defaultAccount: {},
+      access: {}
     }
   }
   const r = raw as {
@@ -330,6 +335,7 @@ export function hydrateAgents(raw: unknown): AgentSettings {
     tag?: unknown
     colors?: unknown
     defaultAccount?: unknown
+    access?: unknown
     format?: unknown
   }
   const from = agentsFormatOf(r.format)
@@ -362,6 +368,7 @@ export function hydrateAgents(raw: unknown): AgentSettings {
     tag: hydrateAgentTag(r.tag),
     colors: hydrateAgentColors(r.colors, from),
     defaultAccount: hydrateDefaultAccounts(r.defaultAccount),
+    access: hydrateAgentAccess(r.access),
     // Upgraded above, so this build's number whatever was read — a newer
     // build's included, since only this build's fields survived the hydrate.
     format: AGENTS_FORMAT
@@ -442,6 +449,7 @@ export type LaunchPlanResult = { ok: true; plan: LaunchPlan } | { ok: false; mes
 
 export interface LaunchPlanInput {
   id: CodingCliId
+  access?: AgentAccessMode
   endpoint: AgentEndpoint | undefined
   /** Settings › Providers' OpenRouter key, shared with Claude Code. */
   openrouterKey: string
@@ -612,7 +620,9 @@ export function agentLaunchPlan(input: LaunchPlanInput): LaunchPlanResult {
   const problem = endpointProblem(id, ep, openrouterKey)
   if (problem) return { ok: false, message: problem }
 
-  const args: string[] = []
+  const access = agentAccessOption(id, input.access ?? 'default')
+  if (!access) return { ok: false, message: `${cli.label} does not support the requested access mode in Stoke.` }
+  const args: string[] = [...access.args]
   const env: Record<string, string> = {}
   const customKey = ep.apiKey || NO_KEY
 

@@ -63,6 +63,8 @@ export interface LaunchOptions {
    * by-id resume refuses the launch rather than starting something else.
    */
   agentResumeId?: string
+  /** Explicit non-Claude access for this session; absent uses its Stoke default. */
+  agentAccess?: import('./agentAccess').AgentAccessMode
   /** With resume/continue, branch to a new session id instead of reusing. */
   forkSession?: boolean
   permissionMode: PermissionMode
@@ -1774,6 +1776,7 @@ export interface StoredTab {
   title: string
   /** A name the user gave this tab; wins over `title` when set. Absent when never renamed. */
   customTitle?: string
+  agentAccess?: import('./agentAccess').AgentAccessMode
   permissionMode: PermissionMode
   model: string
   effort: EffortLevel
