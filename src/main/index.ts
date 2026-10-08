@@ -199,7 +199,9 @@ import {
   windowFor,
   writeSessionSettingsFile
 } from './statusLine.ts'
-import { createScratchDir, resolveDefaultCwd } from './workspace.ts'
+import { createScratchDir, resolveDefaultCwd, resolveScratchRoot } from './workspace.ts'
+import { isScratch } from './scratch.ts'
+import { scratchLabel } from '../shared/scratch.ts'
 import { launchFolderProblem, realpathFolder, revealProblem } from './folderCheck.ts'
 import { BrowserMcpServer } from './mcp/server.ts'
 import { connectTarget, generateToken, RemoteServer, tailnetAddress, type RemoteDeps, type RemotePushDeps } from './remote/server.ts'
@@ -943,6 +945,27 @@ function cwdForSession(sessionId: string): string {
   return (
     ptys?.list().find((s) => s.sessionId === sessionId)?.cwd || sessionCwds.get(sessionId) || ''
   )
+}
+
+const scratchNamePending = new Set<string>()
+const scratchNameChecked = new Set<string>()
+async function nameScratchSession(sessionId: string, text: string): Promise<void> {
+  if (hostForSession(sessionId)) return
+  const folder = cwdForSession(sessionId)
+  const label = scratchLabel(text)
+  if (!folder || !label || scratchNamePending.has(folder) || scratchNameChecked.has(folder)) return
+  scratchNamePending.add(folder)
+  try {
+    const marked = await isScratch(folder)
+    scratchNameChecked.add(folder)
+    if (scratchNameChecked.size > 1000) scratchNameChecked.delete(scratchNameChecked.values().next().value!)
+    const settings = getSettings()
+    if (!marked || !settings.scratch.autoName) return
+    const rules = pathRulesFor(process.platform)
+    const current = Object.entries(settings.projectMeta).find(([path]) => pathKey(path, rules) === pathKey(folder, rules))?.[1]
+    if (current?.label) return
+    setSettings(projectMetaPatch(settings, folder, { ...current, label }, rules))
+  } finally { scratchNamePending.delete(folder) }
 }
 
 /** The host a session is running on, or null when it is local. */
@@ -3011,6 +3034,9 @@ function createWindow(): void {
   watcher = new ContextWatcher(
     (snap) => {
       send(CH.ctxUpdate, snap)
+      if (snap.ready && getSettings().scratch.autoName && (snap.title || snap.firstPrompt)) {
+        void nameScratchSession(snap.sessionId, snap.title || snap.firstPrompt || '').catch((error) => console.warn('[stoke] scratch naming failed', error))
+      }
       // The last window this session was ever seen reading, kept after it
       // stops being live — /api/history's `contextLimit` (phone contract
       // point 9 / PX-19) needs this for a session that just ended, since the
@@ -3459,6 +3485,7 @@ function registerIpc(): void {
    */
   ipcMain.handle(CH.workspaceDefault, () => realpathFolder(resolveDefaultCwd(getSettings().defaultCwd)))
   ipcMain.handle(CH.workspaceScratch, () => createScratchDir())
+  ipcMain.handle(CH.workspaceScratchRoot, () => resolveScratchRoot())
   ipcMain.handle(CH.privateInspect, (_e, ptyId: unknown) =>
     typeof ptyId === 'string' && privateChats ? privateChats.inspect(ptyId) : { files: null }
   )

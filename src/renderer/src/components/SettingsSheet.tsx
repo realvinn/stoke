@@ -576,6 +576,21 @@ export function SettingsSheet({
   const cwdField = useDraft(settings.defaultCwd ?? '', (v) =>
     onPatch({ defaultCwd: v.trim() || null })
   )
+  const scratchRef = useRef(settings.scratch)
+  scratchRef.current = settings.scratch
+  const patchScratch = (patch: Partial<Settings['scratch']>): void => {
+    scratchRef.current = { ...scratchRef.current, ...patch }
+    onPatch({ scratch: scratchRef.current })
+  }
+  const scratchField = useDraft(settings.scratch.directory ?? '', (value) =>
+    patchScratch({ directory: value.trim() || null, legacyLocation: false })
+  )
+  const [scratchRoot, setScratchRoot] = useState('')
+  useEffect(() => {
+    let live = true
+    void window.stoke.workspace.scratchRoot().then((root) => { if (live) setScratchRoot(root) }, () => { if (live) setScratchRoot('Unavailable') })
+    return () => { live = false }
+  }, [settings.scratch.directory, settings.scratch.legacyLocation])
 
   /**
    * What the Interface scale box shows while it is being typed into.
@@ -1048,6 +1063,28 @@ export function SettingsSheet({
                     empty to auto-detect — currently <span className="mono">{defaultCwd}</span>.
                   </span>
                 </div>
+
+                <div className="field" data-setting="sessions.scratch-folder">
+                  <label className="field-label" htmlFor="scratch-folder">Scratch folder</label>
+                  <div style={{ display: 'flex', gap: 'var(--space-8)' }}>
+                    <input id="scratch-folder" className="input mono" placeholder={scratchRoot}
+                      value={scratchField.draft} spellCheck={false}
+                      onChange={(event) => scratchField.setDraft(event.target.value)}
+                      onBlur={scratchField.onBlur} onKeyDown={scratchField.onKeyDown} />
+                    <button className="btn" onClick={async () => {
+                      const directory = await window.stoke.pickFolder()
+                      if (directory) patchScratch({ directory, legacyLocation: false })
+                    }}>Choose</button>
+                    <button className="btn" onClick={() => patchScratch({ directory: null, legacyLocation: false })}>Use home</button>
+                  </div>
+                  <span className="field-hint">New scratch sessions go to <span className="mono">{scratchRoot}</span>. Existing folders stay in their current location.</span>
+                </div>
+                <label className="check-row" data-setting="sessions.scratch-name">
+                  <input type="checkbox" checked={settings.scratch.autoName}
+                    onChange={(event) => patchScratch({ autoName: event.target.checked })} />
+                  <span><span className="field-label">Name scratch projects automatically</span>
+                    <span className="field-hint">Use the first Claude Code prompt or title for the sidebar label. Keeps the folder path and your custom names.</span></span>
+                </label>
 
                 <label className="check-row" data-setting="sessions.start-on-launch">
                   <input

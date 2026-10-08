@@ -120,6 +120,7 @@ export const CH = {
   // sessions that are not tied to a saved project
   workspaceDefault: 'workspace:default',
   workspaceScratch: 'workspace:scratch',
+  workspaceScratchRoot: 'workspace:scratch-root',
 
   /*
    * Private chats (shared/privateChat.ts). A private chat is STARTED through

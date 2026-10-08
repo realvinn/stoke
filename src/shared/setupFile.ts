@@ -305,6 +305,7 @@ export const LOCAL_KEYS = [
   'uiScale',
   'projectRoots',
   'defaultCwd',
+  'scratch',
   'startOnLaunch',
   'pinnedProjects',
   'hiddenProjects',

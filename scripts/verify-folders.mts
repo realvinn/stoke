@@ -47,6 +47,8 @@ import {
   migrateSymlinkedProjectKeys
 } from '../src/main/projects.ts'
 import { defaultCwdCandidates, resolveDefaultCwd } from '../src/main/workspaceRoots.ts'
+import { createScratch, isScratch, scratchRoot } from '../src/main/scratch.ts'
+import { DEFAULT_SCRATCH } from '../src/shared/scratch.ts'
 import { revealProblem } from '../src/main/folderCheck.ts'
 import { addRemoteProject, browseRemoteFolder, resolveFolderBases } from '../src/main/remote/folders.ts'
 import { ContextWatcher } from '../src/main/context.ts'
@@ -73,6 +75,28 @@ function check(name: string, got: unknown, want: unknown): void {
     `  ${ok ? 'PASS' : 'FAIL'}  ${name}` +
       (ok ? '' : `\n        got ${JSON.stringify(got)}, want ${JSON.stringify(want)}`)
   )
+}
+
+console.log('\nscratch folders: atomic creation and stable locations')
+{
+  const root = mkdtempSync(join(tmpdir(), 'stoke-scratch-'))
+  try {
+    const location = join(root, 'scratch with spaces 日本語')
+    const when = new Date('2026-10-08T01:00:00Z')
+    const folders = await Promise.all(Array.from({ length: 5 }, () => createScratch(location, when)))
+    check('simultaneous starts have separate folders', new Set(folders).size, 5)
+    check('created paths are canonical even under macOS /tmp', folders.every((folder) => folder === realpathSync(folder)), true)
+    check('each new scratch folder carries its marker', await Promise.all(folders.map(isScratch)), [true, true, true, true, true])
+    check('a normal project is never mistaken for scratch', await isScratch(root), false)
+    writeFileSync(join(folders[0], '.stoke-scratch.json'), 'x'.repeat(4096))
+    check('oversized markers are refused', await isScratch(folders[0]), false)
+    check('fresh defaults use a visible persistent home folder', scratchRoot(DEFAULT_SCRATCH, root, join(root, 'data')), join(root, 'Stoke', 'Scratch'))
+    check('an upgrade retains its previous root', scratchRoot({ ...DEFAULT_SCRATCH, legacyLocation: true }, root, join(root, 'data')), join(root, 'data', 'scratch'))
+    check('an explicit directory wins', scratchRoot({ ...DEFAULT_SCRATCH, directory: location }, root, join(root, 'data')), location)
+    let relativeRefused = false
+    try { scratchRoot({ ...DEFAULT_SCRATCH, directory: '../relative' }, root, root) } catch { relativeRefused = true }
+    check('relative scratch paths refuse rather than depending on launch cwd', relativeRefused, true)
+  } finally { rmSync(root, { recursive: true, force: true }) }
 }
 
 /**

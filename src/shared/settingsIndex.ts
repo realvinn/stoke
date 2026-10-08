@@ -448,6 +448,8 @@ export const SETTING_ROWS: readonly SettingRow[] = [
 
   // Sessions
   { id: 'sessions.default-folder', page: 'sessions', label: 'Default folder', keywords: ['working directory', 'cwd', 'start here', 'home folder'] },
+  { id: 'sessions.scratch-folder', page: 'sessions', label: 'Scratch folder', keywords: ['scratchpad', 'location', 'directory', 'scratch root', 'scratch default'] },
+  { id: 'sessions.scratch-name', page: 'sessions', label: 'Name scratch projects automatically', keywords: ['scratchpad', 'auto rename', 'automatic names'] },
   { id: 'sessions.start-on-launch', page: 'sessions', label: 'Start a session on launch', keywords: ['startup', 'auto start', 'open on launch'] },
   { id: 'sessions.notifications', page: 'sessions', label: 'Notify me when Claude finishes', keywords: ['notifications', 'alert', 'done', 'finished', 'system notification'] },
   { id: 'sessions.status-line', page: 'sessions', label: 'Hide Claude’s status line in Stoke', keywords: ['status line', 'statusline', 'usage', 'plan limits', 'context'] },

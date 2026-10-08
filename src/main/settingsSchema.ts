@@ -14,6 +14,7 @@ import { tidy } from './projectMeta.ts'
 import { DEFAULT_LIGHT_THEME_ID, DEFAULT_THEME_ID, validateTheme } from '../shared/themes.ts'
 import { DEFAULT_WORKLOG_BOARDS, WORKLOG_TARGETS } from '../shared/worklog.ts'
 import { clampWelcomeSeen } from '../shared/welcome.ts'
+import { DEFAULT_SCRATCH, hydrateScratch } from '../shared/scratch.ts'
 import { CHAT_INDEX_DEFAULTS, clampChatIndex, clampChatIndexOptions } from '../shared/chatIndex.ts'
 import { clampVoice, VOICE_DEFAULTS } from '../shared/voiceSettings.ts'
 import { clampAccessAud, clampAccessTeamDomain } from '../shared/cfAccess.ts'
@@ -75,6 +76,7 @@ export const DEFAULT_SETTINGS: Settings = {
   projectRoots: [],
   // null = auto-detect. workspace.ts prefers G:\Code on Windows, then ~/Code.
   defaultCwd: null,
+  scratch: { ...DEFAULT_SCRATCH },
   startOnLaunch: false,
   pinnedProjects: [],
   hiddenProjects: [],
@@ -309,6 +311,7 @@ export function hydrateSettings(raw: unknown): Settings {
   return {
     ...DEFAULT_SETTINGS,
     ...r,
+    scratch: hydrateScratch(r.scratch, Object.keys(r).length > 0),
     defaults: { ...DEFAULT_SETTINGS.defaults, ...(r.defaults ?? {}) },
     browser: hydrateBrowser(r.browser),
     remote: {

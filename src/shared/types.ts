@@ -242,6 +242,7 @@ export type SessionIndexEntry = Pick<
 
 /** Live context-window reading for one session, derived from its JSONL. */
 export interface ContextSnapshot {
+  firstPrompt?: string | null
   sessionId: string
   /** input + cache_read + cache_creation on the most recent assistant turn. */
   contextTokens: number
@@ -1210,6 +1211,7 @@ export interface Settings {
    * null means auto-detect — see main/workspace.ts.
    */
   defaultCwd: string | null
+  scratch: import('./scratch').ScratchSettings
   /** Open a session in the default folder as soon as the app starts. */
   startOnLaunch: boolean
   pinnedProjects: string[]

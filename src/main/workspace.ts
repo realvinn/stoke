@@ -1,8 +1,8 @@
 import { app } from 'electron'
-import { existsSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
 import { resolveDefaultCwd as resolveCwd } from './workspaceRoots.ts'
+import { createScratch, scratchRoot } from './scratch.ts'
+import { getSettings } from './store.ts'
 
 /**
  * Working directories for sessions that are not tied to a saved project.
@@ -17,34 +17,17 @@ export function resolveDefaultCwd(configured: string | null): string {
   return resolveCwd(configured, process.platform, homedir())
 }
 
-function stamp(): string {
-  const d = new Date()
-  const pad = (n: number): string => String(n).padStart(2, '0')
-  return (
-    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
-    `-${pad(d.getHours())}${pad(d.getMinutes())}`
-  )
+export function resolveScratchRoot(): string {
+  return scratchRoot(getSettings().scratch, homedir(), app.getPath('userData'))
 }
 
 /**
- * Create a dated throwaway folder under the app's data directory.
+ * Create a dated throwaway folder in the user's configured scratch root.
  *
  * Deliberately not the OS temp directory: temp gets swept without warning, and
  * anything Claude writes during a scratch session would vanish with it. These
- * persist until deleted by hand — nothing in the UI opens or prunes the scratch
- * root today.
+ * persist until deleted by hand. Existing folders stay where they were made.
  */
-export function createScratchDir(): string {
-  const root = join(app.getPath('userData'), 'scratch')
-  const base = stamp()
-
-  let dir = join(root, base)
-  let n = 2
-  while (existsSync(dir)) {
-    dir = join(root, `${base}-${n}`)
-    n++
-  }
-
-  mkdirSync(dir, { recursive: true })
-  return dir
+export async function createScratchDir(): Promise<string> {
+  return createScratch(resolveScratchRoot())
 }

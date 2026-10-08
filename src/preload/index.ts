@@ -99,7 +99,8 @@ const api: StokeApi = {
 
   workspace: {
     defaultCwd: () => ipcRenderer.invoke(CH.workspaceDefault),
-    createScratch: () => ipcRenderer.invoke(CH.workspaceScratch)
+    createScratch: () => ipcRenderer.invoke(CH.workspaceScratch),
+    scratchRoot: () => ipcRenderer.invoke(CH.workspaceScratchRoot)
   },
 
   private: {

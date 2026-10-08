@@ -8,6 +8,7 @@
  */
 import { join } from 'node:path'
 import { DEFAULT_SETTINGS, hydrateSettings } from '../src/main/settingsSchema.ts'
+import { scratchLabel } from '../src/shared/scratch.ts'
 import { wallpaperFileFor } from '../src/main/wallpaper.ts'
 import { DEFAULT_WORKLOG_BOARDS } from '../src/shared/worklog.ts'
 import {
@@ -117,6 +118,12 @@ check('a legitimate value is untouched', hydrateSettings({ uiScale: 1.25 }).uiSc
  * hydration would leave the shortcut firing and visibly doing nothing.
  */
 check('zoomTarget defaults to both', hydrateSettings({}).zoomTarget, 'both')
+check('fresh scratch locations use home', hydrateSettings(null).scratch.legacyLocation, false)
+check('an old stored install preserves its scratch location', hydrateSettings({ defaultCwd: '/w' }).scratch.legacyLocation, true)
+check('a persisted new location does not migrate back', hydrateSettings(hydrateSettings(null)).scratch.legacyLocation, false)
+check('scratch configuration round-trips', hydrateSettings({ scratch: { directory: ' /w/scratch ', legacyLocation: false, autoName: true } }).scratch,
+  { directory: '/w/scratch', legacyLocation: false, autoName: true })
+check('scratch names are one short line without markup', scratchLabel('  <tag>Build\n a timer</tag>  '), 'Build a timer')
 check('a real target is kept', hydrateSettings({ zoomTarget: 'terminal' }).zoomTarget, 'terminal')
 check('junk falls back to both', hydrateSettings({ zoomTarget: 'sideways' }).zoomTarget, 'both')
 
@@ -222,7 +229,7 @@ console.log('\nnothing already persisted is disturbed')
 check(
   'pinned and hidden keep their own shape',
   hydrateSettings({ pinnedProjects: ['/a'], hiddenProjects: ['/b'] }),
-  { ...DEFAULT_SETTINGS, pinnedProjects: ['/a'], hiddenProjects: ['/b'] }
+  { ...DEFAULT_SETTINGS, scratch: { ...DEFAULT_SETTINGS.scratch, legacyLocation: true }, pinnedProjects: ['/a'], hiddenProjects: ['/b'] }
 )
 
 console.log('\na fresh install, or a settings.json that parses to null')

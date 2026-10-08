@@ -658,6 +658,7 @@ export interface StokeApi {
     defaultCwd(): Promise<string>
     /** Create a fresh throwaway folder and return its path. */
     createScratch(): Promise<string>
+    scratchRoot(): Promise<string>
   }
 
   /**

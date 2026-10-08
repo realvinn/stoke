@@ -293,6 +293,7 @@ export class ContextWatcher {
           model: parsed.model,
           messageCount: parsed.messageCount,
           title: parsed.title,
+          firstPrompt: parsed.firstPrompt,
           updatedAt: st.mtimeMs,
           ready: true,
           permissionMode: parsed.permissionMode
