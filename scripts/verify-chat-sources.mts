@@ -57,7 +57,8 @@ import {
 } from '../src/shared/chatIndex.ts'
 import { agentLaunchPlan, DEFAULT_ENDPOINT } from '../src/shared/agents.ts'
 import { isSafeResumeId, resumableClis, type CodingCliId } from '../src/shared/codingClis.ts'
-import { cleanText, clineMeta, cutBytes, firstPromptOf, MESSAGE_MAX_BYTES, planTrim, rawFirstPromptOf, redactSecrets } from '../src/main/chatIndex/parse.ts'
+import { cleanText, clineMeta, cutBytes, emptyFold, emptyMeta, foldCodexLine, firstPromptOf, MESSAGE_MAX_BYTES, planTrim, rawFirstPromptOf, redactSecrets } from '../src/main/chatIndex/parse.ts'
+import { chatDateBoundary, clampChatSearchFilters, hasChatSearchFilters } from '../src/shared/chatSearch.ts'
 import { ChatStore, skipFolders } from '../src/main/chatIndex/store.ts'
 import { mergeMeta, recleanStale, runPass, type PassHooks } from '../src/main/chatIndex/scan.ts'
 import {
@@ -94,6 +95,61 @@ function section(title: string): void {
 }
 
 /* ------------------------------------------------------------ pure rules */
+
+section('advanced history filters: boundaries, unknown metrics and ordering')
+{
+  check('advanced controls are opt-in and require literal true', [clampChatIndexOptions({}).advancedSearch, clampChatIndexOptions({ advancedSearch: 'true' }).advancedSearch, clampChatIndexOptions({ advancedSearch: true }).advancedSearch], [false, false, true])
+  const invalid = clampChatSearchFilters({ afterMs: NaN, beforeMs: -1, minContextTokens: Infinity, source: 'sql', model: ' ', folder: ['x'], unexpected: 1 })
+  check('untrusted filter fields are discarded', invalid, {})
+  check('zero is a real metric filter, not an empty filter', hasChatSearchFilters({ maxContextTokens: 0 }), true)
+  check('invalid calendar days are refused', [chatDateBoundary('2026-02-30', false), chatDateBoundary('2026-13-01', false)], [undefined, undefined])
+  const priorTz = process.env.TZ
+  try {
+    process.env.TZ = 'Australia/Melbourne'
+    const day = chatDateBoundary('2026-10-04', false)!
+    const end = chatDateBoundary('2026-10-04', true)!
+    check('inclusive local date ends at next midnight on a DST day', (end - day) / 3_600_000, 23)
+  } finally {
+    if (priorTz === undefined) delete process.env.TZ
+    else process.env.TZ = priorTz
+  }
+  const fold = emptyFold()
+  const count = (at: number, tokens: unknown): string => JSON.stringify({ timestamp: new Date(at).toISOString(), type: 'event_msg', payload: { type: 'token_count', info: { total_token_usage: { total_tokens: tokens } } } })
+  foldCodexLine(fold, count(1000, 80_000), true)
+  foldCodexLine(fold, count(2000, 12_000), true)
+  foldCodexLine(fold, count(1500, 90_000), true)
+  foldCodexLine(fold, count(3000, -1), true)
+  check('a compacted context snapshot can shrink; older and invalid reports cannot overwrite it', [fold.meta.contextTokens, fold.meta.contextAtMs, fold.messages.length], [12_000, 2000, 0])
+
+  const dir = mkdtempSync(join(tmpdir(), 'stoke-chat-filters-'))
+  const db = new ChatStore(dir)
+  try {
+    const flags = { subagent: false, dedupeKey: null, whole: true, redact: true }
+    const seed = (source: ChatOrigin, id: string, createdMs: number | null, updatedMs: number, model: string | null, tokens?: number, folder = '/work/test'): void => {
+      const chatId = db.upsertChat(source, id, { ...emptyMeta(), title: id, firstPrompt: 'filterword', cwd: folder, model, createdMs, updatedMs, ...(tokens === undefined ? {} : { contextTokens: tokens, contextAtMs: updatedMs }) }, flags)
+      db.appendMessages(chatId, [{ role: 'user', text: 'filterword', atMs: updatedMs }])
+    }
+    seed('claude', 'newest', 100_000, 500_000, 'claude-sonnet')
+    seed('codex', 'wanted', 100_000, 300_000, 'gpt-6', 12_000, '/work/100%_literal')
+    seed('codex', 'unknown', null, 200_000, null)
+    seed('codex', 'zero', 100_000, 100_000, 'gpt-6', 0)
+    const ids = (query: string, filters: Parameters<ChatStore['search']>[2]['filters'], limit = 50): string[] => db.search(query, limit, { filters }).map((h) => h.nativeId)
+    check('filters run before LIMIT even when a newer match would rank first', ids('filterword', { source: 'codex', minContextTokens: 10_000 }, 1), ['wanted'])
+    check('date end is exclusive and start inclusive', ids('', { afterMs: 100_000, beforeMs: 300_000 }), ['unknown', 'zero'])
+    check('blank queries browse filtered history newest first', ids('', { source: 'codex' }), ['wanted', 'unknown', 'zero'])
+    check('blank queries without filters never dump the index', ids('', {}), [])
+    check('punctuation cannot accidentally browse the index', ids('???', { source: 'codex' }), [])
+    check('unknown usage is excluded, and measured zero remains searchable', ids('', { maxContextTokens: 0 }), ['zero'])
+    check('unknown spans stay unknown', ids('', { maxSpanMs: 0 }), ['zero'])
+    check('span and model filters combine', ids('filterword', { minSpanMs: 150_000, maxSpanMs: 250_000, model: 'GPT-' }), ['wanted'])
+    check('folder text is literal, including SQL wildcard characters', ids('', { folder: '100%_literal' }), ['wanted'])
+    check('an inverted date range returns no matches', ids('', { afterMs: 400_000, beforeMs: 100_000 }), [])
+    check('hidden projects are skipped before the result limit', db.search('', 1, { filters: { source: 'codex' }, skip: (cwd) => cwd.includes('literal') }).map((h) => h.nativeId), ['unknown'])
+    db.upsertChat('codex', 'wanted', { ...emptyMeta(), contextTokens: 3000, contextAtMs: 400_000 }, { ...flags, whole: false })
+    db.upsertChat('codex', 'wanted', { ...emptyMeta(), contextTokens: 90_000, contextAtMs: 350_000 }, { ...flags, whole: false })
+    check('stored snapshots follow time rather than monotonically summing context', db.search('', 50, { filters: { minContextTokens: 1 } }).map((h) => [h.nativeId, h.contextTokens]), [['wanted', 3000]])
+  } finally { db.close(); rmSync(dir, { recursive: true, force: true }) }
+}
 
 section('settings: hydrated and clamped')
 {

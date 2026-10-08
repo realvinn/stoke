@@ -489,6 +489,7 @@ export const SETTING_ROWS: readonly SettingRow[] = [
 
   // Chat history
   { id: 'chats.enabled', page: 'chats', label: 'Keep a searchable copy of my AI chats', keywords: ['chat history', 'index chats', 'on', 'off'] },
+  { id: 'chats.advanced-search', page: 'chats', label: 'Advanced history search', keywords: ['advanced settings', 'search filters', 'date range', 'duration', 'conversation span', 'tokens', 'usage', 'model', 'folder'] },
   // Also holds "Include subagent chats" and "Leave out anything that looks like an API key".
   {
     id: 'chats.sources',

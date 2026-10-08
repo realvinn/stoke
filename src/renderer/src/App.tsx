@@ -7,6 +7,7 @@ import {
   type ChatSearchHit
 } from '@shared/chatIndex'
 import type { CodingCliDetection, CodingCliId } from '@shared/codingClis'
+import { clampChatSearchFilters, hasChatSearchFilters, type ChatSearchFilters } from '@shared/chatSearch'
 import { installedAgents, resolveDefaultAgent, visibleAgents } from '@shared/agents'
 import { agentSeed, paintAgentColors, type AgentColors } from '@shared/agentColors'
 import { accountSeed, accountsOf, DEFAULT_ACCOUNT_ID } from '@shared/accounts'
@@ -420,6 +421,7 @@ export function App(): React.JSX.Element {
     hits: ChatSearchHit[]
     error?: string | null
   }>({ state: 'off', hits: [] })
+  const [chatFilters, setChatFilters] = useState<ChatSearchFilters>({})
   /**
    * The read-only chat viewer: a hit that cannot be taken back up, open in a
    * column beside the main one (ChatViewer.tsx). Null when closed; opening
@@ -1057,6 +1059,9 @@ export function App(): React.JSX.Element {
    * while a query is up asks again, so what it just indexed shows.
    */
   const chatIndexOn = settings?.chatIndex === 'on'
+  const advancedChatSearch = settings?.chatIndexOptions.advancedSearch === true
+  const activeChatFilters = useMemo(() => advancedChatSearch ? clampChatSearchFilters(chatFilters) : {}, [advancedChatSearch, chatFilters])
+  const chatFiltering = hasChatSearchFilters(activeChatFilters)
   const chatRequest = useRef(0)
   const chatPassEnded = chatStatus?.lastPass ? chatStatus.lastPass.startedMs + chatStatus.lastPass.ms : 0
   // An import or a removal changes what matches as much as a pass does.
@@ -1064,17 +1069,17 @@ export function App(): React.JSX.Element {
   useEffect(() => {
     const q = query.trim()
     const req = ++chatRequest.current
-    if (!q || !chatIndexOn) {
+    if ((!q && !chatFiltering) || !chatIndexOn) {
       setChatSearch({ state: 'off', hits: [] })
       return
     }
-    if (q.length < CHAT_SEARCH_MIN_CHARS) {
+    if (q !== '' && q.length < CHAT_SEARCH_MIN_CHARS) {
       setChatSearch({ state: 'short', hits: [] })
       return
     }
     setChatSearch((cur) => ({ state: 'searching', hits: cur.hits }))
     const t = window.setTimeout(() => {
-      window.stoke.chats.search(q).then(
+      window.stoke.chats.search(q, activeChatFilters).then(
         (hits) => {
           if (req === chatRequest.current) setChatSearch({ state: 'ready', hits })
         },
@@ -1084,7 +1089,7 @@ export function App(): React.JSX.Element {
       )
     }, 180)
     return () => window.clearTimeout(t)
-  }, [query, chatIndexOn, chatPassEnded, chatImportsKey])
+  }, [query, chatIndexOn, chatPassEnded, chatImportsKey, activeChatFilters, chatFiltering])
 
   // Switched off, or the index deleted: the viewer shows nothing main would still hand over.
   // A chat from another computer is not this index's, and stays.
@@ -1223,9 +1228,9 @@ export function App(): React.JSX.Element {
   useEffect(() => {
     const q = query.trim()
     const req = ++remoteChatRequest.current
-    if (!remoteChatsOn || q.length < CHAT_SEARCH_MIN_CHARS) {
+    if (!remoteChatsOn || chatFiltering || q.length < CHAT_SEARCH_MIN_CHARS) {
       setRemoteChats(NO_REMOTE_CHATS)
-      if (!q && remoteChatsAsked.current) {
+      if ((!q || chatFiltering) && remoteChatsAsked.current) {
         remoteChatsAsked.current = false
         window.stoke.hub.remote.endChatSearch()
       }
@@ -1243,7 +1248,7 @@ export function App(): React.JSX.Element {
       )
     }, 350)
     return () => window.clearTimeout(t)
-  }, [query, remoteChatsOn, remoteChatsCue])
+  }, [query, remoteChatsOn, remoteChatsCue, chatFiltering])
   const remoteChatGroupsShown = useMemo(
     () => remoteChatGroups(remoteChats, query, chatSharers.seen),
     [remoteChats, query, chatSharers]
@@ -5935,6 +5940,9 @@ export function App(): React.JSX.Element {
                 onEditProfiles={() => openSettings('profiles')}
                 projectHints={query.trim() ? allProjectHints : projectHints}
                 chatSearch={chatSearch}
+                chatFilters={advancedChatSearch ? chatFilters : undefined}
+                onChatFiltersChange={(patch) => setChatFilters((current) => ({ ...current, ...patch }))}
+                onChatFiltersClear={() => setChatFilters({})}
                 onOpenChat={openChat}
                 remoteChats={remoteChatGroupsShown}
                 onOpenRemoteChat={openRemoteChat}

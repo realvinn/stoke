@@ -14,6 +14,7 @@ import type {
 } from '../../shared/chatIndex.ts'
 import type { PassPlan } from './scan.ts'
 import type { SourceEnv } from './sources.ts'
+import type { ChatSearchFilters } from '../../shared/chatSearch.ts'
 
 export interface WorkerData {
   /** The store's directory, `<userData>/chat-index`. */
@@ -27,7 +28,7 @@ export type WorkerRequest =
    * `redact: 'force'`: only chats cleaned with the rules in force now, whatever the setting (store.ts `search`).
    * `hidden`: folders (`hiddenProjects`) whose chats are left out before the limit, by this platform's path rules.
    */
-  | { id: number; op: 'search'; query: string; limit: number; redact?: 'force'; hidden?: string[] }
+  | { id: number; op: 'search'; query: string; limit: number; redact?: 'force'; hidden?: string[]; filters?: ChatSearchFilters }
   | { id: number; op: 'status' }
   | { id: number; op: 'cancel' }
   | { id: number; op: 'delete' }

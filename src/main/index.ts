@@ -103,6 +103,7 @@ import { sharedChats, type ChatIndexAccess } from './hub/chatShare.ts'
 import type { SourceEnv } from './chatIndex/sources.ts'
 import chatWorkerPath from './chatIndex/worker.ts?modulePath'
 import { CHAT_SEARCH_MIN_CHARS, type ChatImportResult, type ChatIndexStatus } from '../shared/chatIndex.ts'
+import { clampChatSearchFilters, hasChatSearchFilters } from '../shared/chatSearch.ts'
 import {
   folderOf,
   folderProblem,
@@ -3335,12 +3336,13 @@ function registerIpc(): void {
    * renderer, the rule `listProjects` keeps for session titles (sessionsIndex
    * above): hiding a folder must hide its conversations from search too.
    */
-  ipcMain.handle(CH.chatsSearch, async (_e, query: unknown) => {
+  ipcMain.handle(CH.chatsSearch, async (_e, query: unknown, rawFilters: unknown) => {
     const s = getSettings()
-    if (s.chatIndex !== 'on' || typeof query !== 'string' || query.trim().length < CHAT_SEARCH_MIN_CHARS) return []
-    const hits = await chatHost().search(query.slice(0, 200), 50)
-    const rules = pathRulesFor(process.platform)
-    return hits.filter((h) => !h.cwd || !s.hiddenProjects.some((p) => isInside(p, h.cwd!, rules)))
+    if (s.chatIndex !== 'on' || typeof query !== 'string') return []
+    const filters = s.chatIndexOptions.advancedSearch ? clampChatSearchFilters(rawFilters) : {}
+    const q = query.trim().slice(0, 200)
+    if (q.length < CHAT_SEARCH_MIN_CHARS && (q !== '' || !hasChatSearchFilters(filters))) return []
+    return chatHost().search(q, 50, filters, s.hiddenProjects)
   })
   ipcMain.handle(CH.chatsIndexNow, () => {
     runChatPass()

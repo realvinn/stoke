@@ -392,6 +392,8 @@ export interface ChatIndexOptions {
    * what was stored without it first. What leaves this computer is cleaned whatever this says.
    */
   redact: boolean
+  /** Show structured filters in the sidebar; off until explicitly enabled. */
+  advancedSearch: boolean
   caps: ChatIndexCaps
 }
 
@@ -399,6 +401,7 @@ export const CHAT_INDEX_DEFAULTS: ChatIndexOptions = {
   sources: { claude: true, codex: true, opencode: true, 'claude-cowork': true, zed: true, cline: true },
   subagents: false,
   redact: true,
+  advancedSearch: false,
   caps: { ...CHAT_CAP_DEFAULTS }
 }
 
@@ -437,6 +440,7 @@ export function clampChatIndexOptions(v: unknown): ChatIndexOptions {
     subagents: r.subagents === true,
     // Only the literal turns redaction off.
     redact: r.redact !== false,
+    advancedSearch: r.advancedSearch === true,
     caps: clampChatCaps(r.caps)
   }
 }
@@ -650,6 +654,10 @@ export interface ChatSearchHit {
   updatedMs: number | null
   /** A subagent's transcript (only indexed when asked for): never resumable on its own. */
   subagent: boolean
+  createdMs?: number | null
+  model?: string | null
+  /** Codex's latest reported context snapshot; other sources remain unknown. */
+  contextTokens?: number | null
   /** Who said the matching text. `title` when the title matched. */
   role: 'user' | 'assistant' | 'title'
   snippet: { text: string; ranges: [number, number][] }

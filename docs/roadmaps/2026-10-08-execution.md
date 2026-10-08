@@ -22,6 +22,16 @@ Opt-in automatic naming uses the first meaningful Claude Code prompt or title as
 
 Validation: settings migration, concurrent folder creation, non-ASCII paths, marker bounds and portable-settings partition checks pass. The full `npm run check` gate passes, including the desktop and remote builds. Visual verification remains pending for the reason above.
 
+## Advanced history search
+
+Implemented: an opt-in Settings › Chat history toggle exposes sidebar filters for local last-activity dates, source, model, folder, conversation span and reported context tokens. Filters apply in SQLite before the result limit, and also support browsing with an empty text query. Hidden projects are excluded before the limit. Activating filters shows this computer's indexed results without mixing in unfiltered project-title or remote hits.
+
+Codex's latest timestamped `token_count` snapshot supplies context tokens; compaction can shrink it. This is explicitly labeled context, not lifetime usage or cost. Unknown metrics are excluded when their filter is used. Existing index data stays searchable through an in-place schema migration; rebuilding reads snapshots from older unchanged chats. Total billed tokens, cost, account attribution and active-work duration remain open.
+
+Span is labeled an estimate because some source dates fall back to file timestamps, and it includes idle time.
+
+Validation: the focused chat-index and settings-search suites, typecheck and the full `npm run check` gate pass (desktop and remote builds included). Tests cover a 23-hour Melbourne DST day, exclusive date ends, unknown versus zero metrics, filter-before-limit behavior, literal folder text, compacted snapshots and hidden projects. Visual verification remains pending.
+
 ## Remaining implementation
 
-Every roadmap wave still has open acceptance criteria. Advanced search, guided MCP credentials, remote transfers, agent updates, the Work/Notion plugin, privilege helpers and the terminal companion are still to be implemented. Live verification and platform-specific proof remain open where called out above.
+Every roadmap wave still has open acceptance criteria. Guided MCP credentials, remote transfers, agent updates, the Work/Notion plugin, privilege helpers and the terminal companion are still to be implemented. Live verification and platform-specific proof remain open where called out above.

@@ -281,6 +281,14 @@ export function ChatHistorySettings({ settings, onPatch, status, detection }: Pr
         </label>
       </div>
 
+      <label className="check-row" data-setting="chats.advanced-search">
+        <input type="checkbox" checked={opts.advancedSearch} onChange={(e) => patchOpts({ advancedSearch: e.target.checked })} />
+        <span>
+          <span>Advanced history search</span>
+          <FieldHint>Show date, source, model, folder, conversation span and reported context-token filters in the sidebar.</FieldHint>
+        </span>
+      </label>
+
       <div className="field" data-setting="chats.imported">
         <span className="field-label">Imported chats</span>
         <FieldHint

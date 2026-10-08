@@ -118,7 +118,7 @@ port.on('message', async (msg: WorkerRequest) => {
       }
       case 'search': {
         const s = openStore(false)
-        reply(msg.id, s ? s.search(msg.query, msg.limit, { redact: msg.redact, skip: skipFolders(msg.hidden ?? [], process.platform) }) : [])
+        reply(msg.id, s ? s.search(msg.query, msg.limit, { redact: msg.redact, filters: msg.filters, skip: skipFolders(msg.hidden ?? [], process.platform) }) : [])
         return
       }
       case 'status':

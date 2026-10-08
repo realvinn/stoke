@@ -42,6 +42,7 @@ import type { HubLocalKeyView, HubResult, HubVerifyResult, HubView } from './hub
 import type { AttachAnswer, HubRemoteView, RemoteChatGrantView, RemoteChatOpen, RemoteChatsResult, RemoteTabFrame } from './hub/remote'
 import type { AccessLookup, RemoteAccessStatus } from './cfAccess'
 import type { ChatDetection, ChatImportResult, ChatIndexStatus, ChatSearchHit, ChatTranscript } from './chatIndex'
+import type { ChatSearchFilters } from './chatSearch'
 import type {
   ActivityReport,
   BrowserState,
@@ -624,7 +625,7 @@ export interface StokeApi {
     status(): Promise<ChatIndexStatus>
     onStatus(cb: (s: ChatIndexStatus) => void): () => void
     /** Body search, one hit per chat; empty unless `settings.chatIndex` is `on`. */
-    search(query: string): Promise<ChatSearchHit[]>
+    search(query: string, filters?: ChatSearchFilters): Promise<ChatSearchHit[]>
     /** Start a pass now (it runs in the background; progress arrives by `onStatus`). */
     indexNow(): Promise<void>
     /** Drop every chat read from this computer's tools and read them again. Imports are kept. */

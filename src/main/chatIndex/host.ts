@@ -23,6 +23,7 @@ import type {
 } from '../../shared/chatIndex.ts'
 import type { PassPlan } from './scan.ts'
 import type { SourceEnv } from './sources.ts'
+import type { ChatSearchFilters } from '../../shared/chatSearch.ts'
 import type { WorkerData, WorkerEvent, WorkerReply, WorkerRequest, WorkerResults } from './protocol.ts'
 
 /** A worker with nothing pending for this long is stopped; the next ask starts another. */
@@ -120,8 +121,8 @@ export class ChatIndexHost {
     return this.request('status', {})
   }
 
-  search(query: string, limit: number): Promise<ChatSearchHit[]> {
-    return this.request('search', { query, limit })
+  search(query: string, limit: number, filters?: ChatSearchFilters, hidden?: string[]): Promise<ChatSearchHit[]> {
+    return this.request('search', { query, limit, filters, hidden })
   }
 
   /**

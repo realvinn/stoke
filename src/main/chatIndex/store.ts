@@ -39,6 +39,7 @@ import {
   type ChatSourceStatus
 } from '../../shared/chatIndex.ts'
 import { isInside, pathRulesFor } from '../../shared/paths.ts'
+import { clampChatSearchFilters, hasChatSearchFilters, type ChatSearchFilters } from '../../shared/chatSearch.ts'
 import { cleanText, CUT_MARK, FIRST_PROMPT_MAX, planTrim, REDACTION_VERSION, redactCutTail, redactMarkedCut, redactSecrets, redactToolCut, type ChatMessage, type ChatMeta } from './parse.ts'
 
 export const STORE_FILE = 'index.sqlite'
@@ -64,7 +65,7 @@ export function skipFolders(folders: readonly unknown[], platform: string): ((cw
  * cleans it again (`recleanStale`): its text was cleaned, if at all, by fewer
  * rules than the ones in force now.
  */
-const SCHEMA_VERSION = '3'
+const SCHEMA_VERSION = '4'
 
 /** Where a source's file (or row) was read up to, so the next pass reads only what is new. */
 export interface FileRow {
@@ -132,6 +133,7 @@ CREATE TABLE IF NOT EXISTS chat (
   native_id TEXT NOT NULL,
   title TEXT, first_prompt TEXT, cwd TEXT, git_branch TEXT, model TEXT,
   created_ms INTEGER, updated_ms INTEGER,
+  context_tokens INTEGER, context_at_ms INTEGER,
   message_count INTEGER NOT NULL DEFAULT 0,
   text_bytes INTEGER NOT NULL DEFAULT 0,
   truncated INTEGER NOT NULL DEFAULT 0,
@@ -250,6 +252,8 @@ export class ChatStore {
     const cols = (this.db.prepare('PRAGMA table_info(chat)').all() as { name?: unknown }[]).map((c) => c.name)
     if (!cols.includes('import_id')) this.db.exec('ALTER TABLE chat ADD COLUMN import_id INTEGER')
     if (!cols.includes('redact_level')) this.db.exec('ALTER TABLE chat ADD COLUMN redact_level INTEGER NOT NULL DEFAULT 0')
+    if (!cols.includes('context_tokens')) this.db.exec('ALTER TABLE chat ADD COLUMN context_tokens INTEGER')
+    if (!cols.includes('context_at_ms')) this.db.exec('ALTER TABLE chat ADD COLUMN context_at_ms INTEGER')
     this.db.exec('CREATE INDEX IF NOT EXISTS chat_import ON chat(import_id)')
     this.db.exec('CREATE INDEX IF NOT EXISTS chat_redact ON chat(redact_level)')
     this.q('INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run('schema', SCHEMA_VERSION)
@@ -349,8 +353,8 @@ export class ChatStore {
   ): number {
     const first = (col: string): string => (flags.whole ? `COALESCE(excluded.${col}, chat.${col})` : `COALESCE(chat.${col}, excluded.${col})`)
     this.q(
-      `INSERT INTO chat(source, native_id, title, first_prompt, cwd, git_branch, model, created_ms, updated_ms, subagent, dedupe_key, redact_level)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO chat(source, native_id, title, first_prompt, cwd, git_branch, model, created_ms, updated_ms, subagent, dedupe_key, redact_level, context_tokens, context_at_ms)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(source, native_id) DO UPDATE SET
          redact_level = MIN(chat.redact_level, excluded.redact_level),
          title = COALESCE(excluded.title, chat.title),
@@ -360,6 +364,10 @@ export class ChatStore {
          model = COALESCE(excluded.model, chat.model),
          created_ms = MIN(COALESCE(chat.created_ms, excluded.created_ms), COALESCE(excluded.created_ms, chat.created_ms)),
          updated_ms = MAX(COALESCE(chat.updated_ms, 0), COALESCE(excluded.updated_ms, 0)),
+         context_tokens = CASE WHEN excluded.context_at_ms IS NOT NULL AND
+           (chat.context_at_ms IS NULL OR excluded.context_at_ms >= chat.context_at_ms)
+           THEN excluded.context_tokens ELSE chat.context_tokens END,
+         context_at_ms = MAX(COALESCE(chat.context_at_ms, excluded.context_at_ms), COALESCE(excluded.context_at_ms, chat.context_at_ms)),
          subagent = excluded.subagent,
          dedupe_key = excluded.dedupe_key`
     ).run(
@@ -374,7 +382,9 @@ export class ChatStore {
       meta.updatedMs === null ? null : Math.round(meta.updatedMs),
       flags.subagent ? 1 : 0,
       flags.dedupeKey,
-      flags.redact ? REDACTION_VERSION : 0
+      flags.redact ? REDACTION_VERSION : 0,
+      meta.contextTokens ?? null,
+      meta.contextAtMs ?? null
     )
     const id = this.chatId(source, nativeId)
     if (id === null) throw new Error('chat row vanished after upsert')
@@ -817,29 +827,49 @@ export class ChatStore {
    * chat matched and how it ranked. With it the ranked rows are walked until
    * `limit` pass, rather than cut by SQL.
    */
-  search(query: string, limit = 50, opts: { redact?: 'force'; skip?: (cwd: string) => boolean } = {}): ChatSearchHit[] {
+  search(query: string, limit = 50, opts: { redact?: 'force'; skip?: (cwd: string) => boolean; filters?: ChatSearchFilters } = {}): ChatSearchHit[] {
     const match = ftsQuery(query)
-    if (!match) return []
+    const filters = clampChatSearchFilters(opts.filters)
+    if (!match && (query.trim() !== '' || !hasChatSearchFilters(filters))) return []
+    limit = Number.isFinite(limit) ? Math.max(1, Math.min(200, Math.floor(limit))) : 50
     const force = opts.redact === 'force'
     const skip = opts.skip
     type Best = { chat_id: unknown; mid: unknown; role: unknown; cwd: unknown }
+    const where = ['c.redact_level >= ?']
+    const params: (string | number)[] = [force ? REDACTION_VERSION : -1]
+    const add = (sql: string, value: string | number | undefined): void => {
+      if (value !== undefined) { where.push(sql); params.push(value) }
+    }
+    add('c.updated_ms >= ?', filters.afterMs)
+    add('c.updated_ms < ?', filters.beforeMs)
+    add('c.source = ?', filters.source)
+    add("instr(lower(COALESCE(c.model, '')), lower(?)) > 0", filters.model)
+    add("instr(lower(COALESCE(c.cwd, '')), lower(?)) > 0", filters.folder)
+    // Nulls are excluded by comparisons; a missing measurement is never zero.
+    add('c.updated_ms >= c.created_ms AND c.updated_ms - c.created_ms >= ?', filters.minSpanMs)
+    add('c.updated_ms >= c.created_ms AND c.updated_ms - c.created_ms <= ?', filters.maxSpanMs)
+    add('c.context_tokens >= ?', filters.minContextTokens)
+    add('c.context_tokens <= ?', filters.maxContextTokens)
+    const predicate = where.join(' AND ')
     const bestQ = this.q(
       // MATERIALIZED: flattened into the aggregate, bm25() has no FTS context and errors.
-      `WITH h AS MATERIALIZED (SELECT rowid AS mid, bm25(message_fts) AS r FROM message_fts WHERE message_fts MATCH ?)
+      match ? `WITH h AS MATERIALIZED (SELECT rowid AS mid, bm25(message_fts) AS r FROM message_fts WHERE message_fts MATCH ?)
        SELECT m.chat_id AS chat_id, h.mid AS mid, m.role AS role, c.cwd AS cwd, MIN(h.r) AS best
        FROM h JOIN message m ON m.id = h.mid JOIN chat c ON c.id = m.chat_id
-       WHERE c.redact_level >= ?
+       WHERE ${predicate}
        GROUP BY m.chat_id
-       ORDER BY best
-       LIMIT ?`
+       ORDER BY best, c.updated_ms DESC, m.chat_id
+       LIMIT ?` :
+      `SELECT c.id AS chat_id, 0 AS mid, 'title' AS role, c.cwd AS cwd FROM chat c
+       WHERE ${predicate} ORDER BY c.updated_ms DESC, c.id DESC LIMIT ?`
     )
-    const level = force ? REDACTION_VERSION : -1
+    const bound = match ? [match, ...params] : params
     let best: Best[]
-    if (!skip) best = bestQ.all(match, level, limit) as Best[]
+    if (!skip) best = bestQ.all(...bound, limit) as Best[]
     else {
       best = []
       // LIMIT -1 is no limit: the walk stops itself once `limit` chats are kept.
-      for (const r of bestQ.iterate(match, level, -1) as Iterable<Best>) {
+      for (const r of bestQ.iterate(...bound, -1) as Iterable<Best>) {
         if (typeof r.cwd === 'string' && r.cwd !== '' && skip(r.cwd)) continue
         best.push(r)
         if (best.length >= limit) break
@@ -856,27 +886,32 @@ export class ChatStore {
       `SELECT snippet(message_fts, 0, '${HIT_OPEN}', '${HIT_CLOSE}', '…', 20) AS snip
        FROM message_fts WHERE message_fts MATCH ? AND rowid = CAST(? AS INTEGER)`
     )
-    const chatQ = this.q('SELECT source, native_id, title, first_prompt, cwd, updated_ms, subagent FROM chat WHERE id = ?')
+    const chatQ = this.q('SELECT source, native_id, title, first_prompt, cwd, created_ms, updated_ms, model, context_tokens, subagent FROM chat WHERE id = ?')
     const out: ChatSearchHit[] = []
     for (const r of best) {
       const chatId = num(r.chat_id)
       const c = chatQ.get(chatId) as Record<string, unknown> | undefined
       if (!c || !isChatOrigin(c.source)) continue
-      const snip = snipQ.get(match, num(r.mid)) as { snip?: unknown } | undefined
+      const snip = match ? snipQ.get(match, num(r.mid)) as { snip?: unknown } | undefined : undefined
       const role = r.role === 'user' || r.role === 'assistant' || r.role === 'title' ? r.role : 'assistant'
-      const title = strOrNull(c.title)
-      const firstPrompt = strOrNull(c.first_prompt)
+      const rawTitle = strOrNull(c.title)
+      const rawPrompt = strOrNull(c.first_prompt)
+      const title = force && rawTitle !== null ? redactSecrets(rawTitle) : rawTitle
+      const firstPrompt = force && rawPrompt !== null ? redactSecrets(rawPrompt) : rawPrompt
       out.push({
         chatId,
         source: c.source,
         nativeId: String(c.native_id),
-        title: force && title !== null ? redactSecrets(title) : title,
-        firstPrompt: force && firstPrompt !== null ? redactSecrets(firstPrompt) : firstPrompt,
+        title,
+        firstPrompt,
         cwd: strOrNull(c.cwd),
         updatedMs: numOrNull(c.updated_ms),
+        createdMs: numOrNull(c.created_ms),
+        model: strOrNull(c.model),
+        contextTokens: numOrNull(c.context_tokens),
         subagent: num(c.subagent) === 1,
         role,
-        snippet: parseMarked(typeof snip?.snip === 'string' ? snip.snip : '')
+        snippet: parseMarked(typeof snip?.snip === 'string' ? snip.snip : (firstPrompt ?? title ?? '').slice(0, 200))
       })
     }
     return out

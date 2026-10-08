@@ -8557,6 +8557,42 @@ button.color-field-swatch[aria-expanded='true'] {
 }
 
 /* The sidebar's "In conversations" group. */
+.chat-filters {
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  font-size: var(--fs-xs);
+}
+.chat-filters summary {
+  padding: var(--space-8);
+  cursor: pointer;
+  color: var(--text-muted);
+}
+.chat-filters summary .pill {
+  margin-left: var(--space-8);
+}
+.chat-filters-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  padding: 0 var(--space-8) var(--space-8);
+  max-height: 45vh;
+  overflow-y: auto;
+}
+.chat-filters-body label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+.chat-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 7rem), 1fr));
+  gap: var(--space-8);
+}
+.chat-filter-grid input {
+  min-width: 0;
+  width: 100%;
+}
 .chat-hits {
   margin-top: var(--space-8);
 }

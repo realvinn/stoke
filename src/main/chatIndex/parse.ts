@@ -32,6 +32,8 @@ export interface ChatMeta {
   model: string | null
   createdMs: number | null
   updatedMs: number | null
+  contextTokens?: number
+  contextAtMs?: number
 }
 
 export function emptyMeta(): ChatMeta {
@@ -868,7 +870,7 @@ export function foldClaudeLine(fold: Fold, line: string, redact: boolean, subage
 /* ------------------------------------------------------------------ Codex */
 
 export function codexLineWorthParsing(line: string): boolean {
-  return line.includes('"type":"message"') || line.includes('"session_meta"') || line.includes('"turn_context"')
+  return line.includes('"type":"message"') || line.includes('"session_meta"') || line.includes('"turn_context"') || line.includes('"token_count"')
 }
 
 /*
@@ -898,6 +900,18 @@ export function foldCodexLine(fold: Fold, line: string, redact: boolean): void {
   if (!rec) return
   const p = (rec.payload ?? {}) as Record<string, unknown>
   const at = stamp(rec.timestamp)
+  // OpenAI protocol TokenUsageInfo: total_token_usage is context, not billed lifetime usage.
+  // https://github.com/openai/codex/blob/main/codex-rs/protocol/src/protocol.rs (2026-10-09)
+  if (rec.type === 'event_msg' && p.type === 'token_count') {
+    const info = p.info && typeof p.info === 'object' ? p.info as Record<string, unknown> : null
+    const usage = info?.total_token_usage && typeof info.total_token_usage === 'object' ? info.total_token_usage as Record<string, unknown> : null
+    const tokens = usage?.total_tokens
+    if (at !== null && typeof tokens === 'number' && Number.isSafeInteger(tokens) && tokens >= 0 && at >= (fold.meta.contextAtMs ?? 0)) {
+      fold.meta.contextTokens = tokens
+      fold.meta.contextAtMs = at
+    }
+    return
+  }
   if (rec.type === 'session_meta') {
     if (typeof p.cwd === 'string' && p.cwd && fold.meta.cwd === null) fold.meta.cwd = p.cwd
     const started = stamp(p.timestamp)

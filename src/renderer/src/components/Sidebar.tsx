@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { Project, ProjectMeta, SessionIndexEntry, SessionMeta } from '@shared/types'
 import { chatOriginBadge, isChatOrigin, type ChatSearchHit } from '@shared/chatIndex'
+import { hasChatSearchFilters, type ChatSearchFilters } from '@shared/chatSearch'
+import { ChatFilters } from './ChatFilters'
 import type { RemoteChatHit } from '@shared/hub/remote'
 import type { RemoteChatGroup } from '@shared/remoteChatsView'
 import { ContextBar } from './ContextMeter'
@@ -118,6 +120,9 @@ interface Props {
    * `short` for a query under `CHAT_SEARCH_MIN_CHARS`.
    */
   chatSearch?: { state: 'off' | 'short' | 'searching' | 'ready' | 'error'; hits: ChatSearchHit[]; error?: string | null }
+  chatFilters?: ChatSearchFilters
+  onChatFiltersChange?: (patch: Partial<ChatSearchFilters>) => void
+  onChatFiltersClear?: () => void
   onOpenChat?: (hit: ChatSearchHit) => void
   /** Settings › Chat history, from the group's "set up" line. */
   onSetUpChats?: () => void
@@ -168,6 +173,9 @@ export function Sidebar({
   onEditProfiles,
   projectHints = {},
   chatSearch,
+  chatFilters,
+  onChatFiltersChange,
+  onChatFiltersClear,
   onOpenChat,
   onSetUpChats,
   remoteChats,
@@ -221,7 +229,8 @@ export function Sidebar({
     return new Set((hit ? hit.groups : [activeProfile]).map(foldGroup))
   }, [profiles, activeProfile])
 
-  const searching = query.trim() !== ''
+  const filtering = chatFilters !== undefined && hasChatSearchFilters(chatFilters)
+  const searching = query.trim() !== '' || filtering
 
   /*
    * Searching reaches across every profile on purpose (`scopeProjects` says
@@ -245,8 +254,8 @@ export function Sidebar({
    * projects still match on their own fields; the sessions join when it lands.
    */
   const hits = useMemo(
-    () => (searching ? searchProjects(scoped, sessionIndex ?? NO_INDEX, query) : null),
-    [searching, scoped, sessionIndex, query]
+    () => (filtering ? [] : searching ? searchProjects(scoped, sessionIndex ?? NO_INDEX, query) : null),
+    [filtering, searching, scoped, sessionIndex, query]
   )
 
   /*
@@ -260,11 +269,11 @@ export function Sidebar({
   }, [searching, chatSearch, hits])
 
   /* Other computers' groups, only while a query is up; their hits count as matches too. */
-  const remoteGroups = searching ? (remoteChats ?? []) : []
+  const remoteGroups = searching && !filtering ? (remoteChats ?? []) : []
   const remoteHits = remoteGroups.reduce((n, g) => n + g.hits.length, 0)
   /* This computer's part of "In conversations"; with indexing off, the set-up line only where nothing else matched. */
   const localChats =
-    searching && chatSearch && chatSearch.state !== 'short' && (chatSearch.state !== 'off' || ((hits?.length ?? 0) === 0 && remoteHits === 0))
+    searching && chatSearch && (chatSearch.state !== 'short' || filtering) && (chatSearch.state !== 'off' || ((hits?.length ?? 0) === 0 && remoteHits === 0))
       ? chatSearch
       : null
 
@@ -688,6 +697,9 @@ export function Sidebar({
           />
         </div>
         {/* Both routes into a session that is not a saved project. */}
+        {chatFilters !== undefined && onChatFiltersChange && onChatFiltersClear && (
+          <ChatFilters filters={chatFilters} onChange={onChatFiltersChange} onClear={onChatFiltersClear} />
+        )}
         <div style={{ display: 'flex', gap: 'var(--space-8)' }}>
           <button className="btn" style={{ flex: 1 }} onClick={onOpenFolder}>
             <IconFolder />
@@ -731,7 +743,7 @@ export function Sidebar({
           </p>
         )}
 
-        {!loading && projects.length === 0 && (
+        {!loading && !searching && projects.length === 0 && (
           <div className="empty">
             <h3>No projects yet</h3>
             <p>
@@ -760,7 +772,7 @@ export function Sidebar({
         )}
 
         {/* Only the first fetch says so: a refresh keeps the results already on screen. */}
-        {searching && pending && (
+        {searching && !filtering && pending && (
           <p className="sidebar-note" aria-live="polite">
             Searching sessions…
           </p>
@@ -769,7 +781,7 @@ export function Sidebar({
         {/* Project names still match without it, so a failed index narrows the
             search rather than ending it — and says so, rather than reporting a
             conversation as absent that was never looked at. */}
-        {searching && sessionIndexError && (
+        {searching && !filtering && sessionIndexError && (
           <p className="sidebar-note" role="status">
             Session titles could not be searched: {sessionIndexError}
           </p>
@@ -779,6 +791,7 @@ export function Sidebar({
             everything, and this would contradict it. */}
         {/* Not while conversations answered either: body hits are matches too. */}
         {!loading &&
+          !filtering &&
           projects.length > 0 &&
           hits !== null &&
           hits.length === 0 &&
@@ -815,6 +828,8 @@ export function Sidebar({
                   </button>
                 )}
               </p>
+            ) : localChats.state === 'short' ? (
+              <p className="sidebar-note">Type at least 3 characters, or clear the search box to browse filtered chats.</p>
             ) : localChats.state === 'searching' && chatRows.length === 0 ? (
               <p className="sidebar-note" aria-live="polite">
                 Searching conversations…
@@ -824,7 +839,7 @@ export function Sidebar({
                 Conversations could not be searched: {localChats.error}
               </p>
             ) : chatRows.length === 0 ? (
-              <p className="sidebar-note">No conversation says &ldquo;{query.trim()}&rdquo;.</p>
+              <p className="sidebar-note">{filtering ? 'No indexed chats match these filters.' : <>No conversation says &ldquo;{query.trim()}&rdquo;.</>}</p>
             ) : (
               <div className="sessions">
                 {chatRows.map((h) => {
@@ -847,6 +862,13 @@ export function Sidebar({
                         <span className="chat-hit-age">{relativeTime(h.updatedMs)}</span>
                         {h.cwd && <span className="truncate">{baseName(h.cwd)}</span>}
                       </span>
+                      {filtering && (
+                        <span className="session-meta chat-hit-meta">
+                          {h.model && <span className="truncate">{h.model}</span>}
+                          {h.createdMs != null && h.updatedMs != null && h.updatedMs >= h.createdMs && <span>{Math.round((h.updatedMs - h.createdMs) / 60_000)} min est. span</span>}
+                          {h.contextTokens != null && <span>{h.contextTokens.toLocaleString()} context tokens</span>}
+                        </span>
+                      )}
                     </button>
                   )
                 })}
