@@ -1183,7 +1183,9 @@ async function quitGracefully(label: string): Promise<{ code: number | null; sig
     const before = await ev<{ state: QuickTerminalState }>('window.stoke.quickTerminal.read()')
     check(`quick terminal did not auto-start before ${label}`, before.state.phase === 'idle' || before.state.phase === 'exited')
     await ev('window.stoke.settings.set({ quickTerminal: true })')
-    const quick = await ev<QuickTerminalResult>(`window.stoke.quickTerminal.open('panel', ${JSON.stringify(proj)})`)
+    const opened = await ev<QuickTerminalResult>(`window.stoke.quickTerminal.open('panel', ${JSON.stringify(proj)})`)
+    const quick = opened.ok && opened.state.phase === 'exited'
+      ? await ev<QuickTerminalResult>('window.stoke.quickTerminal.restart()') : opened
     check(`a real quick shell is running before ${label}`, quick.ok && quick.state.phase === 'running' && !!quick.state.id)
     await ev('window.stoke.quickTerminal.move("hidden")')
     await ev('(window.stoke.window.close(), true)').catch(() => undefined)
