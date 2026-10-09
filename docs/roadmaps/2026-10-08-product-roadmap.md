@@ -17,7 +17,7 @@ Priority: **P0** = daily regressions; **P1** = usability and missing extensions;
 | Wave | IDs | Outcome | Size |
 | --- | --- | --- | --- |
 | 1 — reliability | R01, R02, R12, R15 | Stable scrolling, attachment and reconnect behavior; smoother SSH; correct macOS menu reveal | M–L |
-| 2 — everyday use | R04, R08, R09, R10, R16b | Accessible scratch storage, sensible names, useful search filters, easier coding workflow, better installer animation | S–M per item |
+| 2 — everyday use | R04, R08, R09, R10, R16b, R18 | Accessible scratch storage, sensible names, useful search filters, easier coding workflow, better installer animation | S–M per item |
 | 3 — tools and agents | R07, R11, R14, R17 | Clear file transfers, guided MCP credentials, proven account isolation, agent updates and accurate session information | M–L per item |
 | 4 — Work plugin | R05, R06 | Optional task pipeline and daily board with direct Notion integration; a small extension contract | L |
 | 5 — privileged execution | R03, R16a | Explicitly enabled admin operations on Windows and macOS; defined Linux root behavior | L |
@@ -257,3 +257,13 @@ For implementation, extend the relevant existing suites, then run the repository
 | Privilege and terminal UI | New focused contracts and PTY fixtures | Native OS authorization; headless Linux and macOS terminal workflows |
 
 **Start with one narrow slice:** reproduce scrolling in a managed SSH session while a Mac desktop and phone both watch it, including a reconnect and a size change. Record the expected viewport/history behavior, fix the responsible layer, and add a focused regression case. Follow with remote drop/sleep/wake handling and the macOS reveal check before adding more background services.
+
+## Additional desktop request
+
+### R18 — optional quick terminal · P1 · M
+
+Added 9 October: an ordinary local command shell, off by default, reachable through an optional Terminal item in the editable top bar. A side panel and native pop-out share one shell and its output; hiding does not restart or end commands. Start, restart and End shell are explicit. Enabling never restores or starts a process on boot. The shell remains separate from agent tabs, provider selection, Work and phone/relay sharing. Support macOS, Windows and Linux using their ordinary platform shell.
+
+**Done when:** Unicode/canonical folders work, concurrent opens cannot create duplicate shells, only the current view can write or resize, snapshots do not repeat output, disabling and quitting end the owned shell, and both views can be used with the keyboard. Native visual and cross-platform proof must be recorded separately.
+
+The desktop footer should also omit usage/context meters; the existing title-bar usage control and tab context indicators carry those readings.

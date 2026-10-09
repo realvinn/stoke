@@ -35,7 +35,7 @@ export default defineConfig({
     },
     plugins: [react()],
     build: {
-      rollupOptions: { input: { index: resolve(__dirname, 'src/renderer/index.html') } }
+      rollupOptions: { input: { index: resolve(__dirname, 'src/renderer/index.html'), quickTerminal: resolve(__dirname, 'src/renderer/quick-terminal.html') } }
     }
   }
 })

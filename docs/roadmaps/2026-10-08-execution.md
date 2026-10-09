@@ -107,3 +107,15 @@ Every roadmap wave still has open acceptance criteria. SSH downloads and relay t
 ## CI portability follow-up
 
 The Linux gate passes on commit `c4682c0`; the Work drafting subprocess suite also passes in the macOS and Windows verification jobs. The non-gating Windows verification found an MCP missing-executable diagnostic flattened by the SDK; path-based commands now get an asynchronous preflight before transport creation. The macOS file-transfer test reached its next assertion before the previous download released its cleanup claim; it now waits for the production router to report availability, keeping the production claim intact. The full local gate passes with both corrections and an added real subprocess deadline check. Windows ARM64 continued-session process discovery still has three failing packaged-probe assertions and remains open.
+
+## Optional quick terminal
+
+Implemented: an off-by-default local shell with a singleton Terminal item in the editable top bar. Adding that item explicitly enables the feature. Appearance settings can disable it. Explicit Open starts the ordinary platform login shell in the current local folder, falling back to home for remote/private views. The side panel and native pop-out keep one PTY and its screen mirror; hiding either view retains commands. End shell has a concrete stop prompt, and New shell is explicit after exit. Enabling, reading settings and restarting Stoke never launch it automatically. Closing the main window or disabling ends the owned shell.
+
+The shell has its own IPC channels and is absent from agent/session history, Work, phone access and relay sharing. It inherits the OS environment with wrapper/runtime markers removed; Stoke injects no selected provider keys or agent configuration. Both IPC sender and main-frame identity are checked. Only the current view can send input or resize, and stale shell IDs are refused. The pop-out preload exposes only terminal actions, clipboard and public appearance; it has no agent, settings or credentials bridge. Narrow title bars retain Terminal in the action overflow. A sibling panel remains visible beside the native browser. Search, copy/paste and grapheme widths use the existing terminal libraries.
+
+Validation: the focused suite runs actual native PTYs in isolated folders and verifies real command-created files, canonical Unicode cwd, same-shell transfers, inactive-view input/resize refusal, explicit restart, disable while preparing, snapshot boundaries and environment markers. A real POSIX shell that ignores HUP retains its ownership through the two-second grace period and is forced only afterward. The full local gate passes, including typecheck, all verify suites and desktop/remote builds. Native visual handoff, Windows/Linux shell behavior and real detached-job behavior remain open. Native Mac packaging is being rebuilt to include this change.
+
+## Desktop footer simplification
+
+Removed bottom-right usage and context meters, retaining the title-bar usage control, tab context indicators, message count, activity, model and update controls. No quota source or telemetry contract was removed. The full local gate passes.

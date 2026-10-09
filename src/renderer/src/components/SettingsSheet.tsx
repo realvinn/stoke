@@ -893,6 +893,14 @@ export function SettingsSheet({
                   </div>
                 </div>
 
+                <label className="check-row" data-setting="appearance.quick-terminal">
+                  <input type="checkbox" checked={settings.quickTerminal} onChange={event => onPatch({ quickTerminal: event.target.checked })} />
+                  <span><span className="field-label">Quick terminal</span><FieldHint>
+                    Off by default. Add Terminal through “Customise on the title bar…” to enable it and open a local shell in a side panel or pop-out.
+                    Hiding keeps commands running. Turning this off ends the shell. Shells are never restored on startup.
+                  </FieldHint></span>
+                </label>
+
                 <div className="field" data-setting="appearance.interface-scale">
                   <span className="field-label">Interface scale</span>
                   {/*

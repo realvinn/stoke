@@ -23,6 +23,22 @@ body {
   overflow: hidden;
 }
 
+.quick-terminal-dock { width: min(460px, 45vw); min-width: 300px; display: flex; flex-shrink: 0; border-left: 1px solid var(--border); }
+.quick-terminal-window { height: 100%; display: flex; background: var(--bg); }
+.quick-terminal { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; color: var(--text); background: var(--bg); }
+.quick-terminal-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; border-bottom: 1px solid var(--border-subtle); }
+.quick-terminal-heading { display: flex; flex-direction: column; gap: 2px; font-size: var(--fs-sm); }
+.quick-terminal-heading span { color: var(--text-muted); font-size: var(--fs-xs); }
+.quick-terminal-actions { display: flex; gap: 4px; }
+.quick-terminal-folder { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 8px 12px; font-family: var(--mono); font-size: var(--fs-xs); color: var(--text-muted); background: var(--bg-sunken); }
+.quick-terminal-screen { flex: 1; min-width: 0; min-height: 0; padding: 10px; overflow: hidden; }
+.quick-terminal-screen .xterm { height: 100%; }
+.quick-terminal-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--border-subtle); font-size: var(--fs-xs); color: var(--text-muted); }
+.quick-terminal-find { display: flex; gap: 4px; padding: 8px; }
+.quick-terminal-find input { flex: 1; min-width: 0; }
+.quick-terminal-empty { flex: 1; padding: 20px; color: var(--text-muted); }
+.quick-terminal-error { color: var(--danger); padding: 8px 12px; margin: 0; }
+
 button,
 input,
 select,

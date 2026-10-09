@@ -61,7 +61,9 @@ export interface TopBarSpacer {
   kind: 'spacer'
 }
 
-export type TopBarItem = TopBarFolder | TopBarGit | TopBarShortcut | TopBarSpacer
+export interface TopBarTerminal { id: string; kind: 'terminal' }
+
+export type TopBarItem = TopBarFolder | TopBarGit | TopBarShortcut | TopBarSpacer | TopBarTerminal
 export type TopBarKind = TopBarItem['kind']
 
 export interface TopBarSettings {
@@ -175,6 +177,7 @@ export function clampTopBar(raw: unknown): TopBarSettings {
   const ids = new Set<string>()
   let folder = false
   let git = false
+  let terminal = false
   let budget = SHORTCUT_TEXT_BUDGET
   for (const v of Array.isArray(r.items) ? r.items : []) {
     if (items.length >= TOP_BAR_MAX_ITEMS) break
@@ -190,6 +193,10 @@ export function clampTopBar(raw: unknown): TopBarSettings {
       if (git) continue
       git = true
       items.push({ id, kind: 'git' })
+    } else if (it.kind === 'terminal') {
+      if (terminal) continue
+      terminal = true
+      items.push({ id, kind: 'terminal' })
     } else if (it.kind === 'spacer') {
       items.push({ id, kind: 'spacer' })
     } else if (it.kind === 'shortcut') {
@@ -233,6 +240,7 @@ export function addRefusal(kind: TopBarKind, items: readonly TopBarItem[]): stri
   if (items.length >= TOP_BAR_MAX_ITEMS) return `The title bar holds at most ${TOP_BAR_MAX_ITEMS} items.`
   if (kind === 'folder' && items.some((i) => i.kind === 'folder')) return 'The folder is already in the title bar.'
   if (kind === 'git' && items.some((i) => i.kind === 'git')) return 'Git is already in the title bar.'
+  if (kind === 'terminal' && items.some((i) => i.kind === 'terminal')) return 'Terminal is already in the title bar.'
   return null
 }
 
@@ -545,7 +553,7 @@ export function fitTopBar(input: FitInput): FitResult {
     if (total(compact, none, none) <= room) return { compact: order(items, compact), overflow: [], hidden: [] }
   }
   const out = new Set<string>()
-  const shortcuts = items.filter((i) => i.kind === 'shortcut')
+  const shortcuts = items.filter((i) => i.kind === 'shortcut' || i.kind === 'terminal')
   for (let i = shortcuts.length - 1; i >= 0; i--) {
     out.add(shortcuts[i].id)
     if (total(compact, out, none) <= room) return { compact: order(items, compact), overflow: order(items, out), hidden: [] }

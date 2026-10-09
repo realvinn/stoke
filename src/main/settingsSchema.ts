@@ -77,6 +77,7 @@ export const DEFAULT_SETTINGS: Settings = {
   // null = auto-detect. workspace.ts prefers G:\Code on Windows, then ~/Code.
   defaultCwd: null,
   scratch: { ...DEFAULT_SCRATCH },
+  quickTerminal: false,
   startOnLaunch: false,
   pinnedProjects: [],
   hiddenProjects: [],
@@ -458,6 +459,7 @@ export function hydrateSettings(raw: unknown): Settings {
     // Rebuilt from named keys (shared/topBar.ts): unknown kinds, bad ids and
     // over-long text go; a file from before the key reads as the default.
     topBar: clampTopBar(r.topBar),
+    quickTerminal: r.quickTerminal === true,
     // A whitelist, not a typeof: the top-level `...r` spread keeps unknown junk
     // verbatim, so anything that is not one of the three literals must be
     // replaced rather than merely type-checked.

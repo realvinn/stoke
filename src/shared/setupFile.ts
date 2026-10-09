@@ -306,6 +306,7 @@ export const LOCAL_KEYS = [
   'projectRoots',
   'defaultCwd',
   'scratch',
+  'quickTerminal',
   'startOnLaunch',
   'pinnedProjects',
   'hiddenProjects',

@@ -508,6 +508,7 @@ export type SetupApplyResult = { ok: true; settings: Settings; changed: number; 
 
 /** The surface exposed to the renderer as `window.stoke`. */
 export interface StokeApi {
+  quickTerminal: import('./quickTerminal').QuickTerminalApi
   platform: string
 
   window: {

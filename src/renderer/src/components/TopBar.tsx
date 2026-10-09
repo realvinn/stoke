@@ -40,7 +40,8 @@ import {
   IconGrip,
   IconPencil,
   IconPlus,
-  IconServer
+  IconServer,
+  IconTerminal
 } from './Icons'
 import { useFloatingLayer } from '../lib/floatingLayers'
 import { useGitStatus } from '../lib/useGitStatus'
@@ -86,6 +87,8 @@ interface Props {
   /** The tab's activity dot (`activityView`): `waiting` refuses a shortcut; the end of `working` re-reads git. */
   dot: string | null
   onReveal: (path: string) => void
+  terminalEnabled: boolean
+  onOpenTerminal: (mode: 'panel' | 'popout') => void
 }
 
 /** One item as drawn now: both forms, what a click does, and a key that changes when its text does. */
@@ -129,7 +132,9 @@ export function TopBar({
   tabCount,
   hostLabel,
   dot,
-  onReveal
+  onReveal,
+  terminalEnabled,
+  onOpenTerminal
 }: Props): React.JSX.Element {
   /*
    * The order on screen the moment an edit lands. The settings round trip is
@@ -264,6 +269,15 @@ export function TopBar({
         menu: actions,
         key: `${chip.head}|${dirty}`
       })
+    } else if (item.kind === 'terminal') {
+      const actions: MenuItem[] = [
+        { label: 'Open side panel', disabled: !terminalEnabled, onSelect: () => onOpenTerminal('panel') },
+        { label: 'Open pop-out', disabled: !terminalEnabled, onSelect: () => onOpenTerminal('popout') },
+        customise
+      ]
+      views.push({ item, full: <ChipText icon={<IconTerminal />} text="Terminal" />, compact: null,
+        title: terminalEnabled ? 'Open quick terminal · Local command shell' : 'Enable Quick terminal in Appearance settings',
+        act: () => onOpenTerminal('panel'), disabled: !terminalEnabled, menu: actions, key: `terminal:${terminalEnabled}` })
     } else if (item.kind === 'shortcut') {
       const v = shortcutVerdict(item, target)
       const what = `${item.send ? 'Types and sends' : 'Types'}: ${item.text.length > 140 ? `${item.text.slice(0, 140)}…` : item.text}`
@@ -512,7 +526,7 @@ export function TopBar({
     }
     const id = mintItemId(kind, items)
     const item: TopBarItem =
-      kind === 'folder' ? { id, kind: 'folder', style: 'path' } : kind === 'git' ? { id, kind: 'git' } : { id, kind: 'spacer' }
+      kind === 'folder' ? { id, kind: 'folder', style: 'path' } : kind === 'git' ? { id, kind: 'git' } : kind === 'terminal' ? { id, kind: 'terminal' } : { id, kind: 'spacer' }
     commit([...items, item])
   }
 
@@ -577,6 +591,7 @@ export function TopBar({
   const addItems: MenuItem[] = [
     { label: 'Folder', hint: 'where the tab is', disabled: addRefusal('folder', items) !== null, onSelect: () => add('folder') },
     { label: 'Git', hint: 'branch, changes', disabled: addRefusal('git', items) !== null, onSelect: () => add('git') },
+    { label: 'Terminal', hint: 'enable a local command shell', disabled: addRefusal('terminal', items) !== null, onSelect: () => add('terminal') },
     { label: 'Flexible space', disabled: addRefusal('spacer', items) !== null, onSelect: () => add('spacer') },
     { label: 'New text shortcut…', separated: true, disabled: addRefusal('shortcut', items) !== null, onSelect: () => add('shortcut') },
     { label: 'Reset to the default (git)', separated: true, onSelect: () => commit(TOP_BAR_DEFAULTS.items.map((i) => ({ ...i }))) }
@@ -584,8 +599,8 @@ export function TopBar({
   const moreItems: MenuItem[] = [
     ...overflowed.map(
       (v): MenuItem => ({
-        label: v.item.kind === 'shortcut' ? `${v.item.icon ? `${v.item.icon} ` : ''}${v.item.label}` : v.item.kind,
-        hint: v.disabled ? 'not here' : v.item.kind === 'shortcut' && v.item.send ? 'sends' : 'types',
+        label: v.item.kind === 'shortcut' ? `${v.item.icon ? `${v.item.icon} ` : ''}${v.item.label}` : v.item.kind === 'terminal' ? 'Terminal' : v.item.kind,
+        hint: v.disabled ? 'not here' : v.item.kind === 'terminal' ? 'local shell' : v.item.kind === 'shortcut' && v.item.send ? 'sends' : 'types',
         disabled: v.disabled || !v.act,
         onSelect: () => {
           const el = listRef.current

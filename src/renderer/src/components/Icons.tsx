@@ -38,6 +38,10 @@ export const IconPlus = (p: SVGProps<SVGSVGElement>): React.JSX.Element => (
   </Base>
 )
 
+export const IconTerminal = (p: SVGProps<SVGSVGElement>): React.JSX.Element => (
+  <Base {...p}><rect x="1.5" y="2.5" width="13" height="11" rx="1.5" /><path d="m4 6 2.5 2L4 10M8.5 10h3" /></Base>
+)
+
 /**
  * A ghost, for a private chat (shared/privateChat.ts): the sidebar's button
  * beside Scratch, the launcher row and the tab's badge. A dome with a wavy

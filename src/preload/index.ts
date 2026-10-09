@@ -5,6 +5,7 @@ import type { ClipboardPeek, ImagePrepared, StokeApi, UploadProgress } from '@sh
 import type { ChatIndexStatus } from '@shared/chatIndex'
 import type { TranscriptFindRequest } from '@shared/transcriptFind'
 import type { SttConfig } from '@shared/speechProviders'
+import type { QuickTerminalApi } from '@shared/quickTerminal'
 import type {
   Rect,
   LaunchOptions,
@@ -17,6 +18,23 @@ import type {
   UsageTarget
 } from '@shared/types'
 
+const quickTerminal: QuickTerminalApi = {
+  platform: process.platform,
+  read: () => ipcRenderer.invoke(CH.quickTerminalRead),
+  open: (mode, cwd) => ipcRenderer.invoke(CH.quickTerminalOpen, mode, cwd),
+  move: (mode) => ipcRenderer.invoke(CH.quickTerminalMove, mode),
+  restart: () => ipcRenderer.invoke(CH.quickTerminalRestart),
+  end: () => ipcRenderer.invoke(CH.quickTerminalEnd),
+  write: (id, data) => ipcRenderer.send(CH.quickTerminalWrite, id, data),
+  resize: (id, cols, rows) => ipcRenderer.send(CH.quickTerminalResize, id, cols, rows),
+  onState: (cb) => on(CH.quickTerminalState, cb),
+  onData: (cb) => on(CH.quickTerminalData, cb),
+  appearance: () => ipcRenderer.invoke(CH.quickTerminalAppearance),
+  onAppearance: (cb) => on(CH.quickTerminalAppearance, cb),
+  copy: (text) => ipcRenderer.send(CH.quickTerminalCopy, text),
+  paste: () => ipcRenderer.invoke(CH.quickTerminalPaste)
+}
+
 /** Subscribe helper that hands back an unsubscribe function. */
 function on<A extends unknown[]>(
   channel: string,
@@ -28,6 +46,7 @@ function on<A extends unknown[]>(
 }
 
 const api: StokeApi = {
+  quickTerminal,
   platform: process.platform,
 
   window: {
@@ -428,4 +447,5 @@ const api: StokeApi = {
   }
 }
 
-contextBridge.exposeInMainWorld('stoke', api)
+if (process.argv.includes('--stoke-quick-terminal')) contextBridge.exposeInMainWorld('stokeQuickTerminal', quickTerminal)
+else contextBridge.exposeInMainWorld('stoke', api)

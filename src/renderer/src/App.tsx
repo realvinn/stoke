@@ -79,6 +79,7 @@ import { StatusBar } from './components/StatusBar'
 import { TerminalView } from './components/TerminalView'
 import { TitleBar } from './components/TitleBar'
 import { TopBar } from './components/TopBar'
+import { QuickTerminalPanel, useQuickTerminal } from './components/QuickTerminal'
 import { WorkDock } from './components/WorkDock'
 import { SshKeyPrompt } from './components/SshKeyPrompt'
 import { OtherMachines } from './components/OtherMachines'
@@ -684,6 +685,7 @@ export function App(): React.JSX.Element {
    * "Customise…" closes the sheet and leaves the bar in edit mode.
    */
   const [topBarEditing, setTopBarEditing] = useState(false)
+  const quickTerminalState = useQuickTerminal(window.stoke.quickTerminal)
   const topBarOn = settings?.topBar.enabled === true
   // Turned off mid-edit: the next time it is on, it is on to use, not to arrange.
   useEffect(() => {
@@ -4556,6 +4558,7 @@ export function App(): React.JSX.Element {
     // (renaming a tab, a popover's field) or a context menu, or only a
     // modifier: Ctrl or Cmd held for a click on a tab.
     const onKey = (e: KeyboardEvent): void => {
+      if (e.target instanceof Element && e.target.closest('[data-quick-terminal]')) return
       if (!onTitleBar(e.target) && revealKeyCounts(e.key)) update({ kind: 'key', buttons: holding(held) })
     }
     const onOut = (e: MouseEvent): void => {
@@ -4928,6 +4931,7 @@ export function App(): React.JSX.Element {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
+      if (e.target instanceof Element && e.target.closest('[data-quick-terminal]')) return
       const action = matchShortcut(e, isMac)
       if (!action) {
         /*
@@ -5126,6 +5130,7 @@ export function App(): React.JSX.Element {
   useEffect(() => {
     if (!settingsOpen) return
     const onKey = (e: KeyboardEvent): void => {
+      if (e.target instanceof Element && e.target.closest('[data-quick-terminal]')) return
       // The busy dialog can sit over the sheet ("Restart and install"), and
       // then Escape is its Cancel — not a second, unasked close of the sheet.
       if (busyPromptRef.current) return
@@ -5842,7 +5847,12 @@ export function App(): React.JSX.Element {
               topBar={settings.topBar}
               editing={topBarEditing}
               onEditing={setTopBarEditing}
-              onChange={(topBar) => void patchSettings({ topBar })}
+              onChange={(topBar) => void patchSettings({ topBar, ...(topBar.items.some(item => item.kind === 'terminal') && !settings.topBar.items.some(item => item.kind === 'terminal') ? { quickTerminal: true } : {}) })}
+              terminalEnabled={settings.quickTerminal}
+              onOpenTerminal={(mode) => {
+                const cwd = activeTab && !activeTab.private && !activeTab.hostId && (activeTab.kind === 'session' || activeTab.kind === 'new') ? activeTab.cwd : undefined
+                void window.stoke.quickTerminal.open(mode, cwd || undefined).then(result => { if (!result.ok) setError(result.message) }).catch(error => setError(ipcErrorMessage(error)))
+              }}
               tab={activeTab}
               tabCount={tabs.length}
               hostLabel={
@@ -6441,6 +6451,11 @@ export function App(): React.JSX.Element {
           WebContentsView that paints above all renderer DOM, so an overlaid
           panel would be invisible whenever the browser was open.
         */}
+        {quickTerminalState?.enabled && quickTerminalState.mode === 'panel' && settings && (
+          <div className="quick-terminal-dock">
+            <QuickTerminalPanel api={window.stoke.quickTerminal} state={quickTerminalState} appearance={{ theme, fontFamily: settings.fontFamily, fontSize: settings.fontSize, uiScale: settings.uiScale, terminal: settings.terminal }} surface="panel" />
+          </div>
+        )}
         {worklogOpen && (
           <div style={{ width: 340, display: 'flex', flexShrink: 0 }}>
             <WorkDock onClose={() => setWorklogOpen(false)} session={activeTab?.kind === 'session' && activeTab.status === 'running' && !activeTab.installing?.length && !activeTab.hostId && !activeTab.private && !activeTab.accountLogin && !activeTab.enrollHostId ? { id: activeTab.sessionId, title: activeTab.title } : undefined} />

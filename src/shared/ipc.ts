@@ -1,5 +1,17 @@
 /** Single source of truth for IPC channel names. */
 export const CH = {
+  quickTerminalRead: 'quick-terminal:read',
+  quickTerminalOpen: 'quick-terminal:open',
+  quickTerminalMove: 'quick-terminal:move',
+  quickTerminalRestart: 'quick-terminal:restart',
+  quickTerminalEnd: 'quick-terminal:end',
+  quickTerminalWrite: 'quick-terminal:write',
+  quickTerminalResize: 'quick-terminal:resize',
+  quickTerminalState: 'quick-terminal:state',
+  quickTerminalData: 'quick-terminal:data',
+  quickTerminalAppearance: 'quick-terminal:appearance',
+  quickTerminalCopy: 'quick-terminal:copy',
+  quickTerminalPaste: 'quick-terminal:paste',
   // window chrome
   winMinimize: 'win:minimize',
   winMaximize: 'win:maximize',

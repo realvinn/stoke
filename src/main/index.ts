@@ -22,6 +22,8 @@ import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, isAbsolute, join } from 'node:path'
 import { CH } from '@shared/ipc'
 import { AgentLifecycleGate } from '../shared/agentLifecycle.ts'
+import { QuickTerminal } from './quickTerminal.ts'
+import type { QuickTerminalAppearance, QuickTerminalMode, QuickTerminalSurface } from '../shared/quickTerminal.ts'
 import { activeThemeId, resolveTheme } from '@shared/themes'
 import { revealInsetFor, revealsOnEntry } from '@shared/fullScreenReveal'
 import { DEFAULT_BROWSER_PROFILE_ID, newProfileId, nextProfileLabel } from '@shared/browserProfiles'
@@ -284,6 +286,9 @@ const isWindows = process.platform === 'win32'
 const TITLEBAR_H = 44
 
 let win: BrowserWindow | null = null
+let quickTerminalWindow: BrowserWindow | null = null
+let quickTerminal: QuickTerminal | null = null
+let appQuitting = false
 let browser: EmbeddedBrowser | null = null
 let ptys: PtyManager | null = null
 const agentLifecycle = new AgentLifecycleGate()
@@ -2171,6 +2176,63 @@ function send(channel: string, ...args: unknown[]): void {
   }
 }
 
+function sendQuickTerminal(channel: string, value: unknown): void {
+  send(channel, value)
+  const popup = quickTerminalWindow
+  if (popup && !popup.isDestroyed() && !popup.webContents.isDestroyed()) popup.webContents.send(channel, value)
+}
+function quickTerminalFor(): QuickTerminal {
+  return quickTerminal ??= new QuickTerminal({
+    enabled: () => getSettings().quickTerminal,
+    onState: state => sendQuickTerminal(CH.quickTerminalState, state),
+    onData: frame => sendQuickTerminal(CH.quickTerminalData, frame)
+  })
+}
+function quickTerminalAppearance(): QuickTerminalAppearance {
+  const s = getSettings()
+  return { theme: effectiveTheme(s), fontFamily: s.fontFamily, fontSize: s.fontSize, uiScale: s.uiScale, terminal: s.terminal }
+}
+function quickTerminalSurface(event: Electron.IpcMainEvent | Electron.IpcMainInvokeEvent): QuickTerminalSurface | null {
+  if (win && !win.isDestroyed() && event.sender === win.webContents && event.senderFrame === win.webContents.mainFrame) return 'panel'
+  const popup = quickTerminalWindow
+  if (popup && !popup.isDestroyed() && event.sender === popup.webContents && event.senderFrame === popup.webContents.mainFrame) return 'popout'
+  return null
+}
+async function presentQuickTerminal(mode: QuickTerminalMode): Promise<void> {
+  if (mode !== 'popout') {
+    quickTerminalWindow?.hide()
+    if (mode === 'panel') { win?.show(); win?.focus() }
+    return
+  }
+  if (quickTerminalWindow && !quickTerminalWindow.isDestroyed()) { quickTerminalWindow.show(); quickTerminalWindow.focus(); return }
+  const popup = new BrowserWindow({
+    title: 'Quick terminal — Stoke', width: 800, height: 520, minWidth: 420, minHeight: 280, show: false,
+    backgroundColor: quickTerminalAppearance().theme.colors.bg,
+    webPreferences: { preload: join(__dirname, '../preload/index.js'), additionalArguments: ['--stoke-quick-terminal'], contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: false, backgroundThrottling: false }
+  })
+  quickTerminalWindow = popup
+  popup.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  popup.webContents.on('will-navigate', event => event.preventDefault())
+  popup.webContents.on('will-redirect', event => event.preventDefault())
+  popup.on('close', event => {
+    if (appQuitting) return
+    event.preventDefault(); popup.hide()
+    if (quickTerminal?.view().mode === 'popout') quickTerminal.move('hidden')
+  })
+  popup.on('closed', () => {
+    if (quickTerminalWindow === popup) {
+      quickTerminalWindow = null
+      if (!appQuitting && quickTerminal?.view().mode === 'popout') quickTerminal.move('hidden')
+    }
+  })
+  const devUrl = process.env.ELECTRON_RENDERER_URL
+  try {
+    if (devUrl) await popup.loadURL(new URL('quick-terminal.html', devUrl.endsWith('/') ? devUrl : `${devUrl}/`).href)
+    else await popup.loadFile(join(__dirname, '../renderer/quick-terminal.html'))
+    if (!popup.isDestroyed() && getSettings().quickTerminal && quickTerminal?.view().mode === 'popout') { popup.show(); popup.focus() }
+  } catch { popup.destroy(); throw new Error('The terminal window could not open. Use the side panel instead.') }
+}
+
 /* ------------------------------------------- `stoke …` from a terminal */
 /*
  * The request arrives in one of two ways — this process's own argv on a cold
@@ -3162,6 +3224,9 @@ function createWindow(): void {
   }
 
   win.on('closed', () => {
+    quickTerminal?.disable()
+    quickTerminalWindow?.destroy()
+    quickTerminalWindow = null
     offSettings()
     // Before anything else: on macOS this fires and `before-quit` does not
     // (gotcha 35), so this is the only flush the tail of a slider drag gets.
@@ -4196,6 +4261,51 @@ function registerIpc(): void {
   /* -------------------------------------------------------------- settings */
   ipcMain.handle(CH.settingsGet, () => getSettings())
   ipcMain.handle(CH.settingsSet, (_e, patch: Partial<Settings>) => commitSettings(patch))
+
+  const quickAction = async (event: Electron.IpcMainInvokeEvent, action: (surface: QuickTerminalSurface) => Promise<import('../shared/quickTerminal.ts').QuickTerminalState> | import('../shared/quickTerminal.ts').QuickTerminalState) => {
+    const surface = quickTerminalSurface(event)
+    if (!surface) return { ok: false, message: 'Open the terminal in Stoke.' }
+    try {
+      const state = await action(surface)
+      await presentQuickTerminal(state.mode)
+      return { ok: true, state: quickTerminalFor().view() }
+    } catch (error) { return { ok: false, message: error instanceof Error ? error.message : 'The shell could not finish this action.' } }
+  }
+  ipcMain.handle(CH.quickTerminalRead, event => {
+    if (!quickTerminalSurface(event)) throw new Error('Open the terminal in Stoke.')
+    return quickTerminalFor().snapshot()
+  })
+  ipcMain.handle(CH.quickTerminalOpen, (event, mode, cwd) => quickAction(event, () => {
+    if (mode !== 'panel' && mode !== 'popout') throw new Error('Choose a terminal view.')
+    return quickTerminalFor().open(mode, cwd)
+  }))
+  ipcMain.handle(CH.quickTerminalMove, (event, mode) => quickAction(event, () => quickTerminalFor().move(mode)))
+  ipcMain.handle(CH.quickTerminalRestart, event => quickAction(event, surface => {
+    if (quickTerminalFor().view().mode !== surface) throw new Error('Use the current terminal view to start a new shell.')
+    return quickTerminalFor().restart(surface)
+  }))
+  let confirmingQuickEnd = false
+  ipcMain.handle(CH.quickTerminalEnd, event => quickAction(event, async surface => {
+    const service = quickTerminalFor()
+    if (service.view().mode !== surface) throw new Error('Use the current terminal view to end the shell.')
+    if (confirmingQuickEnd) throw new Error('The shell is already waiting for your answer.')
+    if (service.view().phase === 'running' || service.view().phase === 'starting') {
+      const owner = surface === 'popout' ? quickTerminalWindow : win
+      if (!owner) throw new Error('The terminal window is unavailable.')
+      const id = service.view().id
+      confirmingQuickEnd = true
+      try {
+        const answer = await dialog.showMessageBox(owner, { type: 'question', message: 'End this shell?', detail: 'The local shell will be stopped. Running commands can be interrupted.', buttons: ['Cancel', 'End shell'], defaultId: 0, cancelId: 0, noLink: true })
+        if (answer.response !== 1 || service.view().id !== id || service.view().mode !== surface) return service.view()
+      } finally { confirmingQuickEnd = false }
+    }
+    return service.end()
+  }))
+  ipcMain.on(CH.quickTerminalWrite, (event, id, data) => { const surface = quickTerminalSurface(event); if (surface) quickTerminal?.write(surface, id, data) })
+  ipcMain.on(CH.quickTerminalResize, (event, id, cols, rows) => { const surface = quickTerminalSurface(event); if (surface) quickTerminal?.resize(surface, id, cols, rows) })
+  ipcMain.handle(CH.quickTerminalAppearance, event => { if (!quickTerminalSurface(event)) throw new Error('Open the terminal in Stoke.'); return quickTerminalAppearance() })
+  ipcMain.on(CH.quickTerminalCopy, (event, text) => { if (quickTerminalSurface(event) && typeof text === 'string' && text.length <= 200_000) clipboard.writeText(text) })
+  ipcMain.handle(CH.quickTerminalPaste, event => { if (!quickTerminalSurface(event)) throw new Error('Open the terminal in Stoke.'); return clipboard.readText().slice(0, 200_000) })
   /*
    * A settings write and everything a moved field has to reach: the docked
    * browser, the phone server, the window's own paint, the recall cache. One
@@ -4225,6 +4335,7 @@ function registerIpc(): void {
     const next = setSettings(
       guarded.accounts ? { ...guarded, accounts: accountsFromRenderer(prev.accounts, guarded.accounts) } : guarded
     )
+    if (prev.quickTerminal && !next.quickTerminal) { quickTerminal?.disable(); quickTerminalWindow?.hide() }
     // A renamed or re-ordered profile list, a switch, or a bookmark list moved.
     if (patch.browser) {
       browser?.setProfiles(next.browser.profiles, next.browser.currentProfile, next.browser.homepage)
@@ -4277,6 +4388,8 @@ function registerIpc(): void {
     const prevTheme = effectiveTheme(prev)
     applyNativeTheme(next)
     paintWindowChrome(effectiveTheme(next), prevTheme.colors.bg)
+    sendQuickTerminal(CH.quickTerminalAppearance, quickTerminalAppearance())
+    quickTerminal?.refreshSettings()
     // A phone paints this theme too; it re-fetches only if it moved (audit PX-21).
     remote?.onThemeChanged()
     relayServer?.onThemeChanged()
@@ -5314,6 +5427,8 @@ if (!app.requestSingleInstanceLock(launchRequest ? { stokeCli: launchRequest } :
   })
 
   app.on('before-quit', () => {
+    appQuitting = true
+    quickTerminal?.dispose()
     workNotion?.stop()
     workDrafts?.stop()
     workPlugin?.stop()
