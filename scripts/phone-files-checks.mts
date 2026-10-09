@@ -106,6 +106,18 @@ export async function phoneFilesChecks(check: Check): Promise<void> {
     check('the HTTP upload returns success only after the real file is complete', [response.status, Buffer.compare(await readFile(saved.path), body)], [200, 0])
     const fileResponse = await fetch(`${base}/api/files/download?${new URLSearchParams({ ptyId: 'local', path: 'café-日本語.txt' })}`, { headers })
     check('the HTTP download is an attachment, never cached, with identical bytes', [fileResponse.status, fileResponse.headers.get('content-type'), fileResponse.headers.get('cache-control'), fileResponse.headers.get('content-disposition')?.includes('attachment'), Buffer.compare(Buffer.from(await fileResponse.arrayBuffer()), body)], [200, 'application/octet-stream', 'no-store', true, 0])
+    // Receiving the last byte can precede FileHandle auto-close and pipeline's
+    // finally. Keep the claim until that cleanup settles; wait for a read-only
+    // list to prove availability before exercising another file request.
+    let available = false
+    for (let n = 0; n < 100; n++) {
+      const idle = await fetch(`${base}/api/files/list?${new URLSearchParams({ ptyId: 'local', path: '' })}`, { headers })
+      await idle.arrayBuffer()
+      if (idle.status === 200) { available = true; break }
+      if (idle.status !== 409) break
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    check('download ownership lasts through cleanup and becomes available again', available, true)
     check('HTTP traversal is rejected', (await fetch(`${base}/api/files/download?${new URLSearchParams({ ptyId: 'local', path: '../outside/secret.txt' })}`, { headers })).status, 400)
     if (linked) check('HTTP also refuses a symlink escape', (await fetch(`${base}/api/files/download?${new URLSearchParams({ ptyId: 'local', path: 'escape/secret.txt' })}`, { headers })).status, 403)
     const beforeCancel = (await readdir(root)).sort()

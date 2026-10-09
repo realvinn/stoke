@@ -129,8 +129,9 @@ try {
     'let prompt = ""; for await (const part of process.stdin) prompt += part;',
     'const args = process.argv.slice(2);',
     `await writeFile(${JSON.stringify(capture)}, JSON.stringify({args, prompt}));`,
+    "if (prompt === 'hold') process.on('SIGTERM', () => {});",
     `await writeFile(${JSON.stringify(ready)}, 'ready');`,
-    "if (prompt === 'hold') { process.on('SIGTERM', () => {}); setInterval(() => {}, 1000) }",
+    "if (prompt === 'hold') { setInterval(() => {}, 1000) }",
     "else console.log(JSON.stringify({type:'result', result:JSON.stringify({title:'CLI draft',body:'Observed outcome',evidence:''}),is_error:false,total_cost_usd:0.01}));"
   ].join('\n'))
   const quote = (s: string): string => `'${s.replace(/'/g, `'"'"'`)}'`
@@ -155,6 +156,7 @@ try {
   check('the owned child is eventually closed and cancelled', await owned, 'cancelled')
   const early = new AbortController(); early.abort(); await rm(ready)
   try { await runHeadless({ ...opts, signal: early.signal }); check('an already cancelled request never spawns', true, false) } catch { try { await readFile(ready); check('an already cancelled request never spawns', true, false) } catch { check('an already cancelled request never spawns', true, true) } }
+  try { await runHeadless({ ...opts, prompt: 'hold', signal: undefined, timeoutMs: 100 }); check('a timed-out owned child closes before the failure reply', true, false) } catch (err) { check('a timed-out owned child closes before the failure reply', (err as Error).message.includes('timed out after 100ms'), true) }
 } finally { service.stop(); work.stop(); await rm(root, { recursive: true, force: true }) }
 console.log(failures ? `\n${failures} failed` : '\nall pass')
 process.exitCode = failures ? 1 : 0

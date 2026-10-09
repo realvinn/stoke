@@ -1,10 +1,14 @@
-import { access } from 'node:fs/promises'
+import { access, stat } from 'node:fs/promises'
 import { delimiter, isAbsolute, join } from 'node:path'
 import { validateMcpSetup, type McpProbeResult } from '../shared/mcpSetup.ts'
 import type { McpServerSpec } from '../shared/mcpServers.ts'
 
 async function executable(command: string, path: string): Promise<string> {
-  if (process.platform !== 'win32' || isAbsolute(command) || /[/\\]/.test(command)) return command
+  if (isAbsolute(command) || /[/\\]/.test(command)) {
+    if (!(await stat(command)).isFile()) throw Object.assign(new Error('missing executable'), { code: 'ENOENT' })
+    return command
+  }
+  if (process.platform !== 'win32') return command
   const names = /\.[a-z]+$/i.test(command) ? [command] : [command, `${command}.exe`, `${command}.cmd`, `${command}.bat`]
   for (const dir of path.split(delimiter).filter(Boolean).slice(0, 200)) {
     for (const name of names) {
