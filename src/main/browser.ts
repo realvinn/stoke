@@ -356,8 +356,14 @@ export class EmbeddedBrowser {
     const next = siblings[at + 1] ?? siblings[at - 1] ?? null
     this.tabs.splice(this.tabs.indexOf(tab), 1)
 
-    if (!this.win.isDestroyed()) this.win.contentView.removeChildView(tab.view)
-    if (!tab.view.webContents.isDestroyed()) tab.view.webContents.close()
+    // A script-owned popup may already have destroyed its contents and view.
+    // Electron clears WebContentsView.webContents then, despite its non-null
+    // type declaration; only the surviving tab metadata remains ours to drop.
+    const contents = tab.view.webContents
+    if (contents && !contents.isDestroyed()) {
+      if (!this.win.isDestroyed()) this.win.contentView.removeChildView(tab.view)
+      contents.close()
+    }
 
     if (this.activeId === id) this.activeId = next?.id ?? null
     if (this.lastActive.get(tab.profileId) === id) {

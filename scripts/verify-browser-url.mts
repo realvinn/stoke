@@ -22,6 +22,7 @@
  *   node scripts/verify-browser-url.mts
  */
 import { browserPopupUrl, normalizeUrl, refusedScheme } from '../src/shared/url.ts'
+import { browserPopupChecks } from './browser-popup-checks.mts'
 
 const BAR = { allowLocalFiles: true }
 
@@ -90,5 +91,6 @@ check('whitespace only is also a blank tab', normalizeUrl('   '), 'about:blank')
 
 check('browser popups accept web documents, their blobs and a script-owned blank window', ['https://example.com', 'http://localhost:3000', 'about:blank', 'about:blank#popup', 'blob:https://example.com/id'].map(browserPopupUrl), [true, true, true, true, true])
 check('browser popups do not gain local-file or privileged scheme navigation', ['file:///etc/passwd', 'javascript:alert(1)', 'data:text/html,x', 'chrome://settings', 'about:config', 'blob:file:///etc/passwd'].map(browserPopupUrl), [false, false, false, false, false, false])
+await browserPopupChecks(check)
 console.log(failures ? `\n${failures} FAILED` : '\nall pass')
 process.exitCode = failures ? 1 : 0
