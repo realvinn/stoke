@@ -588,6 +588,15 @@ must choose to replace source notes before a separate Sonnet run sends them. Own
 selection changes discard late replies. Conversation claims are labelled for review,
 and no board field or transcript is changed by reading.
 
+The launcher's explicit Check setup action uses `main/launchPreflight.ts` to capture
+one settings configuration and check the working folder, executable, selected account,
+provider/model fields and launch-time MCP selections. It performs no sign-in, agent task,
+server connection or account-home repair. Credential values stay in main. Checks have a
+caller deadline and retain their claim until pending lookups settle; the renderer drops
+results after a folder, agent, account or settings change. Findings link to the relevant
+setup page. Authentication, model availability and runtime behavior remain the CLI's
+checks at launch; a configuration report never proves quota or sign-in.
+
 ## The worklog agent
 
 `src/main/worklog/` turns finished work into Notion pages and ClickUp tasks. It is a **review
@@ -1367,6 +1376,13 @@ and real isolated CLI subprocess proof). No paid/vendor CLI run is used by the s
 Session excerpts add `src/main/plugins/workSessionNotes.ts` (bounded transcript reader
 and live owner checks) and `scripts/verify-work-session-notes.mts` (real JSONL reads,
 redaction, private/remote admission, owner changes and deadline ownership).
+
+Launcher checks add `src/shared/launchPreflight.ts` (credential-free wire report),
+`src/main/launchPreflight.ts` (captured read-only configuration checks),
+`LaunchSetupCheck.tsx` (explicit review and settings links), and
+`scripts/verify-launch-preflight.mts` (real folders, account/provider rules, secret
+exclusion and deadline claims). The packaged probe also exercises the mounted report
+against its isolated stub-agent setup and verifies no agent starts from the check.
 
 
 Every file worth knowing about, and the one thing about it that is easy to get wrong. CLAUDE.md

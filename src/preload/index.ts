@@ -132,6 +132,7 @@ const api: StokeApi = {
   },
 
   pty: {
+    preflight: (input) => ipcRenderer.invoke(CH.launchPreflight, input),
     start: (opts: LaunchOptions) => ipcRenderer.invoke(CH.ptyStart, opts),
     write: (ptyId: string, data: string) => ipcRenderer.send(CH.ptyWrite, ptyId, data),
     resize: (ptyId: string, cols: number, rows: number) =>

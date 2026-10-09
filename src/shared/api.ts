@@ -41,6 +41,7 @@ import type { AccountKind, AgentAccount } from './accounts'
 import type { StokeCliRequest } from './stokeArgs'
 import type { TranscriptFindRequest, TranscriptFindResult } from './transcriptFind'
 import type { ClaudeLaunchDefaults } from './launch'
+import type { LaunchPreflightRequest, LaunchPreflightResult } from './launchPreflight'
 import type { SecretStoreStatus } from './secrets'
 import type { SetupPreview } from './setupFile'
 import type { HubLocalKeyView, HubResult, HubVerifyResult, HubView } from './hub/client'
@@ -686,6 +687,7 @@ export interface StokeApi {
   }
 
   pty: {
+    preflight(input: LaunchPreflightRequest): Promise<LaunchPreflightResult>
     start(opts: LaunchOptions): Promise<StartResult>
     write(ptyId: string, data: string): void
     resize(ptyId: string, cols: number, rows: number): void

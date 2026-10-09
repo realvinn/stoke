@@ -32,6 +32,8 @@ import { EFFORT_LEVELS, PERMISSION_MODES, ULTRACODE_HINT } from '../lib/permissi
 import { useFloatingLayer } from '../lib/floatingLayers'
 import { agentMark } from '../lib/agentColor'
 import { agentAccessOptions, type AgentAccessMode } from '@shared/agentAccess'
+import { LaunchSetupCheck } from './LaunchSetupCheck'
+import type { LaunchPreflightItem } from '@shared/launchPreflight'
 
 const NO_LAUNCH_FLAGS = { permissionMode: false, effort: false, model: false } as const
 
@@ -123,6 +125,8 @@ interface Props {
   onPickAccount?: (id: string) => void
   onAddAgents?: () => void
   onStart: () => void
+  setupRevision: object | null
+  onFixSetup: (item: LaunchPreflightItem['id']) => void
   /** Continue this conversation, or — with null, while the list is still loading — the folder's latest. */
   onContinue: (s: SessionMeta | null) => void
   onResume: (s: SessionMeta) => void
@@ -797,6 +801,8 @@ export function Launcher(props: Props): React.JSX.Element {
             </div>
           </div>
         )}
+
+        {target && <LaunchSetupCheck input={{ cwd: target.path, cli: primary.id, accountId: props.accountId }} revision={props.setupRevision} onFix={props.onFixSetup} />}
 
         {/* Row D: conversations. */}
         {target && (

@@ -3356,6 +3356,13 @@ mark.hit {
   font-weight: 600;
 }
 
+.launcher-setup { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-8); }
+.launcher-setup-result { width: 100%; min-width: 0; padding: var(--space-12); border: 1px solid var(--border); border-radius: var(--r-lg); font-size: var(--fs-sm); }
+.launcher-setup-note { display: block; margin-top: var(--space-4); color: var(--text-muted); }
+.launcher-setup-result ul { list-style: none; margin: var(--space-12) 0 0; padding: 0; }
+.launcher-setup-result li { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-8); padding: var(--space-8) 0; }
+.launcher-setup-result li + li { border-top: 1px solid var(--border); }
+
 /* ------------------------------------------------------- folder switcher */
 
 .switcher {

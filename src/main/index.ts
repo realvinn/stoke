@@ -1129,6 +1129,17 @@ function logMcpSkipped(cliId: CodingCliId, skipped: readonly McpRefusal[] | unde
   for (const s of skipped ?? []) console.warn(`[stoke] ${cliId} was not handed MCP server "${s.name}": ${s.reason}`)
 }
 
+let launchPreflightLoading: Promise<import('./launchPreflight.ts').LaunchPreflight> | null = null
+function launchPreflightFor(): Promise<import('./launchPreflight.ts').LaunchPreflight> {
+  return launchPreflightLoading ??= import('./launchPreflight.ts').then(({ LaunchPreflight }) => new LaunchPreflight({
+    settings: getSettings,
+    executable: findCli,
+    folder: launchFolderProblem,
+    canonical: realpathFolder,
+    tools: (settings, cliId, cwd) => resolveLaunchMcp({ cliId, cwd, mcp: settings.agents.mcp, browser: mcp?.spec() ?? null, reader: claudeConfigReader })
+  }))
+}
+
 /**
  * Whether a transcript exists for this session id, on this machine.
  *
@@ -3718,6 +3729,11 @@ function registerIpc(): void {
   })
 
   /* ------------------------------------------------------------------- pty */
+  ipcMain.handle(CH.launchPreflight, async (event, input: unknown) => {
+    if (!win || event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) return { ok: false, message: 'Check setup from Stoke’s launcher.' }
+    try { return { ok: true, report: await (await launchPreflightFor()).check(input) } }
+    catch { return { ok: false, message: 'Setup could not be checked. A check may still be running; wait before retrying, and check the folder and agent in Settings.' } }
+  })
   ipcMain.handle(CH.ptyStart, async (_e, opts: LaunchOptions) => {
     const result = await launchSession(opts)
     // After launchSession, so sessionCwds already holds the new id — the state

@@ -562,6 +562,20 @@ await step('boot', async () => {
 
 /* ------------------------------------------------------------- session */
 
+await step('launcher setup review does not start an agent', async () => {
+  const before = stubRecords().length
+  await waitFor('the launcher setup button', () => ev<boolean>('!!document.querySelector(".launcher-setup > button:not(:disabled)")'), 15_000)
+  await ev('document.querySelector(".launcher-setup > button").click(), true')
+  const text = await waitFor('the setup report in the launcher', async () => {
+    const value = await ev<string>('document.querySelector(".launcher-setup-result")?.textContent ?? ""')
+    return value.includes('Working folder') ? value : null
+  }, 15_000)
+  check('the mounted review includes folder, CLI, account, provider and tools', (await ev<number>('document.querySelectorAll(".launcher-setup-result li").length')) === 5, text)
+  check('the selected fixture setup has no blocking problem', text.includes('No blocking setup issues found'), text)
+  check('the report leaves sign-in and connections unverified', text.includes('checks its own sign-in') && text.includes('not tested'), text)
+  check('checking setup did not start an agent session', stubRecords().length === before)
+})
+
 await step('a Claude session from `stoke <folder> --new`', async () => {
   const code = await stokeCli(proj, '--new')
   check('the second instance handed its request over and quit', code === 0, `exit ${code}`)

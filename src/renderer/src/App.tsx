@@ -6324,6 +6324,12 @@ export function App(): React.JSX.Element {
                 void patchSettings({ agents: { ...agents, access } })
               }}
               accounts={launcherAccounts}
+              setupRevision={settings}
+              onFixSetup={(item) => {
+                if (item === 'folder') void openFolder()
+                else if (item === 'provider' && isClaudeCode(primaryCli)) openSettings('providers')
+                else openSettings({ page: 'agent', agent: primaryCli })
+              }}
               accountId={launcherAccountId}
               onPickAccount={pickAccount}
               onAddAgents={() => setAgentPickerOpen(true)}

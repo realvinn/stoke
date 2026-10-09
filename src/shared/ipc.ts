@@ -149,6 +149,7 @@ export const CH = {
   privateStates: 'private:states',
 
   // pty
+  launchPreflight: 'launch:preflight',
   ptyStart: 'pty:start',
   ptyWrite: 'pty:write',
   ptyResize: 'pty:resize',
