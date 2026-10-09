@@ -23,6 +23,7 @@ import { basename, dirname, isAbsolute, join } from 'node:path'
 import { CH } from '@shared/ipc'
 import { AgentLifecycleGate } from '../shared/agentLifecycle.ts'
 import { QuickTerminal } from './quickTerminal.ts'
+import { ownedPtyExits } from './ptyExitTracker.ts'
 import { boundUsageReading, UsageBindings, usageCacheKey } from './usageBindings.ts'
 import type { QuickTerminalAppearance, QuickTerminalMode, QuickTerminalSurface } from '../shared/quickTerminal.ts'
 import { quickTerminalLink } from '../shared/quickTerminal.ts'
@@ -1173,6 +1174,7 @@ async function launchSession(
   requested: LaunchOptions,
   origin: 'desktop' | 'remote' = 'desktop'
 ): Promise<StartResult> {
+  if (appQuitting) throw new Error('Stoke is closing.')
   const account = requested.accountLogin ? getSettings().accounts[requested.accountLogin.accountId] : null
   const cli = account?.cli ?? cliIdOf(requested.cli)
   const local = !requested.host && !requested.enroll
@@ -2825,6 +2827,7 @@ function standardTitleBarHeight(): number {
 }
 
 function createWindow(): void {
+  if (appQuitting) return
   const settings = getSettings()
   applyNativeTheme(settings)
   const theme = effectiveTheme(settings)
@@ -3266,7 +3269,7 @@ function createWindow(): void {
     // (gotcha 35), so this is the only flush the tail of a slider drag gets.
     flushSettings()
     for (const t of timers.splice(0)) clearInterval(t)
-    ptys?.killAll()
+    ptys?.shutdown()
     watcher?.disposeAll()
     autoscan?.dispose()
     autoscan = null
@@ -4310,6 +4313,7 @@ function registerIpc(): void {
   ipcMain.handle(CH.settingsSet, (_e, patch: Partial<Settings>) => commitSettings(patch))
 
   const quickAction = async (event: Electron.IpcMainInvokeEvent, action: (surface: QuickTerminalSurface) => Promise<import('../shared/quickTerminal.ts').QuickTerminalState> | import('../shared/quickTerminal.ts').QuickTerminalState) => {
+    if (appQuitting) return { ok: false, message: 'Stoke is closing.' }
     const surface = quickTerminalSurface(event)
     if (!surface) return { ok: false, message: 'Open the terminal in Stoke.' }
     try {
@@ -5515,7 +5519,12 @@ if (!app.requestSingleInstanceLock(launchRequest ? { stokeCli: launchRequest } :
     if (!isMac) app.quit()
   })
 
-  app.on('before-quit', () => {
+  let windowsQuitReady = false
+  app.on('before-quit', event => {
+    // Window.close may have already removed the manager. The process-wide
+    // tracker still owns its native callbacks, including earlier tab closes.
+    if (process.platform === 'win32' && !windowsQuitReady) event.preventDefault()
+    if (appQuitting) return
     appQuitting = true
     quickTerminal?.dispose()
     workNotion?.stop()
@@ -5531,7 +5540,7 @@ if (!app.requestSingleInstanceLock(launchRequest ? { stokeCli: launchRequest } :
      * `finally`; this covers a quit landing mid-write.
      */
     releaseHeldLocks()
-    ptys?.killAll()
+    ptys?.shutdown()
     // Their exits may never be delivered now: the folders go at once, the
     // rest on the next boot's sweep (privateChat.ts `quitSync`).
     privateChats?.quitSync()
@@ -5544,5 +5553,15 @@ if (!app.requestSingleInstanceLock(launchRequest ? { stokeCli: launchRequest } :
     void remote?.stop()
     tunnel.stop()
     hubClient?.stop()
+    if (process.platform === 'win32') {
+      void ownedPtyExits.wait().then(remaining => {
+        // Bound shutdown without claiming missing exits or killing an app.
+        const message = `[stoke] PTY quit drain: ${remaining} pending`
+        if (remaining) console.error(message)
+        else console.log(message)
+        windowsQuitReady = true
+        app.quit()
+      })
+    }
   })
 }

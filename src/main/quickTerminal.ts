@@ -5,6 +5,7 @@ import { isAbsolute, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { buildEnvPath, setPathKey } from './cli.ts'
 import { releaseExitedPtyTransports } from './ptyTransportCleanup.ts'
+import { ownedPtyExits } from './ptyExitTracker.ts'
 import type { IPty } from '@lydell/node-pty'
 import type { ScreenMirror } from './screenMirror.ts'
 import type { QuickTerminalFrame, QuickTerminalMode, QuickTerminalSnapshot, QuickTerminalState, QuickTerminalSurface } from '../shared/quickTerminal.ts'
@@ -52,6 +53,7 @@ export class QuickTerminal {
   private sequence = 0
   private preparing: object | null = null
   private cancelStart = false
+  private disposed = false
   private killed: ReturnType<typeof setTimeout> | undefined
   private state: Omit<QuickTerminalState, 'enabled'> = { revision: 0, id: null, phase: 'idle', mode: 'hidden', cwd: '', shell: '', cols: 80, rows: 24, exitCode: null }
   constructor(options: Options) { this.options = options }
@@ -60,6 +62,7 @@ export class QuickTerminal {
   private changed(): void { this.state.revision++; this.options.onState(this.view()) }
   refreshSettings(): void { this.changed() }
   async open(mode: QuickTerminalSurface, cwd?: string): Promise<QuickTerminalState> {
+    if (this.disposed) throw new Error('The Stoke window is closing.')
     if (!this.options.enabled()) throw new Error('Enable Quick terminal in Appearance settings first.')
     if (this.preparing || this.state.phase === 'stopping') throw new Error('Wait for the current shell operation to finish.')
     if (this.state.id) return this.move(mode)
@@ -80,12 +83,13 @@ export class QuickTerminal {
         return { folder, shell, env, runtime }
       }
       const { folder, shell, env, runtime } = await bounded(prepare())
-      if (this.cancelStart || !this.options.enabled()) throw new Error('The shell opening was cancelled.')
+      if (this.disposed || this.cancelStart || !this.options.enabled()) throw new Error('The shell opening was cancelled.')
       const mirror = runtime.mirror(80, 24)
       const id = randomUUID()
       let child: IPty
       try { child = runtime.spawn(shell, process.platform === 'win32' ? ['/d'] : ['-l'], { cwd: folder, env, cols: 80, rows: 24, name: 'xterm-256color' }) }
       catch (error) { mirror.dispose(); throw error }
+      ownedPtyExits.track(child)
       this.mirror?.dispose(); this.mirror = mirror; this.sequence = 0
       this.child = child
       this.state = { ...this.state, id, cwd: folder, shell, phase: 'running', cols: 80, rows: 24, exitCode: null }
@@ -106,6 +110,7 @@ export class QuickTerminal {
     this.state.mode = mode; this.changed(); return this.view()
   }
   async restart(surface: QuickTerminalSurface): Promise<QuickTerminalState> {
+    if (this.disposed) throw new Error('The Stoke window is closing.')
     if (!this.options.enabled()) throw new Error('Quick terminal is disabled.')
     if (this.child || this.preparing) throw new Error('End the existing shell before starting another.')
     if (this.state.phase === 'stopping') throw new Error('Wait for the shell to exit.')
@@ -132,5 +137,5 @@ export class QuickTerminal {
     return this.view()
   }
   disable(): void { this.end(); this.state.mode = 'hidden'; this.changed() }
-  dispose(): void { this.disable(); if (!this.child) { this.mirror?.dispose(); this.mirror = null } }
+  dispose(): void { this.disposed = true; this.disable(); if (!this.child) { this.mirror?.dispose(); this.mirror = null } }
 }

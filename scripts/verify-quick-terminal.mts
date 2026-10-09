@@ -2,6 +2,7 @@ import { access, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'nod
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { QuickTerminal, quickTerminalEnv } from '../src/main/quickTerminal.ts'
+import { ownedPtyExits } from '../src/main/ptyExitTracker.ts'
 import { QuickTerminalReplay, quickTerminalLink } from '../src/shared/quickTerminal.ts'
 import type { QuickTerminalFrame, QuickTerminalState } from '../src/shared/quickTerminal.ts'
 import { hydrateSettings } from '../src/main/settingsSchema.ts'
@@ -114,6 +115,8 @@ try {
   check('a canceled preparation keeps its claim until it settles', await refused(() => pending.open('panel', root)), true)
   release(); check('a disable while preparing never starts a late shell', await refused(() => opening), true)
   check('canceled state is idle', [pending.view().phase, calls], ['idle', 1]); pending.dispose()
+  check('a disposed service refuses a later open', await refused(() => pending.open('panel', root)), true)
+  check('a disposed service refuses a restart', await refused(() => pending.restart('panel')), true)
   const file = join(root, 'file'); await writeFile(file, 'bystander')
   const bad = new QuickTerminal({ enabled: () => enabled, onState: () => {}, onData: () => {} })
   check('files are not working folders', await refused(() => bad.open('panel', file)), true)
@@ -124,7 +127,7 @@ try {
     finally { await rm(alias, { force: true }) }
   }
   bad.dispose()
-} finally { service.dispose(); await rm(root, { recursive: true, force: true }) }
+} finally { service.dispose(); check('all owned native shell callbacks drain before shutdown', await ownedPtyExits.wait(), 0); await rm(root, { recursive: true, force: true }) }
 // A success also requires the real native transports to let Node exit. An
 // unref'd watchdog cannot prolong a healthy run, but makes a leaked worker
 // fail instead of leaving the Windows portability job stuck for 45 minutes.

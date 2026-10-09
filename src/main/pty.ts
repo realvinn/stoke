@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { releaseExitedPtyTransports } from './ptyTransportCleanup.ts'
+import { ownedPtyExits } from './ptyExitTracker.ts'
 import { join } from 'node:path'
 import { rmSync } from 'node:fs'
 import { access, realpath, rm, writeFile } from 'node:fs/promises'
@@ -383,6 +384,7 @@ export async function buildPtyEnv(): Promise<Record<string, string>> {
 
 export class PtyManager {
   private sessions = new Map<string, Session>()
+  private stopping = false
   private readonly onData: (ptyId: string, data: string) => void
   /**
    * `sessionId` is the fourth argument, not folded into a lookup the caller
@@ -479,6 +481,7 @@ export class PtyManager {
      */
     accountEnv: Record<string, string> | null = null
   ): Promise<StartResult> {
+    if (this.stopping) throw new Error('The Stoke window is closing.')
     /*
      * A remote session is the same machinery with a different argv: ssh instead
      * of claude. Nothing else changes - the PTY, the scrollback and the fan-out
@@ -746,6 +749,7 @@ export class PtyManager {
        */
       if (isPrivate) Object.assign(env, PRIVATE_ENV)
 
+      if (this.stopping) throw new Error('The Stoke window is closing.')
       proc = nodePty.spawn(spec.file, spec.args, {
         name: 'xterm-256color',
         cols: Math.max(20, opts.cols || 120),
@@ -754,6 +758,7 @@ export class PtyManager {
         env,
         useConpty: process.platform === 'win32' ? true : undefined
       })
+      ownedPtyExits.track(proc)
     } catch (err) {
       releaseSessionFiles(statusKey, ptyId)
       if (installFile) void rm(installFile, { force: true })
@@ -1317,6 +1322,11 @@ export class PtyManager {
 
   killAll(): void {
     for (const id of [...this.sessions.keys()]) this.kill(id)
+  }
+
+  shutdown(): void {
+    this.stopping = true
+    this.killAll()
   }
 }
 

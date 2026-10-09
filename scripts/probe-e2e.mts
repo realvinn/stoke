@@ -1178,6 +1178,14 @@ async function quitGracefully(label: string): Promise<{ code: number | null; sig
   const child = stoke
   if (!child || stokeExit) return stokeExit
   if (isWin) {
+    // Leave an actual quick shell alive too: earlier link/handoff coverage
+    // ends its shell, which cannot prove native cleanup on window close.
+    const before = await ev<{ state: QuickTerminalState }>('window.stoke.quickTerminal.read()')
+    check(`quick terminal did not auto-start before ${label}`, before.state.phase === 'idle' || before.state.phase === 'exited')
+    await ev('window.stoke.settings.set({ quickTerminal: true })')
+    const quick = await ev<QuickTerminalResult>(`window.stoke.quickTerminal.open('panel', ${JSON.stringify(proj)})`)
+    check(`a real quick shell is running before ${label}`, quick.ok && quick.state.phase === 'running' && !!quick.state.id)
+    await ev('window.stoke.quickTerminal.move("hidden")')
     await ev('(window.stoke.window.close(), true)').catch(() => undefined)
   } else {
     child.kill('SIGTERM')
@@ -1185,6 +1193,10 @@ async function quitGracefully(label: string): Promise<{ code: number | null; sig
   ui?.close()
   ui = null
   const exit = await waitFor(`Stoke to exit after ${label}`, () => stokeExit, 60_000, 250).catch(() => null)
+  if (isWin) {
+    const log = readFileSync(join(logs, `stoke-${launchNo}.log`), 'utf8')
+    check(`all owned PTY exit callbacks drain before ${label}`, log.includes('[stoke] PTY quit drain: 0 pending') && !/PTY quit drain: [1-9]\d* pending/.test(log))
+  }
   return exit
 }
 

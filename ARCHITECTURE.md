@@ -1378,6 +1378,12 @@ than errors*, which is exactly the class a typecheck cannot catch.
 
 ## File map
 
+Native terminal shutdown adds `src/main/ptyExitTracker.ts`: exact terminal objects
+remain owned through their exit callbacks and two event-loop turns, independently
+of closed tabs/windows. Windows quit waits up to five seconds before Node teardown;
+the deadline reports pending ownership without synthesizing exits. The standalone
+`verify:pty-exit` suite checks ordering, deadlines and real natural/killed PTY exits.
+
 The Work module adds `src/main/plugins/work.ts` (durable local transitions),
 `src/shared/plugins.ts` (built-in manifest/lifecycle contract),
 `src/shared/workPlugin.ts` (task/daily wire types), `WorkPanel.tsx` and `WorkDock.tsx`
