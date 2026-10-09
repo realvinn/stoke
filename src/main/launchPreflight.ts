@@ -57,7 +57,7 @@ export class LaunchPreflight {
       unreachable: 'This folder did not answer in time. Check its drive or connection.'
     }
     add('folder', 'Working folder', folder ? 'blocked' : 'configured', folder ? folderMessages[folder] : canonical)
-    add('cli', cliFor(cli).label, executable ? 'configured' : 'blocked', executable ? 'Executable located. Its version and runtime are checked when launched.' : 'Executable not found on Stoke’s login-shell PATH. Check the agent install or configured path in Settings.')
+    add('cli', cliFor(cli).label, executable ? 'configured' : 'blocked', executable ? 'Executable located. This check does not run it or verify its version.' : 'Executable not found on Stoke’s login-shell PATH. Check the agent install or configured path in Settings.')
     if (problem) add('account', 'Account', 'blocked', problem)
     else if (account.ok && account.account?.kind === 'login') {
       const homeProblem = await this.deps.folder(account.account.home)
