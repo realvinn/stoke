@@ -510,10 +510,10 @@ export function BrowserPanel({
 
       {state.certificateException && !state.loadError && (
         <div className="browser-certificate-notice" role="status">
-          <span>Certificate exception for {state.certificateException.origin}</span>
+          <span>Certificate exception in {profileLabel} for {state.certificateException.origin}</span>
           <button className="btn" data-size="sm" onClick={() => {
             if (state.activeId && state.certificateException) void window.stoke.browser.revokeCertificate(state.activeId, state.certificateException.sha256)
-          }}>Remove exception</button>
+          }} title="Remove this site’s exception and reconnect this browser profile’s pages">Remove exception</button>
         </div>
       )}
       <div className="browser-hole" ref={holeRef}>
@@ -526,7 +526,7 @@ export function BrowserPanel({
               <code>{state.loadError.code}</code>
               {state.loadError.certificate && (
                 <>
-                  <p>Continue only if you trust this site. The exception applies to this tab, site and certificate until the tab closes.</p>
+                  <p>Continue only if you trust this site. This browser profile shares the exception for this site and certificate until Stoke quits. Removing it reconnects this profile’s pages.</p>
                   <details>
                     <summary>Certificate details</summary>
                     <dl>
@@ -549,7 +549,7 @@ export function BrowserPanel({
                     void window.stoke.browser.continueCertificate(state.activeId, state.loadError.id).then(ok => {
                       if (!ok) setCertificateNotice('This review changed or expired. Retry to review the current certificate.')
                     })
-                  }}>Continue for this tab</button>
+                  }}>Continue in this profile</button>
                 )}
               </div>
               {certificateNotice && <p role="status">{certificateNotice}</p>}

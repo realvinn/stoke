@@ -945,7 +945,7 @@ await step('browser load errors and explicit certificate reviews work in native 
   }
   try {
     const first = await review(`${tls.origin}/first`)
-    check('untrusted HTTPS exposes a certificate review instead of a blank view', await ev<boolean>('!!document.querySelector(".browser-load-error") && document.querySelector(".browser-load-error").textContent.includes("Continue for this tab")'))
+    check('untrusted HTTPS exposes a certificate review instead of a blank view', await ev<boolean>('!!document.querySelector(".browser-load-error") && document.querySelector(".browser-load-error").textContent.includes("Continue in this profile")'))
     check('certificate review includes a SHA-256 leaf identity', /^[A-F0-9]{2}(?::[A-F0-9]{2}){31}$/.test(first.loadError!.certificate!.sha256))
     await shot('04-certificate-review')
     check('a stale certificate approval cannot authorize the request', await ev(`window.stoke.browser.continueCertificate(${JSON.stringify(first.activeId)}, "stale")`) === false)
@@ -956,8 +956,12 @@ await step('browser load errors and explicit certificate reviews work in native 
       return next?.certificateException && !next.loadError ? next : null
     })
     check('visible Continue resumes the original HTTPS navigation', successful.url === first.loadError!.url)
-    const sameProfile = await review(`${tls.origin}/same-profile`)
-    check('another tab in the same profile requires its own review', sameProfile.activeId !== first.activeId)
+    await ev(`(window.stoke.browser.newTab(${JSON.stringify(`${tls.origin}/same-profile`)}), true)`)
+    const sameProfile = await waitFor('the shared profile certificate exception', async () => {
+      const next = await state()
+      return next?.url === `${tls.origin}/same-profile` && !next.loading && next.certificateException && !next.loadError ? next : null
+    }, 20_000)
+    check('another tab in the same profile shares its reviewed site and certificate', sameProfile.activeId !== first.activeId)
     const anotherPort = await review(`${otherPort.origin}/different-port`)
     check('a certificate grant cannot cross a port boundary', anotherPort.loadError?.certificate?.origin === otherPort.origin)
     await ev(`window.stoke.browser.useProfile(${JSON.stringify(profileTwo)})`)
@@ -968,7 +972,7 @@ await step('browser load errors and explicit certificate reviews work in native 
     await ev(`(window.stoke.browser.selectTab(${JSON.stringify(first.activeId)}), true)`)
     const removed = await ev<boolean>(`window.stoke.browser.revokeCertificate(${JSON.stringify(first.activeId)}, ${JSON.stringify(first.loadError!.certificate!.sha256)})`)
     const revoked = await waitFor('revoked certificate to need review again', async () => (await state())?.loadError?.certificate?.canContinue ?? false, 20_000)
-    check('removing the tab exception restores certificate review', removed && revoked)
+    check('removing the profile exception restores certificate review', removed && revoked)
     const old = await state()
     const resumed = await continueReview(old!)
     resumed.close()
@@ -987,7 +991,10 @@ await step('browser load errors and explicit certificate reviews work in native 
     const source = await waitFor('the HTTPS form source', () => connectBrowserPage(port, (url: string) => url === sourceUrl))
     try {
       const before = (await state())?.activeId
-      await source.evaluate(`(() => { const f = document.createElement('form'); f.method='post'; f.target='_blank'; f.action=${JSON.stringify(`${tls.origin}/posted`)}; const i=document.createElement('input'); i.name='note'; i.value='Reviewed 界'; f.append(i); document.body.append(f); f.submit(); return true })()`)
+      await source.evaluate(`(() => { const f = document.createElement('form'); f.method='post'; f.target='_blank'; f.action=${JSON.stringify(`${tls.origin}/posted`)}; const i=document.createElement('input'); i.name='note'; i.value='Reviewed 界'; const b=document.createElement('button'); b.id='tls-post'; b.textContent='Submit HTTPS form'; f.append(i,b); document.body.append(f); return true })()`)
+      const point = await source.evaluate('(() => {const r=document.querySelector("#tls-post").getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2}})()')
+      await source.send('Input.dispatchMouseEvent', {type:'mousePressed',button:'left',clickCount:1,...point})
+      await source.send('Input.dispatchMouseEvent', {type:'mouseReleased',button:'left',clickCount:1,...point})
       const posted = await waitFor('the popup POST certificate review', async () => {
         const next = await state()
         return next?.activeId !== before && next?.loadError?.url === `${tls.origin}/posted` && next.loadError.certificate?.canContinue ? next : null

@@ -72,6 +72,13 @@ const HARMLESS_PERMISSIONS = new Set(['fullscreen', 'pointerLock'])
  */
 const DEFAULT_VIEWPORT = { x: 0, y: 0, width: 1280, height: 900 }
 
+interface CertificateException { origin: string; sha256: string; error: string }
+// Chromium pools accepted HTTPS connections within a session. Permissions
+// belong to its browser profile, including across window reopen. They are
+// never written to disk and disappear when Stoke's process exits.
+const certificateExceptions = new Map<string, Map<string, CertificateException>>()
+const certificateResets = new Set<string>()
+
 interface Tab {
   id: string
   /** The browser profile, and so the partition, this tab lives in. */
@@ -91,7 +98,6 @@ interface Tab {
   recoveredFrom: string | null
   navigationUrl: string
   loadError?: BrowserLoadError
-  certificateException?: { origin: string; sha256: string; error: string }
   pendingCertificate?: { callback: (trusted: boolean) => void; timer: ReturnType<typeof setTimeout> }
 }
 
@@ -253,7 +259,7 @@ export class EmbeddedBrowser {
       const origin = httpsOrigin(url)
       let sha256 = ''
       try { sha256 = new X509Certificate(certificate.data).fingerprint256 } catch { /* cannot approve an unidentified certificate */ }
-      const allowed = tab.certificateException
+      const allowed = origin ? certificateExceptions.get(partition)?.get(origin) : undefined
       if (origin && sha256 && allowed?.origin === origin && allowed.sha256 === sha256 && allowed.error === error) {
         event.preventDefault()
         callback(true)
@@ -497,7 +503,10 @@ export class EmbeddedBrowser {
   async clearProfileData(id: string): Promise<void> {
     for (const tab of this.tabs.filter((t) => t.profileId === id)) this.closeTab(tab.id)
     this.lastActive.delete(id)
-    const ses = session.fromPartition(partitionFor(id))
+    const partition = partitionFor(id)
+    certificateExceptions.delete(partition)
+    const ses = session.fromPartition(partition)
+    await ses.closeAllConnections()
     await ses.clearStorageData()
     await ses.clearCache()
   }
@@ -720,6 +729,8 @@ export class EmbeddedBrowser {
       }
     }
     const url = tab.loadError?.url ?? wc.getURL()
+    const origin = httpsOrigin(url)
+    const exception = origin ? certificateExceptions.get(partitionFor(tab.profileId))?.get(origin) : undefined
     return {
       url,
       title: tab.loadError ? 'Page could not load' : wc.getTitle(),
@@ -733,8 +744,7 @@ export class EmbeddedBrowser {
       findActive: tab.findActive,
       bookmarked: this.bookmarks.includes(url),
       loadError: tab.loadError,
-      certificateException: tab.certificateException?.origin === httpsOrigin(url)
-        ? { origin: tab.certificateException.origin, sha256: tab.certificateException.sha256 } : undefined
+      certificateException: exception ? { origin: exception.origin, sha256: exception.sha256 } : undefined
     }
   }
 
@@ -860,26 +870,46 @@ export class EmbeddedBrowser {
     const certificate = failure?.certificate
     const pending = tab?.pendingCertificate
     if (!this.userVisible || !tab || tab.id !== tabId || tab.profileId !== this.currentProfile ||
-      failure?.id !== failureId || !certificate?.canContinue || !pending || tab.view.webContents.isDestroyed()) return false
+      failure?.id !== failureId || !certificate?.canContinue || !pending || tab.view.webContents.isDestroyed() || certificateResets.has(partitionFor(tab.profileId))) return false
     tab.pendingCertificate = undefined
     clearTimeout(pending.timer)
-    tab.certificateException = { origin: certificate.origin, sha256: certificate.sha256, error: failure.code }
+    const partition = partitionFor(tab.profileId)
+    const exceptions = certificateExceptions.get(partition) ?? new Map<string, CertificateException>()
+    exceptions.set(certificate.origin, { origin: certificate.origin, sha256: certificate.sha256, error: failure.code })
+    certificateExceptions.set(partition, exceptions)
     tab.loadError = undefined
     // Continue Chromium's actual request, rather than inventing a GET for a
-    // failed POST or redirect. The approval remains only in this owned tab.
+    // failed POST or redirect. Approval shares the profile's HTTPS connection pool.
     pending.callback(true)
     this.applyVisibility()
     this.emit(this.state())
     return true
   }
 
-  revokeCertificate(tabId: string, sha256: string): boolean {
+  async revokeCertificate(tabId: string, sha256: string): Promise<boolean> {
     const tab = this.active()
-    if (!this.userVisible || !tab || tab.id !== tabId || tab.certificateException?.sha256 !== sha256) return false
-    tab.certificateException = undefined
-    this.reload()
-    this.emit(this.state())
-    return true
+    if (!this.userVisible || !tab || tab.id !== tabId) return false
+    const partition = partitionFor(tab.profileId)
+    const origin = httpsOrigin(this.currentState().url)
+    const exceptions = certificateExceptions.get(partition)
+    if (!origin || exceptions?.get(origin)?.sha256 !== sha256 || certificateResets.has(partition)) return false
+    certificateResets.add(partition)
+    exceptions.delete(origin)
+    for (const page of this.tabs) if (page.profileId === tab.profileId) this.cancelCertificate(page)
+    const address = tab.navigationUrl
+    try {
+      // Removing only our map entry leaves Chromium's accepted socket reusable.
+      // Reconnect this profile before retrying; cookies and auth are retained.
+      await session.fromPartition(partition).closeAllConnections()
+      if (this.tabs.includes(tab) && this.activeId === tab.id && tab.navigationUrl === address && !tab.view.webContents.isDestroyed()) {
+        if (tab.loadError) this.load(tab, tab.loadError.url)
+        else tab.view.webContents.reload()
+      }
+      return true
+    } finally {
+      certificateResets.delete(partition)
+      this.emit(this.state())
+    }
   }
 
   find(text: string, forward = true, findNext = false): void {

@@ -35,9 +35,9 @@ export async function browserPopupChecks(check: (name: string, got: unknown, wan
             get webContents(){return this.contents.destroyed?undefined:this.contents}
             setBackgroundColor(){} setBounds(bounds){this.bounds=bounds} setVisible(visible){this.visible=visible}
           }
-          const jar={setPermissionRequestHandler(){},setPermissionCheckHandler(){},webRequest:{onCompleted(){},onErrorOccurred(){}}};
-          export const session={fromPartition:()=>jar}, shell={};
-          export const mock={Contents,window:()=>({destroyed:false,isDestroyed(){return this.destroyed},contentView:{
+          const jars=new Map();
+          export const session={fromPartition:(partition)=>{if(!jars.has(partition))jars.set(partition,{closeAllConnections:()=>Promise.resolve(),clearStorageData:()=>Promise.resolve(),clearCache:()=>Promise.resolve(),setPermissionRequestHandler(){},setPermissionCheckHandler(){},webRequest:{onCompleted(){},onErrorOccurred(){}}});return jars.get(partition)}}, shell={};
+          export const mock={Contents,jars,window:()=>({destroyed:false,isDestroyed(){return this.destroyed},contentView:{
             children:[],addChildView(view){this.children.push(view)},removeChildView(view){
               if(!view.webContents)throw Error('native view already destroyed');
               this.children=this.children.filter(v=>v!==view)
@@ -125,6 +125,7 @@ export async function browserPopupChecks(check: (name: string, got: unknown, wan
     check('hidden browser cannot grant a certificate exception', errors.continueCertificate(tabId, failure.id), false)
     errors.show()
     check('explicit approval resumes exactly the held request without a new GET', [errors.continueCertificate(tabId, failure.id), review.answers, errorPage.loads.length, errorView.visible], [true, [true], 2, true])
+    errorPage.url = url
     check('a reviewed callback cannot be replayed', errors.continueCertificate(tabId, failure.id), false)
     check('same tab, origin, leaf and error reuse the reviewed exception', certError().answers, [true])
     const unreviewed = certError(errorPage, 'https://localhost:4444/asset', cert.cert, false)
@@ -132,11 +133,13 @@ export async function browserPopupChecks(check: (name: string, got: unknown, wan
     const newTab = errors.newTab(url)
     start(newTab.view.webContents)
     const otherReview = certError(newTab.view.webContents)
-    check('another tab in the same profile has no inherited exception', otherReview.answers, [])
+    check('another tab shares the reviewed origin and certificate in the same profile', otherReview.answers, [true])
+    const pendingOther = certError(newTab.view.webContents, url, otherCert.cert)
     errors.closeTab(newTab.id)
-    check('closing a tab denies its pending native certificate request', otherReview.answers, [false])
+    check('closing a tab denies its pending native certificate request', pendingOther.answers, [false])
     const newProfile = errors.newTab(url, 'another-profile')
-    certError(newProfile.view.webContents)
+    const profileReview = certError(newProfile.view.webContents)
+    check('a separate browser profile receives no certificate permission', profileReview.answers, [])
     check('background profile cannot approve even a known failure', errors.continueCertificate(newProfile.id, failure.id), false)
     errors.closeTab(newProfile.id)
     start()
@@ -151,7 +154,16 @@ export async function browserPopupChecks(check: (name: string, got: unknown, wan
     errors.stop()
     check('stop denies the request and disables the stale Continue button', [changedError.answers, errors.currentState().loadError.certificate.canContinue], [[false], false])
     start()
-    check('revocation removes the owned tab grant', errors.revokeCertificate(tabId, new X509Certificate(cert.cert).fingerprint256), true)
+    let finishReset!: () => void
+    const resetGate = new Promise<void>(resolve => { finishReset = resolve })
+    mock.jars.get('persist:stoke-browser').closeAllConnections = () => resetGate
+    const removing = errors.revokeCertificate(tabId, new X509Certificate(cert.cert).fingerprint256)
+    check('revocation refuses reentry while the connection pool is resetting', await errors.revokeCertificate(tabId, new X509Certificate(cert.cert).fingerprint256), false)
+    const duringReset = certError()
+    check('a new review cannot regrant permission during connection reset', errors.continueCertificate(tabId, errors.currentState().loadError.id), false)
+    finishReset()
+    check('revocation removes the profile grant and reconnects before retry', await removing, true)
+    check('retry after connection reset denies the obsolete pending request', duringReset.answers, [false])
     check('revoked certificate needs review again', certError().answers, [])
     errorWin.destroyed = true
     errors.destroy()
@@ -175,5 +187,23 @@ export async function browserPopupChecks(check: (name: string, got: unknown, wan
     check('an agent cannot read the previous document as the failed page', staleRead, true)
     agentBrowser.destroy()
     check('agent error reporting leaves the owned callback for normal browser cleanup', nativeAnswer, false)
+
+    const reopen = new EmbeddedBrowser(mock.window(), () => {})
+    reopen.setProfiles([{id:'default',label:'Default'},{id:'lifecycle',label:'Fixture'}], 'lifecycle', '')
+    reopen.show(url)
+    const reopenPage = reopen.webContents()
+    const reopenedReview = certError(reopenPage)
+    const reopenedFailure = reopen.currentState().loadError
+    check('the lifecycle fixture grants the reviewed profile permission', reopen.continueCertificate(reopen.currentState().activeId, reopenedFailure.id), true)
+    reopen.destroy()
+    const reopened = new EmbeddedBrowser(mock.window(), () => {})
+    reopened.setProfiles([{id:'default',label:'Default'},{id:'lifecycle',label:'Fixture'}], 'lifecycle', '')
+    reopened.show(url)
+    check('window reopening retains the same profile permission until process exit', certError(reopened.webContents()).answers, [true])
+    await reopened.clearProfileData('lifecycle')
+    reopened.show(url)
+    const clearedReview = certError(reopened.webContents())
+    check('clearing a profile removes its certificate permission too', [clearedReview.answers, reopenedReview.answers], [[], [true]])
+    reopened.destroy()
   } finally { await rm(work, { recursive: true, force: true }) }
 }

@@ -1521,7 +1521,7 @@ export interface BrowserState {
   findActive: number
   bookmarked: boolean
   loadError?: BrowserLoadError
-  /** A temporary exception belongs to this tab and the exact certificate. */
+  /** Temporary approval shares the browser profile's connection pool. */
   certificateException?: { origin: string; sha256: string }
 }
 

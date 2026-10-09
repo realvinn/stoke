@@ -168,11 +168,13 @@ Main-frame load failures hide the native blank/error view and expose the failed
 address, error code, Retry and Open externally actions in the browser chrome.
 Certificate failures show leaf SHA-256, issuer, subject and validity. Continue
 holds and resolves Chromium's original callback, preserving POST and referrer
-data. Approval is in memory for the owned tab's exact HTTPS origin (including
-port), leaf and error; subresources cannot initiate review. The trusted main
+data. Approval is in memory for the browser profile's exact HTTPS origin
+(including port), leaf and error until Stoke quits; subresources cannot initiate review. The trusted main
 renderer alone can approve a current failure nonce or revoke an exception.
 Navigation, tab teardown, Stop and a two-minute review expiry deny pending
-callbacks. No session-wide verification override or certificate-ignore switch
+callbacks. Removing an exception first reconnects that profile's pooled
+connections before retrying the page; the UI describes the profile scope and
+reconnection. No session-wide verification override or certificate-ignore switch
 is installed. Packaged probes use freshly generated loopback certificates.
 Browser MCP reports these failures promptly and refuses to read a previous
 document as the failed page; it leaves certificate approval to the person.
