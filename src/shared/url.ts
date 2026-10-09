@@ -28,6 +28,18 @@
  */
 export const BROWSABLE_SCHEMES = new Set(['http', 'https', 'about'])
 
+/** A website's popup stays in web content. Local file preview is a separate
+ * explicit address-bar action; neither a popup nor its later navigation gains it. */
+export function browserPopupUrl(input: string): boolean {
+  if (input === 'about:blank' || input.startsWith('about:blank#')) return true
+  try {
+    const url = new URL(input)
+    if (url.protocol === 'http:' || url.protocol === 'https:') return true
+    if (url.protocol === 'blob:') return /^https?:\/\//i.test(url.pathname)
+  } catch { /* malformed */ }
+  return false
+}
+
 export interface UrlOpts {
   /** Permit `file://`. The address bar passes this; no tool call may. */
   allowLocalFiles?: boolean

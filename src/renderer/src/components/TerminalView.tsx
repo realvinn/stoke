@@ -6,6 +6,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes'
 import { captureTerminalViewport, restoreTerminalViewport } from '@shared/terminalViewport'
+import { selectedTerminalLink, terminalHttpLink, terminalLinkRepairs } from '@shared/terminalLinks'
 import { rememberSshViewport, takeSshViewport } from '../lib/sshViewport'
 import type { ClipboardPeek } from '@shared/api'
 import type { SshHost, TerminalSettings, Theme, VoiceSettings } from '@shared/types'
@@ -72,6 +73,7 @@ interface MenuState {
   x: number
   y: number
   selection: string
+  link: string | null
   /**
    * Cells really are selected, but every one of them is blank.
    *
@@ -330,6 +332,7 @@ export function TerminalView({
      */
     const openLink = (event: MouseEvent, uri: string): void => {
       event.preventDefault()
+      if (!terminalHttpLink(uri)) return
       const moved = Math.abs(event.clientX - downAt.x) + Math.abs(event.clientY - downAt.y)
       if (moved > DRAG_SLOP_PX) return
       const away = event.shiftKey || (isMacPlatform ? event.metaKey : event.ctrlKey)
@@ -446,6 +449,9 @@ export function TerminalView({
     term.loadAddon(new UnicodeGraphemesAddon())
     term.unicode.activeVersion = '15-graphemes'
 
+    // Before the ordinary web provider: repair a URL repainted across full
+    // rows by SSH/tmux, whose explicit CRLF/CUP did not set isWrapped.
+    term.registerLinkProvider({ provideLinks: (line, done) => done(terminalLinkRepairs(term, line).map((link) => ({ ...link, activate: openLink }))) })
     term.loadAddon(new WebLinksAddon(openLink))
 
     /*
@@ -954,6 +960,7 @@ export function TerminalView({
         x: e.clientX,
         y: e.clientY,
         selection,
+        link: selectedTerminalLink(selection),
         blank: selection === '' && term.hasSelection(),
         clip: window.stoke.clipboard.readSync()
       })
@@ -1475,6 +1482,7 @@ export function TerminalView({
           x={menu.x}
           y={menu.y}
           onClose={closeMenu}
+          header={menu.link ? { title: 'Selected link', subtitle: menu.link } : undefined}
           /*
            * Shown only when there is something to explain, which is exactly
            * when a user has just discovered that dragging did not select.
@@ -1506,6 +1514,10 @@ export function TerminalView({
                   : 'Hold Shift while dragging to select text.'
           }
           items={[
+            ...(menu.link ? [
+              { label: 'Open selected link in Stoke', onSelect: () => openUrlRef.current(menu.link!) },
+              { label: 'Open selected link in browser', onSelect: () => window.stoke.openExternal(menu.link!) }
+            ] : []),
             {
               label: 'Copy',
               hint: IS_MAC ? '⌘C' : 'Ctrl+Shift+C',

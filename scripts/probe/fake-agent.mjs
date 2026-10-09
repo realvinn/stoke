@@ -399,6 +399,16 @@ rl.on('line', async (raw) => {
     await mcpVisit(mcp[1])
     return
   }
+  const link = /^hardlink\s+(\S+)/.exec(line)
+  if (link) {
+    const cols = process.stdout.columns || 80
+    const url = link[1] + 'x'.repeat(cols * 2) + '&end=terminal-tail'
+    record('hardlink', { url, cols })
+    // A TUI repaint: two full rows with explicit CRLF, rather than xterm's
+    // ordinary autowrap flag. A click on the last row must open the whole URL.
+    process.stdout.write('\r\n\x1b[?7l' + Array.from({ length: Math.ceil(url.length / cols) }, (_, i) => url.slice(i * cols, (i + 1) * cols)).join('\r\n') + '\x1b[?7h\r\n')
+    return
+  }
   if (!claude || !line.trim()) return
   // One turn, as the CLI makes one: the prompt hook, a busy registry, the
   // transcript's user and assistant records, a re-rendered status line, Stop.

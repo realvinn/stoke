@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto'
 import { BrowserWindow, session, shell, WebContentsView } from 'electron'
-import type { WebContents } from 'electron'
+import type { WebContents, WebContentsViewConstructorOptions } from 'electron'
 import type { BrowserState, BrowserTabState, Rect } from '@shared/types'
 // Relative and with the extension, so this module still runs under
 // `node --experimental-strip-types` (no path aliases there).
-import { normalizeUrl } from '../shared/url.ts'
+import { browserPopupUrl, normalizeUrl } from '../shared/url.ts'
 import { DEFAULT_BROWSER_PROFILE_ID, partitionFor } from '../shared/browserProfiles.ts'
 import type { BrowserProfile } from '../shared/browserProfiles.ts'
 
@@ -145,13 +145,18 @@ export class EmbeddedBrowser {
     return this.newTab()
   }
 
-  newTab(url?: string, profileId: string = this.currentProfile): Tab {
+  newTab(url?: string, profileId: string = this.currentProfile, creation?: WebContentsViewConstructorOptions, foreground = true): Tab {
     const partition = partitionFor(profileId)
     const view = new WebContentsView({
+      ...(creation?.webContents ? { webContents: creation.webContents } : {}),
       webPreferences: {
+        ...creation?.webPreferences,
         // Nothing from Stoke is exposed to browsed pages.
         contextIsolation: true,
         nodeIntegration: false,
+        nodeIntegrationInSubFrames: false,
+        webviewTag: false,
+        webSecurity: true,
         sandbox: true,
         partition
       }
@@ -280,12 +285,43 @@ export class EmbeddedBrowser {
       }
     })
 
-    // A link that asks for a new window gets a real new tab, like a browser —
-    // in the opener's profile, so it carries the same logins.
-    wc.setWindowOpenHandler(({ url: target }) => {
-      this.newTab(target, tab.profileId)
-      return { action: 'deny' }
+    // Let Chromium create the navigation in our tab. Denying it then loading
+    // only the URL loses form POST/referrer data and returns null to a page
+    // that opens a blank window before setting its location.
+    // https://www.electronjs.org/docs/latest/api/web-contents#contentssetwindowopenhandlerhandler
+    wc.setWindowOpenHandler((details) => {
+      if (!browserPopupUrl(details.url)) return { action: 'deny' }
+      return {
+        action: 'allow',
+        outlivesOpener: true,
+        overrideBrowserWindowOptions: { webPreferences: { contextIsolation: true, nodeIntegration: false, nodeIntegrationInSubFrames: false, webviewTag: false, webSecurity: true, sandbox: true, partition } },
+        createWindow: (options) => {
+          // Electron supplies a pre-created webContents at runtime, although
+          // BrowserWindowConstructorOptions in 43.2 does not declare it.
+          const created = options as typeof options & { webContents?: WebContents }
+          const opened = this.newTab(undefined, tab.profileId, { webContents: created.webContents, webPreferences: options.webPreferences }, details.disposition !== 'background-tab')
+          const child = opened.view.webContents
+          const navigate = (event: Electron.Event, target?: string): void => {
+            const address = typeof (event as unknown as { url?: unknown }).url === 'string' ? (event as unknown as { url: string }).url : target ?? ''
+            if (!browserPopupUrl(address)) event.preventDefault()
+          }
+          child.on('will-navigate', navigate)
+          child.on('will-redirect', navigate)
+          // OpenURLFromTab (including a target=_blank link with noopener)
+          // supplies no guest. Only then must we initiate its navigation.
+          // An adopted guest already owns Chromium's navigation and opener.
+          if (!created.webContents) {
+            const body = details.postBody
+            void child.loadURL(details.url, {
+              httpReferrer: details.referrer,
+              ...(body ? { postData: body.data, extraHeaders: `content-type: ${body.contentType}${body.boundary ? `; boundary=${body.boundary}` : ''}` } : {})
+            }).catch(() => {})
+          }
+          return child
+        }
+      }
     })
+    wc.once('destroyed', () => { if (this.tabs.includes(tab)) this.closeTab(tab.id) })
 
     this.hookConsole(wc, tab)
     this.hookSession(partition)
@@ -300,8 +336,10 @@ export class EmbeddedBrowser {
 
     // A popup from a background profile's page joins that profile quietly
     // rather than pulling the strip over to it.
-    if (profileId === this.currentProfile) this.activeId = tab.id
-    else this.lastActive.set(profileId, tab.id)
+    if (foreground) {
+      if (profileId === this.currentProfile) this.activeId = tab.id
+      else this.lastActive.set(profileId, tab.id)
+    }
     this.applyVisibility()
 
     if (url) this.load(tab, url)
@@ -318,8 +356,8 @@ export class EmbeddedBrowser {
     const next = siblings[at + 1] ?? siblings[at - 1] ?? null
     this.tabs.splice(this.tabs.indexOf(tab), 1)
 
-    this.win.contentView.removeChildView(tab.view)
-    tab.view.webContents.close()
+    if (!this.win.isDestroyed()) this.win.contentView.removeChildView(tab.view)
+    if (!tab.view.webContents.isDestroyed()) tab.view.webContents.close()
 
     if (this.activeId === id) this.activeId = next?.id ?? null
     if (this.lastActive.get(tab.profileId) === id) {
@@ -772,4 +810,3 @@ export class EmbeddedBrowser {
     for (const tab of [...this.tabs]) this.closeTab(tab.id)
   }
 }
-

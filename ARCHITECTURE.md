@@ -156,6 +156,14 @@ per-session reading, and only that, which is wired to nothing.
 `src/main/browser.ts` runs tabbed `WebContentsView`s on a persistent partition
 (`persist:stoke-browser`), so logins survive restarts.
 
+Popup requests use Electron's `createWindow` hook to mount Chromium's child
+webContents as a tab in the opener's profile. This retains form POST data,
+referrers and a script's blank-window handle. Guest-less link requests initiate
+their navigation with the same referrer, POST bytes and content-type boundary.
+Modified background clicks keep the opener selected. Popups can load web URLs,
+web-origin blobs and about:blank; local files remain an explicit address-bar
+action. Self-closing child contents remove their tab.
+
 Two structural points:
 
 - **Views stay mounted and are merely hidden.** A detached view gets a 0×0 viewport and never
@@ -1021,6 +1029,9 @@ npm run verify:fullscreen     # the macOS full-screen menu bar: how far it reach
 npm run verify:layers         # nothing floats behind the docked browser: the overlap rule,
                               # and every component that draws a popover, menu or dialog
                               # registers it or is an overlayOpen overlay (gotcha 14)
+npm run verify:terminal-links # actual normal/alternate xterm buffers: hard CRLF/CUP URL
+                              # repairs, soft wraps, grapheme cell ranges, separators,
+                              # bounds and an explicit selected-link fallback
 npm run verify:browser-url    # what the docked browser will load: file://, javascript:,
                               # data: refused to a tool call, file:// kept for the address
                               # bar, and localhost:3000 not mistaken for a scheme

@@ -42,6 +42,7 @@ export function loginCookie(sid) {
 
 const page = (title, body) =>
   `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title></head><body>${body}</body></html>`
+const escape = (value) => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
 
 export function startLoginServer({ sid = `probe-sid-${process.pid}`, port = 0 } = {}) {
   const cookie = loginCookie(sid)
@@ -49,6 +50,25 @@ export function startLoginServer({ sid = `probe-sid-${process.pid}`, port = 0 } 
   const srv = http.createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost')
     const authed = carries(req)
+    if (url.pathname === '/links') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
+      return res.end(page('Probe links', `
+        <a id="plain" href="/popup-result?case=plain" target="_blank" rel="noopener">New tab</a><br>
+        <a id="background" href="/popup-result?case=background">Background tab</a><br>
+        <button id="delayed" onclick="window.probePopup = window.open('about:blank', '_blank'); if (window.probePopup) setTimeout(() => window.probePopup.location = '/popup-result?case=delayed', 100)">Blank then navigate</button>
+        <form method="post" action="/popup-result?case=post" target="_blank"><input name="note" value="Unicode 界 &amp; symbols"><button id="post" type="submit">Post to new tab</button></form>
+        <form method="post" enctype="multipart/form-data" action="/popup-result?case=multipart" target="_blank"><input name="note" value="Multipart 界"><button id="multipart" type="submit">Multipart new tab</button></form>
+      `))
+    }
+    if (url.pathname === '/popup-result') {
+      let body = ''
+      req.on('data', (chunk) => { body += chunk; if (body.length > 64 * 1024) req.destroy() })
+      req.on('end', () => {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
+        res.end(page('Popup result', `<pre id="result">${escape(JSON.stringify({ authed, method: req.method, body, contentType: req.headers['content-type'] ?? '', referrer: req.headers.referer ?? '', case: url.searchParams.get('case') }))}</pre>`))
+      })
+      return
+    }
     if (url.pathname === '/login' && req.method === 'POST') {
       let body = ''
       req.on('data', (c) => (body += c))

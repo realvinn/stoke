@@ -90,6 +90,7 @@ import { parseArgs } from 'node:util'
 
 import { CdpClient, connectBrowserPage, connectStoke, listTargets } from './cdp-lib.mjs'
 import { startLoginServer } from './probe/login-server.mjs'
+import type { BrowserState } from '../src/shared/types.ts'
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const isWin = process.platform === 'win32'
@@ -826,6 +827,88 @@ await step('the docked browser logs in, and keeps it to its own profile', async 
   check('the second profile does NOT carry the first one\'s login (gotcha 107)', /"authed":\s*false/.test(other), other)
   await ev('window.stoke.browser.useProfile("default")')
   await sleep(500)
+})
+
+await step('browser links retain popup navigation, POST data and profile isolation', async () => {
+  await ev('(window.__stokeLinkProbeOff = window.stoke.browser.onState(state => { window.__stokeLinkProbeState = state }), true)')
+  const state = () => ev<BrowserState | null>('window.__stokeLinkProbeState ?? null')
+  try {
+    for (const profile of ['default', profileTwo].filter(Boolean)) {
+      await ev(`window.stoke.browser.useProfile(${JSON.stringify(profile)})`)
+      const sourceUrl = `${site.base}/links?owner=${profile}`
+      await ev(`(window.stoke.browser.newTab(${JSON.stringify(sourceUrl)}), true)`)
+      const sourceTab = await waitFor('the links fixture tab', async () => (await state())?.tabs.find(t => t.url === sourceUrl && !t.loading) ?? null, 20_000)
+      const source = await connectBrowserPage(port, (url: string) => url === sourceUrl)
+      try {
+        for (const kind of profile === 'default' ? ['plain', 'background', 'delayed', 'post', 'multipart'] : ['plain']) {
+          await ev(`(window.stoke.browser.selectTab(${JSON.stringify(sourceTab.id)}), true)`)
+          const rect = await source.evaluate(`(() => { const r = document.querySelector(${JSON.stringify(`#${kind}`)}).getBoundingClientRect(); return {x: r.x + r.width / 2, y: r.y + r.height / 2} })()`)
+          // Native Chromium click on the fixture, with a user gesture. A
+          // modified anchor click covers its guest-less OpenURLFromTab path.
+          const modifiers = kind === 'background' ? (process.platform === 'darwin' ? 4 : 2) : 0
+          await source.send('Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', clickCount: 1, ...rect, modifiers })
+          await source.send('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', clickCount: 1, ...rect, modifiers })
+          const target = `${site.base}/popup-result?case=${kind}`
+          const opened = await waitFor(`${profile}/${kind} popup to commit`, async () => (await state())?.tabs.find(t => t.url === target && !t.loading) ?? null, 20_000)
+          const child = await connectBrowserPage(port, (url: string) => url === target)
+          try {
+            const result = await waitFor('the popup response', () => child.evaluate('document.querySelector("#result")?.textContent || null'), 10_000)
+            const data = JSON.parse(result)
+            check(`${profile}/${kind}: stays in its opener's profile and cookie jar`, opened.profileId === profile && data.authed === (profile === 'default'), JSON.stringify({ profile: opened.profileId, ...data }))
+            check(`${profile}/${kind}: has no Stoke bridge or Node access`, await child.evaluate('typeof window.stoke === "undefined" && typeof require === "undefined"'), 'sandboxed web page')
+            if (kind === 'background') check('modified link click keeps the source tab selected', (await state())?.activeId === sourceTab.id)
+            else check(`${kind}: the popup becomes the selected tab`, (await state())?.activeId === opened.id)
+            if (kind === 'post') check('new-tab form keeps the exact POST payload and encoding', data.method === 'POST' && new URLSearchParams(data.body).get('note') === 'Unicode 界 & symbols' && data.contentType.startsWith('application/x-www-form-urlencoded'), JSON.stringify(data))
+            if (kind === 'multipart') check('new-tab multipart form keeps its boundary and Unicode body', data.method === 'POST' && data.body.includes('Multipart 界') && data.contentType.startsWith('multipart/form-data; boundary=') && data.body.includes(data.contentType.split('boundary=')[1]), JSON.stringify(data))
+            if (kind === 'delayed') {
+              check('script-created blank window keeps its opener', await child.evaluate('!!window.opener'))
+              await source.evaluate('(window.probePopup.close(), true)')
+              await waitFor('self-closing popup to leave the tab strip', async () => !(await state())?.tabs.some(t => t.id === opened.id), 10_000)
+              check('window.close removes the popup tab', true)
+            }
+            check(`${kind}: browser referrer survives`, data.referrer === sourceUrl, String(data.referrer))
+          } finally {
+            child.close()
+            await ev(`(window.stoke.browser.closeTab(${JSON.stringify(opened.id)}), true)`)
+          }
+        }
+      } finally {
+        source.close()
+        await ev(`(window.stoke.browser.closeTab(${JSON.stringify(sourceTab.id)}), true)`)
+      }
+    }
+  } finally {
+    await ev('(window.__stokeLinkProbeOff?.(), delete window.__stokeLinkProbeOff, delete window.__stokeLinkProbeState, true)')
+    await ev('window.stoke.browser.useProfile("default")')
+  }
+})
+
+await step('a click on a hard-wrapped terminal URL opens its complete address', async () => {
+  const t = tabs.codex!
+  await typeLine(t.ptyId, `hardlink ${site.base}/whoami?terminal=hard&padding=`)
+  const link = await waitFor('the stub\'s hard link output', () => stubRecords('codex').find(r => r.pid === t.pid)?.events.find(e => e.kind === 'hardlink') ?? null, 10_000)
+  const target = String(link.url)
+  const point = await waitFor('the hard-wrapped tail in the production terminal', () => ev<{ x: number; y: number; wrapped: boolean } | null>(`(() => {
+    const t = window.stokeTerminals.get(${JSON.stringify(t.ptyId)}), b = t.buffer.active, screen = t.element.querySelector('.xterm-screen').getBoundingClientRect();
+    for (let i = b.viewportY; i < Math.min(b.length, b.viewportY + t.rows); i++) {
+      const line = b.getLine(i), text = line?.translateToString(true) || '';
+      if (!text.includes('&end=terminal-tail')) continue;
+      return { x: screen.x + screen.width / t.cols / 2, y: screen.y + (i - b.viewportY + .5) * screen.height / t.rows, wrapped: line.isWrapped };
+    }
+    return null;
+  })()`), 10_000)
+  check('the terminal tail is an explicit hard line, not a normal soft wrap', point.wrapped === false)
+  await ev('(window.__stokeTerminalLinkOff = window.stoke.browser.onState(state => { window.__stokeTerminalLinkState = state }), true)')
+  try {
+    await ui!.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y })
+    await sleep(150)
+    await ui!.send('Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', clickCount: 1, x: point.x, y: point.y })
+    await ui!.send('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', clickCount: 1, x: point.x, y: point.y })
+    const opened = await waitFor('the whole terminal URL to commit in Stoke', () => ev<BrowserState | null>(`window.__stokeTerminalLinkState?.url === ${JSON.stringify(target)} && !window.__stokeTerminalLinkState.loading ? window.__stokeTerminalLinkState : null`), 20_000)
+    check('clicking the terminal tail preserves the full URL including its query', opened.url === target, opened.url)
+  } finally {
+    await ev('(window.__stokeTerminalLinkOff?.(), delete window.__stokeTerminalLinkOff, delete window.__stokeTerminalLinkState, true)')
+  }
 })
 
 await step('agents read the logged-in page through Stoke\'s browser MCP', async () => {
