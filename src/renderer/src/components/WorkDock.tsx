@@ -3,7 +3,7 @@ import { ActivityPanel } from './ActivityPanel'
 import { WorkPanel } from './WorkPanel'
 import { IconClose } from './Icons'
 
-export function WorkDock({ onClose, session }: { onClose: () => void; session?: { id: string; title: string } }): React.JSX.Element {
+export function WorkDock({ onClose, session }: { onClose: () => void; session?: { id: string; title: string; notesPtyId?: string } }): React.JSX.Element {
   const [panel, setPanel] = useState<'activity' | 'work'>('activity')
   return <div className="work-dock">
     <div className="work-dock-tabs">

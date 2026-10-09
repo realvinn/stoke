@@ -491,6 +491,7 @@ export const CH = {
   workDraftReject: 'work:drafts:reject',
   workDraftCancel: 'work:drafts:cancel',
   workDraftsChanged: 'work:drafts:changed',
+  workSessionNotes: 'work:session-notes',
   worklogQueue: 'worklog:queue',
   worklogScan: 'worklog:scan',
   worklogAccept: 'worklog:accept',

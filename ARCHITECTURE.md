@@ -579,6 +579,15 @@ close, forces a POSIX child that ignores SIGTERM after two seconds, and uses Win
 taskkill /T /F for an owned shell tree. Explicit publishing still uses the Notion review
 above. Existing Worklog automatic transcript reviews remain a separate lifecycle.
 
+`plugins/workSessionNotes.ts` supplies an explicit read-only excerpt of the current
+ordinary local Claude session. Main binds the requested PTY to its current session ID,
+refuses private, remote, ended and setup sessions, and bounds the transcript tail and
+returned text. The existing parser forces secret redaction and excludes tool output,
+reasoning, sidechains and metadata. The renderer first previews the excerpt; the user
+must choose to replace source notes before a separate Sonnet run sends them. Owner or
+selection changes discard late replies. Conversation claims are labelled for review,
+and no board field or transcript is changed by reading.
+
 ## The worklog agent
 
 `src/main/worklog/` turns finished work into Notion pages and ClickUp tasks. It is a **review
@@ -1354,6 +1363,10 @@ Sonnet drafting adds `src/shared/workDrafts.ts` (proposal contracts and budget),
 `src/main/plugins/workDrafts.ts` (durable generation and acceptance), `WorkDrafts.tsx`
 (source notes and review), and `scripts/verify-work-drafts.mts` (board/receipt recovery
 and real isolated CLI subprocess proof). No paid/vendor CLI run is used by the suite.
+
+Session excerpts add `src/main/plugins/workSessionNotes.ts` (bounded transcript reader
+and live owner checks) and `scripts/verify-work-session-notes.mts` (real JSONL reads,
+redaction, private/remote admission, owner changes and deadline ownership).
 
 
 Every file worth knowing about, and the one thing about it that is easy to get wrong. CLAUDE.md

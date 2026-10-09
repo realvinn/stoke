@@ -5,7 +5,7 @@ import { WorkNotion } from './WorkNotion'
 import { WorkDrafts } from './WorkDrafts'
 
 interface Props {
-  session?: { id: string; title: string }
+  session?: { id: string; title: string; notesPtyId?: string }
 }
 
 export function WorkPanel({ session }: Props): React.JSX.Element {
@@ -122,7 +122,7 @@ export function WorkPanel({ session }: Props): React.JSX.Element {
         })}
       </div>
       <WorkNotion work={view} selection={selected ? { kind: mode === 'tasks' ? 'task' : 'daily', id: selected } : null} day={day} />
-      <WorkDrafts work={view} selection={selected ? { kind: mode === 'tasks' ? 'task' : 'daily', id: selected } : null} day={day} />
+      <WorkDrafts work={view} selection={selected ? { kind: mode === 'tasks' ? 'task' : 'daily', id: selected } : null} day={day} session={session} />
     </>}
   </section>
 }

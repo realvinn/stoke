@@ -24,3 +24,13 @@ export interface WorkDraft {
 export interface WorkDraftState { schema: 1; revision: number; drafts: WorkDraft[] }
 export interface WorkDraftView extends WorkDraftState { running: boolean }
 export type WorkDraftResult = { ok: true; view: WorkDraftView; work?: WorkView } | { ok: false; message: string }
+
+export interface WorkSessionNotes {
+  ptyId: string
+  sessionId: string
+  capturedAt: number
+  text: string
+  turns: number
+  truncated: boolean
+}
+export type WorkSessionNotesResult = { ok: true; notes: WorkSessionNotes } | { ok: false; message: string }

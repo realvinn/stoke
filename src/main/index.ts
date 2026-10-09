@@ -2417,6 +2417,14 @@ function workNotionFor(): Promise<import('./plugins/notionWork.ts').NotionWork> 
 }
 
 let workDrafts: import('./plugins/workDrafts.ts').WorkDrafts | null = null
+let workSessionNotesLoading: Promise<import('./plugins/workSessionNotes.ts').WorkSessionNotesReader> | null = null
+function workSessionNotesFor(): Promise<import('./plugins/workSessionNotes.ts').WorkSessionNotesReader> {
+  return workSessionNotesLoading ??= Promise.all([import('./plugins/workSessionNotes.ts'), workPluginFor()]).then(([{ WorkSessionNotesReader }, work]) => new WorkSessionNotesReader({
+    enabled: async () => (await work.read()).enabled,
+    owner: (id) => ptys?.workNotesSession(id) ?? null,
+    file: findSessionFile
+  }))
+}
 let workDraftsLoading: Promise<import('./plugins/workDrafts.ts').WorkDrafts> | null = null
 function workDraftsFor(): Promise<import('./plugins/workDrafts.ts').WorkDrafts> {
   return workDraftsLoading ??= Promise.all([import('./plugins/workDrafts.ts'), workPluginFor()]).then(([{ WorkDrafts }, work]) => {
@@ -4881,6 +4889,11 @@ function registerIpc(): void {
   ipcMain.handle(CH.workDraftsRead, async (event) => {
     if (!win || event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) throw new Error('Open Work drafts in Stoke.')
     return (await workDraftsFor()).view()
+  })
+  ipcMain.handle(CH.workSessionNotes, async (event, ptyId: unknown, sessionId: unknown) => {
+    if (!win || event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) return { ok: false, message: 'Open Work drafts in Stoke.' }
+    try { return { ok: true, notes: await (await workSessionNotesFor()).read(ptyId, sessionId) } }
+    catch (err) { return { ok: false, message: err instanceof Error ? err.message : 'Session notes could not be read. No notes were added.' } }
   })
   const draftAction = async (event: Electron.IpcMainInvokeEvent, action: (service: import('./plugins/workDrafts.ts').WorkDrafts) => Promise<import('../shared/workDrafts.ts').WorkDraftView | { view: import('../shared/workDrafts.ts').WorkDraftView; work: import('../shared/workPlugin.ts').WorkView }>) => {
     if (!win || event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) return { ok: false, message: 'Open Work drafts in Stoke.' }

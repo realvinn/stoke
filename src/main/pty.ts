@@ -1298,6 +1298,13 @@ export class PtyManager {
     return [...this.sessions.values()].some((s) => s.sessionId === sessionId && s.ordinary && !s.private && !s.hostId && !s.exited)
   }
 
+  /** A current, ordinary local Claude transcript owner for reviewed Work input. */
+  workNotesSession(ptyId: string): { sessionId: string } | null {
+    const s = this.sessions.get(ptyId)
+    if (!s || !s.ordinary || !s.instrumented || s.private || s.hostId || s.exited || !s.sessionId) return null
+    return { sessionId: s.sessionId }
+  }
+
   /** Drop an exited session once it has sat in the ring past `ENDED_RETENTION_MS`. */
   private pruneEnded(now: number = Date.now()): void {
     for (const [id, s] of this.sessions) {

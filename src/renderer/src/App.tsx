@@ -6458,7 +6458,7 @@ export function App(): React.JSX.Element {
         )}
         {worklogOpen && (
           <div style={{ width: 340, display: 'flex', flexShrink: 0 }}>
-            <WorkDock onClose={() => setWorklogOpen(false)} session={activeTab?.kind === 'session' && activeTab.status === 'running' && !activeTab.installing?.length && !activeTab.hostId && !activeTab.private && !activeTab.accountLogin && !activeTab.enrollHostId ? { id: activeTab.sessionId, title: activeTab.title } : undefined} />
+            <WorkDock onClose={() => setWorklogOpen(false)} session={activeTab?.kind === 'session' && activeTab.status === 'running' && !activeTab.installing?.length && !activeTab.hostId && !activeTab.private && !activeTab.accountLogin && !activeTab.enrollHostId ? { id: activeTab.sessionId, title: activeTab.title, ...(activeTab.cliId === 'claude' ? { notesPtyId: activeTab.ptyId } : {}) } : undefined} />
           </div>
         )}
       </div>
