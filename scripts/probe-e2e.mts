@@ -90,6 +90,7 @@ import { parseArgs } from 'node:util'
 
 import { CdpClient, connectBrowserPage, connectStoke, listTargets } from './cdp-lib.mjs'
 import { startLoginServer } from './probe/login-server.mjs'
+import { createSshFileFixture, removeSshFileFixture } from './probe/ssh-files.mjs'
 import type { BrowserState } from '../src/shared/types.ts'
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -979,6 +980,57 @@ if (opt.ssh) {
     await shot('06-ssh-kept')
   })
 
+  await step('SSH: explicit file consent, real-host listings and verified binary downloads', async () => {
+    if (!sshTabs.key) throw new Error('No live SSH key tab for the file probe')
+    const alias = opt['ssh-key-alias']!
+    const fixture = createSshFileFixture(alias)
+    try {
+      const server = await ev<{ server: { port: number } }>('window.stoke.remote.status()')
+      const settings = await ev<{ remote: { token: string } }>('window.stoke.settings.get()')
+      const base = `http://127.0.0.1:${server.server.port}`
+      const headers = { authorization: `Bearer ${settings.remote.token}` }
+      const get = (operation: string, path = '') => fetch(`${base}/api/files/${operation}?${new URLSearchParams({ ptyId: sshTabs.key!, path })}`, { headers, signal: AbortSignal.timeout(30_000) })
+      const consent = (folder: string) => ev(`(async () => { const s = await window.stoke.settings.get(); return window.stoke.settings.set({hosts: s.hosts.map(h => h.id === 'probekey' ? {...h, downloadFolder: ${JSON.stringify(folder)}} : h)}) })()`)
+      // The last network byte can precede the production router's owned cleanup.
+      const listWhenReady = () => waitFor('SSH file cleanup to release its claim', async () => {
+        const res = await get('list'); const body = await res.json()
+        if (res.status === 409) return null
+        if (!res.ok) throw new Error(`SSH listing returned ${res.status}: ${JSON.stringify(body)}`)
+        return body
+      }, 20_000)
+      try {
+        const off = await get('list'); await off.arrayBuffer()
+        check('real SSH files stay off before explicit folder consent', off.status === 403)
+        await consent(fixture.root)
+        const listing = await listWhenReady()
+        const names = listing.entries.map((entry: { name: string }) => entry.name)
+        check('real SSH listing preserves Unicode/metacharacters and excludes links and hidden files', names.includes(fixture.name) && names.includes('empty.bin') && !names.includes('escape.bin') && !names.includes('inside-link.bin') && !names.includes('.hidden'), JSON.stringify(names))
+        const response = await get('download', fixture.name)
+        const bytes = Buffer.from(await response.arrayBuffer())
+        const expected = Buffer.alloc(fixture.size)
+        for (let i = 0; i < expected.length; i++) expected[i] = i % 256
+        check('real SSH download preserves every binary byte and attachment headers', response.status === 200 && Buffer.compare(bytes, expected) === 0 && response.headers.get('content-disposition')?.includes('attachment') && response.headers.get('content-length') === String(expected.length), `${response.status}, ${bytes.length} bytes`)
+        await listWhenReady()
+        const empty = await get('download', 'empty.bin')
+        const emptyBytes = await empty.arrayBuffer()
+        check('real SSH empty download completes with exactly zero bytes', empty.status === 200 && emptyBytes.byteLength === 0)
+        for (const path of ['escape.bin', 'inside-link.bin', '../outside.bin']) {
+          await listWhenReady()
+          const denied = await get('download', path); await denied.arrayBuffer()
+          check(`real SSH refuses ${path}`, denied.status === (path.startsWith('..') ? 400 : 403), `${denied.status}`)
+        }
+        await listWhenReady()
+        await consent('')
+        const revoked = await get('download', fixture.name); await revoked.arrayBuffer()
+        check('revoking consent stops real SSH reads', revoked.status === 403)
+      } finally {
+        await consent('')
+      }
+    } finally {
+      check('the disposable remote file fixture is removed', removeSshFileFixture(alias, fixture.scope).removed === true)
+    }
+  })
+
   await step('SSH: a password-only host offers a key once, and the enrollment works', async () => {
     const pw = process.env.STOKE_PROBE_SSH_PASSWORD
     if (!pw) throw new Error('STOKE_PROBE_SSH_PASSWORD is not set')
@@ -1211,3 +1263,8 @@ if (process.env.GITHUB_STEP_SUMMARY) {
 console.log(`\n${results.length - failed.length} passed, ${failed.length} failed`)
 for (const r of failed) console.log(`  FAIL  ${r.name}`)
 process.exitCode = failed.length ? 1 : 0
+// A failed first quit can leave an older owned app's stdio referenced after
+// `launch` replaced stoke with the second instance. Finish the CI probe after
+// its report and stdout flush; runner teardown owns the disposable processes.
+// This exits only the probe, never force-kills Stoke or its agent children.
+if (failed.length && process.env.GITHUB_ACTIONS === 'true') process.stdout.write('', () => process.exit(1))

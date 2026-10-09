@@ -2464,7 +2464,9 @@ try {
   check('…imports included: Delete index removes them too', [await host.search('currentbranchword', 10), (await host.status()).imports], [[], []])
   await host.stop()
 } finally {
-  rmSync(root, { recursive: true, force: true })
+  // Windows may briefly retain the just-closed SQLite/worker files. Retry
+  // removal of this suite-owned root; a persistent failure still fails CI.
+  rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
 }
 
 /*

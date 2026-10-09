@@ -9,8 +9,8 @@
 #             enrollment tab installs (gotchas 75, 109)
 #
 # tmux is there because a kept host (`persist: 'tmux'`) runs each tab inside
-# its own invisible tmux session on the far side (gotcha 126); nothing else is
-# installed, so the probe also shows that is all a server needs.
+# its own invisible tmux session on the far side (gotcha 126). Python 3 is
+# the optional, read-only file browser's execution-host dependency.
 #
 #   docker build -t stoke-probe-sshd --build-arg PROBE_PASSWORD=… -f .github/probe/sshd.Dockerfile <dir holding client_key.pub>
 #   docker run -d --name stoke-probe-sshd -p 127.0.0.1:2222:22 stoke-probe-sshd
@@ -21,7 +21,7 @@ FROM debian:bookworm
 ARG PROBE_PASSWORD
 RUN test -n "$PROBE_PASSWORD" \
  && apt-get update \
- && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends openssh-server tmux locales ca-certificates \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends openssh-server tmux python3 locales ca-certificates \
  && sed -i 's/^# *en_US.UTF-8/en_US.UTF-8/' /etc/locale.gen && locale-gen \
  && rm -rf /var/lib/apt/lists/* \
  && mkdir -p /run/sshd && ssh-keygen -A \
