@@ -4,6 +4,7 @@ import { homedir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { buildEnvPath, setPathKey } from './cli.ts'
+import { releaseExitedPtyTransports } from './ptyTransportCleanup.ts'
 import type { IPty } from '@lydell/node-pty'
 import type { ScreenMirror } from './screenMirror.ts'
 import type { QuickTerminalFrame, QuickTerminalMode, QuickTerminalSnapshot, QuickTerminalState, QuickTerminalSurface } from '../shared/quickTerminal.ts'
@@ -90,6 +91,7 @@ export class QuickTerminal {
       this.state = { ...this.state, id, cwd: folder, shell, phase: 'running', cols: 80, rows: 24, exitCode: null }
       child.onData(data => { if (this.state.id !== id) return; this.mirror?.write(data); this.sequence++; this.options.onData({ id, sequence: this.sequence, data }) })
       child.onExit(event => {
+        releaseExitedPtyTransports(child)
         if (this.child !== child) return
         clearTimeout(this.killed); this.killed = undefined; this.child = null
         this.state.phase = 'exited'; this.state.exitCode = event.exitCode; this.changed()

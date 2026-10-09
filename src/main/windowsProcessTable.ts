@@ -2,53 +2,54 @@ import { join } from 'node:path'
 
 /**
  * Read-only kernel snapshot, avoiding Win32_Process's slow WMI provider on
- * Windows ARM64. No process is opened or changed. The native struct's heap
- * pointer follows this PowerShell process's bitness; the buffer is sized by
- * Marshal rather than assuming x64 offsets. API contract:
+ * Windows ARM64. No process is opened or changed. Emit the four P/Invoke
+ * declarations in memory: Add-Type starts a C# compiler that exceeds our
+ * five-second deadline on ARM64. The buffer follows the reader's bitness.
+ * API contracts:
  * https://learn.microsoft.com/windows/win32/api/tlhelp32/ns-tlhelp32-processentry32w
+ * https://learn.microsoft.com/dotnet/api/system.reflection.emit.typebuilder.definepinvokemethod
  */
 export const WINDOWS_PROCESS_TABLE_SCRIPT = `$ErrorActionPreference = 'Stop'
-Add-Type -TypeDefinition @'
-using System;
-using System.ComponentModel;
-using System.Runtime.InteropServices;
-using System.Text;
-public static class StokeProcessTable {
-  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-  public struct Entry {
-    public uint dwSize, cntUsage, th32ProcessID;
-    public UIntPtr th32DefaultHeapID;
-    public uint th32ModuleID, cntThreads, th32ParentProcessID;
-    public int pcPriClassBase;
-    public uint dwFlags;
-    [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] public string szExeFile;
-  }
-  [DllImport("kernel32.dll", SetLastError = true, ExactSpelling = true)]
-  static extern IntPtr CreateToolhelp32Snapshot(uint flags, uint pid);
-  [DllImport("kernel32.dll", SetLastError = true, ExactSpelling = true)]
-  static extern bool Process32FirstW(IntPtr handle, ref Entry entry);
-  [DllImport("kernel32.dll", SetLastError = true, ExactSpelling = true)]
-  static extern bool Process32NextW(IntPtr handle, ref Entry entry);
-  [DllImport("kernel32.dll", ExactSpelling = true)]
-  static extern bool CloseHandle(IntPtr handle);
-  public static string Read() {
-    IntPtr handle = CreateToolhelp32Snapshot(2, 0);
-    if (handle == new IntPtr(-1)) throw new Win32Exception(Marshal.GetLastWin32Error());
-    try {
-      Entry entry = new Entry();
-      entry.dwSize = (uint)Marshal.SizeOf(typeof(Entry));
-      if (!Process32FirstW(handle, ref entry)) throw new Win32Exception(Marshal.GetLastWin32Error());
-      StringBuilder result = new StringBuilder();
-      do { result.Append(entry.th32ProcessID).Append(' ').Append(entry.th32ParentProcessID).Append('\\n'); }
-      while (Process32NextW(handle, ref entry));
-      int error = Marshal.GetLastWin32Error();
-      if (error != 18) throw new Win32Exception(error);
-      return result.ToString();
-    } finally { CloseHandle(handle); }
-  }
+$assemblyName = [Reflection.AssemblyName]::new('StokeProcessTable')
+$assembly = [AppDomain]::CurrentDomain.DefineDynamicAssembly($assemblyName, [Reflection.Emit.AssemblyBuilderAccess]::Run)
+$module = $assembly.DefineDynamicModule('StokeProcessTable')
+$builder = $module.DefineType('StokeProcessTable', [Reflection.TypeAttributes]'Public, Abstract, Sealed')
+$dllConstructor = [Runtime.InteropServices.DllImportAttribute].GetConstructor([Type[]]@([string]))
+$dllFields = [Reflection.FieldInfo[]]@([Runtime.InteropServices.DllImportAttribute].GetField('SetLastError'), [Runtime.InteropServices.DllImportAttribute].GetField('ExactSpelling'))
+function Add-NativeMethod([string]$nativeName, [Type]$nativeReturn, [Type[]]$nativeParameters) {
+  $method = $builder.DefinePInvokeMethod($nativeName, 'kernel32.dll', [Reflection.MethodAttributes]'Public, Static, PinvokeImpl', [Reflection.CallingConventions]::Standard, $nativeReturn, $nativeParameters, [Runtime.InteropServices.CallingConvention]::Winapi, [Runtime.InteropServices.CharSet]::Unicode)
+  $attribute = [Reflection.Emit.CustomAttributeBuilder]::new($dllConstructor, [object[]]@('kernel32.dll'), $dllFields, [object[]]@($true, $true))
+  $method.SetCustomAttribute($attribute)
+  $method.SetImplementationFlags($method.GetMethodImplementationFlags() -bor [Reflection.MethodImplAttributes]::PreserveSig)
 }
-'@ -ErrorAction Stop
-[Console]::Write([StokeProcessTable]::Read())`
+Add-NativeMethod 'CreateToolhelp32Snapshot' ([IntPtr]) ([Type[]]@([uint32], [uint32]))
+Add-NativeMethod 'Process32FirstW' ([bool]) ([Type[]]@([IntPtr], [IntPtr]))
+Add-NativeMethod 'Process32NextW' ([bool]) ([Type[]]@([IntPtr], [IntPtr]))
+Add-NativeMethod 'CloseHandle' ([bool]) ([Type[]]@([IntPtr]))
+$native = $builder.CreateType()
+$snapshot = $native::CreateToolhelp32Snapshot(2, 0)
+if ($snapshot -eq [IntPtr](-1)) { throw [ComponentModel.Win32Exception]::new([Runtime.InteropServices.Marshal]::GetLastWin32Error()) }
+$entry = [IntPtr]::Zero
+try {
+  # PROCESSENTRY32W: DWORD pid at 8; heap pointer aligns the remaining fields.
+  $entrySize = if ([IntPtr]::Size -eq 8) { 568 } else { 556 }
+  $parentOffset = if ([IntPtr]::Size -eq 8) { 32 } else { 24 }
+  $entry = [Runtime.InteropServices.Marshal]::AllocHGlobal($entrySize)
+  [Runtime.InteropServices.Marshal]::WriteInt32($entry, $entrySize)
+  if (-not $native::Process32FirstW($snapshot, $entry)) { throw [ComponentModel.Win32Exception]::new([Runtime.InteropServices.Marshal]::GetLastWin32Error()) }
+  $result = [Text.StringBuilder]::new()
+  do {
+    $processId = [uint32][Runtime.InteropServices.Marshal]::ReadInt32($entry, 8)
+    $parentId = [uint32][Runtime.InteropServices.Marshal]::ReadInt32($entry, $parentOffset)
+    [void]$result.Append($processId).Append(' ').Append($parentId).Append([char]10)
+  } while ($native::Process32NextW($snapshot, $entry))
+  $lastError = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+  if ($lastError -ne 18) { throw [ComponentModel.Win32Exception]::new($lastError) }
+  [Console]::Write($result.ToString())
+} finally {
+  if ($entry -ne [IntPtr]::Zero) { [Runtime.InteropServices.Marshal]::FreeHGlobal($entry) }
+  [void]$native::CloseHandle($snapshot)
+}`
 
 export function windowsProcessTableSpec(): [string, string[]] {
   const command = join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')

@@ -123,5 +123,14 @@ try {
   }
   bad.dispose()
 } finally { service.dispose(); await rm(root, { recursive: true, force: true }) }
-console.log(`\n${failures ? `${failures} failures` : 'All quick terminal checks passed'}`)
-process.exitCode = failures ? 1 : 0
+// A success also requires the real native transports to let Node exit. An
+// unref'd watchdog cannot prolong a healthy run, but makes a leaked worker
+// fail instead of leaving the Windows portability job stuck for 45 minutes.
+setTimeout(() => {
+  console.error('  FAIL native terminal transports remain open after shell exit and cleanup')
+  process.exit(1)
+}, 5000).unref()
+process.once('beforeExit', () => {
+  console.log(`\n${failures ? `${failures} failures` : 'All quick terminal checks passed, including native transport cleanup'}`)
+  process.exitCode = failures ? 1 : 0
+})

@@ -122,11 +122,17 @@ Removed bottom-right usage and context meters, retaining the title-bar usage con
 
 ## Windows continued-session discovery
 
-Replaced the slow Windows CIM/WMI process-table query with a read-only Toolhelp kernel snapshot. The helper initializes the native struct size for its process bitness, closes its snapshot handle in a finally block and prints PID/parent PID pairs only. The existing five-second deadline and refusal to match a folder without proven ancestry remain intact. The packaged probe now reports the exact production query rather than a separate sixty-second CIM diagnostic. The native registry suite creates its own real Node child and verifies the production snapshot identifies that parent on every OS.
+Replaced the slow Windows CIM/WMI process-table query with a read-only Toolhelp kernel snapshot. The helper chooses the native buffer size and parent offset for its reader’s bitness, closes its snapshot handle and frees its buffer in a finally block, and prints PID/parent PID pairs only. The existing five-second deadline and refusal to match a folder without proven ancestry remain intact. The packaged probe now reports the exact production query rather than a separate sixty-second CIM diagnostic. The native registry suite creates its own real Node child and verifies the production snapshot identifies that parent on every OS.
 
 The API structure and handle lifecycle were checked against Microsoft’s [PROCESSENTRY32W](https://learn.microsoft.com/en-us/windows/win32/api/tlhelp32/ns-tlhelp32-processentry32w) and [snapshot documentation](https://learn.microsoft.com/en-us/windows/win32/api/tlhelp32/nf-tlhelp32-createtoolhelp32snapshot). The full local gate passes; native Windows and ARM64 CI proof is pending. This is a read-only query with no elevation or process control.
 
 CI at `2a157cd` passes the Linux gate, Mac verification and packaged Mac ARM64/Intel, Windows x64 and Linux probes. Windows ARM64 retains the known continued-session failure that this follow-up addresses. The preceding Linux encryption test had a random-ciphertext false positive on the three-letter word “Fix”; that assertion now checks whole encoded project/title values, alongside the existing tamper, wrong-key, wrong-context and schema checks. Windows verification for the quick terminal was still running when this entry was written.
+
+The `cdfd999` ARM64 packaged diagnostic still timed out at 5,028 ms with no rows. Runtime `Add-Type` compilation remained on that path. The follow-up emits the four native declarations directly in memory through documented [Reflection.Emit](https://learn.microsoft.com/en-us/dotnet/api/system.reflection.emit.typebuilder.definepinvokemethod), without a compiler child, generated file, elevation or longer polling deadline. Native Windows/ARM64 proof remains pending.
+
+## Windows PTY transport cleanup
+
+The `cdfd999` Windows verification passed every quick-terminal assertion, then stayed alive after the final tally until the next push cancelled it. Inspection of the pinned `@lydell/node-pty` 1.2.0-beta.14 distribution shows that natural ConPTY exit leaves its input pipe and output worker referenced. A narrow compatibility shim now releases those two transports from the exact terminal object after its exit event, for both ordinary sessions and the quick terminal. It performs no PID-based process control after exit. The native terminal suite reports success only when Node reaches `beforeExit`; a leak fails after five seconds instead of hanging CI. The focused native Mac suite and typecheck pass. The full local gate passes; the Windows exit proof remains pending.
 
 ## Usage follows the running session
 

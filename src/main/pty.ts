@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { releaseExitedPtyTransports } from './ptyTransportCleanup.ts'
 import { join } from 'node:path'
 import { rmSync } from 'node:fs'
 import { access, realpath, rm, writeFile } from 'node:fs/promises'
@@ -869,6 +870,7 @@ export class PtyManager {
     })
 
     proc.onExit(({ exitCode, signal }) => {
+      releaseExitedPtyTransports(proc)
       session.exited = true
       session.endedAt = Date.now()
       session.exitCode = exitCode
