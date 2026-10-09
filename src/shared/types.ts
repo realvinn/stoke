@@ -1744,6 +1744,8 @@ export interface UsageReading {
 export interface UsageBoard {
   readings: UsageReading[]
   activeKey: string | null
+  /** Which tab/account this selection answers for; figures can arrive later. */
+  target: UsageTarget | null
 }
 
 /* ------------------------------------------------------------ tab restore */

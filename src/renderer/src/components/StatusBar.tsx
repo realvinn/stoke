@@ -364,7 +364,8 @@ export function StatusBar({
    * after the first assistant turn — so the bar no longer reads `default`
    * until Claude has said something.
    */
-  const model = line?.modelId ?? context?.model ?? (tab.model || null)
+  const reportedModel = claudeTab ? line?.modelId ?? context?.model : null
+  const model = reportedModel ?? (tab.model || null)
   /*
    * A paused tab's `context` is seeded at restore with a real saved reading
    * but a zeroed message-count breakdown (`toStored` never persisted one) —
@@ -451,9 +452,9 @@ export function StatusBar({
         turned Codex's `gpt-6.1-sol` into "Gpt" when it was first driven.
       */}
       {!installTab && caps.launchFlags.model && model && (
-        <span className="status-item" title={model} {...agentMark(cliIdOf(tab.cliId))}>
+        <span className="status-item" title={reportedModel ? model : `Configured model: ${model}. The agent has not reported its active model to Stoke.`} data-model-source={reportedModel ? 'reported' : 'configured'} {...agentMark(cliIdOf(tab.cliId))}>
           <span className="agent-dot" aria-hidden="true" />
-          {claudeTab ? modelLabel(model) : model}
+          {reportedModel ? modelLabel(model) : `configured: ${claudeTab ? modelLabel(model) : model}`}
         </span>
       )}
 

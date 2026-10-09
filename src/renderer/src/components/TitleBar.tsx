@@ -162,7 +162,8 @@ export function TitleBar({
    * The usage chip follows the tab in front: its agent, on its account. Not a
    * New tab, an install, a key enrollment or a sign-in tab (none runs a
    * session), and not an SSH tab, whose agent spends the far machine's own
-   * sign-in — each of those leaves the chip on Claude Code's Default account.
+   * sign-in. Remote/SSH tabs show no local quota chip; their own readings
+   * belong in the remote status bar. Other non-session tabs show Default.
    */
   const activeTab = tabs.find((t) => t.id === activeTabId)
   const usageTarget = useMemo(
@@ -591,7 +592,7 @@ export function TitleBar({
           <span className="sr-only">Toggle worklog review</span>
         </button>
         <PhonePopover onOpenSettings={onOpenPhoneSettings} settingsOpen={settingsOpen} />
-        <UsageChip target={usageTarget} />
+        {activeTab?.kind !== 'remote' && !activeTab?.hostId && <UsageChip target={usageTarget} accountLabel={activeTab ? labelFor?.(activeTab).account?.text : undefined} />}
 
         <button
           className="icon-btn"

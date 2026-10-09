@@ -230,7 +230,7 @@ import {
   type UpdateInfo
 } from './updates.ts'
 import { planUsageSources, readUsageSource, toReading, USAGE_FLOORS, UsageScheduler, usagePlanInput } from './usageBoard.ts'
-import { CLAUDE_DEFAULT_KEY, chipRows, claudeWindowsFor, usageKey, usageRouteFor } from '../shared/usageSources.ts'
+import { chipRows, claudeWindowsFor, usageKey, usageRouteFor } from '../shared/usageSources.ts'
 import { patchClaudeSetting, readClaudeSettings, readLaunchDefaults, untouchedKeys } from './claudeSettings.ts'
 import {
   readGlobalConfigKey,
@@ -3347,11 +3347,11 @@ function registerIpc(): void {
     const plans = planUsageSources(input, process.env, homedir(), fake)
     usageScheduler.retain(plans.map((p) => p.key))
     // No tab to follow (a New tab, the launcher): Claude Code's Default
-    // account, as the chip always showed. A tab whose agent states nothing
-    // readable answers null, and the chip falls back to that same reading.
+    // account. A tab whose agent states nothing readable answers null;
+    // it never asks for or displays another agent's figures as a fallback.
     const route = target ? usageRouteFor(target, input) : { source: 'anthropic' as const, accountId: DEFAULT_ACCOUNT_ID }
     const activeKey = route ? usageKey(route.source, route.accountId) : null
-    const wanted = all ? plans : plans.filter((p) => p.key === (activeKey ?? CLAUDE_DEFAULT_KEY))
+    const wanted = all ? plans : plans.filter((p) => p.key === activeKey)
     await Promise.all(
       wanted.map((p) =>
         usageScheduler.read(p.key, reason, Date.now(), () => readUsageSource(p, Date.now(), fake), USAGE_FLOORS[p.source])
@@ -3361,7 +3361,7 @@ function registerIpc(): void {
       const snap = usageScheduler.peek(p.key)
       return snap ? [toReading(p, snap)] : []
     })
-    return { readings, activeKey }
+    return { readings, activeKey, target }
   }
   ipcMain.handle(CH.usageRead, (_e, reason?: unknown, target?: unknown) => usageBoard(reason, target, false))
   ipcMain.handle(CH.usageAll, (_e, reason?: unknown, target?: unknown) => usageBoard(reason, target, true))

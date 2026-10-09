@@ -61,6 +61,8 @@ import {
   openRouterSharers,
   panelGroups,
   usageKey,
+  usageChipKey,
+  usageTargetKey,
   usageRouteFor,
   type UsageRouteContext
 } from '../src/shared/usageSources.ts'
@@ -625,6 +627,16 @@ console.log('\nwhich reading answers for which tab')
   check('a key account: its key’s usage is not readable', route('grok', 'grok-key'), null)
   check('another agent’s account id: nothing, never Default’s figures', route('claude', 'codex-work'), null)
   check('a removed account: nothing, never Default’s figures', route('claude', 'claude-gone'), null)
+  const followed = { cli: 'codex' as const, accountId: 'codex-work' }
+  const answered = { readings: [], activeKey: 'codex:codex-work', target: followed }
+  check('the chip follows only the account its answer names', usageChipKey(answered, followed), 'codex:codex-work')
+  check('switching tabs hides the previous account’s figures immediately', usageChipKey(answered, { cli: 'codex', accountId: 'default' }), null)
+  check('a late response for another agent cannot populate the chip', usageChipKey(answered, { cli: 'grok', accountId: 'default' }), null)
+  check('a missing route has no Claude fallback, even with cached Claude figures', usageChipKey({ ...answered, activeKey: null, target: { cli: 'grok', accountId: 'default' } }, { cli: 'grok', accountId: 'default' }), null)
+  check('before an account’s first reply, the chip does not borrow Default', usageChipKey(null, followed), null)
+  check('the launcher still explicitly selects the Default reading', usageChipKey({ readings: [], activeKey: 'anthropic:default', target: null }, null), 'anthropic:default')
+  check('a shared OpenRouter key still waits for the new tab’s own answer', usageChipKey({ readings: [], activeKey: 'openrouter:key', target: followed }, { cli: 'grok', accountId: 'default' }), null)
+  check('empty and Default account ids share the same target identity', usageTargetKey({ cli: 'claude', accountId: '' }), usageTargetKey({ cli: 'claude', accountId: 'default' }))
   check(
     'the key is shared by exactly the agents pointed at it',
     openRouterSharers({ claudeAuth: 'openrouter', endpointModes: { codex: 'openrouter', grok: 'openrouter', crush: 'openrouter', aider: 'custom' } }),

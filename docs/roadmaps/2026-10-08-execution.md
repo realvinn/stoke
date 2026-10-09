@@ -62,6 +62,14 @@ The key, Access gate and browser-origin check protect the binary routes. Private
 
 Validation: typecheck, the focused remote/phone UI suites and the full `npm run check` gate pass, including desktop and remote builds. Tests stream Unicode-named and empty files, compare bytes, protect bystander files, reject wrong sizes, cancellation, duplicate claims, traversal, symlink escapes and opted-out SSH hosts. The production HTTP router runs against isolated PTYs and a stub Electron shell; real requests verify auth/origin, attachments, exact bytes and interrupted-body cleanup. SSH forwarding is emulated here; the existing SSH suite exercises its shell uploader. Real phone use, Mac/Linux SSH transfer proof, SSH downloads, folders and encrypted desktop relay transfers remain open.
 
+## Account usage and model labels
+
+Implemented: usage results name the agent/account they answer for. Switching tabs immediately hides a previous account’s figures, and late replies cannot select the wrong account. An agent with no readable source shows an explicit unavailable state, with its own agent/account name and color; the chip no longer falls back to Claude’s quotas. Remote and SSH sessions show their own status readings without a local quota chip. The panel can still show every supported account’s separately labeled readings and freshness. Existing account nicknames remain separate from discovered Claude sign-in emails.
+
+Model labels distinguish a requested model from one Claude’s status line or transcript has actually reported. Other agents currently show “configured” until a live adapter can prove their active model.
+
+Validation: typecheck, the focused usage/agent suites and the full `npm run check` gate pass, including desktop and remote builds. Fixtures cover account switches, late replies, unsupported agents and shared OpenRouter routing. This is not a new quota source for Grok/Cursor or a live model/context adapter. Usage routing still follows the current configured account source; preserving the exact provider/key configuration from each session’s launch needs further work. [Official Codex authentication docs](https://learn.chatgpt.com/docs/auth) and local `codex login --help` confirm file/keyring/auto/ephemeral stores and command-line overrides. No credential store, sign-in or token was changed during this inspection; concurrent real-account proof remains open.
+
 ## Remaining implementation
 
 Every roadmap wave still has open acceptance criteria. SSH downloads and relay transfers, live agent telemetry, the Work/Notion plugin, privilege helpers and the terminal companion are still to be implemented. Live verification and platform-specific proof remain open where called out above.

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { StatusLineSnapshot, UsageBoard, UsageReading, UsageTarget, UsageWindow } from '@shared/types'
 import { keepUsage } from '@shared/statusLine'
-import { CLAUDE_DEFAULT_KEY, chipRows, claudeWindowsFor, panelGroups } from '@shared/usageSources'
+import { CLAUDE_DEFAULT_KEY, chipRows, claudeWindowsFor, panelGroups, usageChipKey, usageTargetKey } from '@shared/usageSources'
 import { cliFor } from '@shared/codingClis'
 import { useFloatingLayer } from '../lib/floatingLayers'
 import {
@@ -131,7 +131,7 @@ function ReadingBlock({
 }: {
   view: ReadingView
   now: number
-  /** "this tab" for the reading the chip shows for the tab in front; "in the chip" for its fallback. */
+  /** "this tab" for the active account; "in the chip" for the launcher's Default account. */
   tag: string | null
   onRetry: () => void
 }): React.JSX.Element {
@@ -230,7 +230,7 @@ function ReadingBlock({
  * account, hiding each one that has no reading — so it answers "how much is
  * left anywhere" without a tab per account.
  */
-export function UsageChip({ target }: { target: UsageTarget | null }): React.JSX.Element | null {
+export function UsageChip({ target, accountLabel }: { target: UsageTarget | null; accountLabel?: string }): React.JSX.Element | null {
   const [board, setBoard] = useState<UsageBoard | null>(null)
   // The newest payload per account: `keepUsage` within an account only.
   const [lines, setLines] = useState<Record<string, StatusLineSnapshot>>({})
@@ -272,7 +272,7 @@ export function UsageChip({ target }: { target: UsageTarget | null }): React.JSX
           // A read for another account, or one overtaken by a newer read,
           // brings its readings but not its idea of which one is in front.
           const own = mine === targetSeq
-          return { readings: next.readings, activeKey: own || !prev ? next.activeKey : prev.activeKey }
+          return { readings: next.readings, activeKey: own || !prev ? next.activeKey : prev.activeKey, target: own || !prev ? next.target : prev.target }
         })
       })
     }
@@ -290,7 +290,7 @@ export function UsageChip({ target }: { target: UsageTarget | null }): React.JSX
   }, [])
 
   // A new tab in front, or the panel opening: read now, not at the next poll.
-  const targetKey = target ? `${target.cli}:${target.accountId}` : ''
+  const targetKey = usageTargetKey(target)
   useEffect(() => {
     pullRef.current('poll')
   }, [targetKey, open])
@@ -354,13 +354,14 @@ export function UsageChip({ target }: { target: UsageTarget | null }): React.JSX
   }, [open])
 
   const readings = board?.readings ?? []
-  const shownKey = board?.activeKey ?? CLAUDE_DEFAULT_KEY
-  const fellBack = !!board && board.activeKey === null
+  const shownKey = usageChipKey(board, target)
+  const answered = !!board && usageTargetKey(board.target) === targetKey
+  const unavailable = answered && shownKey === null
   const active = readings.find((r) => r.key === shownKey) ?? null
   // Before the first answer, the Default account's payload alone can still speak.
   const view: ReadingView | null = active
     ? viewOf(active, lines, now)
-    : lines.default && !board
+    : !target && lines.default && !board
       ? viewOf(
           { key: CLAUDE_DEFAULT_KEY, source: 'anthropic', cli: 'claude', accountId: 'default', label: 'Default', detail: null, snapshot: { windows: [], extraCredits: null, fetchedAt: 0, error: null } },
           lines,
@@ -371,7 +372,7 @@ export function UsageChip({ target }: { target: UsageTarget | null }): React.JSX
   // Before the first read has answered there is nothing to say, and a wrong
   // number here would be believed. Once it HAS answered, an error is drawn as
   // an error rather than as the chip vanishing.
-  if (!board && !view?.windows.length) return null
+  if (!target && !board && !view?.windows.length) return null
 
   const windows = view?.windows ?? []
   const snap = view?.reading.snapshot ?? null
@@ -385,9 +386,8 @@ export function UsageChip({ target }: { target: UsageTarget | null }): React.JSX
     ? view.reading.cli
       ? `${cliFor(view.reading.cli).label}${view.reading.accountId !== 'default' ? ` (${view.reading.label})` : ''}`
       : view.reading.label
-    : 'Claude Code'
+    : target ? `${cliFor(target.cli).label}${target.accountId !== 'default' ? ` (${accountLabel ?? target.accountId})` : ''}` : 'Claude Code'
   const followed = target ? cliFor(target.cli).label : null
-  const fallbackNote = fellBack && followed ? `. ${followed} states no usage Stoke can read, so this is Claude Code’s Default account` : ''
   const label = rows.length
     ? rows
         .map(
@@ -397,11 +397,11 @@ export function UsageChip({ target }: { target: UsageTarget | null }): React.JSX
         .join('; ')
     : balance
       ? `${balance.label}: ${balanceText(balance)}`
-      : (snap?.error ?? snap?.note ?? 'Usage unavailable')
+      : (snap?.error ?? snap?.note ?? (answered ? 'No readable usage for this account' : 'Reading this account’s usage…'))
 
   // Whose figures these are, in that agent's (or that account's) colour.
-  const markKey = view ? (view.reading.cli && view.reading.accountId !== 'default' ? view.reading.accountId : view.reading.cli) : 'claude'
-  const groups = panelGroups(readings, board?.activeKey ?? null, (r) => (r.source === 'anthropic' ? viewOf(r, lines, now).windows.length : 0))
+  const markKey = view ? (view.reading.cli && view.reading.accountId !== 'default' ? view.reading.accountId : view.reading.cli) : target ? target.accountId !== 'default' ? target.accountId : target.cli : 'claude'
+  const groups = panelGroups(readings, shownKey, (r) => (r.source === 'anthropic' ? viewOf(r, lines, now).windows.length : 0))
   const retry = (): void => pullRef.current('message')
 
   return (
@@ -411,13 +411,14 @@ export function UsageChip({ target }: { target: UsageTarget | null }): React.JSX
         className="usage-chip"
         {...agentMark(markKey)}
         data-source={view?.reading.source}
-        data-account={view?.reading.accountId}
+        data-account={view?.reading.accountId ?? target?.accountId}
+        data-unavailable={unavailable || undefined}
         data-tone={rows.length ? worst : 'none'}
         data-stale={stale || undefined}
         aria-expanded={open}
-        aria-label={`Usage, ${who}. ${label}${stale && asOf ? `. As of ${asOf}` : ''}${fallbackNote}`}
+        aria-label={`Usage, ${who}. ${label}${stale && asOf ? `. As of ${asOf}` : ''}`}
         onClick={() => setOpen((v) => !v)}
-        title={`${who} — ${label}${asOf ? ` — as of ${asOf}` : ''}${fallbackNote}. Click for every account.`}
+        title={`${who} — ${label}${asOf ? ` — as of ${asOf}` : ''}. Click for every account.`}
       >
         {rows.length ? (
           rows.map((w) => (
@@ -458,8 +459,10 @@ export function UsageChip({ target }: { target: UsageTarget | null }): React.JSX
           <div className="popover usage-panel" role="dialog" aria-label="Usage" ref={panelRef}>
             <div className="usage-head">
               <span className="popover-title">Usage</span>
-              {fellBack && followed && <span className="usage-head-meta">{followed}: none readable</span>}
+              {unavailable && followed && <span className="usage-head-meta">{who}: none readable</span>}
             </div>
+
+            {!view && target && <p className="popover-text" role="status">{label}</p>}
 
             {groups.map((g) => (
               <section className="usage-group" key={g.source} aria-label={g.title}>
@@ -471,7 +474,7 @@ export function UsageChip({ target }: { target: UsageTarget | null }): React.JSX
                     key={r.key}
                     view={viewOf(r, lines, now)}
                     now={now}
-                    tag={r.key !== shownKey ? null : target && !fellBack ? 'this tab' : 'in the chip'}
+                    tag={r.key !== shownKey ? null : target ? 'this tab' : 'in the chip'}
                     onRetry={retry}
                   />
                 ))}

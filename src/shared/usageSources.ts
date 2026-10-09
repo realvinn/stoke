@@ -31,13 +31,24 @@ import { DEFAULT_ACCOUNT_ID, type AgentAccount } from './accounts.ts'
 import { CLI_CAPS, cliFor, CODING_CLIS, type CodingCliId } from './codingClis.ts'
 import type { ClaudeAuthMode } from './providers.ts'
 import { mergeUsageWindows, statusLineWindows } from './statusLine.ts'
-import type { StatusLineSnapshot, UsageReading, UsageSnapshot, UsageSourceId, UsageTarget, UsageWindow } from './types'
+import type { StatusLineSnapshot, UsageBoard, UsageReading, UsageSnapshot, UsageSourceId, UsageTarget, UsageWindow } from './types'
 
 /** The account id of the OpenRouter key's reading: there is one key, not one per agent. */
 export const OPENROUTER_ACCOUNT = 'key'
 
 /** The Claude Default account's key — what the chip falls back to with nothing to follow. */
 export const CLAUDE_DEFAULT_KEY = 'anthropic:default'
+
+export function usageTargetKey(target: UsageTarget | null): string {
+  return target ? `${target.cli}:${target.accountId || DEFAULT_ACCOUNT_ID}` : ''
+}
+
+/** A late reading cannot answer for a new tab, even if its figures are valid. */
+export function usageChipKey(board: UsageBoard | null, target: UsageTarget | null): string | null {
+  if (!board) return target ? null : CLAUDE_DEFAULT_KEY
+  if (usageTargetKey(board.target ?? null) !== usageTargetKey(target)) return null
+  return board.activeKey
+}
 
 export function usageKey(source: UsageSourceId, accountId: string): string {
   return `${source}:${source === 'openrouter' ? OPENROUTER_ACCOUNT : accountId || DEFAULT_ACCOUNT_ID}`
