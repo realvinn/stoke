@@ -661,6 +661,7 @@ function windowsProcessTableReport(stubPid: number): void {
       `${r.error ? `, ${r.error.message}` : ''})`
   )
   console.log(`  (the stub's ancestry: ${chain.join(' <- ')})`)
+  if (r.status !== 0 && r.stderr) console.log(`  (snapshot error: ${String(r.stderr).replace(/\s+/g, ' ').trim().slice(0, 2000)})`)
 }
 
 /*
