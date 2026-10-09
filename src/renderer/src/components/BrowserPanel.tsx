@@ -79,6 +79,8 @@ export function BrowserPanel({
   const [editing, setEditing] = useState(false)
   const [findOpen, setFindOpen] = useState(false)
   const [findText, setFindText] = useState('')
+  const [certificateNotice, setCertificateNotice] = useState('')
+  useEffect(() => setCertificateNotice(''), [state.activeId, state.loadError?.id])
 
   // While the address bar is focused the user owns its text; otherwise it
   // tracks whatever the page navigated to.
@@ -506,8 +508,54 @@ export function BrowserPanel({
         </div>
       )}
 
+      {state.certificateException && !state.loadError && (
+        <div className="browser-certificate-notice" role="status">
+          <span>Certificate exception for {state.certificateException.origin}</span>
+          <button className="btn" data-size="sm" onClick={() => {
+            if (state.activeId && state.certificateException) void window.stoke.browser.revokeCertificate(state.activeId, state.certificateException.sha256)
+          }}>Remove exception</button>
+        </div>
+      )}
       <div className="browser-hole" ref={holeRef}>
-        {still && <img className="browser-still" src={still} alt="" aria-hidden="true" draggable={false} />}
+        {state.loadError ? (
+          <div className="browser-load-error" role="alert">
+            <div className="browser-load-error-content">
+              <h2>{state.loadError.certificate ? 'This site’s certificate needs review' : 'This page could not load'}</h2>
+              <p>{state.loadError.description}</p>
+              <p className="browser-error-url">{state.loadError.url}</p>
+              <code>{state.loadError.code}</code>
+              {state.loadError.certificate && (
+                <>
+                  <p>Continue only if you trust this site. The exception applies to this tab, site and certificate until the tab closes.</p>
+                  <details>
+                    <summary>Certificate details</summary>
+                    <dl>
+                      <dt>Site</dt><dd>{state.loadError.certificate.origin}</dd>
+                      <dt>Issued to</dt><dd>{state.loadError.certificate.subject || 'Unknown'}</dd>
+                      <dt>Issued by</dt><dd>{state.loadError.certificate.issuer || 'Unknown'}</dd>
+                      <dt>Valid from</dt><dd>{new Date(state.loadError.certificate.validStart * 1000).toLocaleString()}</dd>
+                      <dt>Valid until</dt><dd>{new Date(state.loadError.certificate.validExpiry * 1000).toLocaleString()}</dd>
+                      <dt>SHA-256</dt><dd><code>{state.loadError.certificate.sha256}</code></dd>
+                    </dl>
+                  </details>
+                </>
+              )}
+              <div className="browser-error-actions">
+                <button className="btn" onClick={() => window.stoke.browser.reload()}>Retry</button>
+                <button className="btn" onClick={() => window.stoke.browser.openExternal()}>Open externally</button>
+                {state.loadError.certificate?.canContinue && (
+                  <button className="btn" data-variant="primary" onClick={() => {
+                    if (!state.activeId || !state.loadError) return
+                    void window.stoke.browser.continueCertificate(state.activeId, state.loadError.id).then(ok => {
+                      if (!ok) setCertificateNotice('This review changed or expired. Retry to review the current certificate.')
+                    })
+                  }}>Continue for this tab</button>
+                )}
+              </div>
+              {certificateNotice && <p role="status">{certificateNotice}</p>}
+            </div>
+          </div>
+        ) : still && <img className="browser-still" src={still} alt="" aria-hidden="true" draggable={false} />}
       </div>
     </section>
   )

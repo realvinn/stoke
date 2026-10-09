@@ -1,7 +1,7 @@
-import { randomUUID } from 'node:crypto'
+import { randomUUID, X509Certificate } from 'node:crypto'
 import { BrowserWindow, session, shell, WebContentsView } from 'electron'
 import type { WebContents, WebContentsViewConstructorOptions } from 'electron'
-import type { BrowserState, BrowserTabState, Rect } from '@shared/types'
+import type { BrowserLoadError, BrowserState, BrowserTabState, Rect } from '@shared/types'
 // Relative and with the extension, so this module still runs under
 // `node --experimental-strip-types` (no path aliases there).
 import { browserPopupUrl, normalizeUrl } from '../shared/url.ts'
@@ -89,6 +89,25 @@ interface Tab {
    * in a loop — the second crash on the same URL is left alone and logged.
    */
   recoveredFrom: string | null
+  navigationUrl: string
+  loadError?: BrowserLoadError
+  certificateException?: { origin: string; sha256: string; error: string }
+  pendingCertificate?: { callback: (trusted: boolean) => void; timer: ReturnType<typeof setTimeout> }
+}
+
+function httpsOrigin(url: string): string | null {
+  try {
+    const parsed = new URL(url)
+    return parsed.protocol === 'https:' && !parsed.username && !parsed.password ? parsed.origin : null
+  } catch { return null }
+}
+
+function loadErrorDescription(code: number): string {
+  if (code === -105) return 'The site’s address could not be found. Check the address and your network connection.'
+  if (code === -102) return 'The site refused the connection. Check that the server is running and the port is correct.'
+  if (code === -7 || code === -118) return 'The site took too long to respond. Check your connection and try again.'
+  if (code === -106) return 'Your network connection is offline.'
+  return 'This page could not be loaded. Check the address or try opening it in your default browser.'
 }
 
 /**
@@ -169,6 +188,7 @@ export class EmbeddedBrowser {
       consoleLog: [],
       netLog: [],
       recoveredFrom: null,
+      navigationUrl: '',
       findTotal: 0,
       findActive: 0
     }
@@ -201,8 +221,13 @@ export class EmbeddedBrowser {
       const isSameDocument =
         typeof details.isSameDocument === 'boolean' ? details.isSameDocument : args[2] === true
       if (!isMainFrame || isSameDocument) return
+      this.cancelCertificate(tab)
+      tab.loadError = undefined
+      tab.navigationUrl = typeof (details as { url?: unknown }).url === 'string'
+        ? (details as { url: string }).url : String(args[1] ?? '')
       tab.consoleLog = []
       tab.netLog = []
+      this.applyVisibility()
       push()
     })
     wc.on('did-start-loading', push)
@@ -210,7 +235,60 @@ export class EmbeddedBrowser {
     wc.on('did-navigate', push)
     wc.on('did-navigate-in-page', push)
     wc.on('page-title-updated', push)
-    wc.on('did-fail-load', push)
+    wc.on('did-fail-load', (_event, code, description, url, isMainFrame) => {
+      if (!isMainFrame || code === -3 || (tab.navigationUrl && url !== tab.navigationUrl)) return
+      // A certificate decision owns its original Chromium request, including
+      // any form POST. Do not replace its review with a second generic error.
+      if (tab.loadError?.certificate && tab.loadError.url === url) { push(); return }
+      tab.loadError = { id: randomUUID(), url, code: description || String(code), description: loadErrorDescription(code) }
+      this.applyVisibility()
+      push()
+    })
+    wc.on('did-redirect-navigation', (details, url, _inPlace, isMainFrame) => {
+      if (details.isMainFrame ?? isMainFrame) tab.navigationUrl = details.url ?? url
+    })
+    wc.on('certificate-error', (event, url, error, certificate, callback, isMainFrame) => {
+      // This is a WebContents event, not a session-wide verification override.
+      // Electron 43 routes the native app event here before applying default denial.
+      const origin = httpsOrigin(url)
+      let sha256 = ''
+      try { sha256 = new X509Certificate(certificate.data).fingerprint256 } catch { /* cannot approve an unidentified certificate */ }
+      const allowed = tab.certificateException
+      if (origin && sha256 && allowed?.origin === origin && allowed.sha256 === sha256 && allowed.error === error) {
+        event.preventDefault()
+        callback(true)
+        return
+      }
+      // A subresource cannot replace the top-level page with a permission prompt.
+      if (!isMainFrame) return
+      event.preventDefault()
+      this.cancelCertificate(tab)
+      const failure: BrowserLoadError = {
+        id: randomUUID(), url, code: error,
+        description: 'Stoke could not verify this site’s identity. Your connection may be intercepted.',
+        ...(origin && sha256 ? { certificate: {
+          origin, subject: certificate.subjectName, issuer: certificate.issuerName,
+          validStart: certificate.validStart, validExpiry: certificate.validExpiry,
+          sha256, canContinue: true
+        } } : {})
+      }
+      tab.navigationUrl = url
+      tab.loadError = failure
+      if (failure.certificate) {
+        // Bound pending native callbacks; after expiry the person can retry.
+        // Keeping the callback until their decision preserves POST/referrer data.
+        const timer = setTimeout(() => {
+          if (tab.loadError !== failure) return
+          this.cancelCertificate(tab)
+          failure.description = 'The certificate review expired. Retry to review the site again.'
+          push()
+        }, 120_000)
+        timer.unref()
+        tab.pendingCertificate = { callback, timer }
+      } else callback(false)
+      this.applyVisibility()
+      push()
+    })
 
     /*
      * A crashed renderer, which nothing was listening for.
@@ -350,6 +428,7 @@ export class EmbeddedBrowser {
   closeTab(id: string): void {
     const tab = this.tabs.find((t) => t.id === id)
     if (!tab) return
+    this.cancelCertificate(tab)
     // The next tab is picked among the closed one's own profile.
     const siblings = this.tabs.filter((t) => t.profileId === tab.profileId)
     const at = siblings.indexOf(tab)
@@ -432,7 +511,7 @@ export class EmbeddedBrowser {
   private applyVisibility(): void {
     for (const tab of this.tabs) {
       const isActive = tab.id === this.activeId
-      const shown = isActive && this.userVisible
+      const shown = isActive && this.userVisible && !tab.loadError
       /*
        * Bounds first, then visibility, and the order is the whole bug.
        *
@@ -615,9 +694,9 @@ export class EmbeddedBrowser {
   private tabState(): BrowserTabState[] {
     return this.shownTabs().map((t) => ({
       id: t.id,
-      title: t.view.webContents.getTitle() || 'New tab',
-      url: t.view.webContents.getURL(),
-      loading: t.view.webContents.isLoading(),
+      title: t.loadError ? 'Page could not load' : t.view.webContents.getTitle() || 'New tab',
+      url: t.loadError?.url ?? t.view.webContents.getURL(),
+      loading: !t.loadError && t.view.webContents.isLoading(),
       profileId: t.profileId
     }))
   }
@@ -640,19 +719,22 @@ export class EmbeddedBrowser {
         bookmarked: false
       }
     }
-    const url = wc.getURL()
+    const url = tab.loadError?.url ?? wc.getURL()
     return {
       url,
-      title: wc.getTitle(),
+      title: tab.loadError ? 'Page could not load' : wc.getTitle(),
       canGoBack: wc.navigationHistory.canGoBack(),
       canGoForward: wc.navigationHistory.canGoForward(),
-      loading: wc.isLoading(),
+      loading: !tab.loadError && wc.isLoading(),
       tabs: this.tabState(),
       activeId: this.activeId,
       zoom: wc.getZoomLevel(),
       findTotal: tab.findTotal,
       findActive: tab.findActive,
-      bookmarked: this.bookmarks.includes(url)
+      bookmarked: this.bookmarks.includes(url),
+      loadError: tab.loadError,
+      certificateException: tab.certificateException?.origin === httpsOrigin(url)
+        ? { origin: tab.certificateException.origin, sha256: tab.certificateException.sha256 } : undefined
     }
   }
 
@@ -708,7 +790,7 @@ export class EmbeddedBrowser {
    */
   async snapshot(): Promise<string | null> {
     const tab = this.active()
-    if (!tab || !this.userVisible || tab.view.webContents.isDestroyed()) return null
+    if (!tab || tab.loadError || !this.userVisible || tab.view.webContents.isDestroyed()) return null
     try {
       const image = await tab.view.webContents.capturePage()
       if (image.isEmpty()) return null
@@ -728,6 +810,8 @@ export class EmbeddedBrowser {
   }
 
   private load(tab: Tab, input: string): void {
+    this.cancelCertificate(tab)
+    tab.loadError = undefined
     void tab.view.webContents
       .loadURL(normalizeUrl(input, { allowLocalFiles: true }))
       .catch(() => {
@@ -746,11 +830,56 @@ export class EmbeddedBrowser {
   }
 
   reload(): void {
+    const tab = this.active()
+    if (tab?.loadError) {
+      this.load(tab, tab.loadError.url)
+      return
+    }
     this.webContents()?.reload()
   }
 
   stop(): void {
+    const tab = this.active()
+    if (tab) this.cancelCertificate(tab)
     this.webContents()?.stop()
+    this.emit(this.state())
+  }
+
+  private cancelCertificate(tab: Tab): void {
+    const pending = tab.pendingCertificate
+    if (!pending) return
+    tab.pendingCertificate = undefined
+    clearTimeout(pending.timer)
+    if (tab.loadError?.certificate) tab.loadError.certificate.canContinue = false
+    pending.callback(false)
+  }
+
+  continueCertificate(tabId: string, failureId: string): boolean {
+    const tab = this.active()
+    const failure = tab?.loadError
+    const certificate = failure?.certificate
+    const pending = tab?.pendingCertificate
+    if (!this.userVisible || !tab || tab.id !== tabId || tab.profileId !== this.currentProfile ||
+      failure?.id !== failureId || !certificate?.canContinue || !pending || tab.view.webContents.isDestroyed()) return false
+    tab.pendingCertificate = undefined
+    clearTimeout(pending.timer)
+    tab.certificateException = { origin: certificate.origin, sha256: certificate.sha256, error: failure.code }
+    tab.loadError = undefined
+    // Continue Chromium's actual request, rather than inventing a GET for a
+    // failed POST or redirect. The approval remains only in this owned tab.
+    pending.callback(true)
+    this.applyVisibility()
+    this.emit(this.state())
+    return true
+  }
+
+  revokeCertificate(tabId: string, sha256: string): boolean {
+    const tab = this.active()
+    if (!this.userVisible || !tab || tab.id !== tabId || tab.certificateException?.sha256 !== sha256) return false
+    tab.certificateException = undefined
+    this.reload()
+    this.emit(this.state())
+    return true
   }
 
   find(text: string, forward = true, findNext = false): void {
@@ -789,7 +918,7 @@ export class EmbeddedBrowser {
   }
 
   openExternal(): void {
-    const url = this.webContents()?.getURL()
+    const url = this.currentState().url
     if (url && /^https?:/i.test(url)) void shell.openExternal(url)
   }
 
@@ -811,6 +940,7 @@ export class EmbeddedBrowser {
      */
     if (this.win.isDestroyed()) {
       for (const tab of this.tabs.splice(0)) {
+        this.cancelCertificate(tab)
         // Parent teardown can already have cleared this native getter, just
         // as a script-owned popup can. Close only the surviving contents.
         const contents = tab.view.webContents

@@ -3845,6 +3845,16 @@ function registerIpc(): void {
   ipcMain.on(CH.browserForward, () => browser?.forward())
   ipcMain.on(CH.browserReload, () => browser?.reload())
   ipcMain.on(CH.browserStop, () => browser?.stop())
+  ipcMain.handle(CH.browserContinueCertificate, (event, tabId: unknown, failureId: unknown) => {
+    if (!win || event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) return false
+    if (typeof tabId !== 'string' || typeof failureId !== 'string') return false
+    return browser?.continueCertificate(tabId, failureId) ?? false
+  })
+  ipcMain.handle(CH.browserRevokeCertificate, (event, tabId: unknown, sha256: unknown) => {
+    if (!win || event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) return false
+    if (typeof tabId !== 'string' || typeof sha256 !== 'string') return false
+    return browser?.revokeCertificate(tabId, sha256) ?? false
+  })
   ipcMain.on(CH.browserOpenExternal, () => browser?.openExternal())
   ipcMain.on(CH.browserDevtools, () => browser?.toggleDevtools())
   ipcMain.on(CH.browserNewTab, (_e, url?: string) => browser?.newTab(url))

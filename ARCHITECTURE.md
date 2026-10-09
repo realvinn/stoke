@@ -164,6 +164,19 @@ Modified background clicks keep the opener selected. Popups can load web URLs,
 web-origin blobs and about:blank; local files remain an explicit address-bar
 action. Self-closing child contents remove their tab.
 
+Main-frame load failures hide the native blank/error view and expose the failed
+address, error code, Retry and Open externally actions in the browser chrome.
+Certificate failures show leaf SHA-256, issuer, subject and validity. Continue
+holds and resolves Chromium's original callback, preserving POST and referrer
+data. Approval is in memory for the owned tab's exact HTTPS origin (including
+port), leaf and error; subresources cannot initiate review. The trusted main
+renderer alone can approve a current failure nonce or revoke an exception.
+Navigation, tab teardown, Stop and a two-minute review expiry deny pending
+callbacks. No session-wide verification override or certificate-ignore switch
+is installed. Packaged probes use freshly generated loopback certificates.
+Browser MCP reports these failures promptly and refuses to read a previous
+document as the failed page; it leaves certificate approval to the person.
+
 Two structural points:
 
 - **Views stay mounted and are merely hidden.** A detached view gets a 0×0 viewport and never

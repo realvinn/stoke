@@ -90,6 +90,7 @@ import { parseArgs } from 'node:util'
 
 import { CdpClient, connectBrowserPage, connectStoke, listTargets } from './cdp-lib.mjs'
 import { startLoginServer } from './probe/login-server.mjs'
+import { createCertificate, startTlsServer } from './probe/tls-server.mjs'
 import { createSshFileFixture, removeSshFileFixture } from './probe/ssh-files.mjs'
 import { terminalLinkPoint } from './probe/terminal-link.mjs'
 import { nativeCrashScript } from './probe/native-crash.mjs'
@@ -902,6 +903,122 @@ await step('browser links retain popup navigation, POST data and profile isolati
   } finally {
     await ev('(window.__stokeLinkProbeOff?.(), delete window.__stokeLinkProbeOff, delete window.__stokeLinkProbeState, true)')
     await ev('window.stoke.browser.useProfile("default")')
+  }
+})
+
+await step('browser load errors and explicit certificate reviews work in native Chromium', async () => {
+  const directory = join(root, 'tls-fixture')
+  mkdirSync(directory, { recursive: true })
+  const certificate = createCertificate(directory)
+  const rotatedCertificate = createCertificate(directory, 'rotated')
+  let tls = await startTlsServer(certificate)
+  const otherPort = await startTlsServer(certificate)
+  await ev('window.stoke.browser.useProfile("default")')
+  await ev('(window.__stokeTlsOff = window.stoke.browser.onState(state => { window.__stokeTlsState = state }), true)')
+  const state = () => ev<BrowserState | null>('window.__stokeTlsState ?? null')
+  // Capture the existing tabs after a normal browser event, before any fixture tabs.
+  await ev('(window.stoke.browser.show(), true)')
+  const original = await waitFor('the original browser state', state)
+  const known = new Set(original.tabs.map(tab => tab.id))
+  const owned = new Set<string>()
+  const review = async (url: string): Promise<BrowserState> => {
+    const before = (await state())?.activeId
+    await ev(`(window.stoke.browser.newTab(${JSON.stringify(url)}), true)`)
+    const failed = await waitFor('a visible certificate review', async () => {
+      const next = await state()
+      return next?.activeId !== before && next?.loadError?.url === url && next.loadError.certificate?.canContinue ? next : null
+    }, 20_000)
+    owned.add(failed.activeId!)
+    return failed
+  }
+  const continueReview = async (failed: BrowserState): Promise<CdpClient> => {
+    const point = await waitFor('the visible certificate Continue button', () => ev<{x:number;y:number} | null>(`(() => {
+      const b = document.querySelector('.browser-load-error button[data-variant="primary"]');
+      if (!b) return null; const r = b.getBoundingClientRect();
+      return r.width && r.height && r.right <= innerWidth && r.bottom <= innerHeight ? {x:r.x+r.width/2,y:r.y+r.height/2} : null;
+    })()`))
+    await ui!.send('Input.dispatchMouseEvent', {type:'mousePressed',button:'left',clickCount:1,...point})
+    await ui!.send('Input.dispatchMouseEvent', {type:'mouseReleased',button:'left',clickCount:1,...point})
+    const page = await waitFor('the approved HTTPS document', () => connectBrowserPage(port, (url: string) => url === failed.loadError!.url), 20_000)
+    await waitFor('the approved HTTPS body', () => page.evaluate('!!document.querySelector("#tls-ready")'), 10_000)
+    return page
+  }
+  try {
+    const first = await review(`${tls.origin}/first`)
+    check('untrusted HTTPS exposes a certificate review instead of a blank view', await ev<boolean>('!!document.querySelector(".browser-load-error") && document.querySelector(".browser-load-error").textContent.includes("Continue for this tab")'))
+    check('certificate review includes a SHA-256 leaf identity', /^[A-F0-9]{2}(?::[A-F0-9]{2}){31}$/.test(first.loadError!.certificate!.sha256))
+    await shot('04-certificate-review')
+    check('a stale certificate approval cannot authorize the request', await ev(`window.stoke.browser.continueCertificate(${JSON.stringify(first.activeId)}, "stale")`) === false)
+    const accepted = await continueReview(first)
+    accepted.close()
+    const successful = await waitFor('the certificate exception indicator', async () => {
+      const next = await state()
+      return next?.certificateException && !next.loadError ? next : null
+    })
+    check('visible Continue resumes the original HTTPS navigation', successful.url === first.loadError!.url)
+    const sameProfile = await review(`${tls.origin}/same-profile`)
+    check('another tab in the same profile requires its own review', sameProfile.activeId !== first.activeId)
+    const anotherPort = await review(`${otherPort.origin}/different-port`)
+    check('a certificate grant cannot cross a port boundary', anotherPort.loadError?.certificate?.origin === otherPort.origin)
+    await ev(`window.stoke.browser.useProfile(${JSON.stringify(profileTwo)})`)
+    const profile = await review(`${tls.origin}/other-profile`)
+    check('another browser profile does not inherit the certificate grant', profile.tabs.find(tab => tab.id === profile.activeId)?.profileId === profileTwo)
+    await ev(`(window.stoke.browser.closeTab(${JSON.stringify(profile.activeId)}), true)`)
+    await ev('window.stoke.browser.useProfile("default")')
+    await ev(`(window.stoke.browser.selectTab(${JSON.stringify(first.activeId)}), true)`)
+    const removed = await ev<boolean>(`window.stoke.browser.revokeCertificate(${JSON.stringify(first.activeId)}, ${JSON.stringify(first.loadError!.certificate!.sha256)})`)
+    const revoked = await waitFor('revoked certificate to need review again', async () => (await state())?.loadError?.certificate?.canContinue ?? false, 20_000)
+    check('removing the tab exception restores certificate review', removed && revoked)
+    const old = await state()
+    const resumed = await continueReview(old!)
+    resumed.close()
+    await tls.close()
+    tls = await startTlsServer(rotatedCertificate, tls.port)
+    await ev(`(window.stoke.browser.navigate(${JSON.stringify(`${tls.origin}/rotated`)}), true)`)
+    const rotated = await waitFor('a rotated certificate to need fresh review', async () => {
+      const next = await state()
+      return next?.loadError?.certificate?.canContinue && next.loadError.certificate.sha256 !== first.loadError!.certificate!.sha256 ? next : null
+    }, 20_000)
+    check('a changed certificate at the same origin needs another review', rotated.loadError?.certificate?.origin === tls.origin)
+
+    // A real popup form to untrusted HTTPS must retain its original POST on Continue.
+    const sourceUrl = `${site.base}/links?tls-form=1`
+    await ev(`(window.stoke.browser.newTab(${JSON.stringify(sourceUrl)}), true)`)
+    const source = await waitFor('the HTTPS form source', () => connectBrowserPage(port, (url: string) => url === sourceUrl))
+    try {
+      const before = (await state())?.activeId
+      await source.evaluate(`(() => { const f = document.createElement('form'); f.method='post'; f.target='_blank'; f.action=${JSON.stringify(`${tls.origin}/posted`)}; const i=document.createElement('input'); i.name='note'; i.value='Reviewed 界'; f.append(i); document.body.append(f); f.submit(); return true })()`)
+      const posted = await waitFor('the popup POST certificate review', async () => {
+        const next = await state()
+        return next?.activeId !== before && next?.loadError?.url === `${tls.origin}/posted` && next.loadError.certificate?.canContinue ? next : null
+      }, 20_000)
+      owned.add(posted.activeId!)
+      const page = await continueReview(posted)
+      try {
+        const request = await page.evaluate('JSON.parse(document.querySelector("#tls-request").textContent)') as {method:string;body:string}
+        check('certificate Continue preserves a popup form POST and Unicode fields', request.method === 'POST' && new URLSearchParams(request.body).get('note') === 'Reviewed 界', JSON.stringify(request))
+      } finally { page.close() }
+    } finally { source.close() }
+    const closedPort = tls.port
+    await tls.close()
+    await ev(`(window.stoke.browser.newTab(${JSON.stringify(`https://127.0.0.1:${closedPort}/unavailable`)}), true)`)
+    const unavailable = await waitFor('a visible refused-connection error', async () => {
+      const next = await state()
+      return next?.loadError?.code.includes('CONNECTION_REFUSED') ? next : null
+    }, 20_000)
+    check('a refused connection offers Retry without a certificate bypass', !unavailable.loadError?.certificate && await ev<boolean>('!!document.querySelector(".browser-load-error") && !document.querySelector(".browser-load-error button[data-variant=primary]")'))
+    await shot('04-browser-load-error')
+  } finally {
+    // Collect even a tab created just before a thrown wait, then restore the login tab.
+    await ev('window.stoke.browser.useProfile("default")')
+    for (const tab of (await state())?.tabs ?? []) if (!known.has(tab.id)) owned.add(tab.id)
+    for (const id of owned) await ev(`(window.stoke.browser.closeTab(${JSON.stringify(id)}), true)`)
+    if (original.activeId) await ev(`(window.stoke.browser.selectTab(${JSON.stringify(original.activeId)}), true)`)
+    await ev('(window.__stokeTlsOff?.(), delete window.__stokeTlsOff, delete window.__stokeTlsState, true)')
+    await tls.close()
+    await otherPort.close()
+    // Only the public certificate remains in artifacts.
+    for (const file of readdirSync(directory)) if (file.endsWith('.key')) rmSync(join(directory, file))
   }
 })
 

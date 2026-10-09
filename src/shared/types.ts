@@ -1489,6 +1489,23 @@ export interface BrowserTabState {
   profileId: string
 }
 
+export interface BrowserLoadError {
+  /** Identifies this failure, so a stale button cannot approve another request. */
+  id: string
+  url: string
+  code: string
+  description: string
+  certificate?: {
+    origin: string
+    subject: string
+    issuer: string
+    validStart: number
+    validExpiry: number
+    sha256: string
+    canContinue: boolean
+  }
+}
+
 export interface BrowserState {
   /** Active tab. Kept flat because most of the UI only cares about this one. */
   url: string
@@ -1503,6 +1520,9 @@ export interface BrowserState {
   findTotal: number
   findActive: number
   bookmarked: boolean
+  loadError?: BrowserLoadError
+  /** A temporary exception belongs to this tab and the exact certificate. */
+  certificateException?: { origin: string; sha256: string }
 }
 
 export interface Rect {

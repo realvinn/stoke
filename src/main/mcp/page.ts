@@ -38,7 +38,16 @@ export class PageAgent {
   }
 
   private wc(): WebContents {
+    this.assertPageAvailable()
     return this.browser.ensureHeadless()
+  }
+
+  private assertPageAvailable(): void {
+    const failure = this.browser.currentState().loadError
+    if (!failure) return
+    throw new Error(`Could not load ${failure.url}: ${failure.code}. ${failure.certificate
+      ? 'The user must review this certificate in Stoke’s browser before continuing.'
+      : failure.description}`)
   }
 
   /**
@@ -78,11 +87,15 @@ export class PageAgent {
     const wc = this.wc()
     const deadline = Date.now() + timeoutMs
 
-    while (wc.isLoading() && Date.now() < deadline) await sleep(100)
+    while (wc.isLoading() && Date.now() < deadline) {
+      this.assertPageAvailable()
+      await sleep(100)
+    }
 
     let previous = -1
     let steady = 0
     while (Date.now() < deadline && steady < 2) {
+      this.assertPageAvailable()
       let length = 0
       try {
         length = await this.evaluate<number>(
@@ -121,14 +134,27 @@ export class PageAgent {
             : '')
       )
     }
-    const wc = this.wc()
-    await wc.loadURL(normalizeUrl(url))
+    // A failed page must still be navigable. Poll its embedder error while
+    // Chromium awaits a certificate decision, so the tool reports the review
+    // promptly rather than timing out or reading the previous document.
+    const wc = this.browser.ensureHeadless()
+    const navigation = wc.loadURL(normalizeUrl(url))
+    let poll: ReturnType<typeof setInterval> | undefined
+    try {
+      await new Promise<void>((resolve, reject) => {
+        navigation.then(() => resolve(), reject)
+        poll = setInterval(() => {
+          try { this.assertPageAvailable() } catch (error) { reject(error) }
+        }, 50)
+      })
+    } finally { clearInterval(poll) }
+    this.assertPageAvailable()
     await this.waitForStable()
   }
 
   async history(action: 'back' | 'forward' | 'reload'): Promise<void> {
-    const wc = this.wc()
-    if (action === 'reload') wc.reload()
+    const wc = this.browser.ensureHeadless()
+    if (action === 'reload') this.browser.reload()
     else if (action === 'back' && wc.navigationHistory.canGoBack()) wc.navigationHistory.goBack()
     else if (action === 'forward' && wc.navigationHistory.canGoForward()) {
       wc.navigationHistory.goForward()

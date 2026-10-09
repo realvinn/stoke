@@ -201,6 +201,8 @@ export const CH = {
   browserForward: 'browser:forward',
   browserReload: 'browser:reload',
   browserStop: 'browser:stop',
+  browserContinueCertificate: 'browser:continueCertificate',
+  browserRevokeCertificate: 'browser:revokeCertificate',
   browserOpenExternal: 'browser:openExternal',
   browserState: 'browser:state',
   browserDevtools: 'browser:devtools',

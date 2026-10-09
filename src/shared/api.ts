@@ -780,6 +780,9 @@ export interface StokeApi {
     forward(): void
     reload(): void
     stop(): void
+    /** Explicit review in Stoke's browser chrome; never exposed to browsed pages or MCP. */
+    continueCertificate(tabId: string, failureId: string): Promise<boolean>
+    revokeCertificate(tabId: string, sha256: string): Promise<boolean>
     openExternal(): void
     devtools(): void
     newTab(url?: string): void
