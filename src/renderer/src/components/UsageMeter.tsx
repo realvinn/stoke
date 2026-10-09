@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { StatusLineSnapshot, UsageBoard, UsageReading, UsageTarget, UsageWindow } from '@shared/types'
 import { keepUsage } from '@shared/statusLine'
-import { CLAUDE_DEFAULT_KEY, chipRows, claudeWindowsFor, panelGroups, usageChipKey, usageTargetKey } from '@shared/usageSources'
+import { CLAUDE_DEFAULT_KEY, chipRows, claudeWindowsFor, mergeUsageBoard, panelGroups, usageChipKey, usageTargetKey } from '@shared/usageSources'
 import { cliFor } from '@shared/codingClis'
 import { useFloatingLayer } from '../lib/floatingLayers'
 import {
@@ -272,7 +272,7 @@ export function UsageChip({ target, accountLabel }: { target: UsageTarget | null
           // A read for another account, or one overtaken by a newer read,
           // brings its readings but not its idea of which one is in front.
           const own = mine === targetSeq
-          return { readings: next.readings, activeKey: own || !prev ? next.activeKey : prev.activeKey, target: own || !prev ? next.target : prev.target }
+          return mergeUsageBoard(prev, next, own)
         })
       })
     }
@@ -318,12 +318,12 @@ export function UsageChip({ target, accountLabel }: { target: UsageTarget | null
       // is every payload until its session's first API response lands. Per
       // account: another account's payload is another account's figures.
       // Same rule main applies to `lastStatusLines`; see `keepUsage`.
-      setLines((prev) => ({ ...prev, [account]: keepUsage(prev[account] ?? null, s) }))
+      if (s.quotaSource === undefined || s.quotaSource === 'anthropic') setLines((prev) => ({ ...prev, [account]: keepUsage(prev[account] ?? null, s) }))
 
       if (s.promptId && lastPrompt.get(s.sessionId) !== s.promptId) {
         lastPrompt.set(s.sessionId, s.promptId)
         // Refresh the account that session spends, which need not be the tab in front.
-        pullRef.current('message', { cli: 'claude', accountId: account })
+        pullRef.current('message', s.usageTarget ?? { cli: 'claude', accountId: account })
       }
     }
 

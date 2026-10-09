@@ -40,7 +40,7 @@ export const OPENROUTER_ACCOUNT = 'key'
 export const CLAUDE_DEFAULT_KEY = 'anthropic:default'
 
 export function usageTargetKey(target: UsageTarget | null): string {
-  return target ? `${target.cli}:${target.accountId || DEFAULT_ACCOUNT_ID}` : ''
+  return target ? `${target.cli}:${target.accountId || DEFAULT_ACCOUNT_ID}${target.ptyId ? `:${target.ptyId}` : ''}` : ''
 }
 
 /** A late reading cannot answer for a new tab, even if its figures are valid. */
@@ -48,6 +48,19 @@ export function usageChipKey(board: UsageBoard | null, target: UsageTarget | nul
   if (!board) return target ? null : CLAUDE_DEFAULT_KEY
   if (usageTargetKey(board.target ?? null) !== usageTargetKey(target)) return null
   return board.activeKey
+}
+
+/** Late replies may update other readings, while retaining the selected configuration's figures. */
+export function mergeUsageBoard(previous: UsageBoard | null, next: UsageBoard, ownsSelection: boolean): UsageBoard {
+  if (!previous || ownsSelection) return next
+  let readings = next.readings
+  const active = previous.readings.find(reading => reading.key === previous.activeKey)
+  if (active) {
+    const at = readings.findIndex(reading => reading.key === active.key)
+    if (at < 0) readings = [...readings, active]
+    else if (readings[at].snapshot.fetchedAt < active.snapshot.fetchedAt) readings = readings.map((reading, index) => index === at ? active : reading)
+  }
+  return { readings, activeKey: previous.activeKey, target: previous.target }
 }
 
 export function usageKey(source: UsageSourceId, accountId: string): string {
@@ -91,6 +104,7 @@ export function usageRouteFor(target: UsageTarget, ctx: UsageRouteContext): Usag
     // Providers' keys reach the Default account only (pty.ts): another
     // account is always its own sign-in.
     if (!account && ctx.claudeAuth === 'openrouter') return { source: 'openrouter', accountId: OPENROUTER_ACCOUNT }
+    if (!account && ctx.claudeAuth !== 'default') return null
     return { source: 'anthropic', accountId }
   }
   const mode = ctx.endpointModes[target.cli] ?? 'default'
@@ -131,7 +145,7 @@ export function claudeWindowsFor(
   snap: UsageSnapshot | null | undefined,
   now: number
 ): { windows: UsageWindow[]; payloadAt: number; accountAt: number } {
-  const ownLine = line && sameAccount(line.accountId, accountId) ? line : null
+  const ownLine = line && sameAccount(line.accountId, accountId) && (line.quotaSource === undefined || line.quotaSource === 'anthropic') ? line : null
   const ownSnap = snap && sameAccount(snap.accountId, accountId) && (snap.source ?? 'anthropic') === 'anthropic' ? snap : null
   const fromLine = ownLine ? statusLineWindows(ownLine, now) : []
   const fromAccount = ownSnap ? ownSnap.windows : []

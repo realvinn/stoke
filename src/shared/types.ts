@@ -336,6 +336,9 @@ export interface StatusLineWindowReading {
  * so no component ever has to know the wire shape or the seconds/ms boundary.
  */
 export interface StatusLineSnapshot {
+  /** Main-stamped source identity; the CLI cannot select an account/configuration. */
+  usageTarget?: UsageTarget
+  quotaSource?: UsageSourceId | null
   sessionId: string
   /**
    * The turn this reading was taken during, or null from a CLI that states
@@ -1722,11 +1725,13 @@ export interface UsageBalance {
 export interface UsageTarget {
   cli: CodingCliId
   accountId: string
+  /** Live session identity; its launch configuration stays in main. */
+  ptyId?: string
 }
 
 /** One source's reading, as the panel lists it. Never carries a key or a token. */
 export interface UsageReading {
-  /** `<source>:<accountId>` (`usageKey`), stable across reads. */
+  /** Source/account and an opaque read-configuration identity, stable across reads. */
   key: string
   source: UsageSourceId
   /** The agent it belongs to; null for the OpenRouter key, which several agents share. */

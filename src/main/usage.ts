@@ -242,8 +242,7 @@ export function freshestCredentials(
  * the Keychain item named after it — so one account's token can never answer
  * for another's plan. Same mcpOAuth skip, same freshness rule, per account.
  */
-export async function readCredentials(home: string | null = null): Promise<StoredCredentials | null> {
-  const where = credentialSources(home)
+export async function readCredentials(home: string | null = null, where = credentialSources(home)): Promise<StoredCredentials | null> {
   let fromFile: StoredCredentials | null = null
   try {
     const raw = await readFile(where.file, 'utf8')
@@ -469,12 +468,12 @@ export function keepLastGood(
  * @param accountId what the reading is stamped with, so no merge can take it
  *                  for another account's (`claudeWindowsFor`)
  */
-export async function fetchUsage(now = Date.now(), home: string | null = null, accountId = 'default'): Promise<UsageSnapshot> {
+export async function fetchUsage(now = Date.now(), home: string | null = null, accountId = 'default', where = credentialSources(home)): Promise<UsageSnapshot> {
   if (process.env.STOKE_FAKE_USAGE) return fakeUsage(now, accountId)
-  return { ...(await fetchAccountUsage(now, home)), source: 'anthropic', accountId }
+  return { ...(await fetchAccountUsage(now, home, where)), source: 'anthropic', accountId }
 }
 
-async function fetchAccountUsage(now: number, home: string | null): Promise<UsageSnapshot> {
+async function fetchAccountUsage(now: number, home: string | null, where: ReturnType<typeof credentialSources>): Promise<UsageSnapshot> {
   const empty = (error: string): UsageSnapshot => ({
     windows: [],
     extraCredits: null,
@@ -482,7 +481,7 @@ async function fetchAccountUsage(now: number, home: string | null): Promise<Usag
     error
   })
 
-  const creds = await readCredentials(home)
+  const creds = await readCredentials(home, where)
   if (!creds) return empty('Not signed in to Claude Code.')
   /*
    * Stated before the call rather than discovered as a 401, because the two

@@ -37,6 +37,7 @@ import {
   readCredentials
 } from '../src/main/usage.ts'
 import { toSnapshot } from '../src/main/statusLine.ts'
+import { boundUsageReading, UsageBindings, usageCacheKey } from '../src/main/usageBindings.ts'
 import { keepUsage, mergeUsageWindows, statusLineWindows } from '../src/shared/statusLine.ts'
 import {
   codexCredits,
@@ -62,6 +63,7 @@ import {
   panelGroups,
   usageKey,
   usageChipKey,
+  mergeUsageBoard,
   usageTargetKey,
   usageRouteFor,
   type UsageRouteContext
@@ -520,6 +522,7 @@ console.log('\neach Claude account reads its own token, from its own two stores'
   check('account A reads account A’s token', (await readCredentials(homeA))?.token, 'sk-ant-oat-A')
   check('account B reads account B’s', (await readCredentials(homeB))?.token, 'sk-ant-oat-B')
   check('and from the file, never the Keychain, while the file holds a live one', (await readCredentials(homeA))?.source, 'file')
+  check('a captured credential location survives a later home selection', (await readCredentials(homeB, credentialSources(homeA)))?.token, 'sk-ant-oat-A')
 }
 
 console.log('\neach account keeps its own backoff and its own last good reading')
@@ -592,6 +595,8 @@ console.log('\nno reading ever merges across accounts, in either direction')
   check('never another account’s', claudeWindowsFor('claude-work', line(undefined, 44), null, at).windows, [])
   const codexShaped: UsageSnapshot = { ...defaultSnap, source: 'codex' }
   check('a Codex reading is never taken as a Claude account’s', claudeWindowsFor('default', null, codexShaped, at).windows, [])
+  check('a provider-routed payload cannot become a subscription reading', claudeWindowsFor('default', { ...line('default', 44), quotaSource: 'openrouter' }, null, at).windows, [])
+  check('an unproven auth source cannot become a subscription reading', claudeWindowsFor('default', { ...line('default', 44), quotaSource: null }, null, at).windows, [])
   // keepUsage within and across accounts, both orders.
   const quietWork = { ...line('claude-work', 0), fiveHour: null, receivedAt: at + 5000 }
   check('keepUsage within one account borrows the older figures', keepUsage(workLine, quietWork).fiveHour?.percent, 90)
@@ -616,6 +621,8 @@ console.log('\nwhich reading answers for which tab')
   check('Claude on Default: its account', route('claude', 'default'), 'anthropic:default')
   check('Claude on a second account: that account', route('claude', 'claude-work'), 'anthropic:claude-work')
   check('Claude’s Default account routed to OpenRouter spends the key', route('claude', 'default', { ...ctx, claudeAuth: 'openrouter' }), 'openrouter:key')
+  check('an Anthropic API key cannot claim subscription limits', route('claude', 'default', { ...ctx, claudeAuth: 'anthropic' }), null)
+  check('a custom Claude gateway cannot claim subscription limits', route('claude', 'default', { ...ctx, claudeAuth: 'custom' }), null)
   check('but a second Claude account is its own sign-in whatever Providers says', route('claude', 'claude-work', { ...ctx, claudeAuth: 'openrouter' }), 'anthropic:claude-work')
   check('Codex on Default: its home’s rollouts', route('codex', 'default'), 'codex:default')
   check('Codex on an account: that account’s', route('codex', 'codex-work'), 'codex:codex-work')
@@ -637,6 +644,7 @@ console.log('\nwhich reading answers for which tab')
   check('the launcher still explicitly selects the Default reading', usageChipKey({ readings: [], activeKey: 'anthropic:default', target: null }, null), 'anthropic:default')
   check('a shared OpenRouter key still waits for the new tab’s own answer', usageChipKey({ readings: [], activeKey: 'openrouter:key', target: followed }, { cli: 'grok', accountId: 'default' }), null)
   check('empty and Default account ids share the same target identity', usageTargetKey({ cli: 'claude', accountId: '' }), usageTargetKey({ cli: 'claude', accountId: 'default' }))
+  check('two sessions on one account wait for their own source identity', usageChipKey({ ...answered, target: { ...followed, ptyId: 'old' } }, { ...followed, ptyId: 'new' }), null)
   check(
     'the key is shared by exactly the agents pointed at it',
     openRouterSharers({ claudeAuth: 'openrouter', endpointModes: { codex: 'openrouter', grok: 'openrouter', crush: 'openrouter', aider: 'custom' } }),
@@ -667,6 +675,56 @@ console.log('\nwhich reading answers for which tab')
   check('what reaches the renderer never carries the key', wire.includes('sk-or-SECRET'), false)
   check('or a path to a token', wire.includes('providers.json'), false)
   check('no key, no OpenRouter row', planUsageSources({ ...input, openrouterKey: '' }, {}, '/Users/v').some((p) => p.source === 'openrouter'), false)
+}
+
+console.log('\nusage bindings: private launch configuration survives Settings changes')
+{
+  const bindings = new UsageBindings()
+  const input: UsagePlanInput = { accounts: {}, claudeAuth: 'openrouter', openrouterKey: 'fixture-old-key', endpointModes: { codex: 'openrouter' } }
+  const target = { cli: 'claude' as const, accountId: 'default', ptyId: 'pty-old' }
+  bindings.capture(target, input, {}, '/isolated-home')
+  input.openrouterKey = 'fixture-new-key'; input.claudeAuth = 'default'
+  check('the existing session retains the actual launch key and source', [bindings.for(target)?.source, bindings.for(target)?.openrouterKey], ['openrouter', 'fixture-old-key'])
+  const newer = { cli: 'codex' as const, accountId: 'default', ptyId: 'pty-new' }
+  bindings.capture(newer, input, {}, '/isolated-home')
+  const oldPlan = bindings.for(target)!; const newPlan = bindings.for(newer)!
+  check('different keys cannot share the quota cache', usageCacheKey(oldPlan) === usageCacheKey(newPlan), false)
+  const oldReading = boundUsageReading(oldPlan, { windows: [], extraCredits: null, fetchedAt: 10, error: null })
+  const newReading = boundUsageReading(newPlan, { windows: [], extraCredits: null, fetchedAt: 20, error: null })
+  const current = { readings: [newReading], activeKey: newReading.key, target: newer }
+  const late = mergeUsageBoard(current, { readings: [oldReading], activeKey: oldReading.key, target }, false)
+  check('an old key reply cannot replace the current key’s figures', [late.activeKey, late.readings.find(reading => reading.key === late.activeKey)?.snapshot.fetchedAt], [newReading.key, 20])
+  check('cache keys reveal neither credential', [usageCacheKey(oldPlan).includes('fixture-old-key'), usageCacheKey(newPlan).includes('fixture-new-key')], [false, false])
+  const same = { ...newer, ptyId: 'pty-same' }; bindings.capture(same, input, {}, '/isolated-home')
+  check('the same source configuration shares its request floor', usageCacheKey(newPlan), usageCacheKey(bindings.for(same)!))
+  check('renaming an account does not reset the request floor', usageCacheKey({ ...oldPlan, label: 'New nickname', detail: 'Another detail' }), usageCacheKey(oldPlan))
+  check('another agent or account cannot select this binding', [bindings.for({ ...target, cli: 'codex' }), bindings.for({ ...target, accountId: 'claude-other' })], [null, null])
+  check('unknown session IDs cannot fall back to a current configured key', bindings.for({ ...target, ptyId: 'missing' }), null)
+  const native = { ...target, ptyId: 'pty-native' }
+  bindings.capture(native, input, { ANTHROPIC_AUTH_TOKEN: 'external-fixture-token' }, '/isolated-home')
+  check('an inherited external token cannot borrow native subscription figures', bindings.for(native), null)
+  const account: AgentAccount = { id: 'claude-work', cli: 'claude', kind: 'login', label: 'Work', home: '/isolated-work-home', apiKey: '' }
+  input.accounts = { [account.id]: account }
+  const named = { ...target, accountId: account.id, ptyId: 'pty-work' }
+  bindings.capture(named, input, {}, '/isolated-home')
+  check('named Claude login binds its own home', bindings.for(named)?.claudeHome, account.home)
+  bindings.capture({ ...named, ptyId: 'pty-inherited' }, input, { ANTHROPIC_API_KEY: 'external-api-fixture' }, '/isolated-home')
+  check('a named account with an inherited API override stays unknown too', bindings.for({ ...named, ptyId: 'pty-inherited' }), null)
+  const codex = { ...newer, ptyId: 'pty-codex' }
+  const own = { ...input, endpointModes: {} }; const env = { CODEX_HOME: '/isolated-old-codex' }
+  bindings.capture(codex, own, env, '/isolated-home'); env.CODEX_HOME = '/isolated-new-codex'
+  check('a source home is captured by value too', bindings.for(codex)?.codexHome, '/isolated-old-codex')
+  const nativeEnv = { CLAUDE_CONFIG_DIR: '/isolated-old-claude', CLAUDE_SECURESTORAGE_CONFIG_DIR: '/isolated-old-keychain' }
+  bindings.capture(native, own, nativeEnv, '/isolated-home')
+  const oldLocations = credentialSources(null, nativeEnv, '/isolated-home')
+  nativeEnv.CLAUDE_CONFIG_DIR = '/isolated-new-claude'; nativeEnv.CLAUDE_SECURESTORAGE_CONFIG_DIR = '/isolated-new-keychain'
+  check('Default captures the inherited credential file and Keychain item', bindings.for(native)?.claudeCredentials, oldLocations)
+  const cline = { cli: 'cline' as const, accountId: 'default', ptyId: 'pty-cline' }
+  bindings.capture(cline, own, { CLINE_DIR: '/isolated-cline', UNRELATED_SECRET: 'fixture-unrelated-secret' }, '/isolated-home')
+  check('only usage-relevant environment is retained', JSON.stringify(bindings.for(cline)).includes('fixture-unrelated-secret'), false)
+  bindings.drop(target.ptyId)
+  check('PTY exit releases its private source binding', bindings.for(target), null)
+  bindings.clear(); check('window close releases every retained binding', bindings.plans().length, 0)
 }
 
 console.log('\nCodex: the limits its last turn stated, from a rollout’s tail')

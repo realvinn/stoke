@@ -174,7 +174,7 @@ export function TitleBar({
       !activeTab.installing?.length &&
       !activeTab.enrollHostId &&
       !activeTab.accountLogin
-        ? { cli: activeTab.cliId, accountId: activeTab.accountId || 'default' }
+        ? { cli: activeTab.cliId, accountId: activeTab.accountId || 'default', ptyId: activeTab.ptyId }
         : null,
     // Keyed by value, so the chip does not re-read on every tabs update.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -185,6 +185,7 @@ export function TitleBar({
       activeTab?.enrollHostId,
       activeTab?.accountLogin,
       activeTab?.cliId,
+      activeTab?.ptyId,
       activeTab?.accountId
     ]
   )

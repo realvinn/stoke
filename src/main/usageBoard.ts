@@ -30,7 +30,7 @@ import type { ClaudeAuthMode } from '../shared/providers.ts'
 import type { UsageReading, UsageReadReason, UsageSnapshot, UsageSourceId } from '../shared/types.ts'
 import { openRouterSharers, sharedByText, usageKey, type UsageRouteContext } from '../shared/usageSources.ts'
 import { readCodexUsage } from './codexUsage.ts'
-import { fakeUsage, fetchUsage, keepLastGood, nextBackoff } from './usage.ts'
+import { credentialSources, fakeUsage, fetchUsage, keepLastGood, nextBackoff } from './usage.ts'
 import { fetchClineUsage, fetchKimiUsage, fetchOpenRouterUsage } from './usageVendors.ts'
 
 /* ------------------------------------------------------------- schedule */
@@ -142,6 +142,8 @@ export interface UsageSourcePlan {
   detail: string | null
   /** anthropic: the account's config dir, or null for Default. */
   claudeHome?: string | null
+  /** Captured credential locations, including inherited secure-store overrides. */
+  claudeCredentials?: ReturnType<typeof credentialSources>
   /** codex: the account's CODEX_HOME. */
   codexHome?: string
   /** cline: its providers.json, and the environment its Cline sees. */
@@ -195,12 +197,16 @@ export function planUsageSources(
   fake?: string
 ): UsageSourcePlan[] {
   const plans: UsageSourcePlan[] = []
+  const pickEnv = (source: Record<string, string | undefined>, keys: string[]) =>
+    Object.fromEntries(keys.filter(key => source[key] !== undefined).map(key => [key, source[key]]))
+  const kimiEnv = (source: Record<string, string | undefined>) => pickEnv(source, ['KIMI_CODE_OAUTH_HOST', 'KIMI_OAUTH_HOST', 'KIMI_CODE_BASE_URL'])
+  const clineEnv = (source: Record<string, string | undefined>) => pickEnv(source, ['CLINE_API_BASE_URL', 'CLINE_ENVIRONMENT_OVERRIDE', 'CLINE_ENVIRONMENT'])
   const login = (cli: CodingCliId): AgentAccount[] =>
     Object.values(input.accounts).filter((a) => a.cli === cli && a.kind === 'login' && a.home)
 
-  plans.push({ key: usageKey('anthropic', DEFAULT_ACCOUNT_ID), source: 'anthropic', cli: 'claude', accountId: DEFAULT_ACCOUNT_ID, label: 'Default', detail: null, claudeHome: null })
+  plans.push({ key: usageKey('anthropic', DEFAULT_ACCOUNT_ID), source: 'anthropic', cli: 'claude', accountId: DEFAULT_ACCOUNT_ID, label: 'Default', detail: null, claudeHome: null, claudeCredentials: credentialSources(null, env, userHome) })
   for (const a of login('claude')) {
-    plans.push({ key: usageKey('anthropic', a.id), source: 'anthropic', cli: 'claude', accountId: a.id, label: a.label, detail: null, claudeHome: a.home })
+    plans.push({ key: usageKey('anthropic', a.id), source: 'anthropic', cli: 'claude', accountId: a.id, label: a.label, detail: null, claudeHome: a.home, claudeCredentials: credentialSources(a.home, env, userHome) })
   }
 
   const codexDefault = env.CODEX_HOME?.trim() || join(userHome, '.codex')
@@ -217,7 +223,7 @@ export function planUsageSources(
     label: 'Default',
     detail: null,
     kimiPath: kimiCredentialsPath(env, userHome, join),
-    kimiEnv: env
+    kimiEnv: kimiEnv(env)
   })
   for (const a of login('kimi')) {
     const accountEnv = { ...env, KIMI_CODE_HOME: a.home }
@@ -229,7 +235,7 @@ export function planUsageSources(
       label: a.label,
       detail: null,
       kimiPath: kimiCredentialsPath(accountEnv, userHome, join),
-      kimiEnv: accountEnv
+      kimiEnv: kimiEnv(accountEnv)
     })
   }
 
@@ -241,7 +247,7 @@ export function planUsageSources(
     label: 'Default',
     detail: null,
     clinePath: clineProvidersPath(env, userHome, join),
-    clineEnv: env
+    clineEnv: clineEnv(env)
   })
   for (const a of login('cline')) {
     // What that account's Cline sees: Stoke's environment plus its CLINE_DIR
@@ -255,7 +261,7 @@ export function planUsageSources(
       label: a.label,
       detail: null,
       clinePath: clineProvidersPath(accountEnv, userHome, join),
-      clineEnv: accountEnv
+      clineEnv: clineEnv(accountEnv)
     })
   }
 
@@ -279,7 +285,7 @@ export async function readUsageSource(plan: UsageSourcePlan, now: number, fake?:
   if (fake) return fakeSnapshot(plan, now, fake)
   switch (plan.source) {
     case 'anthropic':
-      return fetchUsage(now, plan.claudeHome ?? null, plan.accountId)
+      return fetchUsage(now, plan.claudeHome ?? null, plan.accountId, plan.claudeCredentials)
     case 'codex':
       return { ...(await readCodexUsage(plan.codexHome ?? '', now)), accountId: plan.accountId }
     case 'kimi':

@@ -1153,6 +1153,12 @@ export class PtyManager {
     return ended ?? 'default'
   }
 
+  /** The live PTY owning a status-line key, across /clear and /resume. */
+  ptyIdForKey(statusKey: string): string | null {
+    for (const s of this.sessions.values()) if (!s.exited && s.statusKey === statusKey) return s.ptyId
+    return null
+  }
+
   /** The pty child's pid, or null when there is no such live session. */
   pidFor(ptyId: string): number | null {
     const s = this.sessions.get(ptyId)

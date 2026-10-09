@@ -23,6 +23,7 @@ import { basename, dirname, isAbsolute, join } from 'node:path'
 import { CH } from '@shared/ipc'
 import { AgentLifecycleGate } from '../shared/agentLifecycle.ts'
 import { QuickTerminal } from './quickTerminal.ts'
+import { boundUsageReading, UsageBindings, usageCacheKey } from './usageBindings.ts'
 import type { QuickTerminalAppearance, QuickTerminalMode, QuickTerminalSurface } from '../shared/quickTerminal.ts'
 import { activeThemeId, resolveTheme } from '@shared/themes'
 import { revealInsetFor, revealsOnEntry } from '@shared/fullScreenReveal'
@@ -231,7 +232,7 @@ import {
   type AutoUpdateAttempt,
   type UpdateInfo
 } from './updates.ts'
-import { planUsageSources, readUsageSource, toReading, USAGE_FLOORS, UsageScheduler, usagePlanInput } from './usageBoard.ts'
+import { planUsageSources, readUsageSource, USAGE_FLOORS, UsageScheduler, usagePlanInput } from './usageBoard.ts'
 import { chipRows, claudeWindowsFor, usageKey, usageRouteFor } from '../shared/usageSources.ts'
 import { patchClaudeSetting, readClaudeSettings, readLaunchDefaults, untouchedKeys } from './claudeSettings.ts'
 import {
@@ -423,12 +424,12 @@ function remoteSessionStatusFor(ptyId: string): RemoteSessionStatus | null {
   let usage: UsageWindow[] = []
   let usageAt: number | null = null
   if (!facts.hostId && isCodingCliId(facts.cli)) {
-    const route = usageRouteFor({ cli: facts.cli, accountId: facts.accountId || DEFAULT_ACCOUNT_ID }, usagePlanInput(getSettings()))
-    if (route) {
-      const snap = usageScheduler.peek(usageKey(route.source, route.accountId))
+    const plan = usageBindings.for({ cli: facts.cli, accountId: facts.accountId || DEFAULT_ACCOUNT_ID, ptyId })
+    if (plan) {
+      const snap = usageScheduler.peek(usageCacheKey(plan))
       const now = Date.now()
-      if (route.source === 'anthropic') {
-        const m = claudeWindowsFor(route.accountId, lastStatusLines.get(route.accountId) ?? line, snap, now)
+      if (plan.source === 'anthropic') {
+        const m = claudeWindowsFor(plan.accountId, lastStatusLines.get(plan.accountId) ?? line, snap, now)
         usage = chipRows(m.windows)
         const at = Math.max(m.payloadAt, m.accountAt)
         usageAt = Number.isFinite(at) ? at : null
@@ -648,6 +649,7 @@ const timers: NodeJS.Timeout[] = []
  * UsageMeter.tsx is the same 30s from the other side.
  */
 const usageScheduler = new UsageScheduler()
+const usageBindings = new UsageBindings()
 
 /* ------------------------------------------------- keeping the CLI current */
 
@@ -774,6 +776,7 @@ const lastStatusLines = new Map<string, StatusLineSnapshot>()
 
 /** File a payload under the account its session runs on, and keep its rate limits (`keepUsage`). */
 function fileStatusLine(snap: StatusLineSnapshot): void {
+  if (snap.quotaSource !== 'anthropic') return
   const account = snap.accountId || DEFAULT_ACCOUNT_ID
   lastStatusLines.set(account, keepUsage(lastStatusLines.get(account) ?? null, snap))
 }
@@ -781,7 +784,12 @@ function fileStatusLine(snap: StatusLineSnapshot): void {
 /** A payload read from the key's files, stamped with the account of the session that owns the key. */
 function readAccountStatusLine(key: string): StatusLineSnapshot | null {
   const read = readStatusLine(key)
-  return read ? { ...read, accountId: ptys?.accountIdForKey(key) ?? DEFAULT_ACCOUNT_ID } : null
+  if (!read) return null
+  const accountId = ptys?.accountIdForKey(key) ?? DEFAULT_ACCOUNT_ID
+  const ptyId = ptys?.ptyIdForKey(key)
+  const facts = ptyId ? ptys?.launchFacts(ptyId) : null
+  const usageTarget = ptyId && facts && isCodingCliId(facts.cli) ? { cli: facts.cli, accountId, ptyId } : undefined
+  return { ...read, accountId, usageTarget, quotaSource: usageTarget ? usageBindings.for(usageTarget)?.source ?? null : null }
 }
 /** receivedAt of the last payload pushed per session, so nothing is sent twice. */
 const statusLineSeen = new Map<string, number>()
@@ -1392,6 +1400,9 @@ async function startSession(
     // Nothing ran in the folder: it and its marker go now.
     if (privateLaunch) await privateChats?.abandon(privateLaunch.id).catch(() => {})
     throw err
+  }
+  if (localAgent && ptys.sessionIdFor(started.ptyId) !== null) {
+    usageBindings.capture({ cli: cliId, accountId: accountId || DEFAULT_ACCOUNT_ID, ptyId: started.ptyId }, usagePlanInput(settings), process.env, homedir(), process.env.STOKE_FAKE_USAGE || undefined)
   }
   /*
    * A private chat stops here, before anything below can remember it: no
@@ -2950,6 +2961,7 @@ function createWindow(): void {
       enrollOutput(ptyId, data)
     },
     (ptyId, code, signal, sessionId, loggedIn) => {
+      usageBindings.drop(ptyId)
       // `loggedIn`: whether a remote session got past authentication, which
       // the renderer's kept-tab reconnect needs and cannot see (gotcha 126).
       send(CH.ptyExit, ptyId, code, signal, loggedIn)
@@ -3224,6 +3236,7 @@ function createWindow(): void {
   }
 
   win.on('closed', () => {
+    usageBindings.clear()
     quickTerminal?.disable()
     quickTerminalWindow?.destroy()
     quickTerminalWindow = null
@@ -3436,32 +3449,40 @@ function registerIpc(): void {
   /** A wire-borne target, or null for anything that is not one: an agent id and `default` or an account id. */
   const usageTargetOf = (v: unknown): UsageTarget | null => {
     if (!v || typeof v !== 'object') return null
-    const t = v as { cli?: unknown; accountId?: unknown }
+    const t = v as { cli?: unknown; accountId?: unknown; ptyId?: unknown }
     if (!isCodingCliId(t.cli)) return null
     const accountId = t.accountId === DEFAULT_ACCOUNT_ID || isAccountId(t.accountId) ? (t.accountId as string) : DEFAULT_ACCOUNT_ID
-    return { cli: t.cli, accountId }
+    return { cli: t.cli, accountId, ...(typeof t.ptyId === 'string' && t.ptyId.length <= 128 ? { ptyId: t.ptyId } : {}) }
   }
   const usageBoard = async (reasonRaw: unknown, targetRaw: unknown, all: boolean): Promise<UsageBoard> => {
     const reason = usageReason(reasonRaw)
     const target = usageTargetOf(targetRaw)
     const input = usagePlanInput(getSettings())
     const fake = process.env.STOKE_FAKE_USAGE || undefined
-    const plans = planUsageSources(input, process.env, homedir(), fake)
-    usageScheduler.retain(plans.map((p) => p.key))
+    const configuredPlans = planUsageSources(input, process.env, homedir(), fake)
+    let plans = configuredPlans
+    const captured = target?.ptyId ? usageBindings.for(target) : null
+    if (captured) {
+      const selected = { ...captured, ...(captured.source === 'openrouter' ? { detail: 'This session’s launch configuration' } : {}) }
+      const at = plans.findIndex(plan => plan.key === captured.key)
+      plans = at >= 0 ? plans.map((plan, index) => index === at ? selected : plan) : [...plans, selected]
+    }
+    usageScheduler.retain([...configuredPlans, ...usageBindings.plans()].map(usageCacheKey))
     // No tab to follow (a New tab, the launcher): Claude Code's Default
     // account. A tab whose agent states nothing readable answers null;
     // it never asks for or displays another agent's figures as a fallback.
-    const route = target ? usageRouteFor(target, input) : { source: 'anthropic' as const, accountId: DEFAULT_ACCOUNT_ID }
-    const activeKey = route ? usageKey(route.source, route.accountId) : null
-    const wanted = all ? plans : plans.filter((p) => p.key === activeKey)
+    const route = target?.ptyId ? captured : target ? usageRouteFor(target, input) : { source: 'anthropic' as const, accountId: DEFAULT_ACCOUNT_ID }
+    const selected = route ? plans.find(plan => plan.key === usageKey(route.source, route.accountId)) : null
+    const activeKey = selected ? usageCacheKey(selected) : null
+    const wanted = all ? plans : selected ? [selected] : []
     await Promise.all(
       wanted.map((p) =>
-        usageScheduler.read(p.key, reason, Date.now(), () => readUsageSource(p, Date.now(), fake), USAGE_FLOORS[p.source])
+        usageScheduler.read(usageCacheKey(p), reason, Date.now(), () => readUsageSource(p, Date.now(), fake), USAGE_FLOORS[p.source])
       )
     )
     const readings = plans.flatMap((p) => {
-      const snap = usageScheduler.peek(p.key)
-      return snap ? [toReading(p, snap)] : []
+      const snap = usageScheduler.peek(usageCacheKey(p))
+      return snap ? [boundUsageReading(p, snap)] : []
     })
     return { readings, activeKey, target }
   }
