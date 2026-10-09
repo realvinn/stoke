@@ -488,6 +488,7 @@ export const CH = {
   workNotionConfigure: 'work:notion:configure',
   workNotionDisconnect: 'work:notion:disconnect',
   workNotionPublish: 'work:notion:publish',
+  workNotionRefresh: 'work:notion:refresh',
   workNotionRetry: 'work:notion:retry',
   workNotionResolve: 'work:notion:resolve',
   workNotionChanged: 'work:notion:changed',

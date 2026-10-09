@@ -371,6 +371,7 @@ const api: StokeApi = {
     notionConfigure: (mapping, token) => ipcRenderer.invoke(CH.workNotionConfigure, mapping, token),
     notionDisconnect: () => ipcRenderer.invoke(CH.workNotionDisconnect),
     notionPublish: (request) => ipcRenderer.invoke(CH.workNotionPublish, request),
+    notionRefresh: (request) => ipcRenderer.invoke(CH.workNotionRefresh, request),
     notionRetry: (id) => ipcRenderer.invoke(CH.workNotionRetry, id),
     notionResolve: (id, choice) => ipcRenderer.invoke(CH.workNotionResolve, id, choice),
     onNotionChange: (cb) => on<[Parameters<typeof cb>[0]]>(CH.workNotionChanged, cb),

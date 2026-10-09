@@ -69,6 +69,7 @@ export interface WorkNotionStep {
   base: WorkNotionLink | null
   state: 'pending' | 'creating' | 'updating' | 'unknown' | 'conflict' | 'confirmed'
   page: NotionPage | null
+  refreshChoice?: 'stoke' | 'notion'
 }
 export interface WorkNotionOperation {
   id: string
@@ -77,6 +78,8 @@ export interface WorkNotionOperation {
   state: 'pending' | 'partial' | 'unknown' | 'conflict' | 'completed'
   message: string
   steps: WorkNotionStep[]
+  /** Absent in older journals, which contain publish operations only. */
+  mode?: 'publish' | 'refresh'
 }
 export interface WorkNotionState {
   schema: 1

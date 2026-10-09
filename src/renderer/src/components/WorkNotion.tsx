@@ -111,7 +111,7 @@ export function WorkNotion({ work, selection, day }: Props): React.JSX.Element {
     finally { claim.current = false; if (mounted.current) setBusy(false) }
   }
   const changeInput = (fn: () => void): void => { draftVersion.current++; setSchemas(null); setError(''); fn() }
-  const prepare = (): void => {
+  const prepare = (mode: 'publish' | 'refresh' = 'publish'): void => {
     if (!selection || !notion?.config) return
     const config = notion.config
     const rows: Review['rows'] = []
@@ -135,7 +135,9 @@ export function WorkNotion({ work, selection, day }: Props): React.JSX.Element {
       if (!daily || daily.day !== day) return
       revision = daily.revision; relatedRevision = task?.revision; if (task) addTask(task.id); addDaily(daily.id)
     }
-    setReview({ request: { ...selection, revision, relatedRevision, day, connectionId: config.connectionId }, rows }); setError('')
+    const request = { ...selection, revision, relatedRevision, day, connectionId: config.connectionId }
+    if (mode === 'refresh') { void run(() => window.stoke.work.notionRefresh(request)); return }
+    setReview({ request, rows }); setError('')
   }
   return <section className="work-notion" aria-label="Notion connection" aria-busy={locked}>
     {error && <p className="work-error" role="alert">{error}</p>}
@@ -158,7 +160,10 @@ export function WorkNotion({ work, selection, day }: Props): React.JSX.Element {
     </details>
     {notion?.config && notion.tokenPresent && <div data-setting="worklog.publish">
       <p className="work-note">Publishing is a separate decision from approving or starting a task. Only the mapped fields in the reviewed rows are written.</p>
-      <button className="btn" disabled={locked || !selection} onClick={prepare}>Review saved fields for Notion</button>
+      <div className="work-actions">
+        <button className="btn" disabled={locked || !selection} onClick={() => prepare()}>Review saved fields for Notion</button>
+        <button className="btn" disabled={locked || !selection || !notion.links.some(link => link.connectionId === notion.config?.connectionId && link.recordId === selection.id)} onClick={() => prepare('refresh')}>Read current Notion fields</button>
+      </div>
       {review && <div className="work-publish-review">
         <h4>Publish these saved records?</h4>
         {review.rows.map((row, index) => <div className="work-publish-row" key={index}>
@@ -169,9 +174,9 @@ export function WorkNotion({ work, selection, day }: Props): React.JSX.Element {
       </div>}
     </div>}
     {notion && notion.operations.length > 0 && <details className="work-journal" open={notion.operations.some((o) => o.state !== 'completed')}>
-      <summary><span>Notion publish history</span> · {notion.operations.filter((o) => o.state !== 'completed').length} pending</summary>
+      <summary><span>Notion history</span> · {notion.operations.filter((o) => o.state !== 'completed').length} pending</summary>
       {notion.operations.slice().reverse().map((operation) => <div className="work-journal-entry" key={operation.id}>
-        <strong>{operation.steps[0]?.local.title} · {operation.state}</strong>
+        <strong>{operation.steps[0]?.local.title} · {operation.mode === 'refresh' ? 'Read' : 'Publish'} · {operation.state}</strong>
         <p className="work-note" role={operation.state === 'completed' ? undefined : 'status'}>{operation.message || 'Preparing the saved operation…'}</p>
         {operation.steps.map((step) => <p className="work-note" key={step.recordId}>{step.kind === 'task' ? 'Task' : 'Daily work'}: {step.state}{step.page && <> · <a href={step.page.url} target="_blank" rel="noreferrer">Open in Notion</a></>}</p>)}
         {operation.state !== 'completed' && <button className="btn" disabled={locked || !notion.config || !notion.tokenPresent} onClick={() => void run(() => window.stoke.work.notionRetry(operation.id))}>{operation.state === 'unknown' ? 'Retry lookup' : 'Retry saved operation'}</button>}
@@ -179,7 +184,7 @@ export function WorkNotion({ work, selection, day }: Props): React.JSX.Element {
           <table><thead><tr><th>Field</th><th>Proposed in Stoke</th><th>Current in Notion</th></tr></thead><tbody>
             {(['title', 'body', 'status', 'evidence', 'project', 'day', 'taskPageId'] as const).filter((key) => step.local[key] !== undefined || step.page!.fields[key] !== undefined).map((key) => <tr key={key}><th>{key === 'taskPageId' ? 'Task relation' : key}</th><td>{step.local[key] || 'Empty'}</td><td>{step.page!.fields[key] || 'Empty'}</td></tr>)}
           </tbody></table>
-          <div className="work-actions"><button className="btn" disabled={locked || !notion.tokenPresent} onClick={() => void run(() => window.stoke.work.notionResolve(operation.id, 'notion'))}>Use reviewed Notion fields</button><button className="btn" disabled={locked || !notion.tokenPresent} onClick={() => void run(() => window.stoke.work.notionResolve(operation.id, 'stoke'))}>Publish reviewed Stoke fields</button></div>
+          <div className="work-actions"><button className="btn" disabled={locked || !notion.tokenPresent} onClick={() => void run(() => window.stoke.work.notionResolve(operation.id, 'notion'))}>Use reviewed Notion fields</button><button className="btn" disabled={locked || !notion.tokenPresent} onClick={() => void run(() => window.stoke.work.notionResolve(operation.id, 'stoke'))}>{operation.mode === 'refresh' ? 'Keep Stoke fields' : 'Publish reviewed Stoke fields'}</button></div>
         </div>)}
       </div>)}
     </details>}

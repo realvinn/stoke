@@ -560,7 +560,7 @@ export const SETTING_ROWS: readonly SettingRow[] = [
   { id: 'worklog.boards', page: 'worklog', label: 'Work boards', keywords: ['daily work', 'today', 'to-do', 'working on', 'completed', 'task board', 'backlog', 'completion evidence'], fallback: 'worklog.plugin' },
   { id: 'worklog.drafts', page: 'worklog', label: 'Sonnet drafts', keywords: ['draft purpose', 'source notes', 'session notes', 'conversation excerpts', 'idea brief', 'daily summary', 'completion evidence', 'budget', 'claude provider'], fallback: 'worklog.plugin' },
   { id: 'worklog.connection', page: 'worklog', label: 'Notion connection', keywords: ['integration token', 'api key', 'direct api', 'task data source id', 'daily data source id', 'mapping', 'properties', 'schema', 'stoke id'], fallback: 'worklog.plugin' },
-  { id: 'worklog.publish', page: 'worklog', label: 'Publish Work to Notion', keywords: ['publish review', 'saved fields', 'sync', 'retry', 'conflicts', 'journal', 'Notion publish history'], fallback: 'worklog.connection' },
+  { id: 'worklog.publish', page: 'worklog', label: 'Publish Work to Notion', keywords: ['publish review', 'saved fields', 'sync', 'retry', 'conflicts', 'journal', 'Notion history', 'Notion publish history', 'read current Notion fields', 'refresh Notion'], fallback: 'worklog.connection' },
   { id: 'worklog.auto', page: 'worklog', label: 'Scan while I work', keywords: ['automatic', 'auto scan', 'background'] },
   { id: 'worklog.targets', page: 'worklog', label: 'Where reviews are filed', keywords: ['notion', 'clickup', 'destination'] },
   { id: 'worklog.notion', page: 'worklog', label: 'Notion data source', keywords: ['notion id', 'database'] },

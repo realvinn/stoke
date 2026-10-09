@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { mergeNotionFields } from '../../shared/workNotion.ts'
 import { validWorkDay } from '../../shared/workPlugin.ts'
-import type { NotionFields, NotionPage, NotionSource, WorkNotionConfig, WorkNotionOperation, WorkNotionPublishRequest, WorkNotionStep, WorkNotionView } from '../../shared/workNotion.ts'
+import type { NotionFields, NotionPage, NotionSource, WorkNotionConfig, WorkNotionLink, WorkNotionOperation, WorkNotionPublishRequest, WorkNotionStep, WorkNotionView } from '../../shared/workNotion.ts'
 import type { WorkDaily, WorkTask, WorkView } from '../../shared/workPlugin.ts'
 import { NotionClient, NotionError, validateNotionMapping } from './notion.ts'
 import { emptyNotionState, readNotionState } from './notionJournal.ts'
@@ -20,6 +20,13 @@ interface Deps {
 const record = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
 const sameFields = (a: NotionFields, b: NotionFields): boolean => ['title', 'body', 'status', 'identity', 'evidence', 'project', 'day', 'taskPageId'].every((key) => a[key as keyof NotionFields] === b[key as keyof NotionFields])
 class NotionImportConflict extends Error {}
+
+function savedFields(row: WorkTask | WorkDaily, config: WorkNotionConfig, links: WorkNotionLink[]): NotionFields {
+  const fields: NotionFields = { identity: row.id, title: row.title, body: 'brief' in row ? row.brief : row.notes, status: 'brief' in row ? config.task.states[row.status] : config.daily.states[row.status], evidence: row.evidence }
+  if ('brief' in row) fields.project = row.project
+  else { fields.day = row.day; fields.taskPageId = row.taskId ? links.find(l => l.recordId === row.taskId && l.connectionId === config.connectionId)?.id ?? null : null }
+  return fields
+}
 
 /** All external writes are explicit and journaled; there is no sync timer. */
 export class NotionWork {
@@ -94,6 +101,12 @@ export class NotionWork {
     return state.config
   }
   publish(raw: WorkNotionPublishRequest): Promise<WorkNotionView> {
+    return this.prepare(raw, 'publish')
+  }
+  refresh(raw: WorkNotionPublishRequest): Promise<WorkNotionView> {
+    return this.prepare(raw, 'refresh')
+  }
+  private prepare(raw: WorkNotionPublishRequest, mode: 'publish' | 'refresh'): Promise<WorkNotionView> {
     return this.claim(async (signal) => {
       if (!record(raw) || !['task', 'daily'].includes(raw.kind as string) || typeof raw.id !== 'string' || !validWorkDay(raw.day) || typeof raw.revision !== 'number' || typeof raw.connectionId !== 'string') throw new Error('Review the saved Work record before publishing it.')
       const config = await this.guard(raw.connectionId, signal)
@@ -102,10 +115,13 @@ export class NotionWork {
       const steps: WorkNotionStep[] = []
       const add = (row: WorkTask | WorkDaily): void => {
         const kind = 'brief' in row ? 'task' : 'daily'
-        const desired: NotionFields = { identity: row.id, title: row.title, body: 'brief' in row ? row.brief : row.notes, status: kind === 'task' ? config.task.states[(row as WorkTask).status] : config.daily.states[(row as WorkDaily).status], evidence: row.evidence }
-        if ('brief' in row) desired.project = row.project
-        else { desired.day = row.day; desired.taskPageId = row.taskId ? state.links.find((l) => l.recordId === row.taskId && l.connectionId === config.connectionId)?.id ?? null : null }
-        steps.push({ kind, recordId: row.id, revision: row.revision, desired, local: structuredClone(desired), ...(kind === 'daily' ? { taskId: (row as WorkDaily).taskId } : {}), base: state.links.find((l) => l.recordId === row.id && l.connectionId === config.connectionId) ?? null, state: 'pending', page: null })
+        const base = state.links.find(l => l.recordId === row.id && l.connectionId === config.connectionId) ?? null
+        if (mode === 'refresh' && !base) {
+          if (row.id === raw.id) throw new Error('Publish this record once before reading its linked Notion fields.')
+          return
+        }
+        const desired = savedFields(row, config, state.links)
+        steps.push({ kind, recordId: row.id, revision: row.revision, desired, local: structuredClone(desired), ...(kind === 'daily' ? { taskId: (row as WorkDaily).taskId } : {}), base, state: 'pending', page: null })
       }
       if (raw.kind === 'task') {
         const task = work.tasks.find((r) => r.id === raw.id)
@@ -119,7 +135,7 @@ export class NotionWork {
         if (task) add(task); add(daily)
       }
       if (state.operations.some((o) => o.state !== 'completed' && o.steps.some((s) => steps.some((p) => p.recordId === s.recordId)))) throw new Error('A saved operation already owns this record. Retry or resolve that operation first.')
-      const operation: WorkNotionOperation = { id: randomUUID(), connectionId: config.connectionId, createdAt: Date.now(), state: 'pending', message: '', steps }
+      const operation: WorkNotionOperation = { id: randomUUID(), connectionId: config.connectionId, createdAt: Date.now(), state: 'pending', message: '', steps, mode }
       await this.store.change((s) => {
         if (s.operations.length >= 200) {
           const finished = s.operations.findIndex((o) => o.state === 'completed')
@@ -149,6 +165,25 @@ export class NotionWork {
         await this.updateOperation(id, (o) => { o.steps[index].page = current; o.message = 'Notion changed again. Review the refreshed fields before choosing a version.' })
         return this.view()
       }
+      if (operation.mode === 'refresh') {
+        if (choice === 'notion') {
+          const work = await this.deps.work.read()
+          const row = (step.kind === 'task' ? work.tasks : work.daily).find(r => r.id === step.recordId)
+          if (!row || row.revision !== step.revision) {
+            await this.updateOperation(id, o => { o.message = 'Stoke changed after this read. Retry the saved read to review its current fields.' })
+            return this.view()
+          }
+          if (step.kind === 'daily' && (current.fields.day !== step.local.day || current.fields.taskPageId !== step.local.taskPageId)) throw new Error('Restore the daily date and task relation in Notion before adopting its fields.')
+          await this.updateOperation(id, o => { o.steps[index].refreshChoice = 'notion' })
+          await this.confirm(id, index, current, config)
+        } else {
+          // Keep the board. A later explicit publish may propose these local
+          // differences against the newly acknowledged remote baseline.
+          await this.acknowledgeRefresh(id, index, current, config)
+        }
+        await this.run(id, signal)
+        return this.view()
+      }
       if (choice === 'notion') {
         // Date and task-relation changes require restoring the intended link first.
         if (step.kind === 'daily' && (current.fields.day !== step.local.day || current.fields.taskPageId !== step.local.taskPageId)) throw new Error('Restore the daily date and task relation in Notion before adopting its fields.')
@@ -163,6 +198,53 @@ export class NotionWork {
       await this.run(id, signal)
       return this.view()
     })
+  }
+  private async acknowledgeRefresh(id: string, index: number, page: NotionPage, config: WorkNotionConfig): Promise<void> {
+    await this.store.change(state => {
+      const operation = state.operations.find(o => o.id === id)!
+      const step = operation.steps[index]
+      state.links = state.links.filter(l => l.recordId !== step.recordId || l.connectionId !== config.connectionId)
+      state.links.push({ ...page, connectionId: config.connectionId, recordId: step.recordId, localBase: structuredClone(page.fields) })
+      step.page = page; step.state = 'confirmed'; step.refreshChoice = 'stoke'
+      state.revision++; return state
+    })
+    await this.emit()
+  }
+  private async runRefresh(id: string, signal: AbortSignal): Promise<void> {
+    try {
+      const operation = (await this.store.read()).operations.find(o => o.id === id)!
+      const config = await this.guard(operation.connectionId, signal)
+      const client = await this.client()
+      const [task, daily] = await Promise.all([client.source(config.task.source, signal), client.source(config.daily.source, signal)])
+      validateNotionMapping(config, task, daily)
+      for (let index = 0; index < operation.steps.length; index++) {
+        await this.guard(operation.connectionId, signal)
+        const step = operation.steps[index]
+        if (step.state === 'confirmed' && step.page) {
+          if (step.refreshChoice === 'notion') await this.finishLocal(id, index, step, config, step.page)
+          continue
+        }
+        if (!step.base) throw new Error('This read has no linked Notion page. Publish the record before reading it.')
+        const work = await this.deps.work.read(), state = await this.store.read()
+        const row = (step.kind === 'task' ? work.tasks : work.daily).find(r => r.id === step.recordId)
+        if (!row) throw new Error('The local Work record is missing.')
+        const fields = savedFields(row, config, state.links)
+        const page = await client.page(step.base.id, step.kind === 'task' ? config.task : config.daily, signal)
+        await this.guard(operation.connectionId, signal)
+        if (page.fields.identity !== step.recordId) throw new Error('This Notion row now has another Stoke ID. No local fields were changed.')
+        await this.updateOperation(id, o => {
+          o.steps[index].local = fields; o.steps[index].desired = structuredClone(fields); o.steps[index].revision = row.revision; o.steps[index].page = page
+        })
+        if (!sameFields(fields, page.fields)) {
+          await this.updateOperation(id, o => { o.steps[index].state = 'conflict'; o.state = 'conflict'; o.message = 'Read from Notion. Review both versions before applying its fields; this read makes no changes in Notion.' })
+          return
+        }
+        await this.acknowledgeRefresh(id, index, page, config)
+      }
+      await this.updateOperation(id, o => { o.state = 'completed'; o.message = 'Notion read reviewed. Publish separately to send local changes.' })
+    } catch (error) {
+      await this.updateOperation(id, o => { o.state = o.steps.some(s => s.state === 'conflict') ? 'conflict' : 'pending'; o.message = (error instanceof Error ? error.message : 'Notion could not finish this read.').slice(0, 2048) })
+    }
   }
   private async updateOperation(id: string, edit: (op: WorkNotionOperation) => void): Promise<WorkNotionOperation> {
     const next = await this.store.change((state) => {
@@ -212,6 +294,7 @@ export class NotionWork {
   private async run(id: string, signal: AbortSignal): Promise<void> {
     let operation = (await this.store.read()).operations.find((o) => o.id === id)
     if (!operation) throw new Error('The saved Notion operation is missing.')
+    if (operation.mode === 'refresh') return this.runRefresh(id, signal)
     let index = 0
     try {
       const config = await this.guard(operation.connectionId, signal)

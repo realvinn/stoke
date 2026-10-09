@@ -1397,6 +1397,13 @@ atomic module storage), `workCredentials.ts` (encrypted token vault), `WorkNotio
 (schema mapping, publish previews and conflict review), and
 `scripts/verify-work-notion.mts` (loopback HTTP, recovery, conflict and credential proof).
 
+Linked Notion records also support an explicit read into a durable review. Read
+operations use GET only and remain distinct from publish operations across restart.
+Users can apply reviewed remote fields locally or keep their board. New local or
+remote edits require another review; dates, relations and completion evidence retain
+their existing guards. Confirmation receipts recover local saves without overwriting
+later edits. Reading never imports unrelated pages or creates missing links.
+
 Sonnet drafting adds `src/shared/workDrafts.ts` (proposal contracts and budget),
 `src/main/plugins/workDrafts.ts` (durable generation and acceptance), `WorkDrafts.tsx`
 (source notes and review), and `scripts/verify-work-drafts.mts` (board/receipt recovery

@@ -1125,6 +1125,7 @@ export interface StokeApi {
     notionConfigure(mapping: { task: NotionTaskMap; daily: NotionDailyMap }, token?: string): Promise<WorkNotionResult>
     notionDisconnect(): Promise<WorkNotionResult>
     notionPublish(request: WorkNotionPublishRequest): Promise<WorkNotionResult>
+    notionRefresh(request: WorkNotionPublishRequest): Promise<WorkNotionResult>
     notionRetry(operationId: string): Promise<WorkNotionResult>
     notionResolve(operationId: string, choice: 'stoke' | 'notion'): Promise<WorkNotionResult>
     onNotionChange(cb: (view: WorkNotionView) => void): () => void

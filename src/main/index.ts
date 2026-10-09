@@ -4942,6 +4942,7 @@ function registerIpc(): void {
   ipcMain.handle(CH.workNotionConfigure, (event, mapping, token) => notionAction(event, (s) => s.configure(mapping, token)))
   ipcMain.handle(CH.workNotionDisconnect, (event) => notionAction(event, (s) => s.disconnect()))
   ipcMain.handle(CH.workNotionPublish, (event, request) => notionAction(event, (s) => s.publish(request)))
+  ipcMain.handle(CH.workNotionRefresh, (event, request) => notionAction(event, (s) => s.refresh(request)))
   ipcMain.handle(CH.workNotionRetry, (event, id) => notionAction(event, (s) => s.retry(id)))
   ipcMain.handle(CH.workNotionResolve, (event, id, choice) => notionAction(event, (s) => s.resolve(id, choice)))
 

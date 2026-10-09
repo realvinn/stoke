@@ -41,10 +41,12 @@ export function readNotionState(raw: unknown): WorkNotionState {
   }
   const operationIds = new Set<string>()
   for (const operation of raw.operations) {
+    if (!record(operation) || operation.mode !== undefined && !['publish', 'refresh'].includes(operation.mode as string)) refuse()
     if (!record(operation) || !text(operation.id, 100, true) || operationIds.has(operation.id as string) || !text(operation.connectionId, 100, true) || !number(operation.createdAt) || !text(operation.message, 2048) || !['pending', 'partial', 'unknown', 'conflict', 'completed'].includes(operation.state as string) || !Array.isArray(operation.steps) || operation.steps.length < 1 || operation.steps.length > 2) refuse()
     operationIds.add(operation.id as string)
     const records = new Set<string>()
     for (const step of operation.steps) {
+      if (!record(step) || step.refreshChoice !== undefined && (operation.mode !== 'refresh' || !['stoke', 'notion'].includes(step.refreshChoice as string))) refuse()
       if (!record(step) || !['task', 'daily'].includes(step.kind as string) || !text(step.recordId, 100, true) || records.has(step.recordId as string) || !number(step.revision) || !fields(step.desired) || !fields(step.local) || step.desired.identity !== step.recordId || !['pending', 'creating', 'updating', 'unknown', 'conflict', 'confirmed'].includes(step.state as string) || step.page !== null && !page(step.page) || step.base !== null && !page(step.base) || step.taskId !== undefined && step.taskId !== null && !text(step.taskId, 100, true)) refuse()
       if (step.local.identity !== step.recordId || step.page !== null && step.page.fields.identity !== step.recordId) refuse()
       if (step.base !== null && (!record(step.base) || step.base.connectionId !== operation.connectionId || step.base.recordId !== step.recordId || step.base.fields.identity !== step.recordId || step.base.localBase !== undefined && (!fields(step.base.localBase) || step.base.localBase.identity !== step.recordId))) refuse()

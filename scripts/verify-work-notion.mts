@@ -7,6 +7,7 @@ import { WorkPlugin } from '../src/main/plugins/work.ts'
 import { WorkCredentials } from '../src/main/plugins/workCredentials.ts'
 import { NotionClient, NOTION_VERSION, notionText, validateNotionMapping } from '../src/main/plugins/notion.ts'
 import { NotionWork } from '../src/main/plugins/notionWork.ts'
+import { readNotionState } from '../src/main/plugins/notionJournal.ts'
 import { mergeNotionFields } from '../src/shared/workNotion.ts'
 import type { NotionFields, WorkNotionPublishRequest } from '../src/shared/workNotion.ts'
 
@@ -258,6 +259,93 @@ try {
   check('the daily relation points to the confirmed task page', dayPage.properties.task.relation, [{ id: pageId }])
   check('completion evidence is published in both tables', [value(pages.get(pageId), 'evidence'), value(dayPage, 'evidence')], ['Checks passed; commit abc123', 'Checks passed; commit abc123'])
 
+  console.log('\nNotion: explicit reads and reviewed local adoption')
+  const refresh = async (kind: 'task' | 'daily', id: string): Promise<void> => {
+    const board = await work.read(), state = await connector.view()
+    const row = (kind === 'task' ? board.tasks : board.daily).find(r => r.id === id)!
+    const related = kind === 'task' ? board.daily.find(r => r.taskId === id && r.day === day) : board.tasks.find(r => r.id === ('taskId' in row ? row.taskId : null))
+    await connector.refresh({ kind, id, revision: row.revision, relatedRevision: related?.revision, day, connectionId: state.config!.connectionId })
+  }
+  const rejected = async (fn: () => Promise<unknown>): Promise<boolean> => { try { await fn(); return false } catch { return true } }
+  await work.change({ kind: 'idea', title: 'Read fixture', brief: 'Local notes', project: 'Stoke' })
+  const readId = (await work.read()).tasks.find(r => r.title === 'Read fixture')!.id
+  check('a never-published record cannot read an unrelated row', await rejected(() => refresh('task', readId)), true)
+  await publishTask(readId)
+  const readPageId = (await connector.view()).links.find(l => l.recordId === readId)!.id
+  const remote = pages.get(readPageId)
+  const beforeRead = writes, beforeBoard = await work.read()
+  await refresh('task', readId)
+  check('an unchanged read makes no local edits or external writes', [await work.read(), writes, (await connector.view()).operations.at(-1)?.state], [beforeBoard, beforeRead, 'completed'])
+  remote.properties.title = { id: 'title', type: 'title', title: notionText('Notion 🔥 title') }
+  await refresh('task', readId)
+  let readOperation = (await connector.view()).operations.at(-1)!
+  check('reading changed fields produces review without adoption', [readOperation.mode, readOperation.state, (await work.read()).tasks.find(r => r.id === readId)?.title, writes], ['refresh', 'conflict', 'Read fixture', beforeRead])
+  connector.stop(); connector = new NotionWork(root, { work, credentials, fetch: localFetch })
+  check('read review survives connector restart', (await connector.view()).operations.at(-1)?.mode, 'refresh')
+  await connector.resolve(readOperation.id, 'stoke')
+  check('keeping Stoke leaves both copies intact with no API write', [(await work.read()).tasks.find(r => r.id === readId)?.title, value(remote, 'title'), writes, (await connector.view()).operations.at(-1)?.state], ['Read fixture', 'Notion 🔥 title', beforeRead, 'completed'])
+  await publishTask(readId)
+  check('a separate publish can propose the kept local fields', value(remote, 'title'), 'Read fixture')
+  remote.properties.title = { id: 'title', type: 'title', title: notionText('First read') }
+  const readWrites = writes
+  await refresh('task', readId); readOperation = (await connector.view()).operations.at(-1)!
+  remote.properties.title = { id: 'title', type: 'title', title: notionText('Changed after read') }
+  await connector.resolve(readOperation.id, 'notion')
+  check('a newer remote edit requires another review', [(await connector.view()).operations.at(-1)?.state, (await work.read()).tasks.find(r => r.id === readId)?.title], ['conflict', 'Read fixture'])
+  await connector.resolve(readOperation.id, 'notion')
+  check('reviewed adoption updates only the local board', [(await work.read()).tasks.find(r => r.id === readId)?.title, writes], ['Changed after read', readWrites])
+  remote.properties.title = { id: 'title', type: 'title', title: notionText('Pending external title') }
+  await refresh('task', readId); readOperation = (await connector.view()).operations.at(-1)!
+  await edit(readId, 'New local draft', 'New local notes')
+  await connector.resolve(readOperation.id, 'notion')
+  check('a local edit after the preview cannot be overwritten', [(await work.read()).tasks.find(r => r.id === readId)?.title, (await connector.view()).operations.at(-1)?.state, writes], ['New local draft', 'conflict', readWrites])
+  await connector.retry(readOperation.id)
+  check('retry reads the current local fields for a fresh decision', (await connector.view()).operations.at(-1)?.steps[0].local.title, 'New local draft')
+  await connector.resolve(readOperation.id, 'stoke')
+  remote.properties.status = { id: 'status', type: 'status', status: { name: 'Completed' } }
+  remote.properties.evidence = { id: 'evidence', ...rich('') }
+  await refresh('task', readId); readOperation = (await connector.view()).operations.at(-1)!
+  check('evidence-free completion cannot be adopted through a read', await rejected(() => connector.resolve(readOperation.id, 'notion')), true)
+  check('invalid completion leaves the local state and API untouched', [(await work.read()).tasks.find(r => r.id === readId)?.status, writes], ['Idea', readWrites])
+  await connector.resolve(readOperation.id, 'stoke')
+  remote.properties.status = { id: 'status', type: 'status', status: { name: 'Idea' } }
+  remote.properties['stoke-id'] = { id: 'stoke-id', ...rich('another-record') }
+  await refresh('task', readId); readOperation = (await connector.view()).operations.at(-1)!
+  check('a changed page identity is refused without corrupting the journal', [readOperation.state, readOperation.steps[0].page, writes], ['pending', null, readWrites])
+  remote.properties['stoke-id'] = { id: 'stoke-id', ...rich(readId) }
+  await connector.retry(readOperation.id)
+  await connector.resolve(readOperation.id, 'stoke')
+  dayPage.properties.day = { id: 'day', type: 'date', date: { start: '2026-10-10' } }
+  await refresh('daily', linkedDay.id); readOperation = (await connector.view()).operations.at(-1)!
+  check('a read cannot silently change a daily date', await rejected(() => connector.resolve(readOperation.id, 'notion')), true)
+  check('the daily entry stays on its original date', (await work.read()).daily.find(r => r.id === linkedDay.id)?.day, day)
+  await connector.resolve(readOperation.id, 'stoke')
+  dayPage.properties.day = { id: 'day', type: 'date', date: { start: day } }
+  dayPage.properties.task = { id: 'task', type: 'relation', relation: [{ id: readPageId }] }
+  await refresh('daily', linkedDay.id); readOperation = (await connector.view()).operations.at(-1)!
+  check('a read cannot silently retarget a daily task', await rejected(() => connector.resolve(readOperation.id, 'notion')), true)
+  check('the daily entry keeps its task', (await work.read()).daily.find(r => r.id === linkedDay.id)?.taskId, taskId)
+  await connector.resolve(readOperation.id, 'stoke')
+  dayPage.properties.task = { id: 'task', type: 'relation', relation: [{ id: pageId }] }
+  check('all read decisions remained free of external writes', writes, readWrites)
+
+  remote.properties.title = { id: 'title', type: 'title', title: notionText('Receipt recovery') }
+  await refresh('task', readId); readOperation = (await connector.view()).operations.at(-1)!
+  connector.stop()
+  let throwAfterImport = true
+  connector = new NotionWork(root, { work, credentials, fetch: localFetch, onWork: () => { if (throwAfterImport) { throwAfterImport = false; throw new Error('Synthetic interruption after local save') } } })
+  check('a local-save interruption leaves a recoverable reviewed read', await rejected(() => connector.resolve(readOperation.id, 'notion')), true)
+  check('the reviewed fields reached the local board before interruption', (await work.read()).tasks.find(r => r.id === readId)?.title, 'Receipt recovery')
+  await edit(readId, 'Later local draft', 'Keep after recovery')
+  connector.stop(); connector = new NotionWork(root, { work, credentials, fetch: localFetch })
+  await connector.retry(readOperation.id)
+  check('read receipt recovery preserves a later local edit', [(await work.read()).tasks.find(r => r.id === readId)?.title, (await connector.view()).operations.at(-1)?.state, writes], ['Later local draft', 'completed', readWrites])
+  const journal = await connector.view()
+  const legacy = { ...journal, operations: journal.operations.filter(o => o.mode !== 'refresh').map(o => { const { mode, ...rest } = o; return rest }) }
+  check('older publish-only journals retain their semantics', readNotionState(legacy).operations.every(o => o.mode === undefined), true)
+  const badMode = structuredClone(journal); badMode.operations[0].mode = 'write-without-review' as any
+  check('unknown operation modes are refused for recovery', (() => { try { readNotionState(badMode); return false } catch { return true } })(), true)
+
   console.log('\nNotion: transport, disable and credential boundaries')
   check('all requests carry the pinned version and the expected token', [versionsOkay, authOkay], [true, true])
   echoError = true
@@ -275,7 +363,7 @@ try {
   const unsafe = new WorkCredentials(join(root, 'unsafe'), plainBackend, 'linux')
   try { await unsafe.write(token); check('basic_text cannot store Notion tokens', true, false) } catch { check('basic_text cannot store Notion tokens', await unsafe.present(), false) }
   await connector.disconnect()
-  check('disconnect clears the credential but retains journal and local boards', [(await connector.view()).tokenPresent, (await connector.view()).operations.length > 0, (await work.read()).tasks.length], [false, true, 1])
+  check('disconnect clears the credential but retains journal and local boards', [(await connector.view()).tokenPresent, (await connector.view()).operations.length > 0, (await work.read()).tasks.length], [false, true, 2])
   const bad = '{do not replace this uncertain journal'
   connector.stop()
   await writeFile(join(root, 'plugins', 'work-notion.json'), bad)
