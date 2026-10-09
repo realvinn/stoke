@@ -409,7 +409,10 @@ console.log('\nthe status: sealed for the vault, opened only as what it is')
   const f = { account: ACCOUNT, epoch: 1, device: A.id }
   const sealed = sealStatus(k1, f, JSON.stringify(status))
   check('the envelope is what the hub may forward', sealedStatusProblem(sealed), null)
-  ok('and holds nothing readable', !JSON.stringify(sealed).includes('stoke') && !JSON.stringify(sealed).includes('Fix'))
+  // Random base64 can contain a short word such as "Fix". Check complete
+  // encoded field values; quotes/spaces cannot occur inside a base64 string.
+  const wire = JSON.stringify(sealed)
+  ok('and holds no plaintext project or title', !wire.includes(JSON.stringify(rows[0].project)) && !wire.includes(JSON.stringify(rows[0].title)))
   const opened = openStatus(k1, f, sealed)
   check('it opens for a device of the vault', parseRemoteStatus(opened ?? '')?.sessions[0]?.title, 'Fix the relay')
   check('relabelled as another device’s: does not open', openStatus(k1, { ...f, device: B.id }, sealed), null)

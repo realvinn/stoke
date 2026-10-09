@@ -32,7 +32,8 @@ import {
   type RegistryTarget
 } from '../src/shared/claudeRegistry.ts'
 import { basename, dirname, join, sep } from 'node:path'
-import { RegistryPoller } from '../src/main/sessionRegistry.ts'
+import { readProcessTable, RegistryPoller } from '../src/main/sessionRegistry.ts'
+import { spawn } from 'node:child_process'
 import type { LiveSessionState } from '../src/shared/types.ts'
 import {
   activityView,
@@ -844,6 +845,22 @@ function activityTable(): void {
 }
 
 activityTable()
+
+console.log('\nnative process ancestry: the production snapshot reader')
+{
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', windowsHide: true })
+  try {
+    await new Promise<void>((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject) })
+    const began = Date.now()
+    const table = await readProcessTable()
+    check('the owned child is actually a descendant of this process', table?.get(child.pid!), process.pid)
+    check('the snapshot completes inside its five-second deadline', Date.now() - began < 5000, true)
+    check('this process is present too', table?.has(process.pid), true)
+  } finally {
+    const closed = new Promise<void>(resolve => child.once('close', () => resolve()))
+    child.kill(); await closed
+  }
+}
 
 // The tally is the last statement in the file, and must stay that way: anything
 // after it is unfalsifiable (gotcha 50).

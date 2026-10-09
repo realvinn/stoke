@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process'
 import { join } from 'node:path'
+import { windowsProcessTableSpec } from './windowsProcessTable.ts'
 import type { LiveSessionState } from '../shared/types.ts'
 import {
   descendsFrom,
@@ -68,24 +69,16 @@ export interface RegistryEvents {
 /**
  * This machine's pid -> parent pid table, for `pickEntry`'s folder fallback, or
  * null when it cannot be read in time. `ps` on macOS and Linux; on Windows (the
- * only layout the fallback exists for) the CIM process list, which ci.yml's
- * probe timed at 0.5-0.8 s on windows-latest and 23-28 s on windows-11-arm —
- * where this deadline always wins, so descent never answers there (gotcha 92).
+ * only layout the fallback exists for) a read-only Toolhelp kernel snapshot.
+ * The former CIM list took 23-28 s on windows-11-arm against a 5 s deadline,
+ * so descent could never answer there (gotcha 92).
  * A generous `maxBuffer` (gotcha 13) and a deadline, because a pass awaits it;
  * asked for only when the id cannot answer (`needsDescent` in `pass`).
  */
 export function readProcessTable(platform: NodeJS.Platform = process.platform): Promise<Map<number, number> | null> {
   const [cmd, args] =
     platform === 'win32'
-      ? [
-          'powershell.exe',
-          [
-            '-NoProfile',
-            '-NonInteractive',
-            '-Command',
-            'Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId) $($_.ParentProcessId)" }'
-          ]
-        ]
+      ? windowsProcessTableSpec()
       : ['ps', ['-A', '-o', 'pid=,ppid=']]
   return new Promise((resolve) => {
     execFile(cmd, args, { timeout: 5000, maxBuffer: 16 * 1024 * 1024, windowsHide: true }, (err, stdout) => {

@@ -26,7 +26,7 @@
  *              landed; its transcript is where the relaunch will look
  *   continue   `stoke <folder> --continue` opens a Claude tab holding NO id,
  *              and the registry names it and rebinds the tab from '' (gotcha
- *              26) — on Windows by descent over the CIM process table alone,
+ *              26) — on Windows by descent over the Toolhelp process table alone,
  *              since cmd.exe's pid matches no file and there is no id to key on
  *              (gotcha 92)
  *   agents     two other agents started the same way sit in tabs of their own,
@@ -65,6 +65,7 @@
  * tally and process.exitCode are the file's last statement (gotcha 50).
  */
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
+import { windowsProcessTableSpec } from '../src/main/windowsProcessTable.ts'
 import {
   copyFileSync,
   existsSync,
@@ -635,34 +636,28 @@ await step('typing reaches the session, and its hooks land', async () => {
 
 /**
  * What the descent fallback stands on here, measured beside it so a red
- * above says WHY (gotcha 92): the CIM query `readProcessTable` runs (with
- * each process's Name added), timed against its 5 s deadline, and the stub's
- * ancestry from it. One query: on windows-11-arm it took 23.6-28.2 s where
- * windows-latest took under 0.8 s (run 36706319439), and the -Property
- * variant and PowerShell's own start-up (0.2 s) were measured there too and
- * explain none of it. Printed, never checked — the checks above are what
- * Stoke did with it.
+ * above says WHY (gotcha 92): the exact production Toolhelp snapshot, timed
+ * against its 5 s deadline, and the stub's ancestry. The former CIM query
+ * took 23.6-28.2 s on Windows ARM64. Printed, never checked: the continued
+ * session assertions below prove whether Stoke actually used that ancestry.
  */
 function windowsProcessTableReport(stubPid: number): void {
   const t0 = Date.now()
-  const r = spawnSync(
-    'powershell.exe',
-    ['-NoProfile', '-NonInteractive', '-Command', 'Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId) $($_.ParentProcessId) $($_.Name)" }'],
-    { encoding: 'utf8', timeout: 60_000, windowsHide: true, maxBuffer: 16 * 1024 * 1024 }
-  )
+  const [command, args] = windowsProcessTableSpec()
+  const r = spawnSync(command, args, { encoding: 'utf8', timeout: 5000, windowsHide: true, maxBuffer: 16 * 1024 * 1024 })
   const ms = Date.now() - t0
-  const rows = new Map<number, { ppid: number; name: string }>()
+  const rows = new Map<number, number>()
   for (const line of String(r.stdout ?? '').split(/\r?\n/)) {
-    const m = /^(\d+) (\d+) (.*)$/.exec(line.trim())
-    if (m) rows.set(Number(m[1]), { ppid: Number(m[2]), name: m[3] })
+    const m = /^(\d+) (\d+)$/.exec(line.trim())
+    if (m) rows.set(Number(m[1]), Number(m[2]))
   }
   const chain: string[] = []
   for (let at: number | undefined = stubPid, hops = 0; at && hops < 6; hops++) {
-    chain.push(`${at} ${rows.get(at)?.name ?? '?'}`)
-    at = rows.get(at)?.ppid
+    chain.push(String(at))
+    at = rows.get(at)
   }
   console.log(
-    `  (process table, readProcessTable's CIM query: ${ms} ms — its deadline is 5000 ms; ${rows.size} rows, exit ${r.status}` +
+    `  (process table, readProcessTable's Toolhelp snapshot: ${ms} ms — its deadline is 5000 ms; ${rows.size} rows, exit ${r.status}` +
       `${r.error ? `, ${r.error.message}` : ''})`
   )
   console.log(`  (the stub's ancestry: ${chain.join(' <- ')})`)
@@ -674,7 +669,7 @@ function windowsProcessTableReport(stubPid: number): void {
  * tab starts on '' and only the registry can name it (gotcha 26). On POSIX the
  * pid does. On Windows the pty is cmd.exe's and there is no id to key on, so
  * `pickEntry`'s descent fallback is the ONLY thing that can match it — the
- * process table (CIM) read and `descendsFrom` walked from cmd.exe to the stub
+ * process table (Toolhelp) read and `descendsFrom` walked from cmd.exe to the stub
  * (gotcha 92). With that table unreadable `pickEntry` answers null and this
  * goes red, which is what a first-key match above could never show. A folder
  * of its own, since a running Claude tab in `proj` would be reused instead;
@@ -715,7 +710,7 @@ await step('a `stoke <folder> --continue` tab: Stoke holds no id and learns it f
   if (moved) console.log(`  (rebound ${((Date.now() - asked) / 1000).toFixed(1)} s after the request, at most one poll late)`)
   check(
     isWin
-      ? 'Stoke held no id, so only descent could name it: the CIM process table was read and descendsFrom walked cmd.exe to the stub (gotcha 92)'
+      ? 'Stoke held no id, so only descent could name it: the Toolhelp process table was read and descendsFrom walked cmd.exe to the stub (gotcha 92)'
       : 'matched by pid, though Stoke held no id (gotcha 80)',
     !!moved,
     JSON.stringify(rebinds).slice(0, 400)
