@@ -1,8 +1,6 @@
 import { capsFor, cliFor, cliIdOf, isClaudeCode } from '@shared/codingClis'
 import type { CliInfo, ContextSnapshot } from '@shared/types'
 import type { RemoteSessionStatus } from '@shared/hub/remote'
-import { clock, countdown, remainingLabel, shortLabel, tone } from '@shared/usageView'
-import { ContextBar } from './ContextMeter'
 import { modelLabel, shortPath } from '../lib/format'
 import { PERMISSION_LABELS } from '../lib/permissions'
 import { MODE_LABELS, sessionMode } from '@shared/launch'
@@ -87,12 +85,10 @@ interface Props {
 
 /**
  * Another machine's session, said the way a local tab's is: its model and
- * effort, its context bar, and the plan limits of the account it runs on
- * there — the other machine's figures, which is why the first item names it.
+ * effort. Usage meters live in the title bar and tab indicators.
  */
-function RemoteSessionItems({ status, device, now }: { status: RemoteSessionStatus; device: string; now: number }): React.JSX.Element {
+function RemoteSessionItems({ status, device }: { status: RemoteSessionStatus; device: string }): React.JSX.Element {
   const claude = isClaudeCode(cliIdOf(status.agent))
-  const asOf = status.usageAt !== null ? clock(status.usageAt) : null
   return (
     <>
       {status.model && (
@@ -107,29 +103,6 @@ function RemoteSessionItems({ status, device, now }: { status: RemoteSessionStat
         </span>
       )}
       <span className="status-spacer" />
-      {status.usage.length > 0 && (
-        <span
-          className="status-item status-usage"
-          data-remote-item="usage"
-          title={`Plan limits of the account this session runs on, on ${device}${asOf ? `, as of ${asOf}` : ''}`}
-        >
-          {status.usage.map((w) => (
-            <span className="status-usage-row" data-tone={tone(w)} key={`${w.kind}-${w.label}`}>
-              <span className="usage-mini-label">{shortLabel(w)}</span>
-              <span className="usage-track usage-mini-track" data-tone={tone(w)} style={{ '--usage-fill': w.percent / 100 } as React.CSSProperties}>
-                <span className="usage-fill" />
-              </span>
-              <span>{remainingLabel(w)}</span>
-              {w.kind === 'session' && <span className="usage-mini-reset">{countdown(w.resetsAt, w.percent, now)}</span>}
-            </span>
-          ))}
-        </span>
-      )}
-      {status.context && (
-        <span className="status-item" title={`Context window in use, on ${device}`} data-remote-item="context">
-          <ContextBar used={status.context.used} limit={status.context.limit} />
-        </span>
-      )}
     </>
   )
 }
@@ -313,7 +286,7 @@ export function StatusBar({
         </span>
         {profilePill}
         {remoteSession ? (
-          <RemoteSessionItems status={remoteSession} device={device} now={Date.now()} />
+          <RemoteSessionItems status={remoteSession} device={device} />
         ) : (
           <>
             <span className="status-item">another machine’s session</span>
@@ -508,12 +481,6 @@ export function StatusBar({
            * every paused tab that ever ran. Suppressed rather than guessed.
            */}
           {!paused && <span className="status-item">{context.messageCount} msgs</span>}
-          <span
-            className="status-item"
-            title={paused ? 'Context window used when last active' : 'Context window in use'}
-          >
-            <ContextBar used={context.contextTokens} limit={context.contextLimit} paused={paused} />
-          </span>
         </>
       ) : tab.private ? (
         /*
