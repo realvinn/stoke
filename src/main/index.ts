@@ -2328,6 +2328,21 @@ function workPluginFor(): Promise<import('./plugins/work.ts').WorkPlugin> {
   })
 }
 
+let workNotion: import('./plugins/notionWork.ts').NotionWork | null = null
+let workNotionLoading: Promise<import('./plugins/notionWork.ts').NotionWork> | null = null
+function workNotionFor(): Promise<import('./plugins/notionWork.ts').NotionWork> {
+  return workNotionLoading ??= Promise.all([
+    import('./plugins/notionWork.ts'), import('./plugins/workCredentials.ts'), import('./secrets.ts'), workPluginFor()
+  ]).then(([{ NotionWork }, { WorkCredentials }, { safeStorageBackend }, work]) => {
+    const userData = app.getPath('userData')
+    workNotion = new NotionWork(userData, {
+      work, credentials: new WorkCredentials(userData, safeStorageBackend(safeStorage, process.platform), process.platform),
+      onWork: (view) => send(CH.workChanged, view), onChange: (view) => send(CH.workNotionChanged, view)
+    })
+    return workNotion
+  })
+}
+
 /** The process-wide review queue. */
 function worklogQueue(): ReturnType<typeof getWorklogQueue> {
   return getWorklogQueue(app.getPath('userData'))
@@ -4678,23 +4693,44 @@ function registerIpc(): void {
   const queue = worklogQueue
 
   ipcMain.handle(CH.workRead, async (event) => {
-    if (!win || event.sender !== win.webContents) throw new Error('Open Work in Stoke.')
+    if (!win || event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) throw new Error('Open Work in Stoke.')
     return (await workPluginFor()).read()
   })
   ipcMain.handle(CH.workChange, async (event, command: unknown) => {
-    if (!win || event.sender !== win.webContents) return { ok: false, message: 'Open Work in Stoke.' }
+    if (!win || event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) return { ok: false, message: 'Open Work in Stoke.' }
     try {
       // Session associations must name an ordinary live local tab, never a private chat.
       if (command && typeof command === 'object' && 'sessionId' in command && command.sessionId) {
         if (typeof command.sessionId !== 'string' || !ptys?.localAgentSession(command.sessionId)) return { ok: false, message: 'Choose a live local session to associate with this task.' }
       }
       const view = await (await workPluginFor()).change(command)
+      if (!view.enabled) workNotion?.pause()
       send(CH.workChanged, view)
       return { ok: true, view }
     } catch (err) {
       return { ok: false, message: err instanceof Error ? err.message : 'Work could not save the boards.' }
     }
   })
+
+  ipcMain.handle(CH.workNotionRead, async (event) => {
+    if (!win || event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) throw new Error('Open the Notion connection in Stoke.')
+    return (await workNotionFor()).view()
+  })
+  ipcMain.handle(CH.workNotionInspect, async (event, taskSource: string, dailySource: string, token?: string) => {
+    if (!win || event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) return { ok: false, message: 'Open the Notion connection in Stoke.' }
+    try { return { ok: true, ...await (await workNotionFor()).inspect(taskSource, dailySource, token) } }
+    catch (err) { return { ok: false, message: err instanceof Error ? err.message : 'Notion could not inspect the tables.' } }
+  })
+  const notionAction = async (event: Electron.IpcMainInvokeEvent, action: (service: import('./plugins/notionWork.ts').NotionWork) => Promise<import('../shared/workNotion.ts').WorkNotionView>) => {
+    if (!win || event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) return { ok: false, message: 'Open the Notion connection in Stoke.' }
+    try { return { ok: true, view: await action(await workNotionFor()) } }
+    catch (err) { return { ok: false, message: err instanceof Error ? err.message : 'Notion could not finish the operation.' } }
+  }
+  ipcMain.handle(CH.workNotionConfigure, (event, mapping, token) => notionAction(event, (s) => s.configure(mapping, token)))
+  ipcMain.handle(CH.workNotionDisconnect, (event) => notionAction(event, (s) => s.disconnect()))
+  ipcMain.handle(CH.workNotionPublish, (event, request) => notionAction(event, (s) => s.publish(request)))
+  ipcMain.handle(CH.workNotionRetry, (event, id) => notionAction(event, (s) => s.retry(id)))
+  ipcMain.handle(CH.workNotionResolve, (event, id, choice) => notionAction(event, (s) => s.resolve(id, choice)))
 
   ipcMain.handle(CH.worklogQueue, () => queue().list())
 
@@ -5250,6 +5286,7 @@ if (!app.requestSingleInstanceLock(launchRequest ? { stokeCli: launchRequest } :
   })
 
   app.on('before-quit', () => {
+    workNotion?.stop()
     workPlugin?.stop()
     if (lastTabState) writeTabState(tabStateFile(app.getPath('userData')), lastTabState)
     // Settings coalesce bursts of writes (see store.ts). Anything still waiting

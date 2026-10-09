@@ -556,6 +556,8 @@ export const SETTING_ROWS: readonly SettingRow[] = [
   { id: 'worklog.agent', page: 'worklog', label: 'Worklog agent', keywords: ['review', 'notion', 'clickup', 'profiles'] },
   { id: 'worklog.plugin', page: 'worklog', label: 'Work plugin', keywords: ['enable', 'disable', 'ideas', 'approved', 'tasks', 'daily plans'] },
   { id: 'worklog.boards', page: 'worklog', label: 'Work boards', keywords: ['daily work', 'today', 'to-do', 'working on', 'completed', 'task board', 'backlog', 'completion evidence'], fallback: 'worklog.plugin' },
+  { id: 'worklog.connection', page: 'worklog', label: 'Notion connection', keywords: ['integration token', 'api key', 'direct api', 'task data source id', 'daily data source id', 'mapping', 'properties', 'schema', 'stoke id'], fallback: 'worklog.plugin' },
+  { id: 'worklog.publish', page: 'worklog', label: 'Publish Work to Notion', keywords: ['publish review', 'saved fields', 'sync', 'retry', 'conflicts', 'journal', 'Notion publish history'], fallback: 'worklog.connection' },
   { id: 'worklog.auto', page: 'worklog', label: 'Scan while I work', keywords: ['automatic', 'auto scan', 'background'] },
   { id: 'worklog.targets', page: 'worklog', label: 'Where reviews are filed', keywords: ['notion', 'clickup', 'destination'] },
   { id: 'worklog.notion', page: 'worklog', label: 'Notion data source', keywords: ['notion id', 'database'] },

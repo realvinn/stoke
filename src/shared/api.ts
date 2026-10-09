@@ -31,6 +31,7 @@ import type { AccountMcpSummary, McpCatalog } from './mcpServers'
 import type { McpProbeResult } from './mcpSetup'
 import type { AgentInstallation, AgentUpdateResult } from './agentLifecycle'
 import type { WorkCommand, WorkResult, WorkView } from './workPlugin'
+import type { NotionSource, NotionTaskMap, NotionDailyMap, WorkNotionPublishRequest, WorkNotionResult, WorkNotionView } from './workNotion'
 import type { MicAccess } from './voiceRoute'
 import type { SttConfig } from './speechProviders'
 import type { CreateProfileInput, ProfilePlan } from './profiles'
@@ -1110,6 +1111,14 @@ export interface StokeApi {
     read(): Promise<WorkView>
     change(command: WorkCommand): Promise<WorkResult>
     onChange(cb: (view: WorkView) => void): () => void
+    notionRead(): Promise<WorkNotionView>
+    notionInspect(taskSource: string, dailySource: string, token?: string): Promise<{ ok: true; task: NotionSource; daily: NotionSource } | { ok: false; message: string }>
+    notionConfigure(mapping: { task: NotionTaskMap; daily: NotionDailyMap }, token?: string): Promise<WorkNotionResult>
+    notionDisconnect(): Promise<WorkNotionResult>
+    notionPublish(request: WorkNotionPublishRequest): Promise<WorkNotionResult>
+    notionRetry(operationId: string): Promise<WorkNotionResult>
+    notionResolve(operationId: string, choice: 'stoke' | 'notion'): Promise<WorkNotionResult>
+    onNotionChange(cb: (view: WorkNotionView) => void): () => void
   }
   worklog: {
     queue(): Promise<WorklogProposal[]>

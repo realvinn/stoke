@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path'
 import { WORK_PLUGIN, type BuiltinStokePlugin } from '../../shared/plugins.ts'
 import { DAILY_STATES, TASK_STATES, validWorkDay } from '../../shared/workPlugin.ts'
 import type { WorkCommand, WorkDaily, WorkState, WorkTask, WorkView } from '../../shared/workPlugin.ts'
+import type { NotionFields } from '../../shared/workNotion.ts'
 
 const MAX_RECORDS = 5000
 const MAX_BYTES = 16 * 1024 * 1024
@@ -33,6 +34,7 @@ export function readWorkState(value: unknown): WorkState {
     ids.add(r.id as string)
     if (r.sessionId !== null) text(r.sessionId, 100, true)
     text(r.title, 240, true); text(r.evidence, 8000)
+    if (r.notionConfirmation !== undefined) text(r.notionConfirmation, 128, true)
   }
   for (const r of value.tasks) {
     if (!record(r)) throw new Error('The saved task cannot be read.')
@@ -174,6 +176,35 @@ export class WorkPlugin implements BuiltinStokePlugin<WorkView, unknown, WorkVie
     return this.enqueue(async (signal) => {
       const previous = await this.load(signal)
       const next = changeWork(previous, command, Date.now(), randomUUID, Intl.DateTimeFormat().resolvedOptions().timeZone)
+      await this.save(next, signal)
+      return { ...structuredClone(next), manifest: WORK_PLUGIN }
+    })
+  }
+  /** A confirmed connector response can update owned fields, never a newer local draft. */
+  confirmNotion(kind: 'task' | 'daily', id: string, revision: number, fields: NotionFields, status: WorkTask['status'] | WorkDaily['status'], confirmation: string): Promise<{ view: WorkView; applied: boolean }> {
+    return this.enqueue(async (signal) => {
+      const next = structuredClone(await this.load(signal))
+      const row = (kind === 'task' ? next.tasks : next.daily).find((r) => r.id === id)
+      if (!row) throw new Error('The local Work record is missing.')
+      if (row.notionConfirmation === confirmation) return { view: { ...next, manifest: WORK_PLUGIN }, applied: true }
+      if (!next.enabled || row.revision !== revision) return { view: { ...next, manifest: WORK_PLUGIN }, applied: false }
+      row.notionConfirmation = text(confirmation, 128, true)
+      const changed = row.title !== fields.title || row.evidence !== fields.evidence || row.status !== status || ('brief' in row ? row.brief !== fields.body || row.project !== (fields.project ?? '') : row.notes !== fields.body)
+      row.title = fields.title; row.evidence = fields.evidence
+      if (changed) { row.updatedAt = Date.now(); row.revision++ }
+      if ('brief' in row) {
+        row.brief = fields.body; row.project = fields.project ?? ''; row.status = status as WorkTask['status']
+      } else {
+        if (fields.day !== row.day) throw new Error('Notion changed this entry’s date. Review it before publishing.')
+        row.notes = fields.body; row.status = status as WorkDaily['status']
+      }
+      next.revision++
+      const checked = readWorkState(next)
+      await this.save(checked, signal)
+      return { view: { ...structuredClone(checked), manifest: WORK_PLUGIN }, applied: true }
+    })
+  }
+  private async save(next: WorkState, signal: AbortSignal): Promise<void> {
       const body = JSON.stringify(next)
       if (Buffer.byteLength(body) > MAX_BYTES) throw new Error('The Work boards exceed their storage limit.')
       const folder = dirname(this.file)
@@ -186,8 +217,6 @@ export class WorkPlugin implements BuiltinStokePlugin<WorkView, unknown, WorkVie
         signal.throwIfAborted(); await rename(temporary, this.file)
         this.state = next
       } finally { await handle?.close(); await rm(temporary, { force: true }) }
-      return { ...structuredClone(next), manifest: WORK_PLUGIN }
-    })
   }
   /** No timers or external writes in the local board; queued requests stop on quit. */
   stop(): void { this.stopped = true; for (const controller of this.controllers) controller.abort(); this.controllers.clear() }

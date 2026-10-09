@@ -8173,6 +8173,24 @@ button.color-field-swatch[aria-expanded='true'] {
 .work-item[aria-pressed="true"] { background: var(--surface-selected); }
 .work-item small { font-size: 11px; color: var(--text-muted); }
 .work-item:disabled { cursor: default; opacity: 0.6; }
+.work-notion { display: flex; flex-direction: column; gap: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+.work-notion summary { font-size: 12px; font-weight: 600; color: var(--text); cursor: pointer; padding: 8px 0; }
+.work-mapping { display: flex; flex-direction: column; gap: 10px; padding: 12px; min-width: 0; border: 1px solid var(--border); border-radius: 6px; }
+.work-mapping legend { padding: 0 6px; font-size: 12px; color: var(--text); }
+.work-mapping label { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--text-muted); }
+.work-publish-review, .work-journal-entry { margin-top: 12px; padding: 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 12px; }
+.work-publish-review h4 { margin: 0 0 12px; font-size: 13px; }
+.work-publish-row { padding: 10px 0; border-bottom: 1px solid var(--border-subtle); margin-bottom: 10px; }
+.work-publish-row strong, .work-journal-entry strong { display: block; overflow-wrap: anywhere; margin-bottom: 8px; }
+.work-publish-row dl { margin: 8px 0 0; }
+.work-publish-row dt { font-size: 11px; color: var(--text-muted); margin-top: 8px; }
+.work-publish-row dd { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 140px; overflow: auto; }
+.work-journal-entry .work-note { margin-bottom: 8px; }
+.work-notion a { color: var(--accent-ink); }
+.work-conflict { overflow: auto; margin-top: 12px; }
+.work-conflict table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.work-conflict th, .work-conflict td { text-align: left; vertical-align: top; padding: 8px 4px; border-bottom: 1px solid var(--border); white-space: pre-wrap; overflow-wrap: anywhere; max-width: 150px; }
+.work-conflict .work-actions { margin-top: 10px; }
 
 .activity-head {
   display: flex;

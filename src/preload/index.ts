@@ -340,7 +340,15 @@ const api: StokeApi = {
   work: {
     read: () => ipcRenderer.invoke(CH.workRead),
     change: (command) => ipcRenderer.invoke(CH.workChange, command),
-    onChange: (cb) => on<[Parameters<typeof cb>[0]]>(CH.workChanged, cb)
+    onChange: (cb) => on<[Parameters<typeof cb>[0]]>(CH.workChanged, cb),
+    notionRead: () => ipcRenderer.invoke(CH.workNotionRead),
+    notionInspect: (taskSource, dailySource, token) => ipcRenderer.invoke(CH.workNotionInspect, taskSource, dailySource, token),
+    notionConfigure: (mapping, token) => ipcRenderer.invoke(CH.workNotionConfigure, mapping, token),
+    notionDisconnect: () => ipcRenderer.invoke(CH.workNotionDisconnect),
+    notionPublish: (request) => ipcRenderer.invoke(CH.workNotionPublish, request),
+    notionRetry: (id) => ipcRenderer.invoke(CH.workNotionRetry, id),
+    notionResolve: (id, choice) => ipcRenderer.invoke(CH.workNotionResolve, id, choice),
+    onNotionChange: (cb) => on<[Parameters<typeof cb>[0]]>(CH.workNotionChanged, cb)
   },
   worklog: {
     queue: () => ipcRenderer.invoke(CH.worklogQueue),

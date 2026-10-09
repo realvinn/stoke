@@ -531,11 +531,35 @@ its schema, task/daily contracts and manifest live in `shared/workPlugin.ts` and
 `shared/plugins.ts`. It loads lazily, uses bounded async atomic writes, serializes
 requests before I/O and checks record revisions. Fresh installations are disabled.
 The `work:*` IPC bridge accepts local board edits from the app window; session links
-must name a live, non-private local session. There are no external writes or background
-scanners in this first local-board module. Disabling retains records; quitting aborts
+must name a live, non-private local session. Disabling retains records; quitting aborts
 pending storage work. WorkPanel is available in Settings and in WorkDock beside Activity.
 The legacy Worklog review queue below remains under its own settings and file format.
-Direct Notion synchronization and review-lifecycle extraction remain open.
+
+WorkNotion adds an explicit direct-API connection for a task data source and a daily
+data source. `plugins/notion.ts` pins Notion-Version to 2026-03-11, bounds requests and
+validates actual properties, status options, page identity and the daily task relation.
+`plugins/workCredentials.ts` seals its token in a separate owner-only file through the
+system key store; the renderer sees only presence. An unprotected Linux `basic_text`
+backend is refused. No token is included in settings, portable exports or the journal.
+
+`plugins/notionWork.ts` claims operations before any await. Publishing requires a saved
+field preview with current task/daily revisions; this decision is separate from task
+approval or starting an agent. Before each write, `plugins/notionJournal.ts` and the
+bounded atomic `plugins/storage.ts` persist its attempt in `plugins/work-notion.json`.
+Partial writes resume the same operation. Unknown creates only look up their Stoke ID;
+an empty lookup never repeats an uncertain create. Confirmed pages are recorded before
+local import, and durable import receipts close the crash gap between the two stores.
+Separate local and remote field baselines retain drafts edited during a request.
+External synced-field changes are imported on publish/retry; conflicting changes return
+to review, with another read before choosing Stoke or Notion. Daily dates and relations
+must retain their intended identity. Completed rows require evidence.
+
+There is no background sync timer or import of unrelated Notion rows. Disabling Work
+aborts in-flight HTTP and blocks later writes while retaining the recovery journal.
+Notion provides no compare-and-swap contract used here: an external edit between the
+final read and PATCH can still race. Standalone refresh, Sonnet drafting and extraction
+of the legacy review lifecycle remain open. The loopback suite exercises the production
+adapter, coordinator and disk stores; a real workspace and native UI remain unverified.
 
 ## The worklog agent
 
@@ -1300,6 +1324,13 @@ The Work module adds `src/main/plugins/work.ts` (durable local transitions),
 `src/shared/workPlugin.ts` (task/daily wire types), `WorkPanel.tsx` and `WorkDock.tsx`
 (local boards and dock registration), and `scripts/verify-work-plugin.mts` (state and
 real disk concurrency proof).
+
+Direct Notion support adds `src/shared/workNotion.ts` (mapping, journal and merge wire
+types), `src/main/plugins/notion.ts` (bounded API adapter), `notionJournal.ts` (strict
+recovery parser), `notionWork.ts` (reviewed write coordinator), `storage.ts` (serialized
+atomic module storage), `workCredentials.ts` (encrypted token vault), `WorkNotion.tsx`
+(schema mapping, publish previews and conflict review), and
+`scripts/verify-work-notion.mts` (loopback HTTP, recovery, conflict and credential proof).
 
 
 Every file worth knowing about, and the one thing about it that is easy to get wrong. CLAUDE.md
