@@ -133,6 +133,15 @@ export const CONNECTED_KEY = 'stoke.connected'
 /** A non-2xx answer: its status, and its JSON body when it had one. */
 export type ApiError = Error & { status?: number; body?: unknown }
 
+/** Binary file requests share the JSON API's sign-in handoff. */
+export function fileApiError(status: number, body: unknown): ApiError {
+  if (status === 401) { onAuthFailure(); return new AuthError() }
+  const err = new Error((body as { error?: string } | null)?.error || `Stoke answered ${status}.`) as ApiError
+  err.status = status
+  err.body = body
+  return err
+}
+
 /**
  * The computer's own sentence when it took the key and refused the Cloudflare
  * Access token (403 `{error, refused: 'access'}`), else null.

@@ -421,6 +421,16 @@ local index and viewer never run it: it takes ids and hashes too.
 `src/main/remote/server.ts` serves the mobile bundle plus a small API and a WebSocket that
 attaches to a PTY, replaying its scrollback first.
 
+Phone session options also send and download individual files (`remote/files.ts` in main,
+`remote/files.ts` in the phone bundle). The binary HTTP routes use the same key and Access
+gate plus a browser-origin check. Uploads stream into unique owner-only folders without
+overwriting project files; SSH sessions forward through the existing second-connection
+uploader and return the execution host's path. Downloads are attachments confined by
+realpath to a live local session's working folder. Transfers have a 100 MB cap, progress,
+cancel and retry, with two operations globally and one per session. Stopping Phone access
+aborts active operations. File bytes never travel through terminal input. These routes are
+phone-only; SSH downloads and encrypted desktop relay transfers remain separate work.
+
 - **Loopback by default**, and that is the intended deployment: a Cloudflare Tunnel pointing a
   hostname at it, with cloudflared running on this machine and dialling `127.0.0.1`, so nothing
   inbound is opened at all. Two shipped toggles do open a port, and both are off unless asked

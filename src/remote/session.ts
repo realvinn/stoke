@@ -59,6 +59,7 @@ import { accessRefusalOf, folderName, host, machineName, resumeSession, theme, T
 import { confirmSheet, el, explain, icon, iconButton, openSheet, toast } from './dom'
 import { rowTitle, screenLines, sendAnswer } from './list'
 import { store } from './store'
+import { openSessionFiles } from './files'
 
 /** Filled by whoever starts a session, so the header is right before the first push. */
 export const pendingMeta = new Map<string, { cwd: string; project: string }>()
@@ -1295,6 +1296,10 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
         })
       )
       if (!ended) {
+        items.push(action('Send or download files…', 'folder', () => openSessionFiles({
+          ptyId, destination: row?.host ?? machineName(), ssh: !!row?.host, signal,
+          insert: (path) => { input.value += `${input.value && !/\s$/.test(input.value) ? ' ' : ''}${path}`; input.dispatchEvent(new Event('input')); input.focus() }
+        })))
         items.push(action('Interrupt (ctrl-c)', 'stop', () => write('\x03')))
         if (!row || row.cli === 'claude') {
           items.push(

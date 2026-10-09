@@ -11,6 +11,7 @@
  *   node scripts/verify-remote.mts
  */
 import { connectTarget, lanAddresses } from '../src/main/remote/link.ts'
+import { phoneFilesChecks } from './phone-files-checks.mts'
 import { exitError, installHint } from '../src/main/remote/tunnel.ts'
 import {
   classifyHostname,
@@ -2340,6 +2341,8 @@ console.log('\na private chat never reaches the phone, in either direction')
   const picker = phonePickerGroups({ projects: [], defaultCwd: '/home/me', hosts: [], query: 'private', platform: 'darwin' })
   check('the phone picker never offers one, even asked by name', picker.flatMap((g) => g.items).some((c) => c.kind === 'private'), false)
 }
+
+await phoneFilesChecks(check)
 
 console.log(failures ? `\n${failures} FAILED` : '\nall pass')
 process.exitCode = failures ? 1 : 0

@@ -1658,6 +1658,16 @@ a {
   color: var(--text-muted);
 }
 
+.phone-files { display: flex; flex-direction: column; gap: 12px; padding: 12px 0; }
+.phone-file-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.phone-files progress { width: 100%; accent-color: var(--accent); }
+.phone-file-path { margin: 0; font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+.phone-file-list { display: flex; flex-direction: column; gap: 4px; }
+.phone-file-entry { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-height: 44px; padding: 10px 12px; text-align: left; border: 1px solid var(--line); border-radius: 8px; background: var(--bg-elevated); color: var(--text); }
+.phone-file-entry span { overflow-wrap: anywhere; }
+.phone-file-entry small { color: var(--text-muted); }
+.phone-file-entry:disabled { opacity: .55; }
+
 .stepper {
   display: flex;
   align-items: center;

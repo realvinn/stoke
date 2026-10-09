@@ -54,6 +54,14 @@ The updater probes the installed version afterward and distinguishes changed, un
 
 Validation: installation fixtures cover native, npm and Homebrew ownership, mismatched prefixes, no-op/failing/unverifiable updates and concurrent launch claims. A real Node subprocess emulates an update and subsequent version probe; another proves timeout reporting. Read-only inspection on this Mac correctly recognizes Codex 0.161.0 as a native install and OpenCode 1.18.34 as Homebrew-owned. No real agent installation was updated. The full `npm run check` gate passes, including desktop and remote builds. Live vendor updates, Windows installer ownership and visual verification remain open. Live model/context/usage adapters are the next part of R17.
 
+## Phone file transfers
+
+Implemented: a phone session’s options offer file sending with destination, progress, cancel, retry and a verified-path insertion button. Local uploads stream into unique owner-only folders in that session’s working folder; existing files are never overwritten. SSH uploads stream through the existing second-connection uploader to the session’s configured execution host and honor that host’s upload opt-out. A local file browser downloads visible regular files as attachments, confined by realpath to the live session’s working folder. Files have a 100 MB cap. Stopping Phone access aborts active operations.
+
+The key, Access gate and browser-origin check protect the binary routes. Private, ended, sign-in and enrollment sessions cannot expose a folder. Operations are bounded to two globally and one per session. Interrupted uploads do not publish a complete path. A lost reply is shown as uncertain; retries require an explicit press and can create a second copy.
+
+Validation: typecheck, the focused remote/phone UI suites and the full `npm run check` gate pass, including desktop and remote builds. Tests stream Unicode-named and empty files, compare bytes, protect bystander files, reject wrong sizes, cancellation, duplicate claims, traversal, symlink escapes and opted-out SSH hosts. The production HTTP router runs against isolated PTYs and a stub Electron shell; real requests verify auth/origin, attachments, exact bytes and interrupted-body cleanup. SSH forwarding is emulated here; the existing SSH suite exercises its shell uploader. Real phone use, Mac/Linux SSH transfer proof, SSH downloads, folders and encrypted desktop relay transfers remain open.
+
 ## Remaining implementation
 
-Every roadmap wave still has open acceptance criteria. Remote transfers, live agent telemetry, the Work/Notion plugin, privilege helpers and the terminal companion are still to be implemented. Live verification and platform-specific proof remain open where called out above.
+Every roadmap wave still has open acceptance criteria. SSH downloads and relay transfers, live agent telemetry, the Work/Notion plugin, privilege helpers and the terminal companion are still to be implemented. Live verification and platform-specific proof remain open where called out above.

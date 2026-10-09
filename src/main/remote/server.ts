@@ -4,6 +4,8 @@ import { readFile } from 'node:fs/promises'
 import { hostname } from 'node:os'
 import { extname, join, normalize, sep } from 'node:path'
 import type { Duplex } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
+import { PhoneFileError, PhoneFiles, type PhoneFileTarget } from './files.ts'
 import { app } from 'electron'
 import { WebSocketServer } from 'ws'
 import type {
@@ -212,6 +214,16 @@ export type { ConnectTarget, Reach } from './link.ts'
  *     exit on its own — with a content-free payload (`pushPayload`: project
  *     name, "Needs you"/"Finished", the session's route). A subscription made
  *     under an older phone key is never sent to.
+ * 15. Files. `POST /api/files/upload?ptyId=&name=&size=` streams one file,
+ *     at most 100 MB, to a unique owner-only folder in a local session's cwd
+ *     or through the SSH upload route to that session's execution host.
+ *     `GET /api/files/list?ptyId=&path=` browses visible entries, and
+ *     `/api/files/download` sends one attachment. Browse/download paths are
+ *     relative to a live local session's cwd; realpaths cannot escape it.
+ *     Private, ended, sign-in and enrollment sessions are excluded. The key,
+ *     Access and browser-origin checks apply; two operations globally and
+ *     one per session are allowed. Cancellation or stopping Phone access
+ *     aborts the operation. These binary routes are not hub relay routes.
  */
 
 /** What a phone is told when its push service refused its subscription for good (410; the phone drops its copy). */
@@ -519,6 +531,8 @@ interface PtyStatus {
 }
 
 export class RemoteServer {
+  private phoneFiles = new PhoneFiles()
+  private fileRequests = new Set<AbortController>()
   private servers: Server[] = []
   private bound: string[] = []
   private wss: WebSocketServer | null = null
@@ -834,6 +848,8 @@ export class RemoteServer {
   }
 
   async stop(): Promise<void> {
+    for (const request of this.fileRequests) request.abort()
+    this.fileRequests.clear()
     // Turned off is not failed: a busy-port error must not outlive the server
     // the user switched off (the popover and panel both show it).
     this.error = null
@@ -1312,6 +1328,48 @@ export class RemoteServer {
       : {}
 
     try {
+      if (['/api/files/upload', '/api/files/list', '/api/files/download'].includes(url.pathname)) {
+        if (!this.sameOrigin(req)) return this.json(res, { error: 'Open files from this Stoke page.' }, setCookie, 403)
+        if ((url.pathname === '/api/files/upload' ? 'POST' : 'GET') !== req.method) return this.json(res, { error: 'Unsupported file operation.' }, setCookie, 405)
+        const id = url.searchParams.get('ptyId') ?? ''
+        let release: (() => void) | null = null
+        const abort = new AbortController()
+        this.fileRequests.add(abort)
+        const endRequest = (): void => { req.destroy(); res.destroy() }
+        abort.signal.addEventListener('abort', endRequest, { once: true })
+        const stop = (): void => { abort.abort(); req.destroy() }
+        const closed = (): void => { if (!res.writableFinished) abort.abort() }
+        const timer = setTimeout(() => { abort.abort(); res.destroy() }, 180_000)
+        req.once('aborted', stop)
+        res.once('close', closed)
+        try {
+          // Claim before the first await, including disk discovery and body reads.
+          release = this.phoneFiles.claim(id)
+          const target = this.fileTarget(id)
+          if (url.pathname === '/api/files/upload') {
+            const size = Number(url.searchParams.get('size') ?? 'NaN')
+            const sent = await this.phoneFiles.upload(target, url.searchParams.get('name'), size, req, abort.signal)
+            return this.json(res, sent, setCookie)
+          }
+          if (url.pathname === '/api/files/list') {
+            return this.json(res, await this.phoneFiles.list(target, url.searchParams.get('path') ?? ''), setCookie)
+          }
+          const opened = await this.phoneFiles.download(target, url.searchParams.get('path'))
+          if (abort.signal.aborted) { await opened.file.close(); return }
+          // A download is always an attachment, never executable page content.
+          res.writeHead(200, { ...setCookie, 'content-type': 'application/octet-stream', 'content-length': opened.size,
+            'content-disposition': `attachment; filename="download"; filename*=UTF-8''${encodeURIComponent(opened.name).replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)}`,
+            'cache-control': 'no-store', 'x-content-type-options': 'nosniff' })
+          await pipeline(opened.file.createReadStream({ ...(opened.size ? { end: opened.size - 1 } : {}), autoClose: true }), res, { signal: abort.signal })
+          return
+        } catch (error) {
+          if (abort.signal.aborted || res.destroyed || res.headersSent) return
+          const status = error instanceof PhoneFileError ? error.status : 500
+          return this.json(res, { error: error instanceof PhoneFileError ? error.message : 'The file operation failed. Check the folder and retry.' }, setCookie, status)
+        } finally {
+          clearTimeout(timer); req.off('aborted', stop); res.off('close', closed); abort.signal.removeEventListener('abort', endRequest); this.fileRequests.delete(abort); release?.()
+        }
+      }
       // The routes that read the raw request stay here, dictation's audio and
       // Web Push; everything else is `api`, which the hub relay shares.
       /*
@@ -1398,6 +1456,17 @@ export class RemoteServer {
       res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' })
       res.end('Internal error.')
     }
+  }
+
+  /** The live execution host owns the destination; an SSH cwd here is local. */
+  private fileTarget(id: string): PhoneFileTarget {
+    const manager = this.deps.ptys()
+    const session = manager?.list().find((s) => s.ptyId === id && !s.exited && !s.enroll && !s.accountLogin)
+    const facts = manager?.launchFacts(id)
+    if (!session || !facts) throw new PhoneFileError(404, 'This session is no longer available for files.')
+    const host = facts.hostId ? this.deps.hosts().find((h) => h.id === facts.hostId) : null
+    if (facts.hostId && !host) throw new PhoneFileError(404, 'This SSH host is no longer configured in Stoke.')
+    return { cwd: session.cwd, host: host ?? null }
   }
 
   /**
