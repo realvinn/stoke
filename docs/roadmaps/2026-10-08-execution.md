@@ -2,6 +2,31 @@
 
 The [product roadmap](2026-10-08-product-roadmap.md) defines the requested scope. This record distinguishes implemented behavior from remaining work and live verification.
 
+## Current coverage — 10 October 2026
+
+The complete roadmap is still in progress. This table reflects the current code; the sections below record verification and limitations.
+
+| Request | Implemented | Remaining |
+| --- | --- | --- |
+| R01/R02/R12: remote and SSH reliability | Reconnect snapshots, reading positions, shared Unicode widths, managed SSH bookmarks, native PTY cleanup and graceful Windows quit drain | Real phone sleep/network changes and broader detached-job stability |
+| R15: Mac menu timing | Existing geometry-based reveal follows entry into the native menu/title strip | Reproduce the remaining activation band on a real Mac and verify displays/menu settings |
+| R04/R08: Scratch | Configurable persistent location, migration defaults, ownership markers and opt-in sidebar naming | Physical move/rename, promotion and naming from other agents |
+| R09: advanced search | Opt-in date, source, model, folder, conversation span and reported context filters before the result limit | Additional confirmed usage/cost sources and active-work duration |
+| R10: coding workflow | Launcher setup review for folder, CLI, account, provider and MCP | Saved presets, preview/test/change review, promotion and agent handoff |
+| R16b: installer fire | Slower shared animation and movement in lower flame rows; generated shell/PowerShell blocks | Native console recordings |
+| R07: files through remote | Phone/local/SSH file uploads and scoped downloads; native Mac/Linux disposable SSH proof | Desktop relay transfer and folders; real interrupted-device transfers |
+| R11: MCP credentials | Guided stdio/HTTP inputs, sealed keys/tokens, reference-based settings and bounded connection/tool-list tests | Broader setup catalog and vendor-specific onboarding |
+| R14: named accounts and usage | Account isolation/nicknames, launch-source binding, labeled supported readings and explicit unavailable states | New quota sources and concurrent real-account proof for remaining vendors |
+| R17: agent updates and live telemetry | Inspected updater ownership, reviewed commands, active-session guards and post-update checks; configured versus observed model labels | Live Codex/OpenCode and other-agent context/usage adapters; real vendor updates |
+| R05/R06: Work plugin | Optional local task/daily boards, direct Notion mapping/publish/read reviews, durable recovery, Sonnet drafts and reviewed session excerpts | Legacy Worklog extraction, unrelated Notion imports, automatic digests, additional plugins and real-workspace proof |
+| R03/R16a: admin/root | Existing Linux root launcher behavior and CI root package checks | Opt-in Windows/Mac privileged helpers, grants and native authorization verification |
+| R13: Mac/Linux terminal companion | Existing command-line desktop launcher and account subcommands | Standalone service/credential boundary and terminal navigation, sessions, search, auth and SSH |
+| R18: quick terminal | Default-off terminal in editable top bar, side panel/pop-out, retained shell, resize/find/link controls; native platform proof | Broader real-shell use |
+| Added: agent full access/YOLO | Explicit supported CLI access modes, launch records and resume/restart preservation | Real permission behavior for each claimed vendor |
+| Added: duplicate footer usage | Removed; supported usage remains in the top bar | None for this UI change |
+| Added: broken browser/terminal links | Hard/soft-wrapped HTTP(S) links, relay/quick-terminal links and Chromium popup/referrer/POST handling | Additional reported edge cases |
+| Added: blank browser on insecure sites | Visible load errors, certificate details, explicit profile/site/certificate exceptions, removal and original-request continuation | Additional reported site-specific failures |
+
 ## Agent access controls (added to the request)
 
 Implemented: Settings › Agents › Default access and a launcher control for supported non-Claude agents. Codex has read-only, workspace, full access with approval on request, and explicit YOLO. Cursor, Grok, Gemini, Qwen, OpenCode, Kilo, Copilot, Kimi and Aider use their documented permission flags with descriptions specific to each CLI. Claude retains its existing permission controls.
@@ -72,7 +97,7 @@ Validation: typecheck, the focused usage/agent suites and the full `npm run chec
 
 ## Native macOS build
 
-Built the ARM64 DMG and ZIP at commit `9ae8958`, without a version bump, release or install over the running copy. `npm run dist:mac` succeeds. The packaged PTY is `@lydell/node-pty-darwin-arm64`, the cookie-encryption and RunAsNode fuses pass, and `codesign --verify --strict --deep` succeeds with `Authority=Stoke`. Notarization was skipped because notarization options were not configured. Artifacts: `release/Stoke-1.0.0-beta.3-arm64.dmg` and `.zip`. This build includes the Work boards, Notion connector, Sonnet proposals, quick terminal, footer simplification, captured usage bindings, PTY cleanup, reviewed Work session excerpts, launcher setup checks and the Find focus correction. Reading the packaged archive confirms the latest launcher wording and terminal focus callback are included. `release/stoke-build-receipt.json` records the exact source commit, verification results and SHA-256 hashes of both artifacts.
+Latest ARM64 DMG and ZIP are built from `23849ce`. CI at `7cb57c5` passes all eleven jobs; the difference between those commits is only the native form fixture and documentation, with no production or packaging changes. `npm run dist:mac` succeeds. The packaged PTY is `@lydell/node-pty-darwin-arm64`, the cookie-encryption and RunAsNode fuses pass, and `codesign --verify --strict --deep` succeeds with `Authority=Stoke`. The package is not notarized. Artifacts: `release/Stoke-1.0.0-beta.3-arm64.dmg` and `.zip`. It includes the earlier Work, access controls, account/MCP, quick-terminal and search improvements, plus the wrapped links, native popup navigation, SSH downloads, Windows quit drain, linked Notion read reviews and visible browser/certificate failures. Reading the archive confirms the current certificate approval/reconnection, fingerprint, quick-terminal, quit-drain and Notion-refresh paths are present. `release/stoke-build-receipt.json` records the source and validation commits, verification results, sizes and SHA-256 hashes. No version bump, release or installation over the running copy was performed.
 
 ## Work plugin: local task and daily boards
 
@@ -245,3 +270,5 @@ Native CI at `6270029` proves the visible warning, leaf fingerprint, stale-appro
 The revised full local gate passes. Production contract tests also prove shared-profile permission, separate-profile refusal, window reopen, profile clearing, concurrent revocation refusal and no regrant while connections reset. The first native run's other browser/terminal/SSH flows and clean quits continue to pass; its five packaged targets fail the deliberately strict tab-only test. The overall CI conclusion is green because those jobs are currently non-gating, so individual job results remain the delivery gate.
 
 CI at `23849ce` proves the complete certificate flow on Mac ARM64/Intel and Windows x64, including native Continue, profile sharing, port and profile isolation, removal, rotated certificates, original POST/Unicode fields and the refused-connection screen. Linux proves all permission checks then times out waiting for the HTTPS form's popup. The fixture now waits for the source document to finish loading and for its real button to be clickable, and captures the browser/page state if submission still fails. Production code is unchanged by that fixture adjustment.
+
+CI at `7cb57c5` passes all eleven jobs individually, including all five packaged targets. Linux now proves the HTTPS popup POST and Unicode fields, alongside the other certificate and error checks. The saved Mac and Linux screenshots show the visible review and refused-connection actions within the browser pane. The correction is included in the signed, verified ARM64 package described above. Broader real-site examples, HTTP/2 connection behavior and long-running browser activity remain outside these loopback proofs.
