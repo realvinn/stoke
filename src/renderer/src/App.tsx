@@ -686,6 +686,7 @@ export function App(): React.JSX.Element {
    */
   const [topBarEditing, setTopBarEditing] = useState(false)
   const quickTerminalState = useQuickTerminal(window.stoke.quickTerminal)
+  const quickPanelVisible = quickTerminalState?.enabled === true && quickTerminalState.mode === 'panel'
   const topBarOn = settings?.topBar.enabled === true
   // Turned off mid-edit: the next time it is on, it is on to use, not to arrange.
   useEffect(() => {
@@ -5873,7 +5874,7 @@ export function App(): React.JSX.Element {
         }
       />
 
-      <div className="body-row">
+      <div className={`body-row${quickPanelVisible ? ' has-quick-terminal' : ''}`}>
         {sidebarOpen && (
           <>
             <div style={{ width: sidebarWidth, display: 'flex', flexShrink: 0 }}>
@@ -6429,7 +6430,7 @@ export function App(): React.JSX.Element {
                 if (settings) void patchSettings({ browser: { ...settings.browser, width: v } })
               }}
             />
-            <div style={{ width: browserWidth, display: 'flex', flexShrink: 0 }}>
+            <div style={{ width: browserWidth, minWidth: quickPanelVisible ? 320 : undefined, display: 'flex', flexShrink: quickPanelVisible ? 1 : 0 }}>
               <BrowserPanel
                 state={browserState}
                 shellOffset={revealShifted ? revealInset : 0}
@@ -6458,7 +6459,7 @@ export function App(): React.JSX.Element {
           WebContentsView that paints above all renderer DOM, so an overlaid
           panel would be invisible whenever the browser was open.
         */}
-        {quickTerminalState?.enabled && quickTerminalState.mode === 'panel' && settings && (
+        {quickPanelVisible && quickTerminalState && settings && (
           <div className="quick-terminal-dock">
             <QuickTerminalPanel api={window.stoke.quickTerminal} state={quickTerminalState} appearance={{ theme, fontFamily: settings.fontFamily, fontSize: settings.fontSize, uiScale: settings.uiScale, terminal: settings.terminal }} surface="panel" onOpenUrl={openUrl} />
           </div>

@@ -23,7 +23,7 @@ body {
   overflow: hidden;
 }
 
-.quick-terminal-dock { width: min(460px, 45vw); min-width: 300px; display: flex; flex-shrink: 0; border-left: 1px solid var(--border); }
+.quick-terminal-dock { width: min(460px, 45vw); min-width: 300px; display: flex; flex-shrink: 1; border-left: 1px solid var(--border); }
 .quick-terminal-window { height: 100%; display: flex; background: var(--bg); }
 .quick-terminal { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; color: var(--text); background: var(--bg); }
 .quick-terminal-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; border-bottom: 1px solid var(--border-subtle); }
@@ -519,6 +519,10 @@ body {
   position: relative;
   background: var(--bg);
 }
+
+/* Reserve part of a narrow window for the agent while both optional right
+ * columns share the remaining room. Keep the user's preferred widths. */
+.body-row.has-quick-terminal > .main-col { flex-basis: 280px; }
 
 /* -------------------------------------------------------------- titlebar */
 

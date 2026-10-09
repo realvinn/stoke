@@ -945,6 +945,10 @@ await step('quick terminal opens wrapped links and retains its shell through a p
       const t = window.stokeQuickTerminals.get(${JSON.stringify(id)}), screen = t?.element?.querySelector('.xterm-screen');
       return screen && screen.getBoundingClientRect().width <= t.element.clientWidth + 1 ? t.cols : null;
     })()`))
+    check('the quick panel and its controls fit beside the native browser', await ev<boolean>(`(() => {
+      const panel = document.querySelector('.quick-terminal-dock'), controls = panel?.querySelectorAll('.quick-terminal-actions button');
+      return !!panel && panel.getBoundingClientRect().right <= innerWidth + 1 && [...controls].every(button => { const r = button.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth + 1 && r.top >= 0 && r.bottom <= innerHeight; });
+    })()`) === true)
     const quote = (value: string): string => {
       if (isWin) { if (/["%\r\n]/.test(value)) throw new Error('unsupported cmd fixture path'); return `"${value}"` }
       return shWord(value)
@@ -966,7 +970,10 @@ await step('quick terminal opens wrapped links and retains its shell through a p
     const opened = await waitFor('the quick-shell URL in Stoke', () => ev<BrowserState | null>(`window.__stokeQuickLinkState?.url === ${JSON.stringify(target)} && !window.__stokeQuickLinkState.loading ? window.__stokeQuickLinkState : null`))
     check('a real quick-terminal tail click retains the complete query', opened.url === target)
     await shot('05-quick-terminal-panel')
-    const moved = await ev<QuickTerminalResult>('window.stoke.quickTerminal.move("popout")')
+    const popoutButton = await ev<{ x: number; y: number }>(`(() => { const r = document.querySelector('.quick-terminal-actions button').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`)
+    await ui!.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...popoutButton, button: 'left', clickCount: 1 })
+    await ui!.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...popoutButton, button: 'left', clickCount: 1 })
+    const moved = await waitFor('the clicked native pop-out', () => ev<QuickTerminalResult | null>('window.stoke.quickTerminal.read().then(snapshot => snapshot.state.mode === "popout" ? { ok: true, state: snapshot.state } : null)'))
     check('moving into a native pop-out keeps the same shell', moved.ok && moved.state.id === id && moved.state.phase === 'running')
     popup = await waitFor('the native quick-terminal window', async () => {
       for (const target of await listTargets(port)) {
@@ -985,7 +992,9 @@ await step('quick terminal opens wrapped links and retains its shell through a p
     })()`))
     check('the native pop-out replays the existing shell output', snapshot.state.id === id && !!replayed)
     await popup.screenshot(join(shots, '06-quick-terminal-popout.png'))
-    await popup.evaluate('window.stokeQuickTerminal.move("panel")')
+    const dockButton = await popup.evaluate(`(() => { const r = document.querySelector('.quick-terminal-actions button').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`)
+    await popup.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...dockButton, button: 'left', clickCount: 1 })
+    await popup.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...dockButton, button: 'left', clickCount: 1 })
     await waitFor('the shell returning to its panel', () => ev(`!!window.stokeQuickTerminals.get(${JSON.stringify(id)})`))
     check('returning to the panel still uses the same process', (await ev<{ state: QuickTerminalState }>('window.stoke.quickTerminal.read()')).state.id === id)
   } finally {
