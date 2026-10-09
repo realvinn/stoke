@@ -429,6 +429,10 @@ export const CH = {
 
   // ssh
   sshHosts: 'ssh:hosts',
+  sshFilesList: 'ssh:files-list',
+  sshFilesSave: 'ssh:files-save',
+  sshFilesCancel: 'ssh:files-cancel',
+  sshFilesProgress: 'ssh:files-progress',
   /** main -> renderer: a remote just asked this session for a password. */
   sshAuthPrompt: 'ssh:auth-prompt',
   /**

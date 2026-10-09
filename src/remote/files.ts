@@ -150,6 +150,7 @@ export function openSessionFiles(opts: { ptyId: string; destination: string; ssh
   }) }
   up.addEventListener('click', () => void browse(folder.split('/').slice(0, -1).join('/')), { signal: lifetime.signal })
   sheet.body.append(el('div', { class: 'phone-files' }, destination, picker, selected, el('div', { class: 'phone-file-actions' }, choose, send, cancel), progress, message, pathLine, insert))
-  if (!opts.ssh) { sheet.body.append(el('div', { class: 'phone-files' }, el('h3', {}, 'Download from working folder'), browsing, up, rows)); void browse('') }
-  else sheet.body.append(el('p', { class: 'menu-note' }, 'SSH downloads are available through scp. This screen sends files to the SSH host.'))
+  sheet.body.append(el('div', { class: 'phone-files' }, el('h3', {}, opts.ssh ? 'Download from SSH folder' : 'Download from working folder'), browsing, up, rows))
+  if (opts.ssh) sheet.body.append(el('p', { class: 'menu-note' }, 'Browse the download folder chosen for this host in Stoke’s SSH settings. Files are verified on Stoke before they reach this browser.'))
+  void browse('')
 }

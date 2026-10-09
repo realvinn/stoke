@@ -729,6 +729,9 @@ export interface SshHost {
    * a hub payload from an older Stoke means the same thing.
    */
   noUploads?: boolean
+  /** Explicit remote folder for file browsing/downloads. Empty disables it.
+   * Machine-local consent: hub sync never imports or publishes this field. */
+  downloadFolder?: string
   /**
    * The host's Stoke Hub SYNC id (`h…`), minted the first time the hub
    * uploads it and the same on every device that has it. Never `id`, which

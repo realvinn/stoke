@@ -19,6 +19,7 @@ import { CHAT_INDEX_DEFAULTS, clampChatIndex, clampChatIndexOptions } from '../s
 import { clampVoice, VOICE_DEFAULTS } from '../shared/voiceSettings.ts'
 import { clampAccessAud, clampAccessTeamDomain } from '../shared/cfAccess.ts'
 import { hydrateRemotePush } from '../shared/remotePhone.ts'
+import { sshDownloadFolder } from '../shared/remoteFiles.ts'
 import { HUB_SETTINGS_DEFAULTS, hydrateHubSettings } from '../shared/hub/settings.ts'
 import { clampTopBar } from '../shared/topBar.ts'
 import { isId } from '../shared/hub/codec.ts'
@@ -428,6 +429,7 @@ export function hydrateSettings(raw: unknown): Settings {
               // A refusal, so only the literal turns it on: a truthy leftover
               // must not silently stop images reaching a machine.
               noUploads: h.noUploads === true,
+              downloadFolder: sshDownloadFolder(h.downloadFolder),
               persist: h.persist === 'tmux' ? ('tmux' as const) : ('off' as const)
             }
           })

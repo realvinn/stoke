@@ -42,6 +42,7 @@ import type { StokeCliRequest } from './stokeArgs'
 import type { TranscriptFindRequest, TranscriptFindResult } from './transcriptFind'
 import type { ClaudeLaunchDefaults } from './launch'
 import type { LaunchPreflightRequest, LaunchPreflightResult } from './launchPreflight'
+import type { SshFilesRequest, SshFilesListResult, SshFilesSaveResult, SshFilesProgress } from './sshFiles'
 import type { SecretStoreStatus } from './secrets'
 import type { SetupPreview } from './setupFile'
 import type { HubLocalKeyView, HubResult, HubVerifyResult, HubView } from './hub/client'
@@ -1047,6 +1048,10 @@ export interface StokeApi {
   }
 
   ssh: {
+    filesList(request: SshFilesRequest): Promise<SshFilesListResult>
+    filesSave(request: SshFilesRequest): Promise<SshFilesSaveResult>
+    filesCancel(requestId: string): void
+    onFilesProgress(cb: (event: SshFilesProgress) => void): () => void
     /** Host aliases read from the user's own ~/.ssh/config, for the picker. */
     configHosts(): Promise<string[]>
     /*

@@ -9182,3 +9182,44 @@ button.color-field-swatch[aria-expanded='true'] {
   flex: none;
   margin: calc(var(--space-4) * -1) 0;
 }
+
+.ssh-files-panel {
+  display: grid;
+  gap: var(--space-8);
+  min-width: 0;
+  padding: var(--space-12);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+}
+
+.ssh-files-location {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: var(--fs-sm);
+}
+
+.ssh-files-entries {
+  display: grid;
+  max-height: 18rem;
+  overflow: auto;
+  min-width: 0;
+}
+
+.ssh-files-entry {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-12);
+  text-align: left;
+  padding: var(--space-8);
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+}
+
+.ssh-files-entry span { overflow-wrap: anywhere; min-width: 0; }
+.ssh-files-entry small { color: var(--text-muted); flex: none; }
+.ssh-files-entry:hover:not(:disabled) { background: var(--bg-elevated); }
+.ssh-files-entry:disabled { opacity: 0.5; }
+.ssh-files-panel progress { width: 100%; accent-color: var(--accent); }

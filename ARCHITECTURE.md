@@ -428,8 +428,20 @@ overwriting project files; SSH sessions forward through the existing second-conn
 uploader and return the execution host's path. Downloads are attachments confined by
 realpath to a live local session's working folder. Transfers have a 100 MB cap, progress,
 cancel and retry, with two operations globally and one per session. Stopping Phone access
-aborts active operations. File bytes never travel through terminal input. These routes are
-phone-only; SSH downloads and encrypted desktop relay transfers remain separate work.
+aborts active operations. File bytes never travel through terminal input. SSH browsing and
+downloads use `sshFiles.ts` and the fixed read-only `sshFileReader.ts` Python helper. Their
+root is a per-host, default-off `downloadFolder`, never the tab's local cwd; it is not synced
+through the hub. Every descendant is opened relative to directory descriptors with
+`O_NOFOLLOW`. Listings stop at 200 visible or 2,000 scanned entries. Downloads stage in
+owner-only temporary files and require exact bytes and a successful SSH exit before HTTP
+attachment headers. Revoking the root or ending the session aborts active transfers.
+
+`desktopSshFiles.ts` gives the SSH Settings page the same browser through `SshFilesPanel`.
+Only the main window's main frame can list/save/cancel. A native save picker names the local
+destination; a same-volume temporary file is renamed only after a successful download, so
+cancelled or partial transfers cannot truncate a previous file. Claims span the picker,
+child close and cleanup. These HTTP routes are phone-only; encrypted desktop relay transfers
+remain separate work.
 
 - **Loopback by default**, and that is the intended deployment: a Cloudflare Tunnel pointing a
   hostname at it, with cloudflared running on this machine and dialling `127.0.0.1`, so nothing
@@ -1670,6 +1682,11 @@ src/main/         Electron main process
   sshSessions.ts    runs those BatchMode list and kill calls (execFile, never a shell;
                     never throws) for the launcher's "Running on <host>" and a tab's
                     "End session". No electron import; the runner is injectable
+  sshFiles.ts       read-only SSH file browsing/downloads, bounded binary framing,
+                    byte-count/exit verification, cancellation through child close and
+                    private local staging; fixed Python source in sshFileReader.ts
+  desktopSshFiles.ts native-picked file saves, per-host operation claims and permission
+                    revocation; same-volume temporary output protects existing files
   sshUpload.ts      sends an image's bytes, or a dropped file read from disk as it goes, to a
                     host on stdin over a second BatchMode ssh (`buildUploadArgs`/
                     `buildUploadBody` in ssh.ts: -T, RemoteCommand=none, ControlMaster=no and

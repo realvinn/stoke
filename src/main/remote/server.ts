@@ -3,9 +3,10 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { readFile } from 'node:fs/promises'
 import { hostname } from 'node:os'
 import { extname, join, normalize, sep } from 'node:path'
-import type { Duplex } from 'node:stream'
+import { Readable, type Duplex } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { PhoneFileError, PhoneFiles, type PhoneFileTarget } from './files.ts'
+import type { SshFiles } from '../sshFiles.ts'
 import { app } from 'electron'
 import { WebSocketServer } from 'ws'
 import type {
@@ -220,6 +221,8 @@ export type { ConnectTarget, Reach } from './link.ts'
  *     `GET /api/files/list?ptyId=&path=` browses visible entries, and
  *     `/api/files/download` sends one attachment. Browse/download paths are
  *     relative to a live local session's cwd; realpaths cannot escape it.
+ *     SSH sessions instead use an explicitly configured host download folder,
+ *     a read-only Python helper and verified private staging on this desktop.
  *     Private, ended, sign-in and enrollment sessions are excluded. The key,
  *     Access and browser-origin checks apply; two operations globally and
  *     one per session are allowed. Cancellation or stopping Phone access
@@ -248,6 +251,8 @@ export interface RemotePushDeps {
 }
 
 export interface RemoteDeps {
+  /** Shared read-only file service; production uses its native SSH runner. */
+  sshFiles?: SshFiles
   ptys: () => PtyManager | null
   watcher: () => ContextWatcher | null
   listProjects: () => Promise<Project[]>
@@ -531,7 +536,7 @@ interface PtyStatus {
 }
 
 export class RemoteServer {
-  private phoneFiles = new PhoneFiles()
+  private phoneFiles: PhoneFiles
   private fileRequests = new Set<AbortController>()
   private servers: Server[] = []
   private bound: string[] = []
@@ -600,6 +605,7 @@ export class RemoteServer {
 
   constructor(deps: RemoteDeps, onClientsChanged: () => void = () => {}) {
     this.deps = deps
+    this.phoneFiles = new PhoneFiles(deps.sshFiles)
     this.onClientsChanged = onClientsChanged
   }
 
@@ -1333,6 +1339,8 @@ export class RemoteServer {
         if ((url.pathname === '/api/files/upload' ? 'POST' : 'GET') !== req.method) return this.json(res, { error: 'Unsupported file operation.' }, setCookie, 405)
         const id = url.searchParams.get('ptyId') ?? ''
         let release: (() => void) | null = null
+        let dispose: (() => Promise<void>) | null = null
+        let ownership: ReturnType<typeof setInterval> | undefined
         const abort = new AbortController()
         this.fileRequests.add(abort)
         const endRequest = (): void => { req.destroy(); res.destroy() }
@@ -1346,28 +1354,43 @@ export class RemoteServer {
           // Claim before the first await, including disk discovery and body reads.
           release = this.phoneFiles.claim(id)
           const target = this.fileTarget(id)
+          const identity = JSON.stringify(target)
+          // Revoking a host's folder or ending/replacing a session also ends
+          // a transfer already in progress, including its download stream.
+          ownership = setInterval(() => {
+            try { if (JSON.stringify(this.fileTarget(id)) !== identity) abort.abort() }
+            catch { abort.abort() }
+          }, 100)
           if (url.pathname === '/api/files/upload') {
             const size = Number(url.searchParams.get('size') ?? 'NaN')
             const sent = await this.phoneFiles.upload(target, url.searchParams.get('name'), size, req, abort.signal)
             return this.json(res, sent, setCookie)
           }
           if (url.pathname === '/api/files/list') {
-            return this.json(res, await this.phoneFiles.list(target, url.searchParams.get('path') ?? ''), setCookie)
+            const listing = await this.phoneFiles.list(target, url.searchParams.get('path') ?? '', abort.signal)
+            if (JSON.stringify(this.fileTarget(id)) !== identity) abort.abort()
+            if (abort.signal.aborted) return
+            return this.json(res, listing, setCookie)
           }
-          const opened = await this.phoneFiles.download(target, url.searchParams.get('path'))
-          if (abort.signal.aborted) { await opened.file.close(); return }
+          const opened = await this.phoneFiles.download(target, url.searchParams.get('path'), abort.signal)
+          dispose = opened.dispose
+          if (JSON.stringify(this.fileTarget(id)) !== identity) abort.abort()
+          if (abort.signal.aborted) return
           // A download is always an attachment, never executable page content.
           res.writeHead(200, { ...setCookie, 'content-type': 'application/octet-stream', 'content-length': opened.size,
             'content-disposition': `attachment; filename="download"; filename*=UTF-8''${encodeURIComponent(opened.name).replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)}`,
             'cache-control': 'no-store', 'x-content-type-options': 'nosniff' })
-          await pipeline(opened.file.createReadStream({ ...(opened.size ? { end: opened.size - 1 } : {}), autoClose: true }), res, { signal: abort.signal })
+          const stream = opened.size ? opened.file.createReadStream({ start: 0, end: opened.size - 1, autoClose: true }) : Readable.from([])
+          await pipeline(stream, res, { signal: abort.signal })
           return
         } catch (error) {
           if (abort.signal.aborted || res.destroyed || res.headersSent) return
           const status = error instanceof PhoneFileError ? error.status : 500
           return this.json(res, { error: error instanceof PhoneFileError ? error.message : 'The file operation failed. Check the folder and retry.' }, setCookie, status)
         } finally {
-          clearTimeout(timer); req.off('aborted', stop); res.off('close', closed); abort.signal.removeEventListener('abort', endRequest); this.fileRequests.delete(abort); release?.()
+          clearTimeout(timer); clearInterval(ownership)
+          await dispose?.().catch(() => {})
+          req.off('aborted', stop); res.off('close', closed); abort.signal.removeEventListener('abort', endRequest); this.fileRequests.delete(abort); release?.()
         }
       }
       // The routes that read the raw request stay here, dictation's audio and

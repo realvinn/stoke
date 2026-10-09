@@ -2,6 +2,7 @@
 import { build } from 'esbuild'
 import { createRequire } from 'node:module'
 import { createServer, request } from 'node:http'
+import { spawn } from 'node:child_process'
 import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -64,7 +65,7 @@ export async function phoneFilesChecks(check: Check): Promise<void> {
     check('SSH receives a binary stream and returns a host-valid path', [Buffer.compare(forwarded, body), onSsh.path.startsWith('/remote/cache/'), onSsh.destination], [0, true, 'ssh'])
     check('SSH sends never write into the desktop cwd', await readdir(outside), ['secret.txt'])
     check('an opted-out SSH host refuses file sends', await rejectStatus(files.upload({ cwd: root, host: { ...host, noUploads: true } } as never, 'file.txt', body.length, input(), controller.signal)), 403)
-    check('SSH downloads stay explicit about their unsupported route', await rejectStatus(files.download({ cwd: root, host } as never, 'x')), 400)
+    check('SSH downloads require an explicitly configured remote folder', await rejectStatus(files.download({ cwd: root, host } as never, 'x')), 403)
     let linked = false
     try { await symlink(outside, join(root, 'escape'), process.platform === 'win32' ? 'junction' : 'dir'); linked = true } catch { /* Windows without symlink permission */ }
     if (linked) {
@@ -75,17 +76,29 @@ export async function phoneFilesChecks(check: Check): Promise<void> {
 
     const rootDir = fileURLToPath(new URL('../', import.meta.url))
     const bundle = join(work, 'remote.cjs')
-    await build({ entryPoints: [join(rootDir, 'src/main/remote/server.ts')], outfile: bundle, bundle: true, platform: 'node', format: 'cjs', packages: 'external', logLevel: 'silent',
+    await build({ stdin: { contents: `export { RemoteServer } from './src/main/remote/server.ts'; export { SshFiles } from './src/main/sshFiles.ts';`, resolveDir: rootDir, loader: 'ts' }, outfile: bundle, bundle: true, platform: 'node', format: 'cjs', packages: 'external', logLevel: 'silent',
       // The temporary bundle uses the workspace's dependencies, never a global install.
       banner: { js: `require = require('node:module').createRequire(${JSON.stringify(join(rootDir, 'package.json'))});` },
       plugins: [{ name: 'electron-test-shell', setup(builder) {
         builder.onResolve({ filter: /^electron$/ }, () => ({ path: 'electron', namespace: 'phone-test' }))
         builder.onLoad({ filter: /.*/, namespace: 'phone-test' }, () => ({ contents: `export const app = { isPackaged: false, getAppPath: () => ${JSON.stringify(rootDir)} };`, loader: 'js' }))
       } }] })
-    const { RemoteServer } = createRequire(import.meta.url)(bundle)
+    const { RemoteServer, SshFiles } = createRequire(import.meta.url)(bundle)
     const sessions = [{ ptyId: 'local', sessionId: 'local-session', cwd: root, cli: 'codex', exited: false, enroll: false, accountLogin: false }, { ptyId: 'ssh', sessionId: 'ssh-session', cwd: outside, cli: 'claude', exited: false, enroll: false, accountLogin: false }]
     const ptys = { list: () => sessions, launchFacts: (id: string) => ({ hostId: id === 'ssh' ? 'ssh-host' : null }), subscribe: () => () => {}, subscribeExit: () => () => {} }
-    server = new RemoteServer({ ptys: () => ptys, theme: () => ({ theme: BUILT_IN_THEMES[0], fontFamily: 'monospace' }), hosts: () => [{ ...host, noUploads: true }] })
+    const sshRoot = join(work, 'ssh-spool'); await mkdir(sshRoot)
+    const wireBytes = join(work, 'ssh-wire.bin'); await writeFile(wireBytes, body)
+    const started = join(work, 'ssh-started')
+    const wireScript = join(work, 'ssh-wire.mjs')
+    await writeFile(wireScript, `import { createReadStream, writeFileSync } from 'node:fs';
+let raw='';for await(const chunk of process.stdin) raw+=chunk;const req=JSON.parse(raw);
+const header=(value)=>process.stdout.write(JSON.stringify({protocol:'stoke-files-1',...value})+'\\n');
+if(req.path==='slow.bin'){writeFileSync(${JSON.stringify(started)},'started');setInterval(()=>{},1000);}
+else if(req.operation==='list'){header({path:req.path,entries:[{name:'remote.bin',path:req.path?req.path+'/remote.bin':'remote.bin',kind:'file',size:${body.length}}],truncated:false});}
+else{header({size:${body.length}});createReadStream(${JSON.stringify(wireBytes)}).pipe(process.stdout);}`)
+    const configuredHost = { ...host, noUploads: true, downloadFolder: '' }
+    const sshReader = new SshFiles({ tempRoot: sshRoot, start: () => spawn(process.execPath, [wireScript]) })
+    server = new RemoteServer({ ptys: () => ptys, theme: () => ({ theme: BUILT_IN_THEMES[0], fontFamily: 'monospace' }), hosts: () => [configuredHost], sshFiles: sshReader })
     // Reserve and release an ephemeral port; start's real listener owns it thereafter.
     const probe = createServer()
     await new Promise<void>((resolve) => probe.listen(0, '127.0.0.1', resolve))
@@ -120,6 +133,39 @@ export async function phoneFilesChecks(check: Check): Promise<void> {
     check('download ownership lasts through cleanup and becomes available again', available, true)
     check('HTTP traversal is rejected', (await fetch(`${base}/api/files/download?${new URLSearchParams({ ptyId: 'local', path: '../outside/secret.txt' })}`, { headers })).status, 400)
     if (linked) check('HTTP also refuses a symlink escape', (await fetch(`${base}/api/files/download?${new URLSearchParams({ ptyId: 'local', path: 'escape/secret.txt' })}`, { headers })).status, 403)
+    const sshListUrl = `${base}/api/files/list?ptyId=ssh`
+    const disabled = await fetch(sshListUrl, { headers }); await disabled.arrayBuffer()
+    check('HTTP SSH browsing stays off until a folder is configured', disabled.status, 403)
+    configuredHost.downloadFolder = '~/fixture-project'
+    const sshList = await fetch(sshListUrl, { headers })
+    const remoteListing = await sshList.json() as { entries: { name: string }[] }
+    check('the production HTTP route browses the SSH execution host', [sshList.status, remoteListing.entries?.[0]?.name], [200, 'remote.bin'])
+    const sshDownload = await fetch(`${base}/api/files/download?ptyId=ssh&path=remote.bin`, { headers })
+    check('the HTTP SSH attachment preserves all binary bytes', [sshDownload.status, sshDownload.headers.get('content-disposition')?.includes('attachment'), Buffer.compare(Buffer.from(await sshDownload.arrayBuffer()), body)], [200, true, 0])
+    let sshAvailable = false
+    for (let n = 0; n < 100; n++) {
+      const ready = await fetch(sshListUrl, { headers }); await ready.arrayBuffer()
+      if (ready.status === 200) { sshAvailable = true; break }
+      if (ready.status !== 409) break
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    check('HTTP SSH ownership lasts through spool cleanup', [sshAvailable, await readdir(sshRoot)], [true, []])
+    const revoked = fetch(`${base}/api/files/download?ptyId=ssh&path=slow.bin`, { headers }).then((r) => r.status, () => 0)
+    let childStarted = false
+    for (let n = 0; n < 200; n++) {
+      try { await readFile(started); childStarted = true; break } catch { await new Promise((resolve) => setTimeout(resolve, 10)) }
+    }
+    check('the revocation case reached an actual owned SSH subprocess', childStarted, true)
+    configuredHost.downloadFolder = ''
+    check('revoking the SSH folder cancels an active HTTP download before attachment headers', await revoked, 0)
+    let released = false
+    for (let n = 0; n < 100; n++) {
+      const ready = await fetch(sshListUrl, { headers }); await ready.arrayBuffer()
+      if (ready.status === 403) { released = true; break }
+      if (ready.status !== 409) break
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    check('revocation keeps ownership until actual child/spool cleanup finishes', [released, await readdir(sshRoot)], [true, []])
     const beforeCancel = (await readdir(root)).sort()
     const cancelledRequest = request(`${base}/api/files/upload?${new URLSearchParams({ ptyId: 'local', name: 'interrupt.txt', size: '10000' })}`, { method: 'POST', headers })
     cancelledRequest.on('error', () => {})

@@ -155,14 +155,14 @@ export interface SshReach {
 
 /** A T3 item's value. The settings id and `keyEnrolled` stay on each device (a counter, and a fact about ITS key). */
 export interface HostPayload {
-  host: Omit<SshHost, 'id' | 'keyEnrolled'>
+  host: Omit<SshHost, 'id' | 'keyEnrolled' | 'downloadFolder'>
   reach?: SshReach
   /** T4 key ids this host uses. */
   keyRefs: string[]
 }
 
 export function hostPayloadFor(h: SyncableHost, extra: { reach?: SshReach; keyRefs?: string[] } = {}): HostPayload {
-  const { id: _id, keyEnrolled: _mine, syncId: _sync, ...host } = h
+  const { id: _id, keyEnrolled: _mine, syncId: _sync, downloadFolder: _permission, ...host } = h
   return { host, ...(extra.reach ? { reach: extra.reach } : {}), keyRefs: extra.keyRefs ?? [] }
 }
 
@@ -514,9 +514,10 @@ export function applySyncedSettings(current: Settings, incoming: SyncedIncoming,
       }
       if (at >= 0) {
         const mine = hosts[at]
-        hosts[at] = { ...cloneJson(payload.host), id: mine.id, syncId, keyEnrolled: mine.keyEnrolled === true }
+        hosts[at] = { ...cloneJson(payload.host), id: mine.id, syncId, keyEnrolled: mine.keyEnrolled === true,
+          downloadFolder: mine.alias.trim() === payload.host.alias.trim() ? mine.downloadFolder ?? '' : '' }
       } else {
-        hosts.push({ ...cloneJson(payload.host), id: freeHostId(hosts), syncId, keyEnrolled: false })
+        hosts.push({ ...cloneJson(payload.host), id: freeHostId(hosts), syncId, keyEnrolled: false, downloadFolder: '' })
       }
     }
     next.hosts = hosts

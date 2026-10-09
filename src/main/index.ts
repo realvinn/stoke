@@ -154,6 +154,7 @@ import { createProfile, planProfile } from './profiles.ts'
 import { readSshConfigHosts } from './ssh.ts'
 import { endRemoteSession, listRemoteSessions } from './sshSessions.ts'
 import { clipboardFiles, registerSshImageHandlers } from './sshImages.ts'
+import { DesktopSshFiles } from './desktopSshFiles.ts'
 import { hostPersists, isSafeRemoteSessionName, mintRemoteSessionName } from '../shared/sshPersist.ts'
 import { shouldOfferKey } from '../shared/sshAuth.ts'
 import { EnrollRuns } from './enrollRuns.ts'
@@ -4827,6 +4828,38 @@ function registerIpc(): void {
   })
   // Images pasted or dropped on an SSH tab, copied to the machine (sshImages.ts).
   registerSshImageHandlers({ getSettings, isAppWindow: (sender) => !!win && sender === win.webContents })
+
+  const desktopSshFiles = new DesktopSshFiles({
+    hosts: () => getSettings().hosts,
+    chooseSave: async (name, host) => {
+      const parent = win
+      if (!parent || parent.isDestroyed()) return null
+      const result = await dialog.showSaveDialog(parent, {
+        title: `Download from ${host.label || host.alias}`,
+        defaultPath: name,
+        properties: ['showOverwriteConfirmation', 'createDirectory']
+      })
+      return result.canceled ? null : result.filePath ?? null
+    },
+    progress: (event) => send(CH.sshFilesProgress, event)
+  })
+  ipcMain.handle(CH.sshFilesList, async (event, request: unknown) => {
+    if (!win || event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) return { ok: false, message: 'Open SSH files in Stoke.' }
+    const leave = (): void => desktopSshFiles.cancelAll()
+    event.sender.once('destroyed', leave)
+    try { return await desktopSshFiles.list(request) }
+    finally { event.sender.off('destroyed', leave) }
+  })
+  ipcMain.handle(CH.sshFilesSave, async (event, request: unknown) => {
+    if (!win || event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) return { ok: false, message: 'Open SSH files in Stoke.' }
+    const leave = (): void => desktopSshFiles.cancelAll()
+    event.sender.once('destroyed', leave)
+    try { return await desktopSshFiles.save(request) }
+    finally { event.sender.off('destroyed', leave) }
+  })
+  ipcMain.on(CH.sshFilesCancel, (event, requestId: unknown) => {
+    if (win && event.sender === win.webContents && event.senderFrame === win.webContents.mainFrame) desktopSshFiles.cancel(requestId)
+  })
 
   /* ------------------------------------------------------------------ tabs */
   ipcMain.on(CH.tabsSave, (_e, state: StoredTabs) => {

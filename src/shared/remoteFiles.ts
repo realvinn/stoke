@@ -17,3 +17,13 @@ export function phoneRelativePath(path: unknown): path is string {
 export function phoneFileSize(size: unknown): size is number {
   return typeof size === 'number' && Number.isSafeInteger(size) && size >= 0 && size <= MAX_FILE_BYTES
 }
+
+/** A per-machine opt-in, never inferred from an SSH tab's local cwd. */
+export function sshDownloadFolder(value: unknown): string {
+  if (typeof value !== 'string') return ''
+  const folder = value.trim()
+  if (!folder || folder.length > 2048 || /[\\\x00-\x1f\x7f]/.test(folder)) return ''
+  if (!folder.startsWith('/') && !folder.startsWith('~/')) return ''
+  if (folder.split('/').some((part) => part === '.' || part === '..')) return ''
+  return folder
+}

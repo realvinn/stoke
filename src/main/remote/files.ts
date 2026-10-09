@@ -7,6 +7,7 @@ import type { SshHost } from '../../shared/types.ts'
 import { droppedFileName } from '../../shared/imageUpload.ts'
 import { MAX_FILE_BYTES, phoneFileNameProblem, phoneFileSize, phoneRelativePath, type PhoneFileListing, type PhoneFileSent } from '../../shared/remoteFiles.ts'
 import { sendUpload, type SendOpts, type SendImageResult, type UploadInput } from '../sshUpload.ts'
+import { SshFiles, SshFileError } from '../sshFiles.ts'
 
 export interface PhoneFileTarget { cwd: string; host: SshHost | null }
 export class PhoneFileError extends Error {
@@ -53,6 +54,8 @@ export async function* exactPhoneFile(input: AsyncIterable<Uint8Array>, size: nu
 type Send = (host: SshHost, name: string, up: { noun: 'file'; size: number; input: UploadInput }, opts: SendOpts) => Promise<SendImageResult>
 export class PhoneFiles {
   private jobs = new Map<string, object>()
+  private ssh: SshFiles
+  constructor(ssh = new SshFiles()) { this.ssh = ssh }
   /** Global and per-session limits are claimed before any disk or SSH await. */
   claim(id: string): () => void {
     if (this.jobs.has(id) || this.jobs.size >= 2) fail(409, 'Another file operation is running. Wait for it to finish, then retry.')
@@ -106,8 +109,8 @@ export class PhoneFiles {
       if (folder && !completed) await rm(folder, { recursive: true, force: true }).catch(() => {})
     }
   }
-  async list(target: PhoneFileTarget, path: unknown): Promise<PhoneFileListing> {
-    if (target.host) fail(400, 'File browsing and downloads currently support local sessions. SSH sending is available.')
+  async list(target: PhoneFileTarget, path: unknown, signal = new AbortController().signal): Promise<PhoneFileListing> {
+    if (target.host) return this.ssh.list(target.host, path, signal).catch(sshError)
     if (!phoneRelativePath(path)) fail(400, 'Choose a relative folder path.')
     const folder = await confined(target.cwd, path)
     const items: Dirent[] = []
@@ -128,20 +131,26 @@ export class PhoneFiles {
     }))
     return { path, entries, truncated }
   }
-  async download(target: PhoneFileTarget, path: unknown): Promise<{ file: FileHandle; size: number; name: string }> {
-    if (target.host) fail(400, 'Downloads currently support local sessions. Use scp for files on an SSH host.')
+  async download(target: PhoneFileTarget, path: unknown, signal = new AbortController().signal): Promise<{ file: FileHandle; size: number; name: string; dispose: () => Promise<void> }> {
+    if (target.host) return this.ssh.download(target.host, path, signal).catch(sshError)
     if (!phoneRelativePath(path) || !path) fail(400, 'Choose one file inside the working folder.')
     const found = await confined(target.cwd, path)
     let file: FileHandle | null = null
     try {
-      file = await open(found.path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
+      file = await open(found.path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0))
       const st = await file.stat()
       if (!st.isFile()) fail(400, 'Choose a regular file. Zip folders before downloading them.')
       if (!phoneFileSize(st.size)) fail(413, 'This file exceeds the 100 MB download limit.')
       const again = await confined(target.cwd, path)
       const now = await lstat(again.path)
       if (again.path !== found.path || now.ino !== st.ino || now.dev !== st.dev) fail(409, 'The file changed while opening it. Choose it again.')
-      return { file, size: st.size, name: basename(found.path) }
+      const owned = file
+      return { file, size: st.size, name: basename(found.path), dispose: () => owned.close().catch(() => {}) }
     } catch (error) { await file?.close().catch(() => {}); throw error }
   }
+}
+
+function sshError(error: unknown): never {
+  if (error instanceof SshFileError) throw new PhoneFileError(error.status, error.message)
+  throw error
 }

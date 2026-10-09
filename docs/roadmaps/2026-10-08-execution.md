@@ -102,7 +102,7 @@ Validation: the focused suite covers separate generation/acceptance, rejected mo
 
 ## Remaining implementation
 
-Every roadmap wave still has open acceptance criteria. SSH downloads and relay transfers, live agent telemetry, remaining Work plugin lifecycle and automatic session digests, privilege helpers and the terminal companion are still to be implemented. Live verification and platform-specific proof remain open where called out above.
+Every roadmap wave still has open acceptance criteria. Relay transfers, live agent telemetry, remaining Work plugin lifecycle and automatic session digests, privilege helpers and the terminal companion are still to be implemented. SSH download implementation is described below; live verification and platform-specific proof remain open where called out above.
 
 ## CI portability follow-up
 
@@ -163,3 +163,11 @@ Focused tests cover real canonical folders, missing/file paths, exact account va
 ## Quick terminal: return focus after finding text
 
 Closing Find with Escape, Close or Cmd/Ctrl+F now clears search decoration and focuses the current live terminal object. The focus callback is released when that view unmounts, so it cannot target a disposed pane after a pop-out or shell change. The full `npm run check` gate passes, including desktop and remote builds. CI at `9ae8958` passes every verification and packaged-probe leg, including Windows ARM64/x64 and Mac ARM64/Intel. Real native keyboard handoff remains unverified. The launcher executable message also clarifies that setup checking does not run or verify the CLI version. The signed Mac package includes this correction.
+
+## SSH file browsing and downloads
+
+Implemented: a default-off download folder on each SSH host, with an explicit Browse and download files action in SSH Settings and the same read route in paired phone session files. The folder must be an absolute remote path or ~/folder. It never comes from a tab’s local cwd. Hub payloads exclude this consent, incoming payloads cannot enable it, and changing a host alias revokes it.
+
+A fixed read-only Python 3 helper on a macOS/Linux execution host receives paths as JSON on stdin over a separate BatchMode SSH connection. Every descendant is opened through directory descriptors with O_NOFOLLOW and O_NONBLOCK; links, traversal and non-regular downloads are refused. Nothing is installed or written remotely. Listings are capped at 200 visible or 2,000 scanned entries. Downloads have a 100 MB cap and are staged privately on the desktop. Missing/extra bytes, malformed replies or an unsuccessful SSH exit never produce a completed attachment. Desktop save destinations come only from a native picker; same-volume temporary output preserves an existing destination until the completed rename. Claims span the picker, actual child close and cleanup. Cancelling, revoking a host’s download folder, ending its session or stopping phone access cancels active transfers.
+
+Typecheck and the full npm run check gate pass, including every verify suite and desktop/remote builds. The focused suite passes 44 checks using real POSIX files and the production Python helper, native binary subprocesses, Unicode/metacharacter names, internal/external symlinks, sparse oversized files, FIFOs, sockets, bounded listings, partial streams, final exit failures, cancellation, deadlines and pending-dialog ownership. The production HTTP router also passes real authenticated SSH list/download requests with an emulated execution host, complete binary attachments, permission revocation during an owned subprocess and private-spool cleanup. No real remote account or user folder was read. Native save-dialog interaction, real Mac/Linux SSH links and Windows-client native CI proof remain pending. Encrypted desktop relay transfers and folder transfers remain open.

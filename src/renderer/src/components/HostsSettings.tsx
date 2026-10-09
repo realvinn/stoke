@@ -2,8 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { SshHost, SshKeyEnroll } from '@shared/types'
 import { isEnrollableAlias } from '@shared/sshAuth'
 import { persistRefusal } from '@shared/sshPersist'
+import { sshDownloadFolder } from '@shared/remoteFiles'
 import { FieldHint } from './FieldHint'
 import { IconClose, IconCopy, IconPlus } from './Icons'
+import { SshFilesPanel } from './SshFilesPanel'
 
 interface Props {
   hosts: SshHost[]
@@ -117,7 +119,7 @@ export function newHostId(hosts: SshHost[]): string {
   }
 }
 
-export type HostTextField = 'label' | 'alias' | 'command'
+export type HostTextField = 'label' | 'alias' | 'command' | 'downloadFolder'
 
 /**
  * What committing an edited box should change, or null when it changes nothing.
@@ -134,9 +136,10 @@ export function commitField(
   draft: string
 ): Partial<SshHost> | null {
   const next = draft.trim()
-  if (next === host[field]) return null
+  if (next === (host[field] ?? '')) return null
 
   const changes: Partial<SshHost> = { [field]: next }
+  if (field === 'alias') changes.downloadFolder = ''
   // Naming a host twice is busywork: the alias is already a name, so use it
   // when the label has been left blank.
   if (field === 'alias' && next && !host.label.trim()) changes.label = next
@@ -169,6 +172,7 @@ export function HostsSettings({
    */
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   const [confirming, setConfirming] = useState<string | null>(null)
+  const [filesHost, setFilesHost] = useState<string | null>(null)
 
   const known = useMemo(
     () => new Set(suggestions.map((s) => s.trim().toLowerCase())),
@@ -178,7 +182,7 @@ export function HostsSettings({
   const keyFor = (id: string, field: HostTextField): string => `${id}:${field}`
 
   const valueOf = (host: SshHost, field: HostTextField): string =>
-    drafts[keyFor(host.id, field)] ?? host[field]
+    drafts[keyFor(host.id, field)] ?? host[field] ?? ''
 
   const update = useCallback(
     (id: string, changes: Partial<SshHost>): void => {
@@ -550,6 +554,30 @@ export function HostsSettings({
                 />
               </label>
               {refusal && <FieldHint tone="warning">{refusal}</FieldHint>}
+
+              <label className="cc-text" data-setting="hosts.downloads">
+                <span className="field-label">Download folder on this machine</span>
+                <input className="input mono" placeholder="Off · e.g. ~/projects/my-app"
+                  value={valueOf(host, 'downloadFolder')} spellCheck={false}
+                  onChange={(e) => setDrafts((d) => ({ ...d, [keyFor(host.id, 'downloadFolder')]: e.target.value }))}
+                  onBlur={() => commit(host, 'downloadFolder')}
+                  onKeyDown={(e) => { if (e.key === 'Enter') commit(host, 'downloadFolder') }} />
+                <span className="field-hint">
+                  Enables browsing and downloading regular files inside this remote folder from
+                  Stoke and paired phones. Empty turns it off. Needs key login and Python 3 on a
+                  macOS or Linux host. Symbolic links are excluded; files are limited to 100 MB.
+                </span>
+              </label>
+              {valueOf(host, 'downloadFolder').trim() && !sshDownloadFolder(valueOf(host, 'downloadFolder')) && (
+                <FieldHint tone="warning">Use an absolute remote folder or ~/folder, without parent traversal.</FieldHint>
+              )}
+              <div className="settings-item-actions">
+                <button className="btn" data-size="sm" disabled={!sshDownloadFolder(host.downloadFolder)}
+                  onClick={() => setFilesHost((id) => id === host.id ? null : host.id)}>Browse and download files</button>
+              </div>
+              {filesHost === host.id && sshDownloadFolder(host.downloadFolder) && (
+                <SshFilesPanel key={`${host.id}:${host.alias}:${host.downloadFolder}`} host={host} onClose={() => setFilesHost(null)} />
+              )}
 
               {/*
                 Keep this machine's shells running between connections (gotcha

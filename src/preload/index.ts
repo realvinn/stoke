@@ -325,6 +325,10 @@ const api: StokeApi = {
   },
 
   ssh: {
+    filesList: (request) => ipcRenderer.invoke(CH.sshFilesList, request),
+    filesSave: (request) => ipcRenderer.invoke(CH.sshFilesSave, request),
+    filesCancel: (requestId) => ipcRenderer.send(CH.sshFilesCancel, requestId),
+    onFilesProgress: (cb) => on(CH.sshFilesProgress, cb),
     configHosts: () => ipcRenderer.invoke(CH.sshHosts),
     awaitingPassword: (ptyId: string) => ipcRenderer.invoke(CH.sshAwaitingPassword, ptyId),
     onPasswordPrompt: (cb) => on<[SshAuthPromptEvent]>(CH.sshAuthPrompt, cb),
