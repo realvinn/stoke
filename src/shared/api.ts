@@ -30,6 +30,7 @@ import type { GitStatus } from './gitStatus'
 import type { AccountMcpSummary, McpCatalog } from './mcpServers'
 import type { McpProbeResult } from './mcpSetup'
 import type { AgentInstallation, AgentUpdateResult } from './agentLifecycle'
+import type { WorkCommand, WorkResult, WorkView } from './workPlugin'
 import type { MicAccess } from './voiceRoute'
 import type { SttConfig } from './speechProviders'
 import type { CreateProfileInput, ProfilePlan } from './profiles'
@@ -1105,6 +1106,11 @@ export interface StokeApi {
    * The worklog review queue. A scan only ever proposes; nothing reaches Notion
    * or ClickUp until `accept` is called on an item.
    */
+  work: {
+    read(): Promise<WorkView>
+    change(command: WorkCommand): Promise<WorkResult>
+    onChange(cb: (view: WorkView) => void): () => void
+  }
   worklog: {
     queue(): Promise<WorklogProposal[]>
     /** Scan a session's transcript for proposals. Read-only. */

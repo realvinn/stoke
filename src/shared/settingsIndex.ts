@@ -554,6 +554,8 @@ export const SETTING_ROWS: readonly SettingRow[] = [
 
   // Worklog
   { id: 'worklog.agent', page: 'worklog', label: 'Worklog agent', keywords: ['review', 'notion', 'clickup', 'profiles'] },
+  { id: 'worklog.plugin', page: 'worklog', label: 'Work plugin', keywords: ['enable', 'disable', 'ideas', 'approved', 'tasks', 'daily plans'] },
+  { id: 'worklog.boards', page: 'worklog', label: 'Work boards', keywords: ['daily work', 'today', 'to-do', 'working on', 'completed', 'task board', 'backlog', 'completion evidence'], fallback: 'worklog.plugin' },
   { id: 'worklog.auto', page: 'worklog', label: 'Scan while I work', keywords: ['automatic', 'auto scan', 'background'] },
   { id: 'worklog.targets', page: 'worklog', label: 'Where reviews are filed', keywords: ['notion', 'clickup', 'destination'] },
   { id: 'worklog.notion', page: 'worklog', label: 'Notion data source', keywords: ['notion id', 'database'] },

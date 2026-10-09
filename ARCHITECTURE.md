@@ -524,6 +524,19 @@ touches /api or /ws. It also takes Web Push (`notify.ts`, main's `remote/push.ts
 phone re-sends its subscription at every start and sheet open, so the sheet's On is the computer's
 answer rather than the browser's (gotcha 136).
 
+## The Work plugin
+
+The built-in Work module (`src/main/plugins/work.ts`) owns `userData/plugins/work.json`;
+its schema, task/daily contracts and manifest live in `shared/workPlugin.ts` and
+`shared/plugins.ts`. It loads lazily, uses bounded async atomic writes, serializes
+requests before I/O and checks record revisions. Fresh installations are disabled.
+The `work:*` IPC bridge accepts local board edits from the app window; session links
+must name a live, non-private local session. There are no external writes or background
+scanners in this first local-board module. Disabling retains records; quitting aborts
+pending storage work. WorkPanel is available in Settings and in WorkDock beside Activity.
+The legacy Worklog review queue below remains under its own settings and file format.
+Direct Notion synchronization and review-lifecycle extraction remain open.
+
 ## The worklog agent
 
 `src/main/worklog/` turns finished work into Notion pages and ClickUp tasks. It is a **review
@@ -1281,6 +1294,13 @@ every bug listed in CLAUDE.md was found; all of them produced *empty or wrong ou
 than errors*, which is exactly the class a typecheck cannot catch.
 
 ## File map
+
+The Work module adds `src/main/plugins/work.ts` (durable local transitions),
+`src/shared/plugins.ts` (built-in manifest/lifecycle contract),
+`src/shared/workPlugin.ts` (task/daily wire types), `WorkPanel.tsx` and `WorkDock.tsx`
+(local boards and dock registration), and `scripts/verify-work-plugin.mts` (state and
+real disk concurrency proof).
+
 
 Every file worth knowing about, and the one thing about it that is easy to get wrong. CLAUDE.md
 carries a shorter copy; this is the full one.

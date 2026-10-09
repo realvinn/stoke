@@ -70,6 +70,18 @@ Model labels distinguish a requested model from one Claude’s status line or tr
 
 Validation: typecheck, the focused usage/agent suites and the full `npm run check` gate pass, including desktop and remote builds. Fixtures cover account switches, late replies, unsupported agents and shared OpenRouter routing. This is not a new quota source for Grok/Cursor or a live model/context adapter. Usage routing still follows the current configured account source; preserving the exact provider/key configuration from each session’s launch needs further work. [Official Codex authentication docs](https://learn.chatgpt.com/docs/auth) and local `codex login --help` confirm file/keyring/auto/ephemeral stores and command-line overrides. No credential store, sign-in or token was changed during this inspection; concurrent real-account proof remains open.
 
+## Native macOS build
+
+Built the ARM64 DMG and ZIP at commit `c8260a8`, without a version bump, release or install over the running copy. `npm run dist:mac` succeeds. The packaged PTY is `@lydell/node-pty-darwin-arm64`, the cookie-encryption and RunAsNode fuses pass, and `codesign --verify --strict --deep` succeeds with `Authority=Stoke`. Notarization was skipped because notarization options were not configured. Artifacts: `release/Stoke-1.0.0-beta.3-arm64.dmg` and `.zip`. This build predates the Work boards below; rebuild after their verification to include them.
+
+## Work plugin: local task and daily boards
+
+Implemented: an opt-in built-in Work module with a versioned manifest, declared capabilities, durable module-owned state and cleanup. The Activity dock gains a Work boards view; Settings › Worklog gains its enable switch and boards. Tasks follow Idea → Approved → Working → Completed. Approval does not execute an agent or publish externally. Starting can associate the current ordinary local session. Completion requires evidence and updates or creates the selected day’s related entry. A task can span several days; past entries retain their historical state. Unplanned work has no invented backlog task. Local day and timezone are recorded independently from timestamps.
+
+Async owner-only atomic storage serializes mutations before any await, bounds queue size and I/O time, and rejects stale record revisions. Renderer drafts retain the revision they opened, so a background update cannot silently turn an old draft into a current write. Disabling keeps records and blocks board changes. The existing Worklog settings, connector review flow, accepted URLs and rejection tombstones remain separate and unchanged for now.
+
+Validation: the focused Work suite passes approval/start rules, linked multi-day completion, Unicode, unplanned entries, revision conflicts, simultaneous saves, disk reloads, reply isolation, corrupt/future store refusal and preservation of legacy queue bytes. Typecheck, Settings search verification and the full `npm run check` gate pass, including desktop and remote builds. Native visual verification remains pending. Direct Notion API sync, Sonnet drafting and extraction of the legacy review lifecycle are the next parts of this module.
+
 ## Remaining implementation
 
 Every roadmap wave still has open acceptance criteria. SSH downloads and relay transfers, live agent telemetry, the Work/Notion plugin, privilege helpers and the terminal companion are still to be implemented. Live verification and platform-specific proof remain open where called out above.

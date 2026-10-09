@@ -8143,6 +8143,37 @@ button.color-field-swatch[aria-expanded='true'] {
  * No background: `.activity` is the one surface here, and a second tinted
  * layer compounds under a wallpaper (gotcha 54).
  */
+.work-dock { width: 100%; min-width: 0; display: flex; flex-direction: column; border-left: 1px solid var(--border); background: var(--bg-sunken); }
+.work-dock-tabs { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 10px; border-bottom: 1px solid var(--border); }
+.work-dock-tabs .icon-btn { margin-left: auto; }
+.work-dock > .activity { flex: 1; min-height: 0; border-left: 0; }
+.work-dock-body { flex: 1; min-height: 0; overflow: auto; padding: 14px; }
+.work-panel { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.work-header { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.work-header-text { flex: 1; min-width: 180px; }
+.work-header-text h3 { margin: 0 0 6px; font-size: 13px; font-weight: 600; }
+.work-header-text p { margin: 0; font-size: 12px; line-height: 1.5; color: var(--text-muted); }
+.work-enable { display: flex; align-items: center; gap: 8px; font-size: 12px; overflow-wrap: anywhere; }
+.work-controls, .work-switch, .work-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.work-date { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.work-date .input { width: auto; min-width: 0; }
+.work-switch .btn[aria-pressed="true"], .work-dock-tabs .btn[aria-pressed="true"] { background: var(--surface-selected); color: var(--text); border-color: var(--accent-ink); }
+.work-note, .work-empty { color: var(--text-muted); font-size: 12px; line-height: 1.5; margin: 0; overflow-wrap: anywhere; }
+.work-error { color: var(--danger); font-size: 12px; line-height: 1.5; margin: 0; }
+.work-editor { display: flex; flex-direction: column; gap: 12px; padding: 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
+.work-editor > label { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--text-muted); }
+.work-editor > .work-enable { flex-direction: row; }
+.work-editor textarea { resize: vertical; }
+.work-ledger { display: flex; flex-direction: column; gap: 18px; }
+.work-lane { min-width: 0; }
+.work-lane h4 { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; color: var(--text); margin: 0 0 8px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+.work-lane h4 span { color: var(--text-faint); font-weight: 400; }
+.work-item { display: flex; flex-direction: column; gap: 4px; text-align: left; width: 100%; padding: 10px; color: var(--text); background: transparent; border: 0; border-bottom: 1px solid var(--border-subtle); border-radius: 4px; font-size: 13px; cursor: pointer; overflow-wrap: anywhere; }
+.work-item:hover { background: var(--surface-hover); }
+.work-item[aria-pressed="true"] { background: var(--surface-selected); }
+.work-item small { font-size: 11px; color: var(--text-muted); }
+.work-item:disabled { cursor: default; opacity: 0.6; }
+
 .activity-head {
   display: flex;
   align-items: center;

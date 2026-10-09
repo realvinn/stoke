@@ -65,6 +65,7 @@ import { ChatHistorySettings } from './ChatHistorySettings'
 import type { ChatDetection, ChatIndexStatus } from '@shared/chatIndex'
 import type { CodingCliDetection, CodingCliId } from '@shared/codingClis'
 import { WorklogSettings } from './WorklogSettings'
+import { WorkPanel } from './WorkPanel'
 
 /**
  * The zoom targets, worded as what they move rather than as their ids.
@@ -1298,6 +1299,8 @@ export function SettingsSheet({
             )}
 
             {loc.page === 'worklog' && (
+              <>
+              <WorkPanel />
               <WorklogSettings
                 profiles={profiles}
                 worklogGroups={settings.worklogGroups}
@@ -1307,6 +1310,7 @@ export function SettingsSheet({
                 onChange={(worklogGroups) => onPatch({ worklogGroups })}
                 onChangeAuto={(worklogAuto) => onPatch({ worklogAuto })}
               />
+              </>
             )}
 
             {loc.page === 'hosts' && (

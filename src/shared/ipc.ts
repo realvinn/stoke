@@ -462,6 +462,9 @@ export const CH = {
   tabsRestore: 'tabs:restore',
 
   // worklog
+  workRead: 'work:read',
+  workChange: 'work:change',
+  workChanged: 'work:changed',
   worklogQueue: 'worklog:queue',
   worklogScan: 'worklog:scan',
   worklogAccept: 'worklog:accept',

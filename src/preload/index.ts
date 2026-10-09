@@ -337,6 +337,11 @@ const api: StokeApi = {
   activity: {
     read: (from: number, to: number) => ipcRenderer.invoke(CH.activityRead, from, to)
   },
+  work: {
+    read: () => ipcRenderer.invoke(CH.workRead),
+    change: (command) => ipcRenderer.invoke(CH.workChange, command),
+    onChange: (cb) => on<[Parameters<typeof cb>[0]]>(CH.workChanged, cb)
+  },
   worklog: {
     queue: () => ipcRenderer.invoke(CH.worklogQueue),
     scan: (sessionId: string) => ipcRenderer.invoke(CH.worklogScan, sessionId),

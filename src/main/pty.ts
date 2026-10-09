@@ -135,6 +135,8 @@ interface Session {
   enroll: boolean
   /** A sign-in tab running an agent's own login for an account (`opts.accountLogin`), not a session. */
   accountLogin: boolean
+  /** Agent sessions only: excludes install scripts even when they share the home folder. */
+  ordinary: boolean
   /**
    * A private chat (`opts.private`, shared/privateChat.ts): left out of
    * `list()` — so the phone, the hub and every list built on it never see it —
@@ -770,6 +772,7 @@ export class PtyManager {
       instrumented,
       enroll: enrolling,
       accountLogin: loggingIn,
+      ordinary: !installing && !enrolling && !loggingIn,
       private: isPrivate,
       accountId: !remote && !installing && !enrolling && opts.accountId ? opts.accountId : 'default',
       exited: false,
@@ -1280,6 +1283,11 @@ export class PtyManager {
     const s = this.sessions.get(ptyId)
     if (!s || s.private || s.exited) return null
     return { sessionId: s.sessionId, cli: s.cli, accountId: s.accountId, hostId: s.hostId, model: s.launchModel, effort: s.launchEffort }
+  }
+
+  /** Main-owned admission for a Work task's optional live session association. */
+  localAgentSession(sessionId: string): boolean {
+    return [...this.sessions.values()].some((s) => s.sessionId === sessionId && s.ordinary && !s.private && !s.hostId && !s.exited)
   }
 
   /** Drop an exited session once it has sat in the ring past `ENDED_RETENTION_MS`. */

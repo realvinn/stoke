@@ -79,7 +79,7 @@ import { StatusBar } from './components/StatusBar'
 import { TerminalView } from './components/TerminalView'
 import { TitleBar } from './components/TitleBar'
 import { TopBar } from './components/TopBar'
-import { ActivityPanel } from './components/ActivityPanel'
+import { WorkDock } from './components/WorkDock'
 import { SshKeyPrompt } from './components/SshKeyPrompt'
 import { OtherMachines } from './components/OtherMachines'
 import { RemoteHostFab, RemoteHostStrip } from './components/RemoteHostStrip'
@@ -6443,7 +6443,7 @@ export function App(): React.JSX.Element {
         */}
         {worklogOpen && (
           <div style={{ width: 340, display: 'flex', flexShrink: 0 }}>
-            <ActivityPanel onClose={() => setWorklogOpen(false)} />
+            <WorkDock onClose={() => setWorklogOpen(false)} session={activeTab?.kind === 'session' && activeTab.status === 'running' && !activeTab.installing?.length && !activeTab.hostId && !activeTab.private && !activeTab.accountLogin && !activeTab.enrollHostId ? { id: activeTab.sessionId, title: activeTab.title } : undefined} />
           </div>
         )}
       </div>

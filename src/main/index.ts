@@ -2318,6 +2318,16 @@ function serialCommand(fn: () => Promise<StokeCommandState>): Promise<StokeComma
 
 /* --------------------------------------------------------------- worklog */
 
+let workPlugin: import('./plugins/work.ts').WorkPlugin | null = null
+let workPluginLoading: Promise<import('./plugins/work.ts').WorkPlugin> | null = null
+function workPluginFor(): Promise<import('./plugins/work.ts').WorkPlugin> {
+  // Lazy module and disk I/O: opening a board never blocks Stoke's boot.
+  return workPluginLoading ??= import('./plugins/work.ts').then(({ WorkPlugin }) => {
+    workPlugin = new WorkPlugin(app.getPath('userData'))
+    return workPlugin
+  })
+}
+
 /** The process-wide review queue. */
 function worklogQueue(): ReturnType<typeof getWorklogQueue> {
   return getWorklogQueue(app.getPath('userData'))
@@ -4667,6 +4677,25 @@ function registerIpc(): void {
    */
   const queue = worklogQueue
 
+  ipcMain.handle(CH.workRead, async (event) => {
+    if (!win || event.sender !== win.webContents) throw new Error('Open Work in Stoke.')
+    return (await workPluginFor()).read()
+  })
+  ipcMain.handle(CH.workChange, async (event, command: unknown) => {
+    if (!win || event.sender !== win.webContents) return { ok: false, message: 'Open Work in Stoke.' }
+    try {
+      // Session associations must name an ordinary live local tab, never a private chat.
+      if (command && typeof command === 'object' && 'sessionId' in command && command.sessionId) {
+        if (typeof command.sessionId !== 'string' || !ptys?.localAgentSession(command.sessionId)) return { ok: false, message: 'Choose a live local session to associate with this task.' }
+      }
+      const view = await (await workPluginFor()).change(command)
+      send(CH.workChanged, view)
+      return { ok: true, view }
+    } catch (err) {
+      return { ok: false, message: err instanceof Error ? err.message : 'Work could not save the boards.' }
+    }
+  })
+
   ipcMain.handle(CH.worklogQueue, () => queue().list())
 
   ipcMain.handle(CH.worklogWatch, () => watchStates())
@@ -5221,6 +5250,7 @@ if (!app.requestSingleInstanceLock(launchRequest ? { stokeCli: launchRequest } :
   })
 
   app.on('before-quit', () => {
+    workPlugin?.stop()
     if (lastTabState) writeTabState(tabStateFile(app.getPath('userData')), lastTabState)
     // Settings coalesce bursts of writes (see store.ts). Anything still waiting
     // is written here rather than lost with the process.
