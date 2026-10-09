@@ -988,17 +988,27 @@ await step('browser load errors and explicit certificate reviews work in native 
     // A real popup form to untrusted HTTPS must retain its original POST on Continue.
     const sourceUrl = `${site.base}/links?tls-form=1`
     await ev(`(window.stoke.browser.newTab(${JSON.stringify(sourceUrl)}), true)`)
+    await waitFor('the HTTPS form source to finish its navigation', async () => {
+      const next = await state()
+      return next?.url === sourceUrl && !next.loading && !next.loadError ? true : null
+    })
     const source = await waitFor('the HTTPS form source', () => connectBrowserPage(port, (url: string) => url === sourceUrl))
     try {
+      await waitFor('the actual loaded links document', () => source.evaluate('document.readyState === "complete" && !!document.querySelector("#plain")'))
       const before = (await state())?.activeId
       await source.evaluate(`(() => { const f = document.createElement('form'); f.method='post'; f.target='_blank'; f.action=${JSON.stringify(`${tls.origin}/posted`)}; const i=document.createElement('input'); i.name='note'; i.value='Reviewed 界'; const b=document.createElement('button'); b.id='tls-post'; b.textContent='Submit HTTPS form'; f.append(i,b); document.body.append(f); return true })()`)
-      const point = await source.evaluate('(() => {const r=document.querySelector("#tls-post").getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2}})()')
+      const point = await waitFor('the ready HTTPS form button', () => source.evaluate('(() => {const b=document.querySelector("#tls-post"); if(!b)return null; b.scrollIntoView({block:"center"}); const r=b.getBoundingClientRect(), x=r.x+r.width/2,y=r.y+r.height/2; return r.width && r.height && document.elementFromPoint(x,y) === b ? {x,y} : null})()'))
       await source.send('Input.dispatchMouseEvent', {type:'mousePressed',button:'left',clickCount:1,...point})
       await source.send('Input.dispatchMouseEvent', {type:'mouseReleased',button:'left',clickCount:1,...point})
       const posted = await waitFor('the popup POST certificate review', async () => {
         const next = await state()
         return next?.activeId !== before && next?.loadError?.url === `${tls.origin}/posted` && next.loadError.certificate?.canContinue ? next : null
-      }, 20_000)
+      }, 20_000).catch(async error => {
+        await shot('04-https-form-failure')
+        console.log('  HTTPS form state:', JSON.stringify(await state()))
+        console.log('  HTTPS form page:', JSON.stringify(await source.evaluate('({url:location.href,ready:document.readyState,button:!!document.querySelector("#tls-post"),viewport:[innerWidth,innerHeight]})')))
+        throw error
+      })
       owned.add(posted.activeId!)
       const page = await continueReview(posted)
       try {
