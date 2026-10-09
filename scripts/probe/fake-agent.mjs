@@ -399,9 +399,11 @@ rl.on('line', async (raw) => {
     await mcpVisit(mcp[1])
     return
   }
-  const link = /^hardlink\s+(\S+)/.exec(line)
+  const link = /^hardlink\s+(\S+)(?:\s+(\d+))?$/.exec(line)
   if (link) {
-    const cols = process.stdout.columns || 80
+    // ConPTY can report a stale/fallback stdout width after a pane resize.
+    // The probe supplies the production xterm's current width explicitly.
+    const cols = Math.max(8, Math.min(1024, Number(link[2]) || process.stdout.columns || 80))
     const url = link[1] + 'x'.repeat(cols * 2) + '&end=terminal-tail'
     record('hardlink', { url, cols })
     // A TUI repaint: two full rows with explicit CRLF, rather than xterm's

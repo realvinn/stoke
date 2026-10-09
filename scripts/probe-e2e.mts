@@ -91,6 +91,7 @@ import { parseArgs } from 'node:util'
 import { CdpClient, connectBrowserPage, connectStoke, listTargets } from './cdp-lib.mjs'
 import { startLoginServer } from './probe/login-server.mjs'
 import { createSshFileFixture, removeSshFileFixture } from './probe/ssh-files.mjs'
+import { terminalLinkPoint } from './probe/terminal-link.mjs'
 import type { BrowserState } from '../src/shared/types.ts'
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -886,19 +887,16 @@ await step('browser links retain popup navigation, POST data and profile isolati
 
 await step('a click on a hard-wrapped terminal URL opens its complete address', async () => {
   const t = tabs.codex!
-  await typeLine(t.ptyId, `hardlink ${site.base}/whoami?terminal=hard&padding=`)
+  await activate(t.ptyId)
+  const cols = await ev<number>(`window.stokeTerminals.get(${JSON.stringify(t.ptyId)}).cols`)
+  await typeLine(t.ptyId, `hardlink ${site.base}/whoami?terminal=hard&padding= ${cols}`)
   const link = await waitFor('the stub\'s hard link output', () => stubRecords('codex').find(r => r.pid === t.pid)?.events.find(e => e.kind === 'hardlink') ?? null, 10_000)
   const target = String(link.url)
-  const point = await waitFor('the hard-wrapped tail in the production terminal', () => ev<{ x: number; y: number; wrapped: boolean } | null>(`(() => {
-    const t = window.stokeTerminals.get(${JSON.stringify(t.ptyId)}), b = t.buffer.active, screen = t.element.querySelector('.xterm-screen').getBoundingClientRect();
-    for (let i = b.viewportY; i < Math.min(b.length, b.viewportY + t.rows); i++) {
-      const line = b.getLine(i), text = line?.translateToString(true) || '';
-      if (!text.includes('&end=terminal-tail')) continue;
-      return { x: screen.x + screen.width / t.cols / 2, y: screen.y + (i - b.viewportY + .5) * screen.height / t.rows, wrapped: line.isWrapped };
-    }
-    return null;
+  const point = await waitFor('the hard-wrapped tail in the production terminal', () => ev<{ x: number; y: number; hardBoundary: boolean } | null>(`(() => {
+    const t = window.stokeTerminals.get(${JSON.stringify(t.ptyId)}), screen = t.element.querySelector('.xterm-screen').getBoundingClientRect();
+    return (${terminalLinkPoint.toString()})(t, ${JSON.stringify(target)}, screen);
   })()`), 10_000)
-  check('the terminal tail is an explicit hard line, not a normal soft wrap', point.wrapped === false)
+  check('the terminal URL crosses an explicit hard line, not only normal soft wraps', point.hardBoundary === true)
   await ev('(window.__stokeTerminalLinkOff = window.stoke.browser.onState(state => { window.__stokeTerminalLinkState = state }), true)')
   try {
     await ui!.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y })
