@@ -25,6 +25,7 @@ import { AgentLifecycleGate } from '../shared/agentLifecycle.ts'
 import { QuickTerminal } from './quickTerminal.ts'
 import { boundUsageReading, UsageBindings, usageCacheKey } from './usageBindings.ts'
 import type { QuickTerminalAppearance, QuickTerminalMode, QuickTerminalSurface } from '../shared/quickTerminal.ts'
+import { quickTerminalLink } from '../shared/quickTerminal.ts'
 import { activeThemeId, resolveTheme } from '@shared/themes'
 import { revealInsetFor, revealsOnEntry } from '@shared/fullScreenReveal'
 import { DEFAULT_BROWSER_PROFILE_ID, newProfileId, nextProfileLabel } from '@shared/browserProfiles'
@@ -4352,6 +4353,11 @@ function registerIpc(): void {
   ipcMain.handle(CH.quickTerminalAppearance, event => { if (!quickTerminalSurface(event)) throw new Error('Open the terminal in Stoke.'); return quickTerminalAppearance() })
   ipcMain.on(CH.quickTerminalCopy, (event, text) => { if (quickTerminalSurface(event) && typeof text === 'string' && text.length <= 200_000) clipboard.writeText(text) })
   ipcMain.handle(CH.quickTerminalPaste, event => { if (!quickTerminalSurface(event)) throw new Error('Open the terminal in Stoke.'); return clipboard.readText().slice(0, 200_000) })
+  ipcMain.on(CH.quickTerminalOpenLink, (event, id, url) => {
+    const surface = quickTerminalSurface(event)
+    const link = surface && quickTerminal ? quickTerminalLink(quickTerminal.view(), surface, id, url) : null
+    if (link) void shell.openExternal(link).catch(() => {})
+  })
   /*
    * A settings write and everything a moved field has to reach: the docked
    * browser, the phone server, the window's own paint, the recall cache. One

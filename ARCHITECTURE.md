@@ -1853,6 +1853,9 @@ src/main/         Electron main process
                       push services only), all in remotePhone.ts. 136
 src/preload/      contextBridge -> window.stoke
 src/renderer/     desktop React UI (all colour via CSS custom properties)
+  src/components/QuickTerminal.tsx  optional command shell panel and pop-out; one live
+                    shell, replay, find, selection and web/OSC links. The panel opens in
+                    Stoke; the pop-out has only a current-shell HTTP(S) external-link bridge
   src/components/BusyDialog.tsx  "a prompt is running — Force restart / Wait / Cancel", asked
                     before the relaunch pill or "Restart and install" kills a turn in flight.
                     Wait is the focused button. In `overlayOpen`, so the docked browser comes
@@ -2465,8 +2468,10 @@ scripts/          the verify-*.mts suites, make-icon.cjs
                     `--ssh` (CI only: ssh reads the passwd home) a real sshd, `~.`, and a
                     key enrollment. `--dev` runs the unpackaged build for a rehearsal. Not
                     a suite; its tally and exit code are the last statement
-  probe/            the probe's parts. fake-agent.mjs is every agent (one launcher per id,
-                    .cmd on Windows): records argv/env (redacted), writes a Claude
+  probe/            the probe's parts. terminal-link.mjs locates a complete URL across hard
+                    rows; ssh-files.mjs owns the CI-only disposable Mac/Linux SSH file fixture.
+                    fake-agent.mjs is every agent (one launcher per id, .cmd on Windows):
+                    records argv/env (redacted), writes a Claude
                     transcript and registry entry, runs the statusLine and hook commands
                     in the shell the CLI would, calls the MCP server it was handed.
                     login-server.mjs (/login, /whoami, /account, and windows.yml's /seed).

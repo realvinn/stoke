@@ -2,7 +2,7 @@ import { access, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'nod
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { QuickTerminal, quickTerminalEnv } from '../src/main/quickTerminal.ts'
-import { QuickTerminalReplay } from '../src/shared/quickTerminal.ts'
+import { QuickTerminalReplay, quickTerminalLink } from '../src/shared/quickTerminal.ts'
 import type { QuickTerminalFrame, QuickTerminalState } from '../src/shared/quickTerminal.ts'
 import { hydrateSettings } from '../src/main/settingsSchema.ts'
 import { LOCAL_KEYS, portableSettings } from '../src/shared/setupFile.ts'
@@ -46,6 +46,8 @@ try {
   const first = service.open('panel', root)
   check('a second open cannot race the first preparation', await refused(() => service.open('popout', root)), true)
   const state = await first; const id = state.id!
+  check('the current terminal may open only complete web links', [quickTerminalLink(state, 'panel', id, 'http://localhost:3000/a'), quickTerminalLink(state, 'panel', id, 'file:///etc/passwd'), quickTerminalLink(state, 'panel', id, 'https://example.com/\nnext'), quickTerminalLink(state, 'panel', id, { url: 'https://example.com' })], ['http://localhost:3000/a', null, null, null])
+  check('a disabled or obsolete view cannot dispatch links', [quickTerminalLink({ ...state, enabled: false }, 'panel', id, 'https://example.com'), quickTerminalLink(state, 'popout', id, 'https://example.com'), quickTerminalLink(state, 'panel', 'older-shell', 'https://example.com'), quickTerminalLink({ ...state, mode: 'hidden' }, 'panel', id, 'https://example.com')], [null, null, null, null])
   check('the cwd is canonical and Unicode survives', state.cwd, await realpath(root))
   check('it is an ordinary platform shell', state.shell.toLowerCase().includes(process.platform === 'win32' ? 'cmd.exe' : '/'), true)
   service.write('panel', id, process.platform === 'win32' ? 'echo STOKE_QUICK_ONE>verified.txt & type verified.txt\r' : "printf 'STOKE_QUICK_ONE🔥\\n' > verified.txt; cat verified.txt\r")

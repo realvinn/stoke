@@ -3,9 +3,16 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { SearchAddon } from '@xterm/addon-search'
 import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes'
+import { WebLinksAddon } from '@xterm/addon-web-links'
+import { terminalLinkClick, terminalLinkRepairs } from '@shared/terminalLinks'
 import { QuickTerminalReplay, type QuickTerminalApi, type QuickTerminalAppearance, type QuickTerminalState, type QuickTerminalSurface } from '@shared/quickTerminal'
 import { terminalTheme } from '../lib/theme'
+import { installShiftSelection } from '../lib/terminalSelection'
 import '@xterm/xterm/css/xterm.css'
+
+/** Like the agent and relay registries: read the real buffer in packaged probes. */
+const quickTerms = new Map<string, Terminal>()
+;(window as unknown as { stokeQuickTerminals?: Map<string, Terminal> }).stokeQuickTerminals = quickTerms
 
 export function useQuickTerminal(api: QuickTerminalApi): QuickTerminalState | null {
   const [state, setState] = useState<QuickTerminalState | null>(null)
@@ -19,8 +26,8 @@ export function useQuickTerminal(api: QuickTerminalApi): QuickTerminalState | nu
   return state
 }
 
-interface Props { api: QuickTerminalApi; state: QuickTerminalState; appearance: QuickTerminalAppearance; surface: QuickTerminalSurface }
-export function QuickTerminalPanel({ api, state, appearance, surface }: Props): React.JSX.Element {
+interface Props { api: QuickTerminalApi; state: QuickTerminalState; appearance: QuickTerminalAppearance; surface: QuickTerminalSurface; onOpenUrl?: (url: string) => void }
+export function QuickTerminalPanel({ api, state, appearance, surface, onOpenUrl }: Props): React.JSX.Element {
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const claimed = useRef(false)
@@ -54,7 +61,7 @@ export function QuickTerminalPanel({ api, state, appearance, surface }: Props): 
         <button className="btn" type="submit">Next</button><button className="btn" type="button" onClick={closeFind}>Close</button>
       </form>}
       {error && <p className="quick-terminal-error" role="alert">{error}</p>}
-      {state.id && <QuickTerminalScreen api={api} id={state.id} appearance={appearance} phase={state.phase} find={find} focusTerminal={focusTerminal} />}
+      {state.id && <QuickTerminalScreen api={api} id={state.id} appearance={appearance} phase={state.phase} find={find} focusTerminal={focusTerminal} onOpenUrl={onOpenUrl} />}
       {!state.id && <div className="quick-terminal-empty">{state.phase === 'starting' ? 'Opening shell…' : 'Use Terminal in the top bar to open a shell.'}</div>}
       <footer className="quick-terminal-footer">
         <span role="status">{state.phase === 'running' ? 'Commands keep running when hidden' : state.phase === 'exited' ? `Shell ended${state.exitCode === null ? '' : ` · Exit ${state.exitCode}`}` : state.phase === 'stopping' ? 'Stopping shell…' : 'Opening shell…'}</span>
@@ -66,22 +73,37 @@ export function QuickTerminalPanel({ api, state, appearance, surface }: Props): 
   )
 }
 
-function QuickTerminalScreen({ api, id, appearance, phase, find, focusTerminal }: { api: QuickTerminalApi; id: string; appearance: QuickTerminalAppearance; phase: QuickTerminalState['phase']; find: React.RefObject<SearchAddon | null>; focusTerminal: React.RefObject<(() => void) | null> }): React.JSX.Element {
+function QuickTerminalScreen({ api, id, appearance, phase, find, focusTerminal, onOpenUrl }: { api: QuickTerminalApi; id: string; appearance: QuickTerminalAppearance; phase: QuickTerminalState['phase']; find: React.RefObject<SearchAddon | null>; focusTerminal: React.RefObject<(() => void) | null>; onOpenUrl?: (url: string) => void }): React.JSX.Element {
   const host = useRef<HTMLDivElement>(null)
   const terminal = useRef<Terminal | null>(null)
   const fitCurrent = useRef<(() => void) | null>(null)
   const appearanceRef = useRef(appearance); appearanceRef.current = appearance
+  const openUrlRef = useRef(onOpenUrl); openUrlRef.current = onOpenUrl
   useEffect(() => {
     const node = host.current
     if (!node) return
     let alive = true
     const a = appearanceRef.current
-    const term = new Terminal({ cols: 80, rows: 24, scrollback: 2000, fontFamily: a.fontFamily, fontSize: a.fontSize, lineHeight: a.terminal.lineHeight, letterSpacing: a.terminal.letterSpacing, fontWeightBold: a.terminal.boldWeight, minimumContrastRatio: a.terminal.contrastBoost, cursorStyle: a.terminal.cursorStyle, cursorBlink: a.terminal.cursorBlink, theme: terminalTheme(a.theme), macOptionIsMeta: true, macOptionClickForcesSelection: true, altClickMovesCursor: false, allowProposedApi: true })
+    let downAt: { x: number; y: number } | null = null
+    const openLink = (event: MouseEvent, uri: string): void => {
+      event.preventDefault()
+      const action = terminalLinkClick(uri, event, downAt, api.platform === 'darwin')
+      if (!alive || !action) return
+      if (action === 'stoke' && openUrlRef.current) openUrlRef.current(uri)
+      else api.openLink(id, uri)
+    }
+    const press = (event: MouseEvent): void => { downAt = { x: event.clientX, y: event.clientY } }
+    node.addEventListener('mousedown', press, true)
+    const term = new Terminal({ cols: 80, rows: 24, scrollback: 2000, fontFamily: a.fontFamily, fontSize: a.fontSize, lineHeight: a.terminal.lineHeight, letterSpacing: a.terminal.letterSpacing, fontWeightBold: a.terminal.boldWeight, minimumContrastRatio: a.terminal.contrastBoost, cursorStyle: a.terminal.cursorStyle, cursorBlink: a.terminal.cursorBlink, theme: terminalTheme(a.theme), macOptionIsMeta: true, macOptionClickForcesSelection: true, altClickMovesCursor: false, allowProposedApi: true, linkHandler: { activate: openLink } })
     terminal.current = term
+    quickTerms.set(id, term)
     focusTerminal.current = () => { if (alive) term.focus() }
     const fit = new FitAddon(); const search = new SearchAddon(); find.current = search
     term.loadAddon(fit); term.loadAddon(search); term.loadAddon(new UnicodeGraphemesAddon()); term.unicode.activeVersion = '15-graphemes'
+    term.registerLinkProvider({ provideLinks: (line, done) => done(terminalLinkRepairs(term, line).map(link => ({ ...link, activate: openLink }))) })
+    term.loadAddon(new WebLinksAddon(openLink))
     term.open(node)
+    const removeSelection = installShiftSelection(node, term, api.platform === 'darwin')
     const replay = new QuickTerminalReplay(id, data => { if (alive) term.write(data) })
     const offData = api.onData(frame => replay.frame(frame))
     const input = term.onData(data => api.write(id, data))
@@ -106,7 +128,7 @@ function QuickTerminalScreen({ api, id, appearance, phase, find, focusTerminal }
       // Fit only after the replay has parsed its original grid.
       term.write('', () => { if (!alive) return; hydrated = true; resize(); term.focus() })
     }).catch(() => { if (alive) term.write('\r\nThe shell view could not reconnect. Hide and reopen it.\r\n') })
-    return () => { alive = false; observer.disconnect(); offData(); input.dispose(); node.removeEventListener('contextmenu', context); fitCurrent.current = null; find.current = null; focusTerminal.current = null; terminal.current = null; term.dispose() }
+    return () => { alive = false; observer.disconnect(); offData(); input.dispose(); removeSelection(); node.removeEventListener('contextmenu', context); node.removeEventListener('mousedown', press, true); fitCurrent.current = null; find.current = null; focusTerminal.current = null; terminal.current = null; quickTerms.delete(id); term.dispose() }
   }, [api, id, find, focusTerminal])
   useEffect(() => {
     const term = terminal.current

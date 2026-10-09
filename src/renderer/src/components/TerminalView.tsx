@@ -6,7 +6,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes'
 import { captureTerminalViewport, restoreTerminalViewport } from '@shared/terminalViewport'
-import { selectedTerminalLink, terminalHttpLink, terminalLinkRepairs } from '@shared/terminalLinks'
+import { selectedTerminalLink, terminalLinkClick, terminalLinkRepairs } from '@shared/terminalLinks'
 import { rememberSshViewport, takeSshViewport } from '../lib/sshViewport'
 import type { ClipboardPeek } from '@shared/api'
 import type { SshHost, TerminalSettings, Theme, VoiceSettings } from '@shared/types'
@@ -29,13 +29,6 @@ import { ContextMenu } from './ContextMenu'
 import { TerminalFind } from './TerminalFind'
 import { useSshImages } from './ImageSendStrip'
 import { useDictation } from './Dictation'
-
-/**
- * How far the pointer may travel between press and release and still count as a
- * click rather than a drag. Only a click follows a link; a drag is someone
- * selecting the URL to copy it.
- */
-const DRAG_SLOP_PX = 3
 
 /**
  * The largest OSC 52 payload Stoke will put on the clipboard, in base64
@@ -319,7 +312,7 @@ export function TerminalView({
      * character to its last — which is how anyone copies a URL — both selected
      * the text and yanked the browser panel open.
      */
-    const downAt = { x: 0, y: 0 }
+    let downAt: { x: number; y: number } | null = null
 
     /*
      * One rule for every link the terminal can produce, whether WebLinksAddon
@@ -332,12 +325,9 @@ export function TerminalView({
      */
     const openLink = (event: MouseEvent, uri: string): void => {
       event.preventDefault()
-      if (!terminalHttpLink(uri)) return
-      const moved = Math.abs(event.clientX - downAt.x) + Math.abs(event.clientY - downAt.y)
-      if (moved > DRAG_SLOP_PX) return
-      const away = event.shiftKey || (isMacPlatform ? event.metaKey : event.ctrlKey)
-      if (away) window.stoke.openExternal(uri)
-      else openUrlRef.current(uri)
+      const action = terminalLinkClick(uri, event, downAt, isMacPlatform)
+      if (action === 'external') window.stoke.openExternal(uri)
+      else if (action === 'stoke') openUrlRef.current(uri)
     }
 
     const term = new Terminal({
@@ -810,8 +800,7 @@ export function TerminalView({
     }
 
     const onDownPoint = (e: MouseEvent): void => {
-      downAt.x = e.clientX
-      downAt.y = e.clientY
+      downAt = { x: e.clientX, y: e.clientY }
     }
 
     /*

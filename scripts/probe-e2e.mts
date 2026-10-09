@@ -93,6 +93,7 @@ import { startLoginServer } from './probe/login-server.mjs'
 import { createSshFileFixture, removeSshFileFixture } from './probe/ssh-files.mjs'
 import { terminalLinkPoint } from './probe/terminal-link.mjs'
 import type { BrowserState } from '../src/shared/types.ts'
+import type { QuickTerminalResult, QuickTerminalState } from '../src/shared/quickTerminal.ts'
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const isWin = process.platform === 'win32'
@@ -237,7 +238,7 @@ for (const id of AGENTS) {
 const noRcShell = join(root, 'bin', 'sh-norc')
 if (!isWin) {
   mkdirSync(dirname(noRcShell), { recursive: true })
-  writeFileSync(noRcShell, '#!/bin/sh\nshift\nexec /bin/sh -c "$1"\n', { mode: 0o755 })
+  writeFileSync(noRcShell, '#!/bin/sh\nif [ "$#" -eq 1 ] && [ "$1" = "-l" ]; then exec /bin/sh; fi\nshift\nexec /bin/sh -c "$1"\n', { mode: 0o755 })
 }
 
 /* ------------------------------------------------------------- the app */
@@ -907,6 +908,76 @@ await step('a click on a hard-wrapped terminal URL opens its complete address', 
     check('clicking the terminal tail preserves the full URL including its query', opened.url === target, opened.url)
   } finally {
     await ev('(window.__stokeTerminalLinkOff?.(), delete window.__stokeTerminalLinkOff, delete window.__stokeTerminalLinkState, true)')
+  }
+})
+
+await step('quick terminal opens wrapped links and retains its shell through a pop-out', async () => {
+  const fixture = join(root, 'quick-link.mjs')
+  const base = `${site.base}/whoami?terminal=quick&padding=`
+  writeFileSync(fixture, `const cols = Number(process.argv[2]); const url = ${JSON.stringify(base)} + 'x'.repeat(cols * 2) + '&end=quick-tail'; process.stdout.write('\\r\\n\\x1b[?7l'); for (let at = 0; at < url.length; at += cols) process.stdout.write(url.slice(at, at + cols) + '\\r\\n'); process.stdout.write('\\x1b[?7h');`)
+  await ev('window.stoke.settings.set({ quickTerminal: true })')
+  let id = ''
+  let popup: CdpClient | null = null
+  try {
+    const result = await ev<QuickTerminalResult>(`window.stoke.quickTerminal.open('panel', ${JSON.stringify(proj)})`)
+    if (!result.ok || !result.state.id) throw new Error('the quick shell did not start')
+    id = result.state.id
+    const cols = await waitFor('the fitted quick shell', () => ev<number | null>(`(() => {
+      const t = window.stokeQuickTerminals.get(${JSON.stringify(id)}), screen = t?.element?.querySelector('.xterm-screen');
+      return screen && screen.getBoundingClientRect().width <= t.element.clientWidth + 1 ? t.cols : null;
+    })()`))
+    const quote = (value: string): string => {
+      if (isWin) { if (/["%\r\n]/.test(value)) throw new Error('unsupported cmd fixture path'); return `"${value}"` }
+      return shWord(value)
+    }
+    await ev(`(window.stokeQuickTerminals.get(${JSON.stringify(id)}).focus(), true)`)
+    await ui!.send('Input.insertText', { text: `${quote(process.execPath)} ${quote(fixture)} ${cols}` })
+    await pressEnter()
+    const target = base + 'x'.repeat(cols * 2) + '&end=quick-tail'
+    const point = await waitFor('the quick shell\'s complete URL', () => ev<{ x: number; y: number; hardBoundary: boolean } | null>(`(() => {
+      const t = window.stokeQuickTerminals.get(${JSON.stringify(id)}), screen = t.element.querySelector('.xterm-screen').getBoundingClientRect();
+      return (${terminalLinkPoint.toString()})(t, ${JSON.stringify(target)}, screen);
+    })()`))
+    check('the quick-shell fixture crosses a hard row boundary', point.hardBoundary === true)
+    await ev('(window.__stokeQuickLinkOff = window.stoke.browser.onState(state => { window.__stokeQuickLinkState = state }), true)')
+    await ui!.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y })
+    await sleep(150)
+    await ui!.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: point.x, y: point.y, button: 'left', clickCount: 1 })
+    await ui!.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: point.x, y: point.y, button: 'left', clickCount: 1 })
+    const opened = await waitFor('the quick-shell URL in Stoke', () => ev<BrowserState | null>(`window.__stokeQuickLinkState?.url === ${JSON.stringify(target)} && !window.__stokeQuickLinkState.loading ? window.__stokeQuickLinkState : null`))
+    check('a real quick-terminal tail click retains the complete query', opened.url === target)
+    const moved = await ev<QuickTerminalResult>('window.stoke.quickTerminal.move("popout")')
+    check('moving into a native pop-out keeps the same shell', moved.ok && moved.state.id === id && moved.state.phase === 'running')
+    popup = await waitFor('the native quick-terminal window', async () => {
+      for (const target of await listTargets(port)) {
+        if (target.type !== 'page' || !target.webSocketDebuggerUrl || !target.url.includes('quick-terminal.html')) continue
+        const client = await CdpClient.open(target)
+        if (await client.evaluate('!!window.stokeQuickTerminal && !!window.stokeQuickTerminals?.size')) return client
+        client.close()
+      }
+      return null
+    })
+    check('the pop-out exposes its terminal bridge and no agent or Node bridge', await popup.evaluate('typeof window.stoke === "undefined" && typeof require === "undefined" && typeof process === "undefined" && typeof window.stokeQuickTerminal.openLink === "function"') === true)
+    const snapshot = await popup.evaluate(`window.stokeQuickTerminal.read()`)
+    const replayed = await waitFor('the URL replayed into the pop-out', () => popup!.evaluate(`(() => {
+      const t = window.stokeQuickTerminals.get(${JSON.stringify(id)}), screen = t?.element?.querySelector('.xterm-screen');
+      return screen ? (${terminalLinkPoint.toString()})(t, ${JSON.stringify(target)}, screen.getBoundingClientRect()) : null;
+    })()`))
+    check('the native pop-out replays the existing shell output', snapshot.state.id === id && !!replayed)
+    await popup.evaluate('window.stokeQuickTerminal.move("panel")')
+    await waitFor('the shell returning to its panel', () => ev(`!!window.stokeQuickTerminals.get(${JSON.stringify(id)})`))
+    check('returning to the panel still uses the same process', (await ev<{ state: QuickTerminalState }>('window.stoke.quickTerminal.read()')).state.id === id)
+  } finally {
+    popup?.close()
+    if (id) {
+      await ev('window.stoke.quickTerminal.move("panel")').catch(() => {})
+      await ev(`(window.stoke.quickTerminal.write(${JSON.stringify(id)}, 'exit\\r'), true)`).catch(() => {})
+      const exited = await waitFor('the disposable quick shell to exit', () => ev('window.stoke.quickTerminal.read().then(snapshot => snapshot.state.phase === "exited")'), 10_000).catch(() => false)
+      check('the disposable quick shell exits normally after the handoff', exited === true)
+    }
+    await ev('(window.__stokeQuickLinkOff?.(), delete window.__stokeQuickLinkOff, delete window.__stokeQuickLinkState, true)').catch(() => {})
+    await ev('window.stoke.quickTerminal.move("hidden")').catch(() => {})
+    await ev('window.stoke.settings.set({ quickTerminal: false })').catch(() => {})
   }
 })
 

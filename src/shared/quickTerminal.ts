@@ -1,4 +1,5 @@
 import type { TerminalSettings, Theme } from './types'
+import { terminalHttpLink } from './terminalLinks.ts'
 
 export type QuickTerminalMode = 'hidden' | 'panel' | 'popout'
 export type QuickTerminalSurface = Exclude<QuickTerminalMode, 'hidden'>
@@ -40,6 +41,12 @@ export interface QuickTerminalApi {
   onAppearance(cb: (appearance: QuickTerminalAppearance) => void): () => void
   copy(text: string): void
   paste(): Promise<string>
+  openLink(id: string, url: string): void
+}
+
+/** A hidden or superseded view cannot dispatch links through its narrow bridge. */
+export function quickTerminalLink(state: QuickTerminalState, surface: QuickTerminalSurface, id: unknown, url: unknown): string | null {
+  return state.enabled && state.mode === surface && !!state.id && state.id === id ? terminalHttpLink(url) : null
 }
 
 /** Subscribe before reading a snapshot; frames covered by that snapshot must not replay twice. */

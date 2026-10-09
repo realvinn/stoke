@@ -2,7 +2,7 @@
  * grapheme widths and resize/reflow. No renderer or user session is borrowed. */
 import headless from '@xterm/headless'
 import { UnicodeGraphemesAddon } from '../node_modules/@xterm/addon-unicode-graphemes/lib/addon-unicode-graphemes.mjs'
-import { terminalHttpLink, terminalLinkRepairs, selectedTerminalLink } from '../src/shared/terminalLinks.ts'
+import { terminalHttpLink, terminalLinkRepairs, selectedTerminalLink, terminalLinkClick } from '../src/shared/terminalLinks.ts'
 
 let failures = 0
 function check(name: string, got: unknown, want: unknown): void {
@@ -80,5 +80,11 @@ for (const screen of ['normal', 'alternate']) {
 check('selection repairs short/indented wraps only for one complete URL', [selectedTerminalLink(' https://example.com/long\n    /path?q=1 '), selectedTerminalLink('https://example.com/\nother words'), selectedTerminalLink('https://a.example/\nhttps://b.example/'), selectedTerminalLink('https://example.com\n\nnext')], ['https://example.com/long/path?q=1', null, null, null])
 check('non-web schemes, controls and invalid ports cannot activate from terminal links', [terminalHttpLink('javascript:alert(1)'), terminalHttpLink('file:///etc/passwd'), terminalHttpLink('https://example.com/\nword'), terminalHttpLink('http://localhost:99999/'), terminalHttpLink('http://localhost:3000/a')], [null, null, null, null, 'http://localhost:3000/a'])
 check('malformed or out-of-bounds buffer rows are refused', terminalLinkRepairs({ cols: 80, buffer: { active: { length: 0, getLine: () => undefined } } }, 1), [])
+const click = { button: 0, clientX: 12, clientY: 21, shiftKey: false, metaKey: false, ctrlKey: false, altKey: false }
+const down = { x: 10, y: 20 }
+check('a plain click opens in Stoke on both desktop platforms', [terminalLinkClick(url, click, down, true), terminalLinkClick(url, click, down, false)], ['stoke', 'stoke'])
+check('platform browser modifiers and Shift open externally', [terminalLinkClick(url, { ...click, metaKey: true }, down, true), terminalLinkClick(url, { ...click, ctrlKey: true }, down, false), terminalLinkClick(url, { ...click, shiftKey: true }, down, true)], ['external', 'external', 'external'])
+check('selection, secondary clicks and Mac Ctrl-click cannot open a link', [terminalLinkClick(url, { ...click, clientX: 14 }, down, false), terminalLinkClick(url, { ...click, altKey: true }, down, true), terminalLinkClick(url, { ...click, ctrlKey: true }, down, true), terminalLinkClick(url, { ...click, button: 2 }, down, false)], [null, null, null, null])
+check('an activation without a press or with a non-web target is refused', [terminalLinkClick(url, click, null, false), terminalLinkClick('file:///etc/passwd', click, down, false)], [null, null])
 console.log(failures ? `\n${failures} FAILED` : '\nall pass')
 process.exitCode = failures ? 1 : 0

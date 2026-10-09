@@ -6227,6 +6227,7 @@ export function App(): React.JSX.Element {
                   bar={settings?.remoteBar ?? 'fab'}
                   voice={settings?.voice ?? VOICE_DEFAULTS}
                   onClose={requestCloseTab}
+                  onOpenUrl={openUrl}
                 />
               ))}
             {panes.map((tab) =>
@@ -6459,7 +6460,7 @@ export function App(): React.JSX.Element {
         */}
         {quickTerminalState?.enabled && quickTerminalState.mode === 'panel' && settings && (
           <div className="quick-terminal-dock">
-            <QuickTerminalPanel api={window.stoke.quickTerminal} state={quickTerminalState} appearance={{ theme, fontFamily: settings.fontFamily, fontSize: settings.fontSize, uiScale: settings.uiScale, terminal: settings.terminal }} surface="panel" />
+            <QuickTerminalPanel api={window.stoke.quickTerminal} state={quickTerminalState} appearance={{ theme, fontFamily: settings.fontFamily, fontSize: settings.fontSize, uiScale: settings.uiScale, terminal: settings.terminal }} surface="panel" onOpenUrl={openUrl} />
           </div>
         )}
         {worklogOpen && (

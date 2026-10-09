@@ -32,7 +32,8 @@ const quickTerminal: QuickTerminalApi = {
   appearance: () => ipcRenderer.invoke(CH.quickTerminalAppearance),
   onAppearance: (cb) => on(CH.quickTerminalAppearance, cb),
   copy: (text) => ipcRenderer.send(CH.quickTerminalCopy, text),
-  paste: () => ipcRenderer.invoke(CH.quickTerminalPaste)
+  paste: () => ipcRenderer.invoke(CH.quickTerminalPaste),
+  openLink: (id, url) => ipcRenderer.send(CH.quickTerminalOpenLink, id, url)
 }
 
 /** Subscribe helper that hands back an unsubscribe function. */

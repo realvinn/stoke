@@ -12,6 +12,7 @@ export const CH = {
   quickTerminalAppearance: 'quick-terminal:appearance',
   quickTerminalCopy: 'quick-terminal:copy',
   quickTerminalPaste: 'quick-terminal:paste',
+  quickTerminalOpenLink: 'quick-terminal:open-link',
   // window chrome
   winMinimize: 'win:minimize',
   winMaximize: 'win:maximize',

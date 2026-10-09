@@ -2,6 +2,8 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes'
+import { WebLinksAddon } from '@xterm/addon-web-links'
+import { terminalLinkClick, terminalLinkRepairs } from '@shared/terminalLinks'
 import { captureTerminalViewport, restoreTerminalViewport } from '@shared/terminalViewport'
 import type { TerminalSettings, Theme, VoiceSettings } from '@shared/types'
 import type { RemoteBarMode } from '@shared/ui'
@@ -93,11 +95,14 @@ interface Props {
   /** Stoke's dictation: the hold threshold and the chosen microphone, read per press. */
   voice: VoiceSettings
   onClose: (tabId: string) => void
+  onOpenUrl: (url: string) => void
 }
 
-export function RemoteTerminal({ tab, view, active, theme, fontFamily, fontSize, terminal, accent, alpha, bar, voice, onClose }: Props): React.JSX.Element {
+export function RemoteTerminal({ tab, view, active, theme, fontFamily, fontSize, terminal, accent, alpha, bar, voice, onClose, onOpenUrl }: Props): React.JSX.Element {
   const hostRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
+  const openUrlRef = useRef(onOpenUrl)
+  openUrlRef.current = onOpenUrl
   const claimerRef = useRef<SizeClaimer | null>(null)
   const remoteId = tab.remote?.tabId ?? ''
   const stateRef = useRef<RemoteTabView['state'] | undefined>(view?.state)
@@ -152,6 +157,13 @@ export function RemoteTerminal({ tab, view, active, theme, fontFamily, fontSize,
   useEffect(() => {
     const host = hostRef.current
     if (!host || !remoteId) return
+    let downAt: { x: number; y: number } | null = null
+    const openLink = (event: MouseEvent, uri: string): void => {
+      event.preventDefault()
+      const action = terminalLinkClick(uri, event, downAt, window.stoke.platform === 'darwin')
+      if (action === 'external') window.stoke.openExternal(uri)
+      else if (action === 'stoke') openUrlRef.current(uri)
+    }
     const term = new Terminal({
       fontFamily,
       fontSize,
@@ -170,6 +182,7 @@ export function RemoteTerminal({ tab, view, active, theme, fontFamily, fontSize,
       macOptionClickForcesSelection: true,
       altClickMovesCursor: false,
       allowProposedApi: true,
+      linkHandler: { activate: openLink },
       theme: terminalTheme(theme, accent, alpha)
     })
     // Measures this pane's grid for a claim; never fits the terminal itself: its grid is the pty's.
@@ -177,6 +190,8 @@ export function RemoteTerminal({ tab, view, active, theme, fontFamily, fontSize,
     term.loadAddon(fit)
     term.loadAddon(new UnicodeGraphemesAddon())
     term.unicode.activeVersion = '15-graphemes'
+    term.registerLinkProvider({ provideLinks: (line, done) => done(terminalLinkRepairs(term, line).map(link => ({ ...link, activate: openLink }))) })
+    term.loadAddon(new WebLinksAddon(openLink))
     term.open(host)
     const removeSelection = installShiftSelection(host, term, window.stoke.platform === 'darwin')
     termRef.current = term
@@ -279,7 +294,7 @@ export function RemoteTerminal({ tab, view, active, theme, fontFamily, fontSize,
       if (!quietFocusRef.current) use('focus')
     }
     const onKey = (): void => use('key')
-    const onPress = (): void => use('click')
+    const onPress = (event: MouseEvent): void => { downAt = { x: event.clientX, y: event.clientY }; use('click') }
     host.addEventListener('focusin', onFocus)
     host.addEventListener('keydown', onKey, true)
     host.addEventListener('mousedown', onPress, true)

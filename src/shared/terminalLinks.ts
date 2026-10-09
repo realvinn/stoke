@@ -54,6 +54,14 @@ export function terminalHttpLink(value: unknown): string | null {
   try { const url = new URL(value); return ['http:', 'https:'].includes(url.protocol) && !!url.hostname ? value : null } catch { return null }
 }
 
+/** The same click rule for plain, repaired and OSC 8 links in every desktop
+ * view. A selection gesture or a secondary click must never open a page. */
+export function terminalLinkClick(uri: string, event: { button: number; clientX: number; clientY: number; shiftKey: boolean; metaKey: boolean; ctrlKey: boolean; altKey: boolean }, down: { x: number; y: number } | null, isMac: boolean): 'stoke' | 'external' | null {
+  if (!terminalHttpLink(uri) || !down || event.button !== 0 || event.altKey || (isMac && event.ctrlKey)) return null
+  if (Math.abs(event.clientX - down.x) + Math.abs(event.clientY - down.y) > 3) return null
+  return event.shiftKey || (isMac ? event.metaKey : event.ctrlKey) ? 'external' : 'stoke'
+}
+
 /** A user's explicit selection can cover indented or short hard-wrapped rows.
  * Only one complete HTTP(S) URL is offered; prose and multiple URLs are refused. */
 export function selectedTerminalLink(value: string): string | null {
