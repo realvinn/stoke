@@ -557,9 +557,27 @@ must retain their intended identity. Completed rows require evidence.
 There is no background sync timer or import of unrelated Notion rows. Disabling Work
 aborts in-flight HTTP and blocks later writes while retaining the recovery journal.
 Notion provides no compare-and-swap contract used here: an external edit between the
-final read and PATCH can still race. Standalone refresh, Sonnet drafting and extraction
+final read and PATCH can still race. Standalone refresh and extraction
 of the legacy review lifecycle remain open. The loopback suite exercises the production
 adapter, coordinator and disk stores; a real workspace and native UI remain unverified.
+
+`plugins/workDrafts.ts` uses the existing headless CLI runner to request Sonnet briefs,
+daily summaries and completion proposals. The only input is a captured saved record and
+explicit source notes; no transcript or project is scanned automatically. Each run has
+a $1 CLI budget, neutral working directory, safe mode, empty MCP configuration and an
+explicit empty built-in tool set. The CLI's budget is checked after a turn, so it is
+not an exact spending guarantee. Proposals and reported costs live in the bounded,
+atomic `plugins/work-drafts.json` journal. Interrupted generations never resume on
+their own. Model output cannot choose actions or run commands.
+
+Acceptance is a separate revision-checked local edit or completion. Atomic board
+receipts recover an interrupted acceptance without reapplying it over a newer edit;
+task completion checks the linked day's captured revision too. Unsettled acceptances
+block another draft for that record. Rejecting a draft leaves its board untouched.
+Disabling cancels the active run. `agent.ts` holds cancellation ownership through child
+close, forces a POSIX child that ignores SIGTERM after two seconds, and uses Windows
+taskkill /T /F for an owned shell tree. Explicit publishing still uses the Notion review
+above. Existing Worklog automatic transcript reviews remain a separate lifecycle.
 
 ## The worklog agent
 
@@ -1331,6 +1349,11 @@ recovery parser), `notionWork.ts` (reviewed write coordinator), `storage.ts` (se
 atomic module storage), `workCredentials.ts` (encrypted token vault), `WorkNotion.tsx`
 (schema mapping, publish previews and conflict review), and
 `scripts/verify-work-notion.mts` (loopback HTTP, recovery, conflict and credential proof).
+
+Sonnet drafting adds `src/shared/workDrafts.ts` (proposal contracts and budget),
+`src/main/plugins/workDrafts.ts` (durable generation and acceptance), `WorkDrafts.tsx`
+(source notes and review), and `scripts/verify-work-drafts.mts` (board/receipt recovery
+and real isolated CLI subprocess proof). No paid/vendor CLI run is used by the suite.
 
 
 Every file worth knowing about, and the one thing about it that is easy to get wrong. CLAUDE.md

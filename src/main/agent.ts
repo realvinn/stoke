@@ -92,6 +92,10 @@ export interface HeadlessOptions {
   /** Exact tool names the run may use. Omitted entirely when empty. */
   allowedTools?: string[]
   disallowedTools?: string[]
+  /** Exact built-in tool set; an empty list disables every built-in tool. */
+  tools?: string[]
+  /** Caller cancellation is held until the owned child process closes. */
+  signal?: AbortSignal
   timeoutMs?: number
   /**
    * Load no MCP servers at all: an empty `--mcp-config` plus
@@ -281,6 +285,7 @@ export function buildHeadlessArgs(opts: HeadlessOptions): string[] {
 
   if (opts.safeMode) args.push('--safe-mode')
   if (opts.effort) args.push('--effort', opts.effort)
+  if (opts.tools !== undefined) args.push('--tools', opts.tools.join(','))
 
   if (opts.strictMcp) {
     args.push('--mcp-config', emptyMcpConfigFile(), '--strict-mcp-config')
@@ -404,6 +409,7 @@ function snippet(s: string): string {
  * from "the model had nothing to say".
  */
 export async function runHeadless(opts: HeadlessOptions): Promise<HeadlessResult> {
+  opts.signal?.throwIfAborted()
   const exe = await findClaude(opts.claudePath ?? null)
   if (!exe) {
     throw new HeadlessError(notFoundError(loginPathProbeFailed()))
@@ -445,23 +451,51 @@ export async function runHeadless(opts: HeadlessOptions): Promise<HeadlessResult
   const wanted = opts.cwd
   const cwd = wanted && existsSync(wanted) ? wanted : agentScratchDir()
   const timeout = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS
+  opts.signal?.throwIfAborted()
 
+  let timedOut = false
   const run = await new Promise<{
     err: (Error & { code?: number | string; killed?: boolean; signal?: string }) | null
     stdout: string
     stderr: string
   }>((resolve) => {
+    let outcome: { err: (Error & { code?: number | string; killed?: boolean; signal?: string }) | null; stdout: string; stderr: string } | null = null
+    let closed = false
+    const finish = (): void => { if (outcome && closed) resolve(outcome) }
     const child = execFile(
       spec.file,
       spec.args,
-      { cwd, env, timeout, maxBuffer: MAX_BUFFER, encoding: 'utf8', windowsHide: true },
-      (err, stdout, stderr) => resolve({ err: err as never, stdout, stderr })
+      { cwd, env, maxBuffer: MAX_BUFFER, encoding: 'utf8', windowsHide: true },
+      (err, stdout, stderr) => { outcome = { err: err as never, stdout, stderr }; finish() }
     )
+    // Keep the caller's claim until close, including a child that ignores
+    // SIGTERM. A Windows .cmd owns a tree: terminate it before its shell exits.
+    const force = (): void => { if (!closed) child.kill('SIGKILL') }
+    let cancelled: ReturnType<typeof setTimeout> | null = null
+    let terminating = false
+    const terminate = (): void => {
+      if (closed || terminating) return
+      terminating = true
+      if (process.platform === 'win32' && child.pid) {
+        execFile(join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'taskkill.exe'), ['/pid', String(child.pid), '/T', '/F'], { timeout: 2000, maxBuffer: 4096, windowsHide: true }, (err) => { if (err) force() })
+      } else { child.kill('SIGTERM'); cancelled = setTimeout(force, 2000) }
+    }
+    const deadline = setTimeout(() => { timedOut = true; terminate() }, timeout)
+    const abort = (): void => terminate()
+    opts.signal?.addEventListener('abort', abort, { once: true })
+    if (opts.signal?.aborted) abort()
+    child.once('close', () => {
+      closed = true; clearTimeout(deadline); if (cancelled) clearTimeout(cancelled)
+      opts.signal?.removeEventListener('abort', abort); finish()
+    })
     // A child that exits before reading stdin turns the write into EPIPE, which
     // would otherwise take the whole process down as an unhandled error event.
     child.stdin?.on('error', () => {})
     child.stdin?.end(opts.prompt)
   })
+
+  if (opts.signal?.aborted) throw new HeadlessError('The headless run was cancelled.')
+  if (timedOut) throw new HeadlessError(`The headless run timed out after ${timeout}ms.`, { stdout: run.stdout, stderr: run.stderr })
 
   const envelope = parseEnvelope(run.stdout)
 

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { DAILY_STATES, TASK_STATES, localWorkDay } from '@shared/workPlugin'
 import type { WorkCommand, WorkDaily, WorkDailyStatus, WorkTask, WorkView } from '@shared/workPlugin'
 import { WorkNotion } from './WorkNotion'
+import { WorkDrafts } from './WorkDrafts'
 
 interface Props {
   session?: { id: string; title: string }
@@ -121,6 +122,7 @@ export function WorkPanel({ session }: Props): React.JSX.Element {
         })}
       </div>
       <WorkNotion work={view} selection={selected ? { kind: mode === 'tasks' ? 'task' : 'daily', id: selected } : null} day={day} />
+      <WorkDrafts work={view} selection={selected ? { kind: mode === 'tasks' ? 'task' : 'daily', id: selected } : null} day={day} />
     </>}
   </section>
 }

@@ -8175,6 +8175,8 @@ button.color-field-swatch[aria-expanded='true'] {
 .work-item:disabled { cursor: default; opacity: 0.6; }
 .work-notion { display: flex; flex-direction: column; gap: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
 .work-notion summary { font-size: 12px; font-weight: 600; color: var(--text); cursor: pointer; padding: 8px 0; }
+.work-drafts { padding-top: 12px; border-top: 1px solid var(--border); }
+.work-drafts summary { font-size: 12px; font-weight: 600; color: var(--text); cursor: pointer; padding: 8px 0; }
 .work-mapping { display: flex; flex-direction: column; gap: 10px; padding: 12px; min-width: 0; border: 1px solid var(--border); border-radius: 6px; }
 .work-mapping legend { padding: 0 6px; font-size: 12px; color: var(--text); }
 .work-mapping label { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--text-muted); }

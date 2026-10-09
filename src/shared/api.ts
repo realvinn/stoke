@@ -32,6 +32,7 @@ import type { McpProbeResult } from './mcpSetup'
 import type { AgentInstallation, AgentUpdateResult } from './agentLifecycle'
 import type { WorkCommand, WorkResult, WorkView } from './workPlugin'
 import type { NotionSource, NotionTaskMap, NotionDailyMap, WorkNotionPublishRequest, WorkNotionResult, WorkNotionView } from './workNotion'
+import type { WorkDraftRequest, WorkDraftResult, WorkDraftView } from './workDrafts'
 import type { MicAccess } from './voiceRoute'
 import type { SttConfig } from './speechProviders'
 import type { CreateProfileInput, ProfilePlan } from './profiles'
@@ -1119,6 +1120,12 @@ export interface StokeApi {
     notionRetry(operationId: string): Promise<WorkNotionResult>
     notionResolve(operationId: string, choice: 'stoke' | 'notion'): Promise<WorkNotionResult>
     onNotionChange(cb: (view: WorkNotionView) => void): () => void
+    draftsRead(): Promise<WorkDraftView>
+    draft(request: WorkDraftRequest): Promise<WorkDraftResult>
+    draftAccept(id: string): Promise<WorkDraftResult>
+    draftReject(id: string): Promise<WorkDraftResult>
+    draftCancel(): Promise<void>
+    onDraftsChange(cb: (view: WorkDraftView) => void): () => void
   }
   worklog: {
     queue(): Promise<WorklogProposal[]>

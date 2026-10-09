@@ -16,6 +16,7 @@ export interface WorkTask {
   evidence: string
   /** Durable import receipt; lets a restarted connector finish its journal safely. */
   notionConfirmation?: string
+  draftConfirmation?: string
   createdAt: number
   updatedAt: number
 }
@@ -30,6 +31,7 @@ export interface WorkDaily {
   notes: string
   evidence: string
   notionConfirmation?: string
+  draftConfirmation?: string
   sessionId: string | null
   createdAt: number
   updatedAt: number

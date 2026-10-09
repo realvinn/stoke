@@ -2343,6 +2343,18 @@ function workNotionFor(): Promise<import('./plugins/notionWork.ts').NotionWork> 
   })
 }
 
+let workDrafts: import('./plugins/workDrafts.ts').WorkDrafts | null = null
+let workDraftsLoading: Promise<import('./plugins/workDrafts.ts').WorkDrafts> | null = null
+function workDraftsFor(): Promise<import('./plugins/workDrafts.ts').WorkDrafts> {
+  return workDraftsLoading ??= Promise.all([import('./plugins/workDrafts.ts'), workPluginFor()]).then(([{ WorkDrafts }, work]) => {
+    workDrafts = new WorkDrafts(app.getPath('userData'), {
+      work, options: () => ({ claudePath: getSettings().claudePath, providers: getSettings().providers }),
+      onChange: (view) => send(CH.workDraftsChanged, view), onWork: (view) => send(CH.workChanged, view)
+    })
+    return workDrafts
+  })
+}
+
 /** The process-wide review queue. */
 function worklogQueue(): ReturnType<typeof getWorklogQueue> {
   return getWorklogQueue(app.getPath('userData'))
@@ -4704,7 +4716,7 @@ function registerIpc(): void {
         if (typeof command.sessionId !== 'string' || !ptys?.localAgentSession(command.sessionId)) return { ok: false, message: 'Choose a live local session to associate with this task.' }
       }
       const view = await (await workPluginFor()).change(command)
-      if (!view.enabled) workNotion?.pause()
+      if (!view.enabled) { workNotion?.pause(); workDrafts?.pause() }
       send(CH.workChanged, view)
       return { ok: true, view }
     } catch (err) {
@@ -4723,7 +4735,7 @@ function registerIpc(): void {
   })
   const notionAction = async (event: Electron.IpcMainInvokeEvent, action: (service: import('./plugins/notionWork.ts').NotionWork) => Promise<import('../shared/workNotion.ts').WorkNotionView>) => {
     if (!win || event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) return { ok: false, message: 'Open the Notion connection in Stoke.' }
-    try { return { ok: true, view: await action(await workNotionFor()) } }
+    try { const service = await workNotionFor(); await action(service); return { ok: true, view: await service.view() } }
     catch (err) { return { ok: false, message: err instanceof Error ? err.message : 'Notion could not finish the operation.' } }
   }
   ipcMain.handle(CH.workNotionConfigure, (event, mapping, token) => notionAction(event, (s) => s.configure(mapping, token)))
@@ -4731,6 +4743,22 @@ function registerIpc(): void {
   ipcMain.handle(CH.workNotionPublish, (event, request) => notionAction(event, (s) => s.publish(request)))
   ipcMain.handle(CH.workNotionRetry, (event, id) => notionAction(event, (s) => s.retry(id)))
   ipcMain.handle(CH.workNotionResolve, (event, id, choice) => notionAction(event, (s) => s.resolve(id, choice)))
+
+  ipcMain.handle(CH.workDraftsRead, async (event) => {
+    if (!win || event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) throw new Error('Open Work drafts in Stoke.')
+    return (await workDraftsFor()).view()
+  })
+  const draftAction = async (event: Electron.IpcMainInvokeEvent, action: (service: import('./plugins/workDrafts.ts').WorkDrafts) => Promise<import('../shared/workDrafts.ts').WorkDraftView | { view: import('../shared/workDrafts.ts').WorkDraftView; work: import('../shared/workPlugin.ts').WorkView }>) => {
+    if (!win || event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) return { ok: false, message: 'Open Work drafts in Stoke.' }
+    try { const service = await workDraftsFor(); const result = await action(service); return { ok: true, view: await service.view(), ...('view' in result ? { work: result.work } : {}) } }
+    catch (err) { return { ok: false, message: err instanceof Error ? err.message : 'Work could not finish this draft action.' } }
+  }
+  ipcMain.handle(CH.workDraft, (event, request) => draftAction(event, (s) => s.generate(request)))
+  ipcMain.handle(CH.workDraftAccept, (event, id) => draftAction(event, (s) => s.accept(id)))
+  ipcMain.handle(CH.workDraftReject, (event, id) => draftAction(event, (s) => s.reject(id)))
+  ipcMain.handle(CH.workDraftCancel, (event) => {
+    if (win && event.sender === win.webContents && event.senderFrame === win.webContents.mainFrame) workDrafts?.pause()
+  })
 
   ipcMain.handle(CH.worklogQueue, () => queue().list())
 
@@ -5287,6 +5315,7 @@ if (!app.requestSingleInstanceLock(launchRequest ? { stokeCli: launchRequest } :
 
   app.on('before-quit', () => {
     workNotion?.stop()
+    workDrafts?.stop()
     workPlugin?.stop()
     if (lastTabState) writeTabState(tabStateFile(app.getPath('userData')), lastTabState)
     // Settings coalesce bursts of writes (see store.ts). Anything still waiting

@@ -348,7 +348,13 @@ const api: StokeApi = {
     notionPublish: (request) => ipcRenderer.invoke(CH.workNotionPublish, request),
     notionRetry: (id) => ipcRenderer.invoke(CH.workNotionRetry, id),
     notionResolve: (id, choice) => ipcRenderer.invoke(CH.workNotionResolve, id, choice),
-    onNotionChange: (cb) => on<[Parameters<typeof cb>[0]]>(CH.workNotionChanged, cb)
+    onNotionChange: (cb) => on<[Parameters<typeof cb>[0]]>(CH.workNotionChanged, cb),
+    draftsRead: () => ipcRenderer.invoke(CH.workDraftsRead),
+    draft: (request) => ipcRenderer.invoke(CH.workDraft, request),
+    draftAccept: (id) => ipcRenderer.invoke(CH.workDraftAccept, id),
+    draftReject: (id) => ipcRenderer.invoke(CH.workDraftReject, id),
+    draftCancel: () => ipcRenderer.invoke(CH.workDraftCancel),
+    onDraftsChange: (cb) => on<[Parameters<typeof cb>[0]]>(CH.workDraftsChanged, cb)
   },
   worklog: {
     queue: () => ipcRenderer.invoke(CH.worklogQueue),

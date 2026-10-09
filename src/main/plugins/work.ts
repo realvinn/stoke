@@ -35,6 +35,7 @@ export function readWorkState(value: unknown): WorkState {
     if (r.sessionId !== null) text(r.sessionId, 100, true)
     text(r.title, 240, true); text(r.evidence, 8000)
     if (r.notionConfirmation !== undefined) text(r.notionConfirmation, 128, true)
+    if (r.draftConfirmation !== undefined) text(r.draftConfirmation, 100, true)
   }
   for (const r of value.tasks) {
     if (!record(r)) throw new Error('The saved task cannot be read.')
@@ -202,6 +203,22 @@ export class WorkPlugin implements BuiltinStokePlugin<WorkView, unknown, WorkVie
       const checked = readWorkState(next)
       await this.save(checked, signal)
       return { view: { ...structuredClone(checked), manifest: WORK_PLUGIN }, applied: true }
+    })
+  }
+  /** Apply an accepted draft and its receipt atomically, including a linked day. */
+  applyDraft(command: Extract<WorkCommand, { kind: 'edit' | 'daily-edit' | 'complete' }>, confirmation: string, relatedRevision?: number): Promise<WorkView> {
+    return this.enqueue(async (signal) => {
+      const previous = await this.load(signal)
+      const row = (command.kind === 'daily-edit' ? previous.daily : previous.tasks).find((r) => r.id === command.id)
+      if (!row) throw new Error('The draft’s Work record is missing.')
+      if (!previous.enabled) throw new Error('Enable Work before accepting a draft.')
+      if (row.draftConfirmation === confirmation) return { ...structuredClone(previous), manifest: WORK_PLUGIN }
+      if (command.kind === 'complete' && previous.daily.find((r) => r.taskId === command.id && r.day === command.day)?.revision !== relatedRevision) throw new Error('The linked daily entry changed. Create a new draft from its current fields.')
+      const next = changeWork(previous, command, Date.now(), randomUUID, Intl.DateTimeFormat().resolvedOptions().timeZone)
+      const changed = (command.kind === 'daily-edit' ? next.daily : next.tasks).find((r) => r.id === command.id)!
+      changed.draftConfirmation = text(confirmation, 100, true)
+      await this.save(readWorkState(next), signal)
+      return { ...structuredClone(next), manifest: WORK_PLUGIN }
     })
   }
   private async save(next: WorkState, signal: AbortSignal): Promise<void> {
