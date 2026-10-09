@@ -2470,6 +2470,8 @@ scripts/          the verify-*.mts suites, make-icon.cjs
                     a suite; its tally and exit code are the last statement
   probe/            the probe's parts. terminal-link.mjs locates a complete URL across hard
                     rows; ssh-files.mjs owns the CI-only disposable Mac/Linux SSH file fixture.
+                    native-crash.mjs initializes local reports and shutdown phase markers in
+                    the disposable Windows CI main process only; submission stays disabled.
                     fake-agent.mjs is every agent (one launcher per id, .cmd on Windows):
                     records argv/env (redacted), writes a Claude
                     transcript and registry entry, runs the statusLine and hook commands

@@ -810,7 +810,14 @@ export class EmbeddedBrowser {
      * needs, so this only skips the one call that assumes `win` is alive.
      */
     if (this.win.isDestroyed()) {
-      for (const tab of this.tabs.splice(0)) tab.view.webContents.close()
+      for (const tab of this.tabs.splice(0)) {
+        // Parent teardown can already have cleared this native getter, just
+        // as a script-owned popup can. Close only the surviving contents.
+        const contents = tab.view.webContents
+        if (contents && !contents.isDestroyed()) contents.close()
+      }
+      this.activeId = null
+      this.lastActive.clear()
       return
     }
     for (const tab of [...this.tabs]) this.closeTab(tab.id)

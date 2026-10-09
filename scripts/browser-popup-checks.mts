@@ -31,7 +31,7 @@ export async function browserPopupChecks(check: (name: string, got: unknown, wan
           }
           const jar={setPermissionRequestHandler(){},setPermissionCheckHandler(){},webRequest:{onCompleted(){},onErrorOccurred(){}}};
           export const session={fromPartition:()=>jar}, shell={};
-          export const mock={Contents,window:()=>({isDestroyed:()=>false,contentView:{
+          export const mock={Contents,window:()=>({destroyed:false,isDestroyed(){return this.destroyed},contentView:{
             children:[],addChildView(view){this.children.push(view)},removeChildView(view){
               if(!view.webContents)throw Error('native view already destroyed');
               this.children=this.children.filter(v=>v!==view)
@@ -69,5 +69,16 @@ export async function browserPopupChecks(check: (name: string, got: unknown, wan
     check('later page-driven popup navigation cannot become a local file', prevented, true)
     browser.destroy()
     check('closing the browser releases every remaining owned page', [opener.destroyed, background.destroyed, post.destroyed, browser.currentState().tabs.length], [true, true, true, 0])
+    const closedWin = mock.window()
+    const closedBrowser = new EmbeddedBrowser(closedWin, () => {})
+    closedBrowser.show('https://example.test/quit')
+    const live = closedBrowser.webContents()
+    const cleared = live.popup(details).createWindow({})
+    // Native parent teardown can clear a page before the queued destroyed
+    // notification reaches JS. It is no longer legal to use the getter.
+    cleared.destroyed = true
+    closedWin.destroyed = true
+    closedBrowser.destroy()
+    check('a destroyed parent releases surviving pages and skips a cleared native getter', [live.destroyed, closedBrowser.currentState().tabs.length], [true, 0])
   } finally { await rm(work, { recursive: true, force: true }) }
 }

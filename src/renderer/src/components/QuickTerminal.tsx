@@ -140,5 +140,7 @@ function QuickTerminalScreen({ api, id, appearance, phase, find, focusTerminal, 
     // ResizeObserver alone cannot detect glyph-width changes at the same box size.
     fitCurrent.current?.()
   }, [appearance, phase])
-  return <div className="quick-terminal-screen" ref={host} title="Copy: Cmd+C on Mac, Ctrl+Shift+C elsewhere. Paste: Cmd+V / Ctrl+Shift+V. Right-click copies a selection or pastes." />
+  // FitAddon measures its parent's full CSS box; keep padding on the outer
+  // wrapper so the fitted grid uses the actual inner content area (gotcha 87).
+  return <div className="quick-terminal-screen" title="Copy: Cmd+C on Mac, Ctrl+Shift+C elsewhere. Paste: Cmd+V / Ctrl+Shift+V. Right-click copies a selection or pastes."><div className="quick-terminal-host" ref={host} /></div>
 }

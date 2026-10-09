@@ -92,6 +92,7 @@ import { CdpClient, connectBrowserPage, connectStoke, listTargets } from './cdp-
 import { startLoginServer } from './probe/login-server.mjs'
 import { createSshFileFixture, removeSshFileFixture } from './probe/ssh-files.mjs'
 import { terminalLinkPoint } from './probe/terminal-link.mjs'
+import { nativeCrashScript } from './probe/native-crash.mjs'
 import type { BrowserState } from '../src/shared/types.ts'
 import type { QuickTerminalResult, QuickTerminalState } from '../src/shared/quickTerminal.ts'
 
@@ -199,6 +200,13 @@ writeFileSync(join(proj, 'README.md'), '# Probe project\n\nA folder the CI probe
 
 const pkg = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8')) as { version: string }
 const port = Number(opt.port)
+// Only the disposable Windows CI fixture gets a main-process debugger. It
+// enables local crash reports, then disconnects before any quit is tested.
+const nativeInspectorPort = isWin && process.env.GITHUB_ACTIONS === 'true' ? await new Promise<number>((resolve, reject) => {
+  const server = createServer()
+  server.once('error', reject)
+  server.listen(0, '127.0.0.1', () => { const address = server.address(); const assigned = typeof address === 'object' && address ? address.port : 0; server.close(error => error ? reject(error) : resolve(assigned)) })
+}) : 0
 const sid = `probe-sid-${process.pid}-${Date.now()}`
 
 /** A single-quoted POSIX word, or a refusal: these paths are written into launchers. */
@@ -302,7 +310,7 @@ let launchNo = 0
 function launch(): ChildProcess {
   launchNo++
   const log = openSync(join(logs, `stoke-${launchNo}.log`), 'a')
-  const args = [...exePrefix, `--user-data-dir=${ud}`, `--remote-debugging-port=${port}`, '--disable-backgrounding-occluded-windows', ...platformFlags]
+  const args = [...exePrefix, `--user-data-dir=${ud}`, `--remote-debugging-port=${port}`, '--disable-backgrounding-occluded-windows', ...platformFlags, ...(nativeInspectorPort ? [`--inspect=127.0.0.1:${nativeInspectorPort}`] : [])]
   console.log(`  launch ${launchNo}: ${exe} ${args.join(' ')}`)
   const child = spawn(exe, args, { env: stokeEnv(), stdio: ['ignore', log, log], cwd: root })
   stokeExit = null
@@ -340,6 +348,17 @@ async function attach(): Promise<CdpClient> {
   // focus can go nowhere (gotcha 119).
   await client.send('Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => undefined)
   ui = client
+  if (nativeInspectorPort) {
+    await step('Windows CI main-process crash diagnostics', async () => {
+      const target = await waitFor('the disposable app\'s main inspector', async () => (await listTargets(nativeInspectorPort)).find(target => target.type === 'node' && target.webSocketDebuggerUrl), 10_000)
+      const main = await CdpClient.open(target)
+      try {
+        const directory = join(logs, `native-crashes-${launchNo}`)
+        const state = await main.evaluate(nativeCrashScript(directory))
+        check('CI crash reports stay in this fixture with submission disabled', state.installed === true && state.uploads === false && state.directory === directory)
+      } finally { main.close() }
+    })
+  }
   return client
 }
 
@@ -946,6 +965,7 @@ await step('quick terminal opens wrapped links and retains its shell through a p
     await ui!.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: point.x, y: point.y, button: 'left', clickCount: 1 })
     const opened = await waitFor('the quick-shell URL in Stoke', () => ev<BrowserState | null>(`window.__stokeQuickLinkState?.url === ${JSON.stringify(target)} && !window.__stokeQuickLinkState.loading ? window.__stokeQuickLinkState : null`))
     check('a real quick-terminal tail click retains the complete query', opened.url === target)
+    await shot('05-quick-terminal-panel')
     const moved = await ev<QuickTerminalResult>('window.stoke.quickTerminal.move("popout")')
     check('moving into a native pop-out keeps the same shell', moved.ok && moved.state.id === id && moved.state.phase === 'running')
     popup = await waitFor('the native quick-terminal window', async () => {
@@ -964,6 +984,7 @@ await step('quick terminal opens wrapped links and retains its shell through a p
       return screen ? (${terminalLinkPoint.toString()})(t, ${JSON.stringify(target)}, screen.getBoundingClientRect()) : null;
     })()`))
     check('the native pop-out replays the existing shell output', snapshot.state.id === id && !!replayed)
+    await popup.screenshot(join(shots, '06-quick-terminal-popout.png'))
     await popup.evaluate('window.stokeQuickTerminal.move("panel")')
     await waitFor('the shell returning to its panel', () => ev(`!!window.stokeQuickTerminals.get(${JSON.stringify(id)})`))
     check('returning to the panel still uses the same process', (await ev<{ state: QuickTerminalState }>('window.stoke.quickTerminal.read()')).state.id === id)
