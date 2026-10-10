@@ -1569,6 +1569,8 @@ src/main/         Electron main process
                     (a cache, floor and backoff per `<source>:<account>`), `readUsageSource`,
                     and the `STOKE_FAKE_USAGE` fixtures (`multi` fakes every source through
                     the real parsers). A plan holds a key or a token path and never leaves main
+  codexContext.ts   per-launch native Codex rollout/model/context watcher; account/cwd/start matching,
+                    exact resume ids, incremental reads and unknown readings for ambiguous launches
   codexUsage.ts     the newest `<CODEX_HOME>/sessions/…/rollout-*.jsonl` that states limits,
                     by mtime, tail only (gotcha 103), under a deadline
   usageVendors.ts   the OpenRouter key, Kimi Code and Cline readers: one read-only GET each,
@@ -2433,6 +2435,8 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     account; OpenRouter when pointed there; null for a removed or another
                     agent's account), `claudeWindowsFor` (one Claude account's endpoint
                     reading merged with only its own payloads), the panel's groups
+  codexContext.ts   Codex rollout token/model fold; last-response usage, never the cumulative total
+  windowShortcuts.ts native window-cycle chord matcher and wrapping order
   codexUsage.ts     Codex's rate limits from a rollout's `token_count` lines: seconds to ms
                     once, the plan's bucket first, a window reset since the turn dropped
   openRouterUsage.ts  `GET /api/v1/key` (documented): key limit, spend, the free-model day

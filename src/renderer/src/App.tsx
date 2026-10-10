@@ -2300,12 +2300,14 @@ export function App(): React.JSX.Element {
           snap.permissionMode && snap.permissionMode !== t.permissionMode
             ? snap.permissionMode
             : null
-        if (!title && !mode) return t
+        const agentResumeId = t.cliId === 'codex' && snap.agentResumeId && snap.agentResumeId !== t.agentResumeId ? snap.agentResumeId : null
+        if (!title && !mode && !agentResumeId) return t
         changed = true
         return {
           ...t,
           ...(title ? { title } : {}),
-          ...(mode ? { permissionMode: mode } : {})
+          ...(mode ? { permissionMode: mode } : {}),
+          ...(agentResumeId ? { agentResumeId } : {})
         }
       })
       return changed ? next : list
@@ -2470,6 +2472,7 @@ export function App(): React.JSX.Element {
           ...(res.private ? { private: true as const } : {}),
           ptyId: res.ptyId,
           sessionId: res.sessionId,
+          ...(launchCli === 'codex' && opts.agentResumeId ? { agentResumeId: opts.agentResumeId } : {}),
           // A private chat's folder is main's, from the reply: never one the
           // renderer named (it is deleted when the tab closes).
           cwd: res.private && res.cwd ? res.cwd : opts.cwd,
@@ -2783,6 +2786,7 @@ export function App(): React.JSX.Element {
           // was spending, and main refuses one that has since been removed.
           accountId: tab.accountId,
           sessionId: tab.sessionId || undefined,
+          agentResumeId: tab.agentResumeId,
           // No id means a --continue session, which never learned its own
           // (gotcha 26). Continue in the same folder instead.
           resume: Boolean(tab.sessionId),
@@ -3907,6 +3911,11 @@ export function App(): React.JSX.Element {
     },
     [closeTab, profileOwner]
   )
+  const projectTabsNow = useCallback((path: string) => profileClosePlan(tabs, 'project', cwd => cwd === path ? 'project' : null, live, new Set([...starting, ...relaunching, ...movingTabs.current])), [tabs, live, starting, relaunching])
+  const closeProjectTabs = useCallback((path: string): void => {
+    const plan = profileClosePlan(tabsRef.current, 'project', cwd => cwd === path ? 'project' : null, liveRef.current, new Set([...startingRef.current, ...relaunchingRef.current, ...movingTabs.current]))
+    for (const id of plan.close) closeTab(id)
+  }, [closeTab])
 
   /*
    * Show a folder in the file manager — the tab menu's folder item and the
@@ -4132,6 +4141,7 @@ export function App(): React.JSX.Element {
           name: tab.projectName,
           title: tab.title,
           sessionId: plan.sessionId,
+          ...(!plan.fresh && tab.agentResumeId ? { agentResumeId: tab.agentResumeId } : {}),
           // What the renderer believes; main checks the disk and has the last
           // word (`resumeOrMint`), because `--resume` on an id with no
           // transcript exits 1 and `--session-id` on one with a transcript is
@@ -4687,7 +4697,7 @@ export function App(): React.JSX.Element {
   // slide back up has a `top: 0` to transition to.
   const revealLayout = revealInset > 0 && revealMode !== 'off' ? revealMode : undefined
   const nativeFollow = revealLayout === 'follow' && nativeReveal !== null && !shellInert
-  const shellOffset = nativeFollow ? Math.min(revealInset, nativeReveal) : followReveal && revealShift ? revealInset : 0
+  const shellOffset = nativeFollow ? nativeReveal : followReveal && revealShift ? revealInset : 0
   const revealShifted = revealLayout === 'follow' && shellOffset > 0
 
   /*
@@ -6052,6 +6062,9 @@ export function App(): React.JSX.Element {
                 onSelectProfile={(id) => void patchSettings({ activeProfile: id })}
                 profileTabs={profileTabsNow}
                 onCloseProfileTabs={closeProfileTabs}
+                projectTabs={projectTabsNow}
+                onCloseProjectTabs={closeProjectTabs}
+                onRevealProject={revealFolder}
                 onEditProfiles={() => openSettings('profiles')}
                 projectHints={query.trim() ? allProjectHints : projectHints}
                 chatSearch={chatSearch}

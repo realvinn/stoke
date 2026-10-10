@@ -81,6 +81,9 @@ interface Props {
   onSetMeta: (project: Project, meta: ProjectMeta | null) => void
   /** Stop listing this folder. Nothing on disk is touched. */
   onHide: (project: Project) => void
+  projectTabs: (path: string) => { close: string[]; busy: string[]; starting: string[] }
+  onCloseProjectTabs: (path: string) => void
+  onRevealProject: (path: string) => void
   onAddRoot: () => void
   onOpenFolder: () => void
   onStartScratch: () => void
@@ -160,6 +163,9 @@ export function Sidebar({
   onPin,
   onSetMeta,
   onHide,
+  projectTabs,
+  onCloseProjectTabs,
+  onRevealProject,
   onAddRoot,
   onOpenFolder,
   onStartScratch,
@@ -191,6 +197,10 @@ export function Sidebar({
    * profile renamed or a tab closed while the menu is up shows at once.
    */
   const [profileMenu, setProfileMenu] = useState<{ x: number; y: number; id: string } | null>(null)
+  const [projectMenu, setProjectMenu] = useState<{ x: number; y: number; path: string } | null>(null)
+  const menuProject = projectMenu ? projects.find(p => p.path === projectMenu.path) : undefined
+  const projectPlan = menuProject ? projectTabs(menuProject.path) : null
+  useEffect(() => { if (projectMenu && !menuProject) setProjectMenu(null) }, [projectMenu, menuProject])
   const menuProfile = profileMenu ? profiles.find((p) => foldGroup(p.id) === foldGroup(profileMenu.id)) : undefined
   const menuPlan = menuProfile && profileTabs ? profileTabs(menuProfile.id) : null
   /*
@@ -474,6 +484,7 @@ export function Sidebar({
         tabIndex={0}
         onClick={() => onSelectProject(project)}
         onDoubleClick={() => onStartNew(project)}
+        onContextMenu={e => { e.preventDefault(); e.stopPropagation(); setPickerPath(null); setProfileMenu(null); setProjectMenu({ x: e.clientX, y: e.clientY, path: project.path }) }}
         onKeyDown={(e) => {
           /*
            * Enter and Space both do exactly what a click does.
@@ -654,6 +665,7 @@ export function Sidebar({
                     profileTabs && onCloseProfileTabs
                       ? (e) => {
                           e.preventDefault()
+                          setProjectMenu(null)
                           setProfileMenu({ x: e.clientX, y: e.clientY, id: p.id })
                         }
                       : undefined
@@ -951,6 +963,24 @@ export function Sidebar({
         )}
       </div>
 
+      {projectMenu && menuProject && projectPlan && (
+        <ContextMenu
+          x={projectMenu.x} y={projectMenu.y}
+          header={{ title: menuProject.label ?? menuProject.name, subtitle: menuProject.path }}
+          items={[
+            { label: 'New session', disabled: !menuProject.exists, onSelect: () => onStartNew(menuProject) },
+            { label: expandedPath === menuProject.path ? 'Collapse sessions' : 'Show sessions', onSelect: () => onToggleExpand(menuProject) },
+            { label: profileCloseLabel(projectPlan.close.length), disabled: !projectPlan.close.length, onSelect: () => onCloseProjectTabs(menuProject.path) },
+            { label: 'Rename / change icon…', separated: true, onSelect: () => setPickerPath(menuProject.path) },
+            { label: menuProject.pinned ? 'Unpin' : 'Pin to top', onSelect: () => onPin(menuProject) },
+            { label: 'Copy folder path', onSelect: () => window.stoke.clipboard.writeText(menuProject.path) },
+            { label: window.stoke.platform === 'darwin' ? 'Reveal in Finder' : window.stoke.platform === 'win32' ? 'Show in Explorer' : 'Open folder', disabled: !menuProject.exists, onSelect: () => onRevealProject(menuProject.path) },
+            { label: 'Remove from sidebar', separated: true, onSelect: () => onHide(menuProject) }
+          ]}
+          footer={[profileCloseNote(projectPlan, menuProject.name), 'Rename changes the display name. Remove hides the project; files and open sessions stay available.'].filter(Boolean).join(' ')}
+          onClose={() => setProjectMenu(null)}
+        />
+      )}
       {profileMenu && menuProfile && menuPlan && (
         <ContextMenu
           x={profileMenu.x}

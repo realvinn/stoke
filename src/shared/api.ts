@@ -528,6 +528,7 @@ export interface StokeApi {
     maximize(): void
     close(): void
     isMaximized(): Promise<boolean>
+    isFocused(): Promise<boolean>
     onMaximizedChanged(cb: (maximized: boolean) => void): () => void
     /**
      * Distinct from `isMaximized`, which is false on macOS while full screen.

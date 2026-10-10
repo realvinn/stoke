@@ -81,6 +81,8 @@ export interface Tab {
   ptyId: string
   /** Claude Code session id — the key the context meter watches. Empty on `new`. */
   sessionId: string
+  /** Confirmed native Codex thread id; distinct from Stoke's live-session key. */
+  agentResumeId?: string
   /**
    * The session's working directory; `''` on a `new` tab.
    *

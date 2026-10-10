@@ -900,11 +900,11 @@ export function foldCodexLine(fold: Fold, line: string, redact: boolean): void {
   if (!rec) return
   const p = (rec.payload ?? {}) as Record<string, unknown>
   const at = stamp(rec.timestamp)
-  // OpenAI protocol TokenUsageInfo: total_token_usage is context, not billed lifetime usage.
-  // https://github.com/openai/codex/blob/main/codex-rs/protocol/src/protocol.rs (2026-10-09)
+  // Codex's status card reads last_token_usage; total_token_usage accumulates across responses.
+  // https://github.com/openai/codex/blob/main/codex-rs/tui/src/status/card.rs (2026-10-10)
   if (rec.type === 'event_msg' && p.type === 'token_count') {
     const info = p.info && typeof p.info === 'object' ? p.info as Record<string, unknown> : null
-    const usage = info?.total_token_usage && typeof info.total_token_usage === 'object' ? info.total_token_usage as Record<string, unknown> : null
+    const usage = info?.last_token_usage && typeof info.last_token_usage === 'object' ? info.last_token_usage as Record<string, unknown> : null
     const tokens = usage?.total_tokens
     if (at !== null && typeof tokens === 'number' && Number.isSafeInteger(tokens) && tokens >= 0 && at >= (fold.meta.contextAtMs ?? 0)) {
       fold.meta.contextTokens = tokens

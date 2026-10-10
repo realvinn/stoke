@@ -108,6 +108,7 @@ function tabOf(v: unknown): StoredTab | null {
     // spawns, and the file it comes from is one a user can edit.
     cliId,
     sessionId: str(v.sessionId),
+    ...(cliId === 'codex' && kind === 'session' && typeof v.agentResumeId === 'string' && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(v.agentResumeId) ? { agentResumeId: v.agentResumeId } : {}),
     cwd,
     projectName: str(v.projectName),
     title: str(v.title),

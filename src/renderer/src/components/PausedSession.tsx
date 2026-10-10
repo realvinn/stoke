@@ -57,6 +57,8 @@ export function PausedSession({
               ? tab.remoteSession
                 ? 'Detached when Stoke quit; the shell kept running on the machine. Resuming reattaches to it.'
                 : 'Paused when Stoke quit. Resuming reconnects to this host.'
+              : tab.agentResumeId
+                ? 'Paused when Stoke quit. Resuming reopens this conversation.'
               : caps.resume === 'continue'
                 ? `Paused when Stoke quit. ${cliFor(tab.cliId).label} continues its most recent session in this folder — this one, unless another was started here since.`
                 : caps.resume === 'none'
@@ -78,6 +80,8 @@ export function PausedSession({
                 ? 'Resuming…'
                 : tab.hostId && tab.remoteSession
                   ? 'Reattach'
+                  : !tab.hostId && tab.agentResumeId
+                    ? 'Resume session'
                   : !tab.hostId && caps.resume === 'continue'
                     ? 'Continue latest session'
                     : !tab.hostId && caps.resume === 'none'

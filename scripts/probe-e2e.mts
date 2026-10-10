@@ -562,6 +562,7 @@ console.log(`  site  ${site.base}`)
 
 const tabs: Partial<Record<AgentId, { ptyId: string; pid: number }>> = {}
 let claudeSession = ''
+let codexNativeId = ''
 const sshTabs: { key?: string } = {}
 
 /* ---------------------------------------------------------------- boot */
@@ -791,6 +792,19 @@ for (const id of ['codex', 'opencode'] as const) {
     }
   })
 }
+await step('Codex reports its native model and current context', async () => {
+  await activate(tabs.codex!.ptyId)
+  await ev('(window.__stokeCodexContext = null, window.__stokeCodexContextOff = window.stoke.context.onUpdate(s => { if (s.model === "gpt-6.1-sol") window.__stokeCodexContext = s }), true)')
+  try {
+    await typeLine(tabs.codex!.ptyId, 'codex-context-reading')
+    await waitFor('Codex rollout context to reach the renderer', () => ev<boolean>('window.__stokeCodexContext?.ready && window.__stokeCodexContext.contextTokens === 12000 && window.__stokeCodexContext.contextLimit === 258400'))
+    check('Codex context uses its last-response tokens instead of the cumulative fixture', true)
+    codexNativeId = await ev<string>('window.__stokeCodexContext.agentResumeId')
+    check('the renderer receives the confirmed native Codex thread', /^[a-f0-9-]{36}$/i.test(codexNativeId))
+    check('the status bar names the reported Codex model', await ev<boolean>('document.querySelector(\'[data-model-source="reported"]\')?.textContent.includes("gpt-6.1-sol")') === true)
+  } finally { await ev('(window.__stokeCodexContextOff?.(), delete window.__stokeCodexContextOff, true)') }
+})
+
 await step('three agents side by side', async () => {
   const ids = Object.values(tabs).map((t) => t!.ptyId)
   check('three tabs, three terminals', new Set(ids).size === 3, JSON.stringify(tabs))
@@ -866,11 +880,31 @@ await step('dragging a live agent into a separate Stoke window keeps the process
     await typeLine(t.ptyId, 'detached-window-input')
     await waitFor('typing in the moved terminal to reach its original process', async () => (await bufferOf(t.ptyId)).includes('GOT detached-window-input'))
     await shot('04-detached-agent-window')
+    const modifiers = process.platform === 'darwin' ? 4 : 2
+    const windowKey = async (client: CdpClient, key: 'ArrowLeft' | 'ArrowRight'): Promise<void> => {
+      await client.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key, code: key, windowsVirtualKeyCode: key === 'ArrowLeft' ? 37 : 39, modifiers })
+      await client.send('Input.dispatchKeyEvent', { type: 'keyUp', key, code: key, windowsVirtualKeyCode: key === 'ArrowLeft' ? 37 : 39, modifiers })
+    }
+    await ev('window.stoke.window.focus(), true')
+    await waitFor('detached window native focus', () => ev<boolean>('window.stoke.window.isFocused()'))
+    await windowKey(popup, 'ArrowLeft')
+    await waitFor('previous Stoke window native focus', () => primary.evaluate('window.stoke.window.isFocused()'))
+    check('the previous-window shortcut focuses the primary shell from the terminal', true)
+    await windowKey(primary, 'ArrowRight')
+    await waitFor('next Stoke window native focus', () => ev<boolean>('window.stoke.window.isFocused()'))
+    check('the next-window shortcut wraps to the detached shell', true)
     await primary.evaluate('(window.__stokeDetachedBrowserChanged = false, window.__stokeDetachedBrowserOff = window.stoke.browser.onState(() => { window.__stokeDetachedBrowserChanged = true }), true)')
     await ev('(window.__stokeDetachedBrowserState = null, window.stoke.browser.onState(s => { window.__stokeDetachedBrowserState = s }), true)')
     await ev(`window.stoke.browser.show(${JSON.stringify(`${site.base}/whoami?window=detached`)}), true`)
     await waitFor('the separate window browser to navigate', () => ev<boolean>(`window.__stokeDetachedBrowserState?.url.includes('window=detached') && !window.__stokeDetachedBrowserState.loading`))
     check('a separate window navigates its own browser', await primary.evaluate('window.__stokeDetachedBrowserChanged === false') === true)
+    const detachedPage = await connectBrowserPage(port, (url: string) => url.includes('window=detached'))
+    try {
+      await windowKey(detachedPage, 'ArrowLeft')
+      await waitFor('switching from a focused browser page', () => primary.evaluate('window.stoke.window.isFocused()'))
+      check('window cycling also intercepts the embedded browser input', true)
+    } finally { detachedPage.close() }
+    await ev('window.stoke.window.focus(), true')
     await ev('window.stoke.browser.hide(), true')
     // Closing the primary shell with a child open must not shut down shared PTYs.
     await primary.evaluate('window.stoke.window.close(), true')
@@ -885,6 +919,53 @@ await step('dragging a live agent into a separate Stoke window keeps the process
     if (popup) { await popup.evaluate('window.stoke.window.close(), true').catch(() => {}); popup.close() }
     ui = primary
     await primary.evaluate('(window.__stokeDetachedBrowserOff?.(), delete window.__stokeDetachedBrowserOff, delete window.__stokeDetachedBrowserChanged, true)').catch(() => {})
+  }
+})
+
+await step('sidebar project menus edit metadata and close only their own tabs', async () => {
+  const folder = join(root, 'menu-project')
+  mkdirSync(folder, { recursive: true })
+  writeFileSync(join(folder, 'README.md'), 'keep project files')
+  await ev(`window.stoke.projects.setMeta(${JSON.stringify(folder)}, { addedManually: true })`)
+  await stokeCli('--cli', 'codex', '--new', folder)
+  const taken = Object.values(tabs).map(t => t!.ptyId)
+  const own = await termShowing('STOKE-PROBE codex ready', 'project menu fixture', 45000, taken)
+  const row = `[...document.querySelectorAll('.sidebar .project')].find(e => e.title.startsWith(${JSON.stringify(folder + '\n')}))`
+  const openMenu = async (): Promise<void> => {
+    await waitFor('the project sidebar row', () => ev<boolean>(`!!(${row})`))
+    await ev(`(${row}).dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 150, clientY: 200 })), true`)
+    await waitFor('the project menu', () => ev<boolean>(`!!document.querySelector('.context-menu')`))
+  }
+  const choose = async (label: string): Promise<void> => {
+    await ev(`[...document.querySelectorAll('.context-menu [role="menuitem"]')].find(e => e.textContent.trim() === ${JSON.stringify(label)}).click(), true`)
+  }
+  try {
+    await openMenu()
+    await shot('04-project-context-menu')
+    const labels = await ev<string[]>('[...document.querySelectorAll(\'.context-menu [role="menuitem"]\')].map(e => e.textContent.trim())')
+    check('the existing project offers rename, icon, pin, copy and removal', ['Rename / change icon…', 'Pin to top', 'Copy folder path', 'Remove from sidebar', 'Close 1 tab'].every(label => labels.includes(label)), JSON.stringify(labels))
+    await choose('Rename / change icon…')
+    await waitFor('the project name editor', () => ev<boolean>('!!document.querySelector(".project-meta-pop input")'))
+    await ev('document.querySelector(".project-meta-pop input").focus(), true')
+    await ui!.send('Input.insertText', { text: 'Menu fixture renamed' })
+    await ev('document.querySelector(".project-meta-pop input").blur(), true')
+    await waitFor('the renamed display label', () => ev<boolean>(`(${row})?.textContent.includes('Menu fixture renamed')`))
+    await openMenu(); await choose('Pin to top')
+    await waitFor('the project pin to persist', async () => (await ev<any>('window.stoke.projects.list()')).find((p: any) => p.path === folder)?.pinned === true)
+    await openMenu(); await choose('Copy folder path')
+    check('copy path retains the real folder after a display rename', await ev<string>('window.stoke.clipboard.readSync().text') === folder)
+    await openMenu(); await choose('Close 1 tab')
+    await waitFor('only the fixture terminal to close', () => ev<boolean>(`!window.stokeTerminals.has(${JSON.stringify(own)})`))
+    check('closing a project leaves all three original agent terminals alive', await ev<boolean>(`${JSON.stringify(taken)}.every(id => window.stokeTerminals.has(id))`) === true)
+    await openMenu(); await choose('Remove from sidebar')
+    await waitFor('the removed project row to disappear', () => ev<boolean>(`!(${row})`))
+    check('removal and rename preserve the project files', readFileSync(join(folder, 'README.md'), 'utf8') === 'keep project files')
+    await shot('04-project-context-menu-result')
+  } finally {
+    await ev(`window.stoke.projects.hide(${JSON.stringify(folder)}, false)`)
+    await ev(`window.stoke.projects.pin(${JSON.stringify(folder)}, false)`)
+    await ev(`window.stoke.projects.setMeta(${JSON.stringify(folder)}, null)`)
+    await activate(tabs.claude!.ptyId)
   }
 })
 
@@ -1557,7 +1638,7 @@ await step('relaunch: the tabs come back, and resume what they were', async () =
   check('Claude came back with --resume <the same session id> (gotcha 81)', argAfter(claudeAgain?.start.argv ?? [], '--resume') === claudeSession, JSON.stringify(claudeAgain?.start.argv ?? null))
   check('and no --session-id beside it (the CLI refuses the pair)', !(claudeAgain?.start.argv ?? []).includes('--session-id'))
   const codexAgain = fresh.find((r) => r.id === 'codex')
-  check('Codex came back with its own continue flag (resume --last)', (codexAgain?.start.argv ?? []).join(' ').includes('resume --last'), JSON.stringify(codexAgain?.start.argv ?? null))
+  check('Codex resumes its confirmed native conversation instead of account-wide latest', !!codexNativeId && (codexAgain?.start.argv ?? []).includes(codexNativeId) && (codexAgain?.start.argv ?? []).includes('resume') && !(codexAgain?.start.argv ?? []).includes('--last'), JSON.stringify(codexAgain?.start.argv ?? null))
   const opencodeAgain = fresh.find((r) => r.id === 'opencode')
   check('OpenCode came back with --continue', (opencodeAgain?.start.argv ?? []).includes('--continue'), JSON.stringify(opencodeAgain?.start.argv ?? null))
   if (claudeAgain) {

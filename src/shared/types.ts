@@ -242,6 +242,10 @@ export type SessionIndexEntry = Pick<
 
 /** Live context-window reading for one session, derived from its JSONL. */
 export interface ContextSnapshot {
+  /** An unavailable native reading can say why; unknown is never represented as 0% used. */
+  readingNote?: string
+  /** Confirmed native agent thread to reopen the same conversation. */
+  agentResumeId?: string
   firstPrompt?: string | null
   sessionId: string
   /** input + cache_read + cache_creation on the most recent assistant turn. */
@@ -1793,6 +1797,7 @@ export interface StoredTabContext {
  * are regenerated on restore and the last two are always "paused" by definition.
  */
 export interface StoredTab {
+  agentResumeId?: string
   kind: 'session' | 'new'
   /**
    * Which CLI this tab was running. Hydrated through `cliIdOf`, never read raw.

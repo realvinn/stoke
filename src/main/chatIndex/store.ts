@@ -65,7 +65,7 @@ export function skipFolders(folders: readonly unknown[], platform: string): ((cw
  * cleans it again (`recleanStale`): its text was cleaned, if at all, by fewer
  * rules than the ones in force now.
  */
-const SCHEMA_VERSION = '4'
+const SCHEMA_VERSION = '5'
 
 /** Where a source's file (or row) was read up to, so the next pass reads only what is new. */
 export interface FileRow {
@@ -256,6 +256,11 @@ export class ChatStore {
     if (!cols.includes('context_at_ms')) this.db.exec('ALTER TABLE chat ADD COLUMN context_at_ms INTEGER')
     this.db.exec('CREATE INDEX IF NOT EXISTS chat_import ON chat(import_id)')
     this.db.exec('CREATE INDEX IF NOT EXISTS chat_redact ON chat(redact_level)')
+    const prior = this.q('SELECT value FROM meta WHERE key = ?').get('schema') as { value?: unknown } | undefined
+    if (prior && Number(prior.value) < 5) {
+      // Old Codex snapshots used the cumulative field. Unknown until the next native reading or index rebuild.
+      this.db.exec("UPDATE chat SET context_tokens = NULL, context_at_ms = NULL WHERE source = 'codex'")
+    }
     this.q('INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run('schema', SCHEMA_VERSION)
   }
 

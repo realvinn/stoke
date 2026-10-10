@@ -114,7 +114,7 @@ section('advanced history filters: boundaries, unknown metrics and ordering')
     else process.env.TZ = priorTz
   }
   const fold = emptyFold()
-  const count = (at: number, tokens: unknown): string => JSON.stringify({ timestamp: new Date(at).toISOString(), type: 'event_msg', payload: { type: 'token_count', info: { total_token_usage: { total_tokens: tokens } } } })
+  const count = (at: number, tokens: unknown): string => JSON.stringify({ timestamp: new Date(at).toISOString(), type: 'event_msg', payload: { type: 'token_count', info: { last_token_usage: { total_tokens: tokens }, total_token_usage: { total_tokens: 9_000_000 } } } })
   foldCodexLine(fold, count(1000, 80_000), true)
   foldCodexLine(fold, count(2000, 12_000), true)
   foldCodexLine(fold, count(1500, 90_000), true)
@@ -149,6 +149,30 @@ section('advanced history filters: boundaries, unknown metrics and ordering')
     db.upsertChat('codex', 'wanted', { ...emptyMeta(), contextTokens: 90_000, contextAtMs: 350_000 }, { ...flags, whole: false })
     check('stored snapshots follow time rather than monotonically summing context', db.search('', 50, { filters: { minContextTokens: 1 } }).map((h) => [h.nativeId, h.contextTokens]), [['wanted', 3000]])
   } finally { db.close(); rmSync(dir, { recursive: true, force: true }) }
+}
+
+section('old Codex context readings migrate without losing chat text')
+{
+  const dir = mkdtempSync(join(tmpdir(), 'stoke-codex-context-migration-'))
+  try {
+    const old = new ChatStore(dir)
+    const file = old.file
+    const flags = { subagent: false, dedupeKey: null, whole: true, redact: true }
+    for (const source of ['codex', 'claude'] as const) {
+      const id = old.upsertChat(source, 'migration', { ...emptyMeta(), title: source, contextTokens: 9_000_000, contextAtMs: 1000 }, flags)
+      old.appendMessages(id, [{ role: 'user', text: 'migration fixture retained', atMs: 1000 }])
+    }
+    old.close()
+    const raw = new DatabaseSync(file)
+    raw.exec("UPDATE meta SET value = '4' WHERE key = 'schema'")
+    raw.close()
+    const current = new ChatStore(dir)
+    try {
+      const hits = current.search('migration', 10)
+      check('migration preserves both histories', hits.length, 2)
+      check('only old Codex context metrics are cleared', hits.map(h => [h.source, h.contextTokens]).sort(), [['claude', 9_000_000], ['codex', null]])
+    } finally { current.close() }
+  } finally { rmSync(dir, { recursive: true, force: true }) }
 }
 
 section('settings: hydrated and clamped')

@@ -139,17 +139,20 @@ export class EmbeddedBrowser {
   private readonly win: BrowserWindow
   private readonly emit: (state: BrowserState) => void
   private readonly onFindRequested: () => void
+  private readonly onWindowShortcut: (input: Electron.Input) => boolean
   /** Bookmarks live in settings; this reads them for the `bookmarked` flag. */
   private bookmarks: string[] = []
 
   constructor(
     win: BrowserWindow,
     emit: (state: BrowserState) => void,
-    onFindRequested: () => void = () => {}
+    onFindRequested: () => void = () => {},
+    onWindowShortcut: (input: Electron.Input) => boolean = () => false
   ) {
     this.win = win
     this.emit = emit
     this.onFindRequested = onFindRequested
+    this.onWindowShortcut = onWindowShortcut
   }
 
   /* ------------------------------------------------------------------ tabs */
@@ -354,6 +357,7 @@ export class EmbeddedBrowser {
      * Ctrl/Cmd+F at all.
      */
     wc.on('before-input-event', (event, input) => {
+      if (this.onWindowShortcut(input)) { event.preventDefault(); return }
       if (input.type !== 'keyDown' || typeof input.key !== 'string') return
       const primary = process.platform === 'darwin' ? input.meta : input.control
       if (primary && !input.alt && input.key.toLowerCase() === 'f') {

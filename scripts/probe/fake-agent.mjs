@@ -134,6 +134,21 @@ function flagValue(flag) {
   const at = argv.indexOf(flag)
   return at !== -1 && at + 1 < argv.length ? argv[at + 1] : null
 }
+let codexRollout = null
+if (id === 'codex') {
+  const home = process.env.CODEX_HOME || join(homedir(), '.codex')
+  const stamp = new Date(), date = stamp.toISOString().slice(0, 10).split('-')
+  const folder = join(home, 'sessions', ...date)
+  mkdirSync(folder, { recursive: true })
+  const afterResume = argv[argv.indexOf('resume') + 1]
+  const explicit = argv.includes('resume') && /^[a-f0-9-]{36}$/i.test(afterResume) ? afterResume : null
+  const thread = explicit || randomUUID()
+  const existing = explicit ? readdirSync(folder).find(n => n.endsWith(`-${explicit}.jsonl`)) : null
+  codexRollout = existing ? join(folder, existing) : join(folder, `rollout-${stamp.toISOString().replace(/:/g, '-')}-${thread}.jsonl`)
+  if (!existing) writeFileSync(codexRollout, JSON.stringify({ type: 'session_meta', payload: { id: thread, cwd: process.cwd(), timestamp: stamp.toISOString(), source: 'cli', originator: 'codex-tui' } }) + '\n')
+  appendFileSync(codexRollout, JSON.stringify({ type: 'turn_context', payload: { model: flagValue('-m') || 'gpt-6.1-sol' } }) + '\n')
+  record('codex-session', { nativeId: thread })
+}
 
 /** Every value after `flag` up to the next `--option`. */
 function flagValues(flag) {
@@ -420,6 +435,7 @@ rl.on('line', async (raw) => {
   const line = raw.replace(/\r$/, '')
   record('input', { line })
   say(`GOT ${line}`)
+  if (codexRollout) appendFileSync(codexRollout, JSON.stringify({ type: 'event_msg', payload: { type: 'token_count', info: { model_context_window: 258400, last_token_usage: { total_tokens: 12000, input_tokens: 11800, cached_input_tokens: 1000, output_tokens: 200 }, total_token_usage: { total_tokens: 9_000_000 } } } }) + '\n')
   const mcp = /^mcp\s+(\S+)/.exec(line)
   if (mcp) {
     await mcpVisit(mcp[1])

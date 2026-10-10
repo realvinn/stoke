@@ -227,6 +227,19 @@ console.log('\nthe CLI a restored tab spawns')
   check('nor can a number', roundTrip(7), 'claude')
 }
 
+console.log('\nconfirmed Codex threads')
+{
+  const nativeId = '00000000-0000-4000-8000-000000000001'
+  const read = (cliId: string, agentResumeId: unknown) => normaliseTabs({ version: 1, savedAt: NOW, activeIndex: 0, tabs: [{ ...tab(), cliId, agentResumeId }] }, NOW)
+  const saved = read('codex', nativeId)
+  check('the native Codex id survives disk hydration', saved.tabs[0].agentResumeId, nativeId)
+  const restored = fromStored(saved)
+  check('and reaches the restored tab', restored.tabs[0].agentResumeId, nativeId)
+  check('and its next saved snapshot', toStored(restored.tabs, restored.activeId, {}, () => '', NOW).tabs[0].agentResumeId, nativeId)
+  check('a corrupt native id cannot become a resume argument', read('codex', 'invalid & command').tabs[0].agentResumeId, undefined)
+  check('a Codex id cannot attach a different CLI', read('claude', nativeId).tabs[0].agentResumeId, undefined)
+}
+
 console.log('\nwhat it drops')
 {
   const out = normaliseTabs(

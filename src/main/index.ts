@@ -93,6 +93,7 @@ import {
   type McpRefusal
 } from '../shared/mcpServers.ts'
 import { ContextWatcher } from './context.ts'
+import { CodexContextWatcher } from './codexContext.ts'
 import {
   findSessionFile,
   hideProjectsUnder,
@@ -288,6 +289,7 @@ import {
 
 import { MacReveal } from './macReveal.ts'
 import { nativeRevealOffset } from '../shared/nativeReveal.ts'
+import { windowShortcut, nextWindow } from '../shared/windowShortcuts.ts'
 import { TabWindowState } from './tabWindowState.ts'
 import { canMoveTab, type TabWindowPacket, type TabWindowTransfer } from '../shared/tabWindows.ts'
 
@@ -305,6 +307,18 @@ const windowSavedIds = new Map<number, string[]>()
 const transferTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const returningWindows = new Set<number>()
 function appWindows(): BrowserWindow[] { return [...(win ? [win] : []), ...detachedWindows.values()].filter(w => !w.isDestroyed()) }
+function switchWindow(owner: BrowserWindow, input: Electron.Input): boolean {
+  const windows = appWindows(), delta = windowShortcut(input, isMac, windows.length)
+  const target = delta === null ? null : nextWindow(windows, owner, delta)
+  if (!target) return false
+  if (target.isMinimized()) target.restore()
+  target.show()
+  target.focus()
+  return true
+}
+function bindWindowSwitching(owner: BrowserWindow): void {
+  owner.webContents.on('before-input-event', (event, input) => { if (switchWindow(owner, input)) event.preventDefault() })
+}
 function appFrame(event: Electron.IpcMainEvent | Electron.IpcMainInvokeEvent): BrowserWindow | null {
   return appWindows().find(w => event.sender === w.webContents && event.senderFrame === w.webContents.mainFrame) ?? null
 }
@@ -341,6 +355,7 @@ let browser: EmbeddedBrowser | null = null
 let ptys: PtyManager | null = null
 const agentLifecycle = new AgentLifecycleGate()
 let watcher: ContextWatcher | null = null
+const codexWatcher = new CodexContextWatcher(snap => send(CH.ctxUpdate, snap))
 let registry: RegistryPoller | null = null
 /**
  * How often the registry is read. A second is the ceiling on how late a
@@ -1462,6 +1477,10 @@ async function startSession(
     throw err
   }
   if (localAgent && ptys.sessionIdFor(started.ptyId) !== null) {
+    if (cliId === 'codex') {
+      const session = ptys.list().find(s => s.ptyId === started.ptyId)
+      if (session) codexWatcher.watch({ sessionId: started.sessionId, home: agentPlan?.env.CODEX_HOME || defaultTrees(process.env, homedir()).codex, cwd: opts.cwd, startedAt: session.startedAt, resumeId: opts.agentResumeId, continueLast: opts.continueLast })
+    }
     usageBindings.capture({ cli: cliId, accountId: accountId || DEFAULT_ACCOUNT_ID, ptyId: started.ptyId }, usagePlanInput(settings), process.env, homedir(), process.env.STOKE_FAKE_USAGE || undefined)
     accountIdentities.capture(planAccountIdentity({ cli: cliId, accountId: accountId || DEFAULT_ACCOUNT_ID, ptyId: started.ptyId }, settings, process.env, opts.cwd))
   }
@@ -2315,7 +2334,8 @@ function createDetachedWindow(): BrowserWindow {
   popup.on('unmaximize', pushChrome)
   popup.on('enter-full-screen', () => { pushChrome(); updateNativeReveal() })
   popup.on('leave-full-screen', () => { pushChrome(); updateNativeReveal() })
-  const embedded = new EmbeddedBrowser(popup, state => popup.webContents.send(CH.browserState, state), () => popup.webContents.send(CH.browserFindRequested))
+  bindWindowSwitching(popup)
+  const embedded = new EmbeddedBrowser(popup, state => popup.webContents.send(CH.browserState, state), () => popup.webContents.send(CH.browserFindRequested), input => switchWindow(popup, input))
   detachedBrowsers.set(popup.id, embedded)
   const settings = getSettings()
   embedded.setProfiles(settings.browser.profiles, settings.browser.currentProfile, settings.browser.homepage)
@@ -3102,10 +3122,13 @@ function createWindow(): void {
     if (url !== win?.webContents.getURL()) e.preventDefault()
   })
 
+  bindWindowSwitching(win)
+  const browserOwner = win
   browser = new EmbeddedBrowser(
     win,
     (state) => win?.webContents.send(CH.browserState, state),
-    () => win?.webContents.send(CH.browserFindRequested)
+    () => win?.webContents.send(CH.browserFindRequested),
+    input => switchWindow(browserOwner, input)
   )
   browser.setBookmarks(settings.browser.bookmarks)
   browser.setProfiles(settings.browser.profiles, settings.browser.currentProfile, settings.browser.homepage)
@@ -3165,7 +3188,7 @@ function createWindow(): void {
       // this callback ever ran. `sessionId` here comes straight from that
       // same exit event, while it is still known, so this entry does not
       // sit in `statusLineSeen` forever.
-      if (sessionId) statusLineSeen.delete(sessionId)
+      if (sessionId) { statusLineSeen.delete(sessionId); codexWatcher.unwatch(sessionId) }
       // An enrollment tab: ssh-copy-id has finished, been closed, or failed.
       // Whichever — only the probe knows whether it worked.
       const run = enrollRuns.exit(ptyId)
@@ -3446,6 +3469,7 @@ function createWindow(): void {
     for (const t of timers.splice(0)) clearInterval(t)
     ptys?.shutdown()
     watcher?.disposeAll()
+    codexWatcher.disposeAll()
     autoscan?.dispose()
     autoscan = null
     mcp?.stop()
@@ -3553,6 +3577,7 @@ function registerIpc(): void {
     win.focus()
   })
   ipcMain.handle(CH.winIsMaximized, event => appFrame(event)?.isMaximized() ?? false)
+  ipcMain.handle(CH.winIsFocused, event => appFrame(event)?.isFocused() ?? false)
   // Asked once on mount, because a window can be launched already full screen
   // and no enter-full-screen event fires for a state it started in.
   ipcMain.handle(CH.winIsFullScreen, event => appFrame(event)?.isFullScreen() ?? false)
@@ -4016,6 +4041,7 @@ function registerIpc(): void {
     ptys?.kill(ptyId)
     if (sessionId) {
       watcher?.unwatch(sessionId)
+      codexWatcher.unwatch(sessionId)
       statusLineSeen.delete(sessionId)
     }
   })
@@ -4032,6 +4058,7 @@ function registerIpc(): void {
     const stopped = ptys.stop(ptyId, cap)
     if (sessionId) {
       watcher?.unwatch(sessionId)
+      codexWatcher.unwatch(sessionId)
       statusLineSeen.delete(sessionId)
     }
     return await stopped
@@ -4039,8 +4066,12 @@ function registerIpc(): void {
   ipcMain.handle(CH.sessionState, () => registry?.states() ?? [])
 
   /* --------------------------------------------------------------- context */
-  ipcMain.on(CH.ctxWatch, (_e, sessionId: string) => watcher?.watch(sessionId))
-  ipcMain.on(CH.ctxUnwatch, (_e, sessionId: string) => watcher?.unwatch(sessionId))
+  ipcMain.on(CH.ctxWatch, (_e, sessionId: string) => {
+    if (codexWatcher.has(sessionId)) { const snap = codexWatcher.snapshot(sessionId); if (snap) send(CH.ctxUpdate, snap); codexWatcher.refresh(sessionId); return }
+    const session = ptys?.list().find(s => s.sessionId === sessionId)
+    if (!session || session.cli === 'claude') watcher?.watch(sessionId)
+  })
+  ipcMain.on(CH.ctxUnwatch, (_e, sessionId: string) => { watcher?.unwatch(sessionId); codexWatcher.unwatch(sessionId) })
   /*
    * Hook events, polled off the per-session events file every second.
    *
@@ -5834,6 +5865,7 @@ if (!app.requestSingleInstanceLock(launchRequest ? { stokeCli: launchRequest } :
     // rest on the next boot's sweep (privateChat.ts `quitSync`).
     privateChats?.quitSync()
     watcher?.disposeAll()
+    codexWatcher.disposeAll()
     // A pass stops where it is; the store is WAL, so an interrupted write is simply not there.
     void chatIndex?.stop()
     conversationFinder?.forget()

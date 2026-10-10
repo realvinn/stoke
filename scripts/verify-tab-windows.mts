@@ -2,11 +2,21 @@ import assert from 'node:assert/strict'
 import { TabWindowState } from '../src/main/tabWindowState.ts'
 import { canMoveTab, tabDragLeavesStrip, type Tab, type TabWindowPacket } from '../src/shared/tabWindows.ts'
 import { nativeRevealOffset } from '../src/shared/nativeReveal.ts'
+import { windowShortcut, nextWindow } from '../src/shared/windowShortcuts.ts'
 import { restorableTabs, toStored } from '../src/renderer/src/lib/restore.ts'
 
 const tab = (id: string): Tab => ({ id, kind: 'session', cliId: 'codex', accountId: 'codex-work', ptyId: `pty-${id}`, sessionId: `session-${id}`, cwd: '/fixture', projectName: 'Fixture', title: id, permissionMode: 'default', model: '', effort: 'default', ultracode: false, status: 'running', exitCode: null, hostId: null, selectedPath: null, expandedPath: null })
 const packet = (tabs: Tab[]): TabWindowPacket => ({ tabs, activeId: tabs[0]?.id ?? null, contexts: {}, drafts: {}, screens: {}, stored: { state: toStored(tabs, tabs[0]?.id ?? null, {}, () => 'fixture screen', 10), ids: restorableTabs(tabs).map(t => t.id) } })
 const a = tab('a'), b = tab('b'), c = tab('c')
+const key = { type: 'keyDown', key: 'ArrowLeft', meta: true, control: false, shift: false, alt: false }
+assert.equal(windowShortcut(key, true, 2), -1)
+assert.equal(windowShortcut({ ...key, key: 'ArrowRight' }, true, 2), 1)
+assert.equal(windowShortcut({ ...key, meta: false, control: true }, false, 2), -1)
+for (const change of [{ shift: true }, { alt: true }, { control: true }, { isAutoRepeat: true }, { isComposing: true }, { type: 'keyUp' }]) assert.equal(windowShortcut({ ...key, ...change }, true, 2), null)
+assert.equal(windowShortcut(key, true, 1), null, 'one window keeps native terminal/editor keys')
+assert.equal(nextWindow([a, b, c], a, -1), c)
+assert.equal(nextWindow([a, b, c], c, 1), a)
+assert.equal(nextWindow([a], a, 1), null)
 const state = new TabWindowState()
 assert(state.publish(1, [a, b]))
 assert(state.publish(2, []))
@@ -53,6 +63,9 @@ const frame = (y: number, extra = {}) => ({ x: 0, y, width: 1440, height: 62, on
 assert.equal(nativeRevealOffset([frame(-62)], bounds, 62), 0)
 assert.equal(nativeRevealOffset([frame(-45)], bounds, 62), 17, 'follows the actual reveal during its slide')
 assert.equal(nativeRevealOffset([frame(0)], bounds, 62), 62)
+assert.equal(nativeRevealOffset([frame(0, { height: 74 })], bounds, 62), 74, 'native toolbar height overrides the standard hidden-window estimate')
+assert.equal(nativeRevealOffset([frame(0, { height: 74 })], { ...bounds, y: 37 }, 32), 37, 'a notch-offset shell follows the actual native bottom')
+assert.equal(nativeRevealOffset([frame(100, { height: 160 })], bounds, 62), 0, 'a wide overlay below the screen edge is not a menu reveal')
 assert.equal(nativeRevealOffset([frame(-26)], bounds, 62), 36, 'hide follows the native slide without a second linger')
 assert.equal(nativeRevealOffset([frame(0, { onscreen: false })], bounds, 62), 0)
 assert.equal(nativeRevealOffset([frame(0, { width: 400 })], bounds, 62), 0, 'notification-sized windows do not reveal the shell')

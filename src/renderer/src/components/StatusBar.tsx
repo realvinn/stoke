@@ -337,7 +337,7 @@ export function StatusBar({
    * after the first assistant turn — so the bar no longer reads `default`
    * until Claude has said something.
    */
-  const reportedModel = claudeTab ? line?.modelId ?? context?.model : null
+  const reportedModel = claudeTab ? line?.modelId ?? context?.model : context?.model
   const model = reportedModel ?? (tab.model || null)
   /*
    * A paused tab's `context` is seeded at restore with a real saved reading
@@ -427,7 +427,7 @@ export function StatusBar({
       {!installTab && caps.launchFlags.model && model && (
         <span className="status-item" title={reportedModel ? model : `Configured model: ${model}. The agent has not reported its active model to Stoke.`} data-model-source={reportedModel ? 'reported' : 'configured'} {...agentMark(cliIdOf(tab.cliId))}>
           <span className="agent-dot" aria-hidden="true" />
-          {reportedModel ? modelLabel(model) : `configured: ${claudeTab ? modelLabel(model) : model}`}
+          {reportedModel ? (claudeTab ? modelLabel(model) : model) : `configured: ${claudeTab ? modelLabel(model) : model}`}
         </span>
       )}
 
@@ -480,7 +480,7 @@ export function StatusBar({
            * would read as "this session had no turns," which is false for
            * every paused tab that ever ran. Suppressed rather than guessed.
            */}
-          {!paused && <span className="status-item">{context.messageCount} msgs</span>}
+          {!paused && claudeTab && <span className="status-item">{context.messageCount} msgs</span>}
         </>
       ) : tab.private ? (
         /*
@@ -491,6 +491,8 @@ export function StatusBar({
         <span className="status-item">Private chat · nothing saved, so no context reading</span>
       ) : claudeTab ? (
         <span className="status-item">waiting for first turn…</span>
+      ) : cliIdOf(tab.cliId) === 'codex' && !installTab ? (
+        <span className="status-item" title="Stoke reads Codex’s own rollout records. A reading appears after a token-count event; ambiguous launches and native continue-last remain unknown.">{context?.readingNote ?? 'Waiting for Codex context reading…'}</span>
       ) : (
         /*
          * Not "waiting for first turn…", which is a promise: it says a reading
