@@ -515,6 +515,15 @@ export interface StokeApi {
   platform: string
 
   window: {
+    detached: boolean
+    tabBootstrap(): Promise<import('./tabWindows').TabWindowTransfer | null>
+    publishTabs(tabs: import('./tabWindows').Tab[]): void
+    detachTab(packet: import('./tabWindows').TabWindowPacket): Promise<{ ok: boolean; message?: string }>
+    acceptTabs(id: string): void
+    returnTabs(packet: import('./tabWindows').TabWindowPacket): void
+    onAdoptTabs(cb: (transfer: import('./tabWindows').TabWindowTransfer) => void): () => void
+    onTabsRemoved(cb: (ids: string[]) => void): () => void
+    onReturnTabsRequested(cb: () => void): () => void
     minimize(): void
     maximize(): void
     close(): void
@@ -534,6 +543,8 @@ export interface StokeApi {
      * `revealInsetFor` and `revealsOnEntry`.
      */
     revealInfo(): Promise<RevealInfo>
+    nativeReveal(): Promise<number | null>
+    onNativeRevealChanged(cb: (offset: number | null) => void): () => void
     /** Show and focus the window, from a notification click or the like. */
     focus(): void
     /**
@@ -1182,7 +1193,7 @@ export interface StokeApi {
    * that blocks the UI thread to be exact.
    */
   tabs: {
-    save(state: StoredTabs): void
+    save(state: StoredTabs, tabIds?: string[]): void
     restore(): Promise<StoredTabs>
   }
 

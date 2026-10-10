@@ -51,6 +51,15 @@ const api: StokeApi = {
   platform: process.platform,
 
   window: {
+    detached: process.argv.includes('--stoke-detached-window'),
+    tabBootstrap: () => ipcRenderer.invoke(CH.winTabBootstrap),
+    publishTabs: tabs => ipcRenderer.send(CH.winTabPublish, tabs),
+    detachTab: packet => ipcRenderer.invoke(CH.winTabDetach, packet),
+    acceptTabs: id => ipcRenderer.send(CH.winTabAccept, id),
+    returnTabs: packet => ipcRenderer.send(CH.winTabReturn, packet),
+    onAdoptTabs: cb => on(CH.winTabAdopt, cb),
+    onTabsRemoved: cb => on(CH.winTabRemoved, cb),
+    onReturnTabsRequested: cb => on(CH.winTabReturnRequest, cb),
     minimize: () => ipcRenderer.send(CH.winMinimize),
     maximize: () => ipcRenderer.send(CH.winMaximize),
     close: () => ipcRenderer.send(CH.winClose),
@@ -59,6 +68,8 @@ const api: StokeApi = {
     isFullScreen: () => ipcRenderer.invoke(CH.winIsFullScreen),
     onFullScreenChanged: (cb) => on<[boolean]>(CH.winFullScreenChanged, cb),
     revealInfo: () => ipcRenderer.invoke(CH.winRevealInfo),
+    nativeReveal: () => ipcRenderer.invoke(CH.winNativeReveal),
+    onNativeRevealChanged: cb => on(CH.winNativeRevealChanged, cb),
     focus: () => ipcRenderer.send(CH.winFocus),
     systemDark: () => ipcRenderer.invoke(CH.systemDark),
     onSystemDarkChanged: (cb) => on<[boolean]>(CH.systemDarkChanged, cb)
@@ -400,7 +411,7 @@ const api: StokeApi = {
   },
 
   tabs: {
-    save: (state: StoredTabs) => ipcRenderer.send(CH.tabsSave, state),
+    save: (state: StoredTabs, tabIds?: string[]) => ipcRenderer.send(CH.tabsSave, state, tabIds),
     restore: () => ipcRenderer.invoke(CH.tabsRestore)
   },
 

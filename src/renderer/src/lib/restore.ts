@@ -14,6 +14,13 @@ function restoredId(i: number): string {
   return `restored-${Date.now().toString(36)}-${i}`
 }
 
+export function restorableTabs(tabs: Tab[]): (Tab & { kind: 'session' | 'new' })[] {
+  return tabs.filter(
+    (t): t is Tab & { kind: 'session' | 'new' } =>
+      t.kind !== 'remote' && !t.installing?.length && !t.enrollHostId && !t.accountLogin && !t.private
+  )
+}
+
 export function toStored(
   tabs: Tab[],
   activeTabId: string | null,
@@ -29,10 +36,7 @@ export function toStored(
   // Nor another machine's session: a relay does not survive a restart, and that machine asks again.
   // Nor a private chat, above all: its whole promise is that nothing of it is
   // kept, and `screen` is its raw terminal text (main drops one too).
-  const kept = tabs.filter(
-    (t): t is Tab & { kind: 'session' | 'new' } =>
-      t.kind !== 'remote' && !t.installing?.length && !t.enrollHostId && !t.accountLogin && !t.private
-  )
+  const kept = restorableTabs(tabs)
   const stored: StoredTab[] = kept.map((t) => {
     const snap = t.sessionId ? contexts[t.sessionId] : undefined
     return {

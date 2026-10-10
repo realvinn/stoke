@@ -23,6 +23,7 @@ import {
 } from './Icons'
 import { PRIVATE_BUTTON_TITLE, PRIVATE_FOLDER_TEXT } from '@shared/privateChat'
 import { chordLabel } from '../lib/shortcuts'
+import { canMoveTab } from '@shared/tabWindows'
 import { useTabDrag } from '../lib/useTabDrag'
 import { agentMark } from '../lib/agentColor'
 import { folderMenuEntry, revealLabel, type CloseSide } from '../lib/tabs'
@@ -69,6 +70,7 @@ interface Props {
    * Reorder: the dragged tab takes the target's index. Called once per drag,
    * on release — the strip previews the move itself until then.
    */
+  onDetachTab: (id: string) => void
   onReorderTab: (dragId: string, overId: string) => void
   onToggleSidebar: () => void
   onToggleBrowser: () => void
@@ -143,6 +145,7 @@ export function TitleBar({
   hostLabelFor,
   onNewTab,
   onReorderTab,
+  onDetachTab,
   onToggleSidebar,
   onToggleBrowser,
   worklogCount,
@@ -200,7 +203,8 @@ export function TitleBar({
     ids,
     isMac,
     onSelect: onSelectTab,
-    onReorder: onReorderTab
+    onReorder: onReorderTab,
+    onDetach: id => { const tab = tabs.find(t => t.id === id); if (tab && canMoveTab(tab)) onDetachTab(id) }
   })
 
   // The right-click menu (its anchor tab) and the inline rename in progress.
@@ -662,6 +666,7 @@ export function TitleBar({
         footer={folderEntry && 'reason' in folderEntry ? folderEntry.reason : undefined}
         items={buildTabMenu(tabs, menuTab, isMac, {
           onRename: startRename,
+          onDetach: onDetachTab,
           onClose: onCloseTab,
           onCloseSide: onCloseTabsSide,
           folder:
@@ -694,6 +699,7 @@ function buildTabMenu(
   tab: Tab,
   isMac: boolean,
   on: {
+    onDetach: (id: string) => void
     onRename: (t: Tab) => void
     onClose: (id: string) => void
     onCloseSide: (anchorId: string, side: CloseSide) => void
@@ -735,6 +741,7 @@ function buildTabMenu(
           }
         ]
       : []),
+    { label: 'Move to new window', disabled: !canMoveTab(tab), onSelect: () => on.onDetach(tab.id) },
     { label: 'Close', separated: true, hint: chordLabel('closeTab', isMac), onSelect: () => on.onClose(tab.id) },
     { label: 'Close others', disabled: tabs.length <= 1, onSelect: () => on.onCloseSide(tab.id, 'others') },
     { label: 'Close tabs to the right', disabled: !hasRight, onSelect: () => on.onCloseSide(tab.id, 'right') },

@@ -1038,6 +1038,8 @@ npm run verify:drop           # what a dropped file types: quoting per platform,
                               # by Claude Code's own splitter and by real shells, the far
                               # paths an SSH upload types (POSIX, read back whole), and the
                               # image-paste key per platform (Alt+V for Claude on Windows)
+npm run verify:tab-windows    # acknowledged ownership, failed/duplicate handoffs, account and
+                             # private restore scope; native reveal slide/display geometry
 npm run verify:fullscreen     # the macOS full-screen menu bar: how far it reaches (notch,
                               # never-hide, failed reads) and when the shell moves under it
                               # and back, replayed from measured pointer events (gotcha 105)
@@ -1670,6 +1672,10 @@ src/main/         Electron main process
                     dev, a sandbox) shares that one file, so it is merged per userData under a
                     `mkdir` lock, never rewritten from one settings file. No electron import:
                     verify:accounts runs it on synthetic trees
+  tabWindowState.ts acknowledged live-tab ownership across native Stoke windows; loading
+                    and failed targets never remove the source; tabs from every window
+                    join the existing private-filtered restore snapshot
+  macReveal.ts      owned macOS metadata helper lifecycle, only during native full screen
   accountIdentity.ts read-only Claude auth status / Codex account/read in owned, bounded
                     subprocesses. Captures each PTY's launch account/home/provider source;
                     deduplicates reads, holds two probe slots and drops late ended-session
@@ -2320,6 +2326,9 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
   browserProfiles.ts  the docked browser's profiles: each its own persistent partition
                     (`partitionFor`; Default keeps `persist:stoke-browser`), the hydrate that
                     repairs a settings file's list, and id/label minting. verify:browser-profiles
+  tabWindows.ts     live tab contract, window handoff packets, eligible tabs and tear-off
+                    threshold; renderer/types.ts re-exports the common Tab type
+  nativeReveal.ts   native menu-window geometry to a partial reveal offset; no pixels
   fullScreenReveal.ts  how far macOS's full-screen menu bar and title strip reach over the
                     window (main measures the inputs), and the pointer rule that moves the
                     shell below them and back. Pure, geometry passed in, so

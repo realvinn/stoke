@@ -88,7 +88,7 @@ import { delimiter, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 
-import { CdpClient, connectBrowserPage, connectStoke, listTargets } from './cdp-lib.mjs'
+import { CdpClient, connectBrowserPage, connectStoke, connectPage, listTargets } from './cdp-lib.mjs'
 import { startLoginServer } from './probe/login-server.mjs'
 import { createCertificate, startTlsServer } from './probe/tls-server.mjs'
 import { createSshFileFixture, removeSshFileFixture } from './probe/ssh-files.mjs'
@@ -844,6 +844,50 @@ await step('the active account follows the agent and fits the title bar', async 
 /* -------------------------------------------------------------- browser */
 
 let profileTwo = ''
+await step('dragging a live agent into a separate Stoke window keeps the process and returns it on close', async () => {
+  const primary = ui!
+  const t = tabs.codex!
+  const recordsBefore = stubRecords('codex').length
+  let popup: CdpClient | null = null
+  try {
+    await activate(t.ptyId)
+    const point = await ev<{ x: number; y: number }>(`(() => { const r = document.querySelector('.tablist .tab[aria-selected="true"]').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 } })()`)
+    await primary.send('Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', buttons: 1, clickCount: 1, ...point })
+    await primary.send('Input.dispatchMouseEvent', { type: 'mouseMoved', button: 'left', buttons: 1, x: point.x + 12, y: point.y + 10 })
+    await primary.send('Input.dispatchMouseEvent', { type: 'mouseMoved', button: 'left', buttons: 1, x: point.x + 12, y: point.y + 110 })
+    await primary.send('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', buttons: 0, clickCount: 1, x: point.x + 12, y: point.y + 110 })
+    popup = await waitFor('the detached Stoke renderer', () => connectPage(port, client => client.evaluate('window.stoke?.window.detached === true'), { what: 'the detached Stoke renderer' }), 25_000)
+    await popup.send('Emulation.setFocusEmulationEnabled', { enabled: true })
+    ui = popup
+    await waitFor('the original PTY in the detached terminal', () => ev<boolean>(`window.stokeTerminals?.has(${JSON.stringify(t.ptyId)}) === true`))
+    check('a detached Stoke window starts with its sidebar hidden', await ev<boolean>(`!document.querySelector('.sidebar')`) === true)
+    check('the original window releases its transferred terminal', await primary.evaluate(`!window.stokeTerminals.has(${JSON.stringify(t.ptyId)})`) === true)
+    check('the detached window has the same running agent process', stubRecords('codex').length === recordsBefore && !!stubRecords('codex').find(record => record.pid === t.pid && !record.events.some(event => event.kind === 'exit')))
+    await typeLine(t.ptyId, 'detached-window-input')
+    await waitFor('typing in the moved terminal to reach its original process', async () => (await bufferOf(t.ptyId)).includes('GOT detached-window-input'))
+    await shot('04-detached-agent-window')
+    await primary.evaluate('(window.__stokeDetachedBrowserChanged = false, window.__stokeDetachedBrowserOff = window.stoke.browser.onState(() => { window.__stokeDetachedBrowserChanged = true }), true)')
+    await ev('(window.__stokeDetachedBrowserState = null, window.stoke.browser.onState(s => { window.__stokeDetachedBrowserState = s }), true)')
+    await ev(`window.stoke.browser.show(${JSON.stringify(`${site.base}/whoami?window=detached`)}), true`)
+    await waitFor('the separate window browser to navigate', () => ev<boolean>(`window.__stokeDetachedBrowserState?.url.includes('window=detached') && !window.__stokeDetachedBrowserState.loading`))
+    check('a separate window navigates its own browser', await primary.evaluate('window.__stokeDetachedBrowserChanged === false') === true)
+    await ev('window.stoke.browser.hide(), true')
+    // Closing the primary shell with a child open must not shut down shared PTYs.
+    await primary.evaluate('window.stoke.window.close(), true')
+    await typeLine(t.ptyId, 'primary-window-closed')
+    await waitFor('the process to keep working after the primary shell closes', async () => (await bufferOf(t.ptyId)).includes('GOT primary-window-closed'))
+    await ev('window.stoke.window.close(), true')
+    ui = primary
+    await waitFor('the same terminal to return to the primary window', () => ev<boolean>(`window.stokeTerminals.has(${JSON.stringify(t.ptyId)})`))
+    check('closing the separate window returns the same PTY without launching another agent', stubRecords('codex').length === recordsBefore)
+    await activate(t.ptyId)
+  } finally {
+    if (popup) { await popup.evaluate('window.stoke.window.close(), true').catch(() => {}); popup.close() }
+    ui = primary
+    await primary.evaluate('(window.__stokeDetachedBrowserOff?.(), delete window.__stokeDetachedBrowserOff, delete window.__stokeDetachedBrowserChanged, true)').catch(() => {})
+  }
+})
+
 await step('the docked browser logs in, and keeps it to its own profile', async () => {
   await ev('document.querySelector(\'button[title^="Toggle browser"]\').click(), true')
   const page = await waitFor('the docked browser to load the login page', () => connectBrowserPage(port, (u: string) => u.startsWith(`${site.base}/login`)), 45_000, 500)

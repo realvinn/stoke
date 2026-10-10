@@ -286,13 +286,55 @@ import {
   selfUpdateState
 } from './selfUpdate.ts'
 
+import { MacReveal } from './macReveal.ts'
+import { nativeRevealOffset } from '../shared/nativeReveal.ts'
+import { TabWindowState } from './tabWindowState.ts'
+import { canMoveTab, type TabWindowPacket, type TabWindowTransfer } from '../shared/tabWindows.ts'
+
 const isMac = process.platform === 'darwin'
 const isWindows = process.platform === 'win32'
 /** Must match --titlebar-h in app.css, or the overlay and the bar disagree. */
 const TITLEBAR_H = 44
 
 let win: BrowserWindow | null = null
+const detachedWindows = new Map<number, BrowserWindow>()
+const detachedBrowsers = new Map<number, EmbeddedBrowser>()
+const windowTabs = new TabWindowState()
+const windowSavedTabs = new Map<number, StoredTabs>()
+const windowSavedIds = new Map<number, string[]>()
+const transferTimers = new Map<string, ReturnType<typeof setTimeout>>()
+const returningWindows = new Set<number>()
+function appWindows(): BrowserWindow[] { return [...(win ? [win] : []), ...detachedWindows.values()].filter(w => !w.isDestroyed()) }
+function appFrame(event: Electron.IpcMainEvent | Electron.IpcMainInvokeEvent): BrowserWindow | null {
+  return appWindows().find(w => event.sender === w.webContents && event.senderFrame === w.webContents.mainFrame) ?? null
+}
+function browserFor(event: Electron.IpcMainEvent | Electron.IpcMainInvokeEvent): EmbeddedBrowser | null {
+  const owner = appFrame(event)
+  return owner === win ? browser : owner ? detachedBrowsers.get(owner.id) ?? null : null
+}
+let macReveal: MacReveal | null = null
+const lastNativeOffsets = new Map<number, number | null>()
+function measuredRevealInset(owner: BrowserWindow): number {
+  const bounds = owner.getBounds(), display = screen.getDisplayMatching(bounds)
+  return revealInsetFor({ windowTop: bounds.y - display.bounds.y, menuBar: display.workArea.y - display.bounds.y, titleBar: standardTitleBarHeight() })
+}
+function nativeOffsetFor(owner: BrowserWindow): number | null {
+  return owner.isFullScreen() ? nativeRevealOffset(macReveal?.current(), owner.getBounds(), measuredRevealInset(owner)) : null
+}
+function updateNativeReveal(): void {
+  if (!isMac || appQuitting) return
+  macReveal ??= new MacReveal(app.isPackaged ? join(process.resourcesPath, 'mac-reveal') : join(__dirname, '../native/mac-reveal'), () => {
+    for (const owner of appWindows()) if (owner.isFullScreen()) {
+      const offset = nativeOffsetFor(owner)
+      if (lastNativeOffsets.get(owner.id) !== offset || !lastNativeOffsets.has(owner.id)) { lastNativeOffsets.set(owner.id, offset); owner.webContents.send(CH.winNativeRevealChanged, offset) }
+    }
+  })
+  macReveal.setActive(getSettings().fullScreenReveal === 'follow' && appWindows().some(w => w.isFullScreen() && w.isVisible()))
+}
+
 let quickTerminalWindow: BrowserWindow | null = null
+let quickTerminalOwner: number | null = null
+function quickPanelOwner(): BrowserWindow | null { return appWindows().find(w => w.id === quickTerminalOwner) ?? win }
 let quickTerminal: QuickTerminal | null = null
 let appQuitting = false
 let browser: EmbeddedBrowser | null = null
@@ -2202,13 +2244,131 @@ function remoteDeps(): RemoteDeps {
 }
 
 function send(channel: string, ...args: unknown[]): void {
-  if (win && !win.isDestroyed() && !win.webContents.isDestroyed()) {
-    win.webContents.send(channel, ...args)
+  // A shell launch is adopted once, by the primary window. State updates fan out.
+  let targets = channel === CH.cliRequest || channel === CH.remoteSessionStarted ? (win ? [win] : []) : appWindows()
+  if (channel === CH.ptyData) {
+    const owner = [...windowTabs.tabs].find(([_id, tabs]) => tabs.some(t => t.ptyId === args[0]))?.[0]
+    if (owner !== undefined) targets = targets.filter(w => w.id === owner)
+  }
+  for (const target of targets) if (!target.isDestroyed() && !target.webContents.isDestroyed()) target.webContents.send(channel, ...args)
+}
+
+function persistWindowTabs(): void {
+  const snapshots = [...windowSavedTabs.values()]
+  if (!snapshots.length) return
+  lastTabState = { version: 1, savedAt: Date.now(), activeIndex: snapshots[0].activeIndex, tabs: snapshots.flatMap(s => s.tabs) }
+  writeTabState(tabStateFile(app.getPath('userData')), lastTabState)
+}
+
+function transferFor(id: string): TabWindowTransfer | null {
+  const pending = windowTabs.pending.get(id)
+  if (!pending) return null
+  const packet = pending.transfer.packet
+  // Read the mirror immediately before delivery, not before a slow renderer loads.
+  const screens = { ...packet.screens }
+  for (const tab of packet.tabs) if (tab.ptyId && tab.status === 'running') screens[tab.id] = ptys?.historyFor(tab.ptyId) || screens[tab.id] || ''
+  return { id, packet: { ...packet, screens } }
+}
+
+function cancelTabTransfer(id: string): void {
+  const pending = windowTabs.pending.get(id)
+  if (!pending) return
+  clearTimeout(transferTimers.get(id))
+  transferTimers.delete(id)
+  windowTabs.pending.delete(id)
+  const source = appWindows().find(w => w.id === pending.source)
+  source?.webContents.send(CH.winTabRemoved, []) // releases the renderer's in-flight guard
+  if (returningWindows.delete(pending.source)) return
+  const target = detachedWindows.get(pending.target)
+  if (target && !(windowTabs.tabs.get(target.id)?.length)) target.destroy()
+}
+
+function createDetachedWindow(): BrowserWindow {
+  const theme = effectiveTheme(getSettings())
+  const point = screen.getCursorScreenPoint()
+  const area = screen.getDisplayNearestPoint(point).workArea
+  const width = Math.min(1100, area.width), height = Math.min(800, area.height)
+  const popup = new BrowserWindow({
+    title: 'Stoke', width, height, minWidth: 700, minHeight: 480, show: false,
+    x: Math.max(area.x, Math.min(point.x - 120, area.x + area.width - width)),
+    y: Math.max(area.y, Math.min(point.y - 24, area.y + area.height - height)),
+    backgroundColor: theme.colors.bg,
+    frame: isMac || !isWindows,
+    titleBarStyle: isMac ? 'hiddenInset' : isWindows ? 'hidden' : 'default',
+    titleBarOverlay: isWindows ? { color: theme.colors.bgSunken, symbolColor: theme.colors.textMuted, height: TITLEBAR_H } : undefined,
+    trafficLightPosition: isMac ? { x: 16, y: 18 } : undefined,
+    webPreferences: { preload: join(__dirname, '../preload/index.js'), additionalArguments: ['--stoke-detached-window'], contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: false, backgroundThrottling: false }
+  })
+  detachedWindows.set(popup.id, popup)
+  windowTabs.tabs.set(popup.id, [])
+  popup.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:/i.test(url)) void shell.openExternal(url)
+    return { action: 'deny' }
+  })
+  popup.webContents.on('will-navigate', event => event.preventDefault())
+  popup.webContents.on('will-redirect', event => event.preventDefault())
+  const pushChrome = (): void => {
+    popup.webContents.send(CH.winMaximizedChanged, popup.isMaximized())
+    popup.webContents.send(CH.winFullScreenChanged, popup.isFullScreen())
+  }
+  popup.on('maximize', pushChrome)
+  popup.on('unmaximize', pushChrome)
+  popup.on('enter-full-screen', () => { pushChrome(); updateNativeReveal() })
+  popup.on('leave-full-screen', () => { pushChrome(); updateNativeReveal() })
+  const embedded = new EmbeddedBrowser(popup, state => popup.webContents.send(CH.browserState, state), () => popup.webContents.send(CH.browserFindRequested))
+  detachedBrowsers.set(popup.id, embedded)
+  const settings = getSettings()
+  embedded.setProfiles(settings.browser.profiles, settings.browser.currentProfile, settings.browser.homepage)
+  embedded.setBookmarks(settings.browser.bookmarks)
+  popup.on('close', event => {
+    if (appQuitting) return
+    event.preventDefault()
+    if (returningWindows.has(popup.id)) return
+    returningWindows.add(popup.id)
+    popup.webContents.send(CH.winTabReturnRequest)
+    // A hung renderer stays open with its processes intact.
+    setTimeout(() => returningWindows.delete(popup.id), 10_000).unref()
+  })
+  popup.on('closed', () => {
+    embedded.destroy()
+    setImmediate(updateNativeReveal)
+    detachedBrowsers.delete(popup.id)
+    detachedWindows.delete(popup.id)
+    lastNativeOffsets.delete(popup.id)
+    if (quickTerminalOwner === popup.id) { quickTerminalOwner = win?.id ?? null; quickTerminal?.move('hidden') }
+    returningWindows.delete(popup.id)
+    for (const [id, pending] of windowTabs.pending) if (pending.target === popup.id || pending.source === popup.id) cancelTabTransfer(id)
+    windowTabs.remove(popup.id)
+    windowSavedTabs.delete(popup.id)
+    windowSavedIds.delete(popup.id)
+  })
+  return popup
+}
+
+async function detachTabWindow(source: BrowserWindow, packet: TabWindowPacket): Promise<{ ok: boolean; message?: string }> {
+  if (appQuitting || detachedWindows.size >= 12) return { ok: false, message: 'Close a separate window before opening another.' }
+  if (!packet || packet.tabs?.length !== 1 || !canMoveTab(packet.tabs[0])) return { ok: false, message: 'This tab cannot move while it is connecting or installing.' }
+  const target = createDetachedWindow()
+  const id = randomUUID()
+  if (!windowTabs.stage(id, source.id, target.id, packet)) { target.destroy(); return { ok: false, message: 'The tab changed before it could move. Try again.' } }
+  transferTimers.set(id, setTimeout(() => cancelTabTransfer(id), 15_000))
+  try {
+    const devUrl = process.env.ELECTRON_RENDERER_URL
+    if (!app.isPackaged && devUrl) await target.loadURL(devUrl)
+    else await target.loadFile(join(__dirname, '../renderer/index.html'))
+    return { ok: true }
+  } catch {
+    cancelTabTransfer(id)
+    return { ok: false, message: 'The separate window could not open. Your session is still here.' }
   }
 }
 
 function sendQuickTerminal(channel: string, value: unknown): void {
-  send(channel, value)
+  const owner = quickPanelOwner()
+  for (const target of appWindows()) {
+    if (channel === CH.quickTerminalState) target.webContents.send(channel, target === owner ? value : { ...(value as import('../shared/quickTerminal.ts').QuickTerminalState), mode: 'hidden' })
+    else if (target === owner || channel === CH.quickTerminalAppearance) target.webContents.send(channel, value)
+  }
   const popup = quickTerminalWindow
   if (popup && !popup.isDestroyed() && !popup.webContents.isDestroyed()) popup.webContents.send(channel, value)
 }
@@ -2224,7 +2384,8 @@ function quickTerminalAppearance(): QuickTerminalAppearance {
   return { theme: effectiveTheme(s), fontFamily: s.fontFamily, fontSize: s.fontSize, uiScale: s.uiScale, terminal: s.terminal }
 }
 function quickTerminalSurface(event: Electron.IpcMainEvent | Electron.IpcMainInvokeEvent): QuickTerminalSurface | null {
-  if (win && !win.isDestroyed() && event.sender === win.webContents && event.senderFrame === win.webContents.mainFrame) return 'panel'
+  const owner = appFrame(event)
+  if (owner && owner === quickPanelOwner()) return 'panel'
   const popup = quickTerminalWindow
   if (popup && !popup.isDestroyed() && event.sender === popup.webContents && event.senderFrame === popup.webContents.mainFrame) return 'popout'
   return null
@@ -2232,7 +2393,7 @@ function quickTerminalSurface(event: Electron.IpcMainEvent | Electron.IpcMainInv
 async function presentQuickTerminal(mode: QuickTerminalMode): Promise<void> {
   if (mode !== 'popout') {
     quickTerminalWindow?.hide()
-    if (mode === 'panel') { win?.show(); win?.focus() }
+    if (mode === 'panel') { quickPanelOwner()?.show(); quickPanelOwner()?.focus() }
     return
   }
   if (quickTerminalWindow && !quickTerminalWindow.isDestroyed()) { quickTerminalWindow.show(); quickTerminalWindow.focus(); return }
@@ -2784,7 +2945,7 @@ function applyNativeTheme(settings: Settings): void {
  * colour at every resize until something else was saved.
  */
 function paintWindowChrome(theme: Theme, previousBg: string | null): void {
-  if (!win || win.isDestroyed()) return
+  for (const win of appWindows()) {
   /*
    * Chromium paints the window's backgroundColor wherever the renderer has not
    * painted yet — the strip exposed by a resize, the whole window on a slow
@@ -2806,6 +2967,7 @@ function paintWindowChrome(theme: Theme, previousBg: string | null): void {
       symbolColor: theme.colors.textMuted,
       height: TITLEBAR_H
     })
+  }
   }
 }
 
@@ -2896,12 +3058,13 @@ function createWindow(): void {
    * which surfaces as a crash with no message anywhere.
    */
   win.webContents.session.setPermissionRequestHandler((wc, permission, callback) => {
-    callback(permission === 'media' && wc === win?.webContents)
+    callback(permission === 'media' && appWindows().some(w => wc === w.webContents))
   })
 
+  windowTabs.tabs.set(win.id, [])
   win.once('ready-to-show', () => win?.show())
 
-  const pushMaximized = (): void => send(CH.winMaximizedChanged, win?.isMaximized() ?? false)
+  const pushMaximized = (): void => win?.webContents.send(CH.winMaximizedChanged, win.isMaximized())
   win.on('maximize', pushMaximized)
   win.on('unmaximize', pushMaximized)
   win.on('enter-full-screen', pushMaximized)
@@ -2912,9 +3075,9 @@ function createWindow(): void {
    * is false throughout it. Reporting the two down one channel is what left the
    * title bar holding 88px open for traffic lights that were no longer drawn.
    */
-  const pushFullScreen = (): void => send(CH.winFullScreenChanged, win?.isFullScreen() ?? false)
-  win.on('enter-full-screen', pushFullScreen)
-  win.on('leave-full-screen', pushFullScreen)
+  const pushFullScreen = (): void => win?.webContents.send(CH.winFullScreenChanged, win.isFullScreen())
+  win.on('enter-full-screen', () => { pushFullScreen(); updateNativeReveal() })
+  win.on('leave-full-screen', () => { pushFullScreen(); updateNativeReveal() })
 
   // Anything the app UI itself tries to open goes to the system browser.
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -2941,8 +3104,8 @@ function createWindow(): void {
 
   browser = new EmbeddedBrowser(
     win,
-    (state) => send(CH.browserState, state),
-    () => send(CH.browserFindRequested)
+    (state) => win?.webContents.send(CH.browserState, state),
+    () => win?.webContents.send(CH.browserFindRequested)
   )
   browser.setBookmarks(settings.browser.bookmarks)
   browser.setProfiles(settings.browser.profiles, settings.browser.currentProfile, settings.browser.homepage)
@@ -3234,7 +3397,7 @@ function createWindow(): void {
    * user-paced, so recomputing unconditionally is cheaper than working out
    * whether this particular write mattered.
    */
-  const offSettings = onSettingsChanged(() => sendWatchStates())
+  const offSettings = onSettingsChanged(() => { sendWatchStates(); updateNativeReveal() })
   win.webContents.on('did-finish-load', () => sendWatchStates())
   /*
    * A reload is a new renderer that has not asked for the launch queue yet, so
@@ -3265,7 +3428,12 @@ function createWindow(): void {
     })
   }
 
+  win.on('close', event => {
+    if (!appQuitting && detachedWindows.size) { event.preventDefault(); win?.hide() }
+  })
   win.on('closed', () => {
+    if (win) { windowTabs.remove(win.id); windowSavedTabs.delete(win.id); windowSavedIds.delete(win.id); lastNativeOffsets.delete(win.id) }
+    macReveal?.setActive(false)
     usageBindings.clear()
     accountIdentities.clear()
     quickTerminal?.disable()
@@ -3321,23 +3489,73 @@ let lastTabState: StoredTabs | null = null
 
 function registerIpc(): void {
   /* ---------------------------------------------------------- window chrome */
-  ipcMain.on(CH.winMinimize, () => win?.minimize())
-  ipcMain.on(CH.winMaximize, () => {
+  ipcMain.on(CH.winTabPublish, (event, tabs: unknown) => {
+    const owner = appFrame(event)
+    if (owner) windowTabs.publish(owner.id, tabs)
+  })
+  ipcMain.handle(CH.winTabBootstrap, event => {
+    const owner = appFrame(event)
+    if (!owner) return null
+    const pending = [...windowTabs.pending.values()].find(p => p.target === owner.id)
+    return pending ? transferFor(pending.transfer.id) : null
+  })
+  ipcMain.handle(CH.winTabDetach, (event, packet: TabWindowPacket) => {
+    const owner = appFrame(event)
+    return owner ? detachTabWindow(owner, packet) : { ok: false, message: 'Move tabs from Stoke’s tab strip.' }
+  })
+  ipcMain.on(CH.winTabAccept, (event, id: string) => {
+    const target = appFrame(event)
+    if (!target || typeof id !== 'string') return
+    const pending = windowTabs.pending.get(id)
+    if (!pending) return
+    const packet = pending.transfer.packet
+    const accepted = windowTabs.accept(id, target.id)
+    if (!accepted) return
+    clearTimeout(transferTimers.get(id)); transferTimers.delete(id)
+    const source = appWindows().find(w => w.id === accepted.source)
+    const prior = windowSavedTabs.get(accepted.source)
+    const priorIds = windowSavedIds.get(accepted.source) ?? []
+    if (prior) {
+      windowSavedTabs.set(accepted.source, { ...prior, tabs: prior.tabs.filter((_t, i) => !accepted.ids.includes(priorIds[i])) })
+      windowSavedIds.set(accepted.source, priorIds.filter(tabId => !accepted.ids.includes(tabId)))
+    }
+    const existing = windowSavedTabs.get(target.id)
+    const safe = dropPrivateStoredTabs(packet.stored.state, privateChats?.sessionIds() ?? new Set(), privateRoots(), process.platform)
+    windowSavedTabs.set(target.id, { ...safe, tabs: [...(existing?.tabs ?? []), ...safe.tabs] })
+    windowSavedIds.set(target.id, [...(windowSavedIds.get(target.id) ?? []), ...packet.stored.ids])
+    persistWindowTabs()
+    source?.webContents.send(CH.winTabRemoved, accepted.ids)
+    target.show(); target.focus()
+    if (returningWindows.delete(accepted.source) && source !== win) source?.destroy()
+  })
+  ipcMain.on(CH.winTabReturn, (event, packet: TabWindowPacket) => {
+    const source = appFrame(event)
+    if (!source || source === win || !win || !returningWindows.has(source.id)) return
+    if (!packet?.tabs?.length) { source.destroy(); win.show(); win.focus(); return }
+    const id = randomUUID()
+    if (!windowTabs.stage(id, source.id, win.id, packet)) { returningWindows.delete(source.id); return }
+    transferTimers.set(id, setTimeout(() => cancelTabTransfer(id), 10_000))
+    win.webContents.send(CH.winTabAdopt, transferFor(id))
+  })
+  ipcMain.on(CH.winMinimize, event => appFrame(event)?.minimize())
+  ipcMain.on(CH.winMaximize, event => {
+    const win = appFrame(event)
     if (!win) return
     if (win.isMaximized()) win.unmaximize()
     else win.maximize()
   })
-  ipcMain.on(CH.winClose, () => win?.close())
-  ipcMain.on(CH.winFocus, () => {
+  ipcMain.on(CH.winClose, event => appFrame(event)?.close())
+  ipcMain.on(CH.winFocus, event => {
+    const win = appFrame(event)
     if (!win) return
     if (win.isMinimized()) win.restore()
     win.show()
     win.focus()
   })
-  ipcMain.handle(CH.winIsMaximized, () => win?.isMaximized() ?? false)
+  ipcMain.handle(CH.winIsMaximized, event => appFrame(event)?.isMaximized() ?? false)
   // Asked once on mount, because a window can be launched already full screen
   // and no enter-full-screen event fires for a state it started in.
-  ipcMain.handle(CH.winIsFullScreen, () => win?.isFullScreen() ?? false)
+  ipcMain.handle(CH.winIsFullScreen, event => appFrame(event)?.isFullScreen() ?? false)
   /*
    * How far macOS's full-screen reveal — the menu bar, and under it the title
    * strip with the traffic lights — reaches over the window. Gotcha 105.
@@ -3348,7 +3566,13 @@ function registerIpc(): void {
    * inset (still 30 while full screen on macOS 27, where it is cached), and the
    * strip is a hidden standard window's frame-to-content height.
    */
-  ipcMain.handle(CH.winRevealInfo, (): RevealInfo => {
+  ipcMain.handle(CH.winNativeReveal, event => {
+    const owner = appFrame(event)
+    updateNativeReveal()
+    return owner ? nativeOffsetFor(owner) : null
+  })
+  ipcMain.handle(CH.winRevealInfo, (event): RevealInfo => {
+    const win = appFrame(event)
     if (!isMac || !win || !win.isFullScreen()) return { inset: 0, onEntry: false }
     const bounds = win.getBounds()
     const display = screen.getDisplayMatching(bounds)
@@ -3400,7 +3624,7 @@ function registerIpc(): void {
   ipcMain.handle(CH.accountsRemove, (_e, id: string) => removeAccount(id))
   ipcMain.handle(CH.accountsIdentify, () => identifyAccounts())
   ipcMain.handle(CH.accountsIdentity, async (event, raw: unknown, refresh: unknown) => {
-    if (appQuitting || !win || event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) return null
+    if (appQuitting || !appFrame(event)) return null
     const target = accountIdentityTarget(raw)
     if (!target) return null
     const configured = planAccountIdentity(target, getSettings(), process.env, homedir())
@@ -3582,7 +3806,8 @@ function registerIpc(): void {
    * (the worker then recognises it by content). Claimed in the host before its
    * first await (gotcha 20); the pass that follows balances the total cap.
    */
-  ipcMain.handle(CH.chatsImport, async (_e, given: unknown): Promise<ChatImportResult | null> => {
+  ipcMain.handle(CH.chatsImport, async (event, given: unknown): Promise<ChatImportResult | null> => {
+    const win = appFrame(event)
     const s = getSettings()
     if (s.chatIndex !== 'on') return { ok: false, error: 'Turn on chat history first: an import is searched with everything else in it.' }
     if (chatHost().importRunning) return { ok: false, error: 'An import is already running.' }
@@ -3632,7 +3857,8 @@ function registerIpc(): void {
   // the request crosses IPC and its session id names a file.
   ipcMain.handle(CH.transcriptFind, (_e, req: unknown) => finder().find(req))
 
-  ipcMain.handle(CH.projectsAddRoot, async () => {
+  ipcMain.handle(CH.projectsAddRoot, async event => {
+    const win = appFrame(event)
     if (!win) return null
     const res = await dialog.showOpenDialog(win, {
       title: 'Add a folder to scan for projects',
@@ -3657,7 +3883,8 @@ function registerIpc(): void {
    * closed and the sidebar was unchanged (spec 2.5). The record is what makes
    * `listProjects` able to emit a folder Claude has never seen.
    */
-  ipcMain.handle(CH.projectsAdd, async () => {
+  ipcMain.handle(CH.projectsAdd, async event => {
+    const win = appFrame(event)
     if (!win) return null
     const res = await dialog.showOpenDialog(win, {
       title: 'Open a project folder',
@@ -3754,7 +3981,7 @@ function registerIpc(): void {
 
   /* ------------------------------------------------------------------- pty */
   ipcMain.handle(CH.launchPreflight, async (event, input: unknown) => {
-    if (!win || event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) return { ok: false, message: 'Check setup from Stoke’s launcher.' }
+    if (!appFrame(event)) return { ok: false, message: 'Check setup from Stoke’s launcher.' }
     try { return { ok: true, report: await (await launchPreflightFor()).check(input) } }
     catch { return { ok: false, message: 'Setup could not be checked. A check may still be running; wait before retrying, and check the folder and agent in Settings.' } }
   })
@@ -3855,45 +4082,45 @@ function registerIpc(): void {
   })
 
   /* --------------------------------------------------------------- browser */
-  ipcMain.on(CH.browserSetBounds, (_e, rect: Rect) => browser?.setBounds(rect))
-  ipcMain.on(CH.browserShow, (_e, url?: string) => browser?.show(url))
-  ipcMain.on(CH.browserHide, () => browser?.hide())
-  ipcMain.handle(CH.browserSnapshot, () => browser?.snapshot() ?? null)
-  ipcMain.on(CH.browserNavigate, (_e, url: string) => browser?.navigate(url))
-  ipcMain.on(CH.browserBack, () => browser?.back())
-  ipcMain.on(CH.browserForward, () => browser?.forward())
-  ipcMain.on(CH.browserReload, () => browser?.reload())
-  ipcMain.on(CH.browserStop, () => browser?.stop())
+  ipcMain.on(CH.browserSetBounds, (event, rect: Rect) => browserFor(event)?.setBounds(rect))
+  ipcMain.on(CH.browserShow, (event, url?: string) => browserFor(event)?.show(url))
+  ipcMain.on(CH.browserHide, (event) => browserFor(event)?.hide())
+  ipcMain.handle(CH.browserSnapshot, (event) => browserFor(event)?.snapshot() ?? null)
+  ipcMain.on(CH.browserNavigate, (event, url: string) => browserFor(event)?.navigate(url))
+  ipcMain.on(CH.browserBack, (event) => browserFor(event)?.back())
+  ipcMain.on(CH.browserForward, (event) => browserFor(event)?.forward())
+  ipcMain.on(CH.browserReload, (event) => browserFor(event)?.reload())
+  ipcMain.on(CH.browserStop, (event) => browserFor(event)?.stop())
   ipcMain.handle(CH.browserContinueCertificate, (event, tabId: unknown, failureId: unknown) => {
-    if (!win || event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) return false
+    if (!appFrame(event)) return false
     if (typeof tabId !== 'string' || typeof failureId !== 'string') return false
-    return browser?.continueCertificate(tabId, failureId) ?? false
+    return browserFor(event)?.continueCertificate(tabId, failureId) ?? false
   })
   ipcMain.handle(CH.browserRevokeCertificate, (event, tabId: unknown, sha256: unknown) => {
-    if (!win || event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) return false
+    if (!appFrame(event)) return false
     if (typeof tabId !== 'string' || typeof sha256 !== 'string') return false
-    return browser?.revokeCertificate(tabId, sha256) ?? false
+    return browserFor(event)?.revokeCertificate(tabId, sha256) ?? false
   })
-  ipcMain.on(CH.browserOpenExternal, () => browser?.openExternal())
-  ipcMain.on(CH.browserDevtools, () => browser?.toggleDevtools())
-  ipcMain.on(CH.browserNewTab, (_e, url?: string) => browser?.newTab(url))
-  ipcMain.on(CH.browserCloseTab, (_e, id: string) => browser?.closeTab(id))
-  ipcMain.on(CH.browserSelectTab, (_e, id: string) => browser?.selectTab(id))
-  ipcMain.on(CH.browserFind, (_e, t: string, fwd?: boolean, next?: boolean) =>
-    browser?.find(t, fwd ?? true, next ?? false)
+  ipcMain.on(CH.browserOpenExternal, (event) => browserFor(event)?.openExternal())
+  ipcMain.on(CH.browserDevtools, (event) => browserFor(event)?.toggleDevtools())
+  ipcMain.on(CH.browserNewTab, (event, url?: string) => browserFor(event)?.newTab(url))
+  ipcMain.on(CH.browserCloseTab, (event, id: string) => browserFor(event)?.closeTab(id))
+  ipcMain.on(CH.browserSelectTab, (event, id: string) => browserFor(event)?.selectTab(id))
+  ipcMain.on(CH.browserFind, (event, t: string, fwd?: boolean, next?: boolean) =>
+    browserFor(event)?.find(t, fwd ?? true, next ?? false)
   )
-  ipcMain.on(CH.browserStopFind, () => browser?.stopFind())
-  ipcMain.on(CH.browserZoom, (_e, level: number) => browser?.setZoom(level))
+  ipcMain.on(CH.browserStopFind, (event) => browserFor(event)?.stopFind())
+  ipcMain.on(CH.browserZoom, (event, level: number) => browserFor(event)?.setZoom(level))
 
-  ipcMain.on(CH.browserBookmark, () => {
-    const url = browser?.currentState().url
+  ipcMain.on(CH.browserBookmark, event => {
+    const url = browserFor(event)?.currentState().url
     if (!url || url === 'about:blank') return
     const s = getSettings()
     const list = s.browser.bookmarks.includes(url)
       ? s.browser.bookmarks.filter((b) => b !== url)
       : [...s.browser.bookmarks, url]
     const next = setSettings({ browser: { ...s.browser, bookmarks: list } })
-    browser?.setBookmarks(list)
+    browserFor(event)?.setBookmarks(list)
     send(CH.settingsChanged, next)
   })
 
@@ -3905,10 +4132,10 @@ function registerIpc(): void {
   const writeBrowser = (patch: Partial<Settings['browser']>): Settings => {
     const s = getSettings()
     const next = setSettings({ browser: { ...s.browser, ...patch } })
-    browser?.setProfiles(next.browser.profiles, next.browser.currentProfile, next.browser.homepage)
+    for (const embedded of [browser, ...detachedBrowsers.values()]) embedded?.setProfiles(next.browser.profiles, next.browser.currentProfile, next.browser.homepage)
     // The star reads its own copy; an import that adds bookmarks must refresh it,
     // or a bookmarked page shows unstarred and a click REMOVES the bookmark.
-    browser?.setBookmarks(next.browser.bookmarks)
+    for (const embedded of [browser, ...detachedBrowsers.values()]) embedded?.setBookmarks(next.browser.bookmarks)
     send(CH.settingsChanged, next)
     return next
   }
@@ -3932,8 +4159,9 @@ function registerIpc(): void {
   )
   ipcMain.handle(
     CH.browserProfileMenu,
-    (_e, x: number, y: number) =>
+    (event, x: number, y: number) =>
       new Promise<'manage' | null>((resolve) => {
+        const win = appFrame(event)
         if (!win) return resolve(null)
         const s = getSettings()
         const menu = Menu.buildFromTemplate([
@@ -4260,7 +4488,12 @@ function registerIpc(): void {
   ipcMain.handle(CH.selfState, () => selfUpdateState())
   ipcMain.handle(CH.selfCheck, () => checkSelfUpdate())
   ipcMain.handle(CH.selfDownload, () => downloadSelfUpdate())
-  ipcMain.handle(CH.selfInstall, () => {
+  ipcMain.handle(CH.selfInstall, async event => {
+    if (detachedWindows.size) {
+      const owner = appFrame(event)
+      if (owner) await dialog.showMessageBox(owner, { type: 'info', message: 'Return separate windows before restarting Stoke', detail: 'Close each separate window to return its running tabs to the main window, where you can review every session before restarting.', buttons: ['OK'] })
+      return false
+    }
     /*
      * Recorded BEFORE the quit, synchronously, because the next statement ends
      * the process. `installSelfUpdate` returns false without quitting when there
@@ -4352,14 +4585,24 @@ function registerIpc(): void {
     } catch (error) { return { ok: false, message: error instanceof Error ? error.message : 'The shell could not finish this action.' } }
   }
   ipcMain.handle(CH.quickTerminalRead, event => {
-    if (!quickTerminalSurface(event)) throw new Error('Open the terminal in Stoke.')
-    return quickTerminalFor().snapshot()
+    const owner = appFrame(event)
+    if (!owner && !quickTerminalSurface(event)) throw new Error('Open the terminal in Stoke.')
+    const snapshot = quickTerminalFor().snapshot()
+    return owner && owner !== quickPanelOwner() ? { ...snapshot, state: { ...snapshot.state, mode: 'hidden' }, data: '' } : snapshot
   })
-  ipcMain.handle(CH.quickTerminalOpen, (event, mode, cwd) => quickAction(event, () => {
+  ipcMain.handle(CH.quickTerminalOpen, (event, mode, cwd) => {
+    const owner = appFrame(event)
+    if (owner && (mode === 'panel' || mode === 'popout')) quickTerminalOwner = owner.id
+    return quickAction(event, () => {
     if (mode !== 'panel' && mode !== 'popout') throw new Error('Choose a terminal view.')
     return quickTerminalFor().open(mode, cwd)
-  }))
-  ipcMain.handle(CH.quickTerminalMove, (event, mode) => quickAction(event, () => quickTerminalFor().move(mode)))
+    })
+  })
+  ipcMain.handle(CH.quickTerminalMove, (event, mode) => {
+    const owner = appFrame(event)
+    if (owner && mode === 'panel') quickTerminalOwner = owner.id
+    return quickAction(event, () => quickTerminalFor().move(mode))
+  })
   ipcMain.handle(CH.quickTerminalRestart, event => quickAction(event, surface => {
     if (quickTerminalFor().view().mode !== surface) throw new Error('Use the current terminal view to start a new shell.')
     return quickTerminalFor().restart(surface)
@@ -4370,7 +4613,7 @@ function registerIpc(): void {
     if (service.view().mode !== surface) throw new Error('Use the current terminal view to end the shell.')
     if (confirmingQuickEnd) throw new Error('The shell is already waiting for your answer.')
     if (service.view().phase === 'running' || service.view().phase === 'starting') {
-      const owner = surface === 'popout' ? quickTerminalWindow : win
+      const owner = surface === 'popout' ? quickTerminalWindow : quickPanelOwner()
       if (!owner) throw new Error('The terminal window is unavailable.')
       const id = service.view().id
       confirmingQuickEnd = true
@@ -4383,7 +4626,7 @@ function registerIpc(): void {
   }))
   ipcMain.on(CH.quickTerminalWrite, (event, id, data) => { const surface = quickTerminalSurface(event); if (surface) quickTerminal?.write(surface, id, data) })
   ipcMain.on(CH.quickTerminalResize, (event, id, cols, rows) => { const surface = quickTerminalSurface(event); if (surface) quickTerminal?.resize(surface, id, cols, rows) })
-  ipcMain.handle(CH.quickTerminalAppearance, event => { if (!quickTerminalSurface(event)) throw new Error('Open the terminal in Stoke.'); return quickTerminalAppearance() })
+  ipcMain.handle(CH.quickTerminalAppearance, event => { if (!appFrame(event) && !quickTerminalSurface(event)) throw new Error('Open the terminal in Stoke.'); return quickTerminalAppearance() })
   ipcMain.on(CH.quickTerminalCopy, (event, text) => { if (quickTerminalSurface(event) && typeof text === 'string' && text.length <= 200_000) clipboard.writeText(text) })
   ipcMain.handle(CH.quickTerminalPaste, event => { if (!quickTerminalSurface(event)) throw new Error('Open the terminal in Stoke.'); return clipboard.readText().slice(0, 200_000) })
   ipcMain.on(CH.quickTerminalOpenLink, (event, id, url) => {
@@ -4423,8 +4666,8 @@ function registerIpc(): void {
     if (prev.quickTerminal && !next.quickTerminal) { quickTerminal?.disable(); quickTerminalWindow?.hide() }
     // A renamed or re-ordered profile list, a switch, or a bookmark list moved.
     if (patch.browser) {
-      browser?.setProfiles(next.browser.profiles, next.browser.currentProfile, next.browser.homepage)
-      browser?.setBookmarks(next.browser.bookmarks)
+      for (const embedded of [browser, ...detachedBrowsers.values()]) embedded?.setProfiles(next.browser.profiles, next.browser.currentProfile, next.browser.homepage)
+      for (const embedded of [browser, ...detachedBrowsers.values()]) embedded?.setBookmarks(next.browser.bookmarks)
     }
     /*
      * A new speech service is probed afresh rather than reported from the last
@@ -4565,7 +4808,8 @@ function registerIpc(): void {
     }
   })
 
-  ipcMain.handle(CH.setupImportPick, async () => {
+  ipcMain.handle(CH.setupImportPick, async event => {
+    const win = appFrame(event)
     if (setupBusy) return { ok: false, message: 'Already working on a setup file.' }
     setupBusy = true
     try {
@@ -4866,7 +5110,7 @@ function registerIpc(): void {
     return endRemoteSession(host, name)
   })
   // Images pasted or dropped on an SSH tab, copied to the machine (sshImages.ts).
-  registerSshImageHandlers({ getSettings, isAppWindow: (sender) => !!win && sender === win.webContents })
+  registerSshImageHandlers({ getSettings, isAppWindow: sender => appWindows().some(w => sender === w.webContents) })
 
   const desktopSshFiles = new DesktopSshFiles({
     hosts: () => getSettings().hosts,
@@ -4883,25 +5127,27 @@ function registerIpc(): void {
     progress: (event) => send(CH.sshFilesProgress, event)
   })
   ipcMain.handle(CH.sshFilesList, async (event, request: unknown) => {
-    if (!win || event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) return { ok: false, message: 'Open SSH files in Stoke.' }
+    if (!appFrame(event)) return { ok: false, message: 'Open SSH files in Stoke.' }
     const leave = (): void => desktopSshFiles.cancelAll()
     event.sender.once('destroyed', leave)
     try { return await desktopSshFiles.list(request) }
     finally { event.sender.off('destroyed', leave) }
   })
   ipcMain.handle(CH.sshFilesSave, async (event, request: unknown) => {
-    if (!win || event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) return { ok: false, message: 'Open SSH files in Stoke.' }
+    if (!appFrame(event)) return { ok: false, message: 'Open SSH files in Stoke.' }
     const leave = (): void => desktopSshFiles.cancelAll()
     event.sender.once('destroyed', leave)
     try { return await desktopSshFiles.save(request) }
     finally { event.sender.off('destroyed', leave) }
   })
   ipcMain.on(CH.sshFilesCancel, (event, requestId: unknown) => {
-    if (win && event.sender === win.webContents && event.senderFrame === win.webContents.mainFrame) desktopSshFiles.cancel(requestId)
+    if (appFrame(event)) desktopSshFiles.cancel(requestId)
   })
 
   /* ------------------------------------------------------------------ tabs */
-  ipcMain.on(CH.tabsSave, (_e, state: StoredTabs) => {
+  ipcMain.on(CH.tabsSave, (event, state: StoredTabs, tabIds?: string[]) => {
+    const owner = appFrame(event)
+    if (!owner) return
     /*
      * The renderer never sends a private tab (`toStored`); this is main's own
      * check, by the ids it minted and the folder every private chat runs in,
@@ -4909,8 +5155,14 @@ function registerIpc(): void {
      * forgot (gotcha 35: this write is on every push).
      */
     const kept = dropPrivateStoredTabs(state, privateChats?.sessionIds() ?? new Set(), privateRoots(), process.platform)
-    lastTabState = kept
-    writeTabState(tabStateFile(app.getPath('userData')), kept)
+    // Ignore the stale sender snapshot while a transfer awaits its acknowledgement.
+    const ids = new Set((windowTabs.tabs.get(owner.id) ?? []).map(t => t.id))
+    if (tabIds && tabIds.length === state.tabs.length) {
+      const allowed = new Set(state.tabs.filter((_t, i) => ids.has(tabIds[i])))
+      windowSavedTabs.set(owner.id, { ...kept, tabs: kept.tabs.filter(t => allowed.has(t)) })
+      windowSavedIds.set(owner.id, tabIds.filter(id => ids.has(id)))
+    } else windowSavedTabs.set(owner.id, kept)
+    persistWindowTabs()
   })
 
   /*
@@ -4919,7 +5171,8 @@ function registerIpc(): void {
    * install"), and the marker is consumed here, so a second restore in the same
    * run — a renderer reload — reads false. See `writeUpdateRestart`.
    */
-  ipcMain.handle(CH.tabsRestore, (): StoredTabs => {
+  ipcMain.handle(CH.tabsRestore, (event): StoredTabs => {
+    if (appFrame(event) !== win) return { version: 1, tabs: [], activeIndex: 0, savedAt: Date.now() }
     const userData = app.getPath('userData')
     const state = dropPrivateStoredTabs(readTabState(tabStateFile(userData)), new Set(), privateRoots(), process.platform)
     return consumeUpdateRestart(updateRestartFile(userData)) ? { ...state, afterUpdate: true } : state
@@ -4935,11 +5188,11 @@ function registerIpc(): void {
   const queue = worklogQueue
 
   ipcMain.handle(CH.workRead, async (event) => {
-    if (!win || event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) throw new Error('Open Work in Stoke.')
+    if (!appFrame(event)) throw new Error('Open Work in Stoke.')
     return (await workPluginFor()).read()
   })
   ipcMain.handle(CH.workChange, async (event, command: unknown) => {
-    if (!win || event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) return { ok: false, message: 'Open Work in Stoke.' }
+    if (!appFrame(event)) return { ok: false, message: 'Open Work in Stoke.' }
     try {
       // Session associations must name an ordinary live local tab, never a private chat.
       if (command && typeof command === 'object' && 'sessionId' in command && command.sessionId) {
@@ -4955,16 +5208,16 @@ function registerIpc(): void {
   })
 
   ipcMain.handle(CH.workNotionRead, async (event) => {
-    if (!win || event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) throw new Error('Open the Notion connection in Stoke.')
+    if (!appFrame(event)) throw new Error('Open the Notion connection in Stoke.')
     return (await workNotionFor()).view()
   })
   ipcMain.handle(CH.workNotionInspect, async (event, taskSource: string, dailySource: string, token?: string) => {
-    if (!win || event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) return { ok: false, message: 'Open the Notion connection in Stoke.' }
+    if (!appFrame(event)) return { ok: false, message: 'Open the Notion connection in Stoke.' }
     try { return { ok: true, ...await (await workNotionFor()).inspect(taskSource, dailySource, token) } }
     catch (err) { return { ok: false, message: err instanceof Error ? err.message : 'Notion could not inspect the tables.' } }
   })
   const notionAction = async (event: Electron.IpcMainInvokeEvent, action: (service: import('./plugins/notionWork.ts').NotionWork) => Promise<import('../shared/workNotion.ts').WorkNotionView>) => {
-    if (!win || event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) return { ok: false, message: 'Open the Notion connection in Stoke.' }
+    if (!appFrame(event)) return { ok: false, message: 'Open the Notion connection in Stoke.' }
     try { const service = await workNotionFor(); await action(service); return { ok: true, view: await service.view() } }
     catch (err) { return { ok: false, message: err instanceof Error ? err.message : 'Notion could not finish the operation.' } }
   }
@@ -4976,16 +5229,16 @@ function registerIpc(): void {
   ipcMain.handle(CH.workNotionResolve, (event, id, choice) => notionAction(event, (s) => s.resolve(id, choice)))
 
   ipcMain.handle(CH.workDraftsRead, async (event) => {
-    if (!win || event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) throw new Error('Open Work drafts in Stoke.')
+    if (!appFrame(event)) throw new Error('Open Work drafts in Stoke.')
     return (await workDraftsFor()).view()
   })
   ipcMain.handle(CH.workSessionNotes, async (event, ptyId: unknown, sessionId: unknown) => {
-    if (!win || event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) return { ok: false, message: 'Open Work drafts in Stoke.' }
+    if (!appFrame(event)) return { ok: false, message: 'Open Work drafts in Stoke.' }
     try { return { ok: true, notes: await (await workSessionNotesFor()).read(ptyId, sessionId) } }
     catch (err) { return { ok: false, message: err instanceof Error ? err.message : 'Session notes could not be read. No notes were added.' } }
   })
   const draftAction = async (event: Electron.IpcMainInvokeEvent, action: (service: import('./plugins/workDrafts.ts').WorkDrafts) => Promise<import('../shared/workDrafts.ts').WorkDraftView | { view: import('../shared/workDrafts.ts').WorkDraftView; work: import('../shared/workPlugin.ts').WorkView }>) => {
-    if (!win || event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) return { ok: false, message: 'Open Work drafts in Stoke.' }
+    if (!appFrame(event)) return { ok: false, message: 'Open Work drafts in Stoke.' }
     try { const service = await workDraftsFor(); const result = await action(service); return { ok: true, view: await service.view(), ...('view' in result ? { work: result.work } : {}) } }
     catch (err) { return { ok: false, message: err instanceof Error ? err.message : 'Work could not finish this draft action.' } }
   }
@@ -4993,7 +5246,7 @@ function registerIpc(): void {
   ipcMain.handle(CH.workDraftAccept, (event, id) => draftAction(event, (s) => s.accept(id)))
   ipcMain.handle(CH.workDraftReject, (event, id) => draftAction(event, (s) => s.reject(id)))
   ipcMain.handle(CH.workDraftCancel, (event) => {
-    if (win && event.sender === win.webContents && event.senderFrame === win.webContents.mainFrame) workDrafts?.pause()
+    if (appFrame(event)) workDrafts?.pause()
   })
 
   ipcMain.handle(CH.worklogQueue, () => queue().list())
@@ -5304,7 +5557,8 @@ function registerIpc(): void {
   ipcMain.on(CH.openExternal, (_e, url: string) => {
     if (/^https?:/i.test(url)) void shell.openExternal(url)
   })
-  ipcMain.handle(CH.wallpaperPick, async () => {
+  ipcMain.handle(CH.wallpaperPick, async event => {
+    const win = appFrame(event)
     if (!win) return null
     const res = await dialog.showOpenDialog(win, {
       properties: ['openFile'],
@@ -5326,7 +5580,8 @@ function registerIpc(): void {
     return next
   })
 
-  ipcMain.handle(CH.pickFolder, async () => {
+  ipcMain.handle(CH.pickFolder, async event => {
+    const win = appFrame(event)
     if (!win) return null
     const res = await dialog.showOpenDialog(win, { properties: ['openDirectory'] })
     return res.canceled ? null : (res.filePaths[0] ?? null)
@@ -5541,7 +5796,8 @@ if (!app.requestSingleInstanceLock(launchRequest ? { stokeCli: launchRequest } :
       })
       .catch((err) => console.error('[stoke] could not migrate symlinked project keys', err))
     app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) createWindow()
+      if (win) { win.show(); win.focus() }
+      else if (BrowserWindow.getAllWindows().length === 0) createWindow()
     })
   })
 
@@ -5557,6 +5813,7 @@ if (!app.requestSingleInstanceLock(launchRequest ? { stokeCli: launchRequest } :
     if (drain && !quitReady) event.preventDefault()
     if (appQuitting) return
     appQuitting = true
+    macReveal?.stop()
     const identityDrain = accountIdentities.shutdown()
     quickTerminal?.dispose()
     workNotion?.stop()

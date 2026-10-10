@@ -207,7 +207,7 @@ export function isStokeInnerEntry(folder: string, name: string): boolean {
   const n = name.toLowerCase()
   if (OS_LITTER.has(n)) return true
   if (f === 'locales') return n.endsWith('.pak')
-  if (f === 'resources') return ['app.asar', 'app.asar.unpacked', 'app-update.yml', 'elevate.exe', 'bin'].includes(n)
+  if (f === 'resources') return ['app.asar', 'app.asar.unpacked', 'app-update.yml', 'elevate.exe', 'bin', 'mac-reveal'].includes(n)
   return false
 }
 

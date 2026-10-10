@@ -14,6 +14,14 @@ export const CH = {
   quickTerminalPaste: 'quick-terminal:paste',
   quickTerminalOpenLink: 'quick-terminal:open-link',
   // window chrome
+  winTabBootstrap: 'win:tab-bootstrap',
+  winTabPublish: 'win:tab-publish',
+  winTabDetach: 'win:tab-detach',
+  winTabAdopt: 'win:tab-adopt',
+  winTabAccept: 'win:tab-accept',
+  winTabRemoved: 'win:tab-removed',
+  winTabReturnRequest: 'win:tab-return-request',
+  winTabReturn: 'win:tab-return',
   winMinimize: 'win:minimize',
   winMaximize: 'win:maximize',
   winClose: 'win:close',
@@ -32,6 +40,8 @@ export const CH = {
   winIsFullScreen: 'win:isFullScreen',
   winFullScreenChanged: 'win:fullScreenChanged',
   /** How far macOS's full-screen menu bar reaches over the window, and whether it comes with full screen. Gotcha 105. */
+  winNativeReveal: 'win:native-reveal',
+  winNativeRevealChanged: 'win:native-reveal-changed',
   winRevealInfo: 'win:revealInfo',
   /** Bring the window forward — what a clicked notification asks for. */
   winFocus: 'win:focus',

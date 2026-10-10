@@ -158,6 +158,8 @@ mac:
   # launcher the installer writes, since a link into an AppImage's mount would
   # point at /tmp.
   extraResources:
+    - from: out/native/mac-reveal
+      to: mac-reveal
     - from: build/bin/stoke
       to: bin/stoke
   # A PTY spawns child processes; the JIT/unsigned-memory entitlements keep

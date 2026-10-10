@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent, RefObject } from 'react'
 import { flushSync } from 'react-dom'
+import { tabDragLeavesStrip } from '../../../shared/tabWindows'
 import {
   autoscrollVelocity,
   clampDrag,
@@ -69,6 +70,7 @@ export interface TabDragOptions {
   /** A press inside this never drags: the tab's close button, a chip's remove button. */
   ignore?: string
   /** The one commit: `dragId` takes `overId`'s index (`moveTab`). */
+  onDetach?: (id: string) => void
   onReorder: (dragId: string, overId: string) => void
 }
 
@@ -496,6 +498,13 @@ function createTabDrag(get: () => TabDragOptions): TabDrag & {
   function onUp(e: PointerEvent): void {
     if (!g || e.pointerId !== g.pointerId) return
     if (g.phase === 'dragging') {
+      const box = g.list.getBoundingClientRect()
+      if (get().onDetach && tabDragLeavesStrip(e.clientY, box.top, box.bottom)) {
+        const id = g.id
+        abandon(g)
+        get().onDetach?.(id)
+        return
+      }
       g.x = e.clientX
       land(g, true)
     }

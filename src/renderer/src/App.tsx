@@ -11,6 +11,7 @@ import { clampChatSearchFilters, hasChatSearchFilters, type ChatSearchFilters } 
 import { installedAgents, resolveDefaultAgent, visibleAgents } from '@shared/agents'
 import { agentSeed, paintAgentColors, type AgentColors } from '@shared/agentColors'
 import { accountSeed, accountsOf, DEFAULT_ACCOUNT_ID } from '@shared/accounts'
+import { canMoveTab, type TabWindowPacket, type TabWindowTransfer } from '@shared/tabWindows'
 import { nextReveal, REVEAL_ENTRY_GRACE_MS, revealKeyCounts } from '@shared/fullScreenReveal'
 import type { RevealInfo, RevealInput, RevealState } from '@shared/fullScreenReveal'
 import { AgentPicker } from './components/AgentPicker'
@@ -114,6 +115,7 @@ import {
   exitOf,
   forgetPty,
   initPtyBus,
+  seedPty,
   noteInput,
   setTyped,
   typedSinceSubmit
@@ -124,7 +126,7 @@ import { welcomePlan, type WelcomeReason } from '@shared/welcome'
 import { matchShortcut, typeThroughKey } from './lib/shortcuts'
 import { newTab } from './lib/newTab'
 import { profileIdForCwd } from './lib/projectProfile'
-import { fromStored, screensFrom, toStored } from './lib/restore'
+import { fromStored, screensFrom, toStored, restorableTabs } from './lib/restore'
 import { focusTerm, hasActiveFinder, openActiveFinder, screenOf, termSizeHint } from './lib/termRegistry'
 import { findConversation, findOwner, findTargetOf, paletteFindHint } from './lib/terminalFind'
 import {
@@ -598,7 +600,7 @@ export function App(): React.JSX.Element {
    */
   const [activity, setActivity] = useState<Record<string, SessionActivity>>({})
 
-  const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [sidebarOpen, setSidebarOpen] = useState(!window.stoke.window.detached)
   const [sidebarWidth, setSidebarWidth] = useState(260)
   const [browserOpen, setBrowserOpen] = useState(false)
   /** For the keydown listener's find chord, which must not rebuild on every toggle. */
@@ -1274,6 +1276,67 @@ export function App(): React.JSX.Element {
     return resolveTheme(activeThemeId(s, systemDarkRef.current), s.customThemes).appearance
   }, [])
 
+  const movingTabs = useRef(new Set<string>())
+  const acceptedTransfers = useRef(new Set<string>())
+  const packetRef = useRef<(list: Tab[]) => TabWindowPacket>(() => { throw new Error('Tabs are loading') })
+  packetRef.current = (list) => {
+    const screens = Object.fromEntries(list.map(t => [t.id, t.status === 'paused' ? restoredScreens[t.id] ?? '' : screenOf(t.ptyId)]))
+    return {
+      tabs: list, activeId: list.find(t => t.id === activeTabId)?.id ?? list[0]?.id ?? null, screens,
+      contexts: Object.fromEntries(list.filter(t => contexts[t.sessionId]).map(t => [t.sessionId, contexts[t.sessionId]])),
+      drafts: Object.fromEntries(list.map(t => [t.ptyId, typedSinceSubmit(t.ptyId)])),
+      stored: { state: toStored(list, activeTabId, contexts, t => screens[t.id] ?? '', Date.now()), ids: restorableTabs(list).map(t => t.id) }
+    }
+  }
+  const adoptTransfer = useRef<(transfer: TabWindowTransfer) => void>(() => {})
+  adoptTransfer.current = ({ id, packet }) => {
+    if (acceptedTransfers.current.has(id)) return
+    acceptedTransfers.current.add(id)
+    for (const tab of packet.tabs) if (tab.ptyId && tab.status !== 'paused') seedPty(tab.ptyId, packet.screens[tab.id] ?? '', packet.drafts[tab.ptyId] === true)
+    setRestoredScreens(prev => ({ ...prev, ...packet.screens }))
+    setContexts(prev => ({ ...prev, ...packet.contexts }))
+    const moved = packet.tabs.map(t => {
+      const exit = t.ptyId ? exitOf(t.ptyId) : null
+      return exit ? { ...t, status: 'exited' as const, exitCode: exit.code } : t
+    })
+    tabsRef.current = [...tabsRef.current.filter(t => !moved.some(m => m.id === t.id)), ...moved]
+    setTabs(tabsRef.current)
+    setActiveTabId(packet.activeId ?? moved[0]?.id ?? null)
+    window.stoke.window.acceptTabs(id)
+  }
+  useLayoutEffect(() => { window.stoke.window.publishTabs(tabs) }, [tabs])
+  useEffect(() => {
+    const offAdopt = window.stoke.window.onAdoptTabs(transfer => adoptTransfer.current(transfer))
+    const offRemove = window.stoke.window.onTabsRemoved(ids => {
+      for (const id of movingTabs.current) relaunchingRef.current.delete(id)
+      movingTabs.current.clear()
+      if (!ids.length) return
+      const remaining = tabsRef.current.filter(t => !ids.includes(t.id))
+      tabsRef.current = remaining
+      setTabs(remaining)
+      setActiveTabId(active => active && !ids.includes(active) ? active : remaining[0]?.id ?? null)
+    })
+    const offReturn = window.stoke.window.onReturnTabsRequested(() => {
+      if (tabsRef.current.some(t => !canMoveTab(t))) {
+        toast({ tone: 'error', title: 'Finish setup before returning this window', description: 'Close install and sign-in tabs, or let a connecting session settle, then close the window again.' })
+        return
+      }
+      window.stoke.window.returnTabs(packetRef.current(tabsRef.current))
+    })
+    return () => { offAdopt(); offRemove(); offReturn() }
+  }, [])
+  const detachTab = useCallback(async (id: string) => {
+    const tab = tabsRef.current.find(t => t.id === id)
+    if (!tab || !canMoveTab(tab) || movingTabs.current.size > 0 || relaunchingRef.current.has(id)) return
+    movingTabs.current.add(id)
+    relaunchingRef.current.add(id)
+    const result = await window.stoke.window.detachTab(packetRef.current([tab])).catch(() => ({ ok: false, message: 'The separate window could not open. Your session is still here.' }))
+    if (!result.ok) {
+      movingTabs.current.delete(id); relaunchingRef.current.delete(id)
+      toast({ tone: 'error', title: 'Could not move tab', description: result.message })
+    }
+  }, [])
+
   /* ------------------------------------------------------------- bootstrap */
 
   useEffect(() => {
@@ -1617,6 +1680,7 @@ export function App(): React.JSX.Element {
      * runs once, before `startSshEnroll` exists.
      */
     const offSshPrompt = window.stoke.ssh.onPasswordPrompt((e) => {
+      if (!tabsRef.current.some(t => t.ptyId === e.ptyId)) return
       setSshOffer(e)
       /*
        * Progress belongs to the enrollment that is still running, and to
@@ -2271,7 +2335,8 @@ export function App(): React.JSX.Element {
           contexts,
           (t) => (t.status === 'paused' ? (restoredScreens[t.id] ?? '') : screenOf(t.ptyId)),
           Date.now()
-        )
+        ),
+        restorableTabs(tabs).map(t => t.id)
       )
     }, 500)
     return () => window.clearTimeout(id)
@@ -2940,6 +3005,11 @@ export function App(): React.JSX.Element {
   useEffect(() => {
     if (restored.current) return
     restored.current = true
+    if (window.stoke.window.detached) {
+      autoStarted.current = true
+      void window.stoke.window.tabBootstrap().then(transfer => { if (transfer) adoptTransfer.current(transfer) }).finally(() => setRestoreSettled(true))
+      return
+    }
     void window.stoke.tabs
       .restore()
       .then((state) => {
@@ -3397,6 +3467,7 @@ export function App(): React.JSX.Element {
    */
   const requestCloseTab = useCallback(
     (id: string): void => {
+      if (movingTabs.current.has(id)) return
       const tab = tabsRef.current.find((t) => t.id === id)
       if (!tab) return
       /*
@@ -4464,11 +4535,37 @@ export function App(): React.JSX.Element {
       live = false
     }
   }, [platform, fullScreen])
+  const [nativeReveal, setNativeReveal] = useState<number | null>(null)
+  useEffect(() => {
+    if (platform !== 'darwin' || !fullScreen) { setNativeReveal(null); return }
+    let live = true, held = 0, latest: number | null = null
+    let retry: ReturnType<typeof setTimeout> | undefined
+    const apply = (): void => {
+      if (!live) return
+      clearTimeout(retry)
+      const menuOpen = Array.from(appRef.current?.querySelectorAll('.context-menu') ?? []).some(m => m.getClientRects().length > 0)
+      if (held || menuOpen) { retry = setTimeout(apply, 50); return }
+      setNativeReveal(latest)
+    }
+    const read = (offset: number | null): void => { latest = offset; apply() }
+    const down = (event: PointerEvent): void => { held = event.buttons }
+    const up = (event: PointerEvent): void => { held = event.buttons; apply() }
+    const move = (event: PointerEvent): void => { const before = held; held = event.buttons; if (before && !held) apply() }
+    const cancel = (): void => { held = 0; apply() }
+    const off = window.stoke.window.onNativeRevealChanged(read)
+    void window.stoke.window.nativeReveal().then(value => { if (live) read(value) })
+    window.addEventListener('pointerdown', down, true)
+    window.addEventListener('pointerup', up, true)
+    window.addEventListener('pointermove', move, true)
+    window.addEventListener('pointercancel', cancel, true)
+    window.addEventListener('blur', cancel)
+    return () => { live = false; clearTimeout(retry); off(); window.removeEventListener('pointerdown', down, true); window.removeEventListener('pointerup', up, true); window.removeEventListener('pointermove', move, true); window.removeEventListener('pointercancel', cancel, true); window.removeEventListener('blur', cancel) }
+  }, [platform, fullScreen])
   const revealInset = revealInfo.inset
   const revealOnEntry = revealInfo.onEntry
 
   const revealMode = settings?.fullScreenReveal ?? 'follow'
-  const followReveal = revealMode === 'follow' && revealInset > 0 && !shellInert
+  const followReveal = revealMode === 'follow' && revealInset > 0 && !shellInert && nativeReveal === null
   const [revealShift, setRevealShift] = useState(false)
   // Entering full screen starts shifted where macOS slides the reveal down as
   // full screen begins and leaves it over the tabs until the pointer goes
@@ -4589,7 +4686,9 @@ export function App(): React.JSX.Element {
   // `follow` stays set for the whole of full screen, shifted or not, so the
   // slide back up has a `top: 0` to transition to.
   const revealLayout = revealInset > 0 && revealMode !== 'off' ? revealMode : undefined
-  const revealShifted = revealLayout === 'follow' && followReveal && revealShift
+  const nativeFollow = revealLayout === 'follow' && nativeReveal !== null && !shellInert
+  const shellOffset = nativeFollow ? Math.min(revealInset, nativeReveal) : followReveal && revealShift ? revealInset : 0
+  const revealShifted = revealLayout === 'follow' && shellOffset > 0
 
   /*
    * The slide between the two resting places, as FLIP: `top` jumps straight to
@@ -4610,7 +4709,8 @@ export function App(): React.JSX.Element {
   useLayoutEffect(() => {
     const el = appRef.current
     const slide = slideRef.current
-    const rest = revealShifted ? revealInset : 0
+    const rest = shellOffset
+    if (nativeFollow) { slide.anim?.cancel(); slide.anim = null; slide.rest = rest; return }
     const from = slide.rest
     slide.rest = rest
     if (!el || rest === from) return
@@ -4635,7 +4735,7 @@ export function App(): React.JSX.Element {
     }
     anim.addEventListener('finish', done)
     anim.addEventListener('cancel', done)
-  }, [revealShifted, revealInset, revealLayout])
+  }, [shellOffset, nativeFollow, revealLayout])
 
   useEffect(() => {
     void refreshAgents()
@@ -4778,9 +4878,10 @@ export function App(): React.JSX.Element {
     return () => clearTimeout(t)
   }, [browserOpen, overlayOpen, layerOverBrowser, settings])
 
-  // Remember the last page, so reopening the panel returns you to it.
+  // The primary window owns the startup page. Separate windows keep their
+  // live browser state without competing to overwrite the shared default URL.
   useEffect(() => {
-    if (!settings) return
+    if (!settings || window.stoke.window.detached) return
     const url = browserState.url
     if (!url || url === 'about:blank' || settings.browser.lastUrl === url) return
     const id = window.setTimeout(() => {
@@ -5797,7 +5898,7 @@ export function App(): React.JSX.Element {
       ref={appRef}
       data-reveal={revealLayout}
       data-shifted={revealShifted || undefined}
-      style={revealLayout ? ({ '--reveal-inset': `${revealInset}px` } as React.CSSProperties) : undefined}
+      style={revealLayout ? ({ '--reveal-inset': `${nativeFollow ? shellOffset : revealInset}px` } as React.CSSProperties) : undefined}
     >
       <TitleBar
         hostedBy={hostedBy}
@@ -5820,6 +5921,7 @@ export function App(): React.JSX.Element {
         hostLabelFor={(id) => settings?.hosts.find((h) => h.id === id)?.label || null}
         onNewTab={openNewTab}
         onReorderTab={reorderTab}
+        onDetachTab={id => void detachTab(id)}
         onToggleSidebar={() => setSidebarOpen((v) => !v)}
         onToggleBrowser={() => setBrowserOpen((v) => !v)}
         worklogCount={worklogPending}
@@ -6435,7 +6537,7 @@ export function App(): React.JSX.Element {
             <div style={{ width: browserWidth, minWidth: quickPanelVisible ? 320 : undefined, display: 'flex', flexShrink: quickPanelVisible ? 1 : 0 }}>
               <BrowserPanel
                 state={browserState}
-                shellOffset={revealShifted ? revealInset : 0}
+                shellOffset={shellOffset}
                 bookmarks={settings?.browser.bookmarks ?? []}
                 onAskClaude={askClaude}
                 onClose={() => setBrowserOpen(false)}

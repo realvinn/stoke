@@ -103,6 +103,15 @@ export function exitOf(ptyId: string): { code: number; signal?: number; loggedIn
   return entries.get(ptyId)?.exit ?? null
 }
 
+/** A transferred terminal starts from main's current mirror, including its terminal modes. */
+export function seedPty(ptyId: string, screen: string, draft: boolean): void {
+  const e = entry(ptyId)
+  e.chunks = screen ? [screen] : []
+  e.length = screen.length
+  e.head = new ReplayModes()
+  setTyped(ptyId, draft)
+}
+
 /** Release a closed tab's retained output. */
 export function forgetPty(ptyId: string): void {
   entries.delete(ptyId)
