@@ -201,13 +201,14 @@ writeFileSync(join(proj, 'README.md'), '# Probe project\n\nA folder the CI probe
 
 const pkg = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8')) as { version: string }
 const port = Number(opt.port)
-// Only the disposable Windows CI fixture gets a main-process debugger. It
-// enables local crash reports, then disconnects before any quit is tested.
-const nativeInspectorPort = isWin && process.env.GITHUB_ACTIONS === 'true' ? await new Promise<number>((resolve, reject) => {
+// Only this disposable fixture gets a main-process debugger. Native key-hook
+// emulation needs it: CDP Input.dispatchKeyEvent bypasses Electron's before-input-event.
+// Crash diagnostics remain limited to Windows CI. Clients disconnect before quit.
+const nativeInspectorPort = await new Promise<number>((resolve, reject) => {
   const server = createServer()
   server.once('error', reject)
   server.listen(0, '127.0.0.1', () => { const address = server.address(); const assigned = typeof address === 'object' && address ? address.port : 0; server.close(error => error ? reject(error) : resolve(assigned)) })
-}) : 0
+})
 const sid = `probe-sid-${process.pid}-${Date.now()}`
 
 /** A single-quoted POSIX word, or a refusal: these paths are written into launchers. */
@@ -349,7 +350,7 @@ async function attach(): Promise<CdpClient> {
   // focus can go nowhere (gotcha 119).
   await client.send('Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => undefined)
   ui = client
-  if (nativeInspectorPort) {
+  if (nativeInspectorPort && isWin && process.env.GITHUB_ACTIONS === 'true') {
     await step('Windows CI main-process crash diagnostics', async () => {
       const target = await waitFor('the disposable app\'s main inspector', async () => (await listTargets(nativeInspectorPort)).find(target => target.type === 'node' && target.webSocketDebuggerUrl), 10_000)
       const main = await CdpClient.open(target)
@@ -880,10 +881,20 @@ await step('dragging a live agent into a separate Stoke window keeps the process
     await typeLine(t.ptyId, 'detached-window-input')
     await waitFor('typing in the moved terminal to reach its original process', async () => (await bufferOf(t.ptyId)).includes('GOT detached-window-input'))
     await shot('04-detached-agent-window')
-    const modifiers = process.platform === 'darwin' ? 4 : 2
     const windowKey = async (client: CdpClient, key: 'ArrowLeft' | 'ArrowRight'): Promise<void> => {
-      await client.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key, code: key, windowsVirtualKeyCode: key === 'ArrowLeft' ? 37 : 39, modifiers })
-      await client.send('Input.dispatchKeyEvent', { type: 'keyUp', key, code: key, windowsVirtualKeyCode: key === 'ArrowLeft' ? 37 : 39, modifiers })
+      const target = await waitFor('the disposable fixture main inspector', async () => (await listTargets(nativeInspectorPort)).find(t => t.type === 'node' && t.webSocketDebuggerUrl), 10000)
+      const main = await CdpClient.open(target)
+      try {
+        const prevented = await main.evaluate(`(() => {
+          const electron = process.getBuiltinModule('module').createRequire(process.cwd() + '/probe-input.cjs')('electron');
+          const wc = electron.webContents.fromDevToolsTargetId(${JSON.stringify(client.page.id)});
+          if (!wc || wc.isDestroyed()) throw new Error('fixture key target is missing');
+          let prevented = false;
+          wc.emit('before-input-event', { preventDefault() { prevented = true } }, { type: 'keyDown', key: ${JSON.stringify(key)}, code: ${JSON.stringify(key)}, meta: ${process.platform === 'darwin'}, control: ${process.platform !== 'darwin'}, shift: false, alt: false, isAutoRepeat: false, isComposing: false });
+          return prevented;
+        })()`)
+        if (!prevented) throw new Error('the registered native window shortcut did not consume its chord')
+      } finally { main.close() }
     }
     await ev('window.stoke.window.focus(), true')
     await waitFor('detached window native focus', () => ev<boolean>('window.stoke.window.isFocused()'))
