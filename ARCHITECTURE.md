@@ -1067,6 +1067,8 @@ npm run verify:accounts       # agent accounts: the home/key variable per agent,
                               # several Stokes: a dev boot with no accounts writes nothing,
                               # each writer's rows survive the others', a deleted userData's
                               # are dropped, two concurrent writers both land (the lock)
+                              # account-api-checks.mts covers named Claude/Codex API profiles,
+                              # multiple sealed keys, provider precedence and phone model validation
 npm run verify:agents         # the coding agents: what is stored, what the launcher shows,
                               # the default agent and its fallback (`resolveDefaultAgent`),
                               # the tab tag and agent colours as stored (junk included), the
@@ -2262,6 +2264,11 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     `accountIndexText` is the line-shaped JSON `stoke account list|env` reads;
                     `mergeAccountIndex` keeps every other writer's rows (its `writers` record),
                     and a Stoke that never held an account never writes (`accountIndexNeedsWrite`)
+  accountProviders.ts named Claude/Codex API profiles: provider/address/model validation,
+                    pinned vendor routes and child-only credentials; selected accounts override
+                    Default provider settings. Keys use accounts.*.apiKey in the existing vault
+  modelId.ts        shared CLI model argument validation, including Windows shim safety;
+                    re-exported by agents.ts for existing callers
   skills.ts         which skill folders each agent reads, and the report of who can see
                     which skill. `~/.agents/skills` is the one nearly all share; Claude Code
                     reads only `~/.claude/skills`. A report, never a sync — linking between

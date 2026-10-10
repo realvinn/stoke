@@ -739,6 +739,8 @@ export interface PhoneChoice {
   hint?: string
   /** Why this one cannot start right now (an account with no key); the chip is drawn disabled. */
   problem?: string
+  /** An API account owns this model; empty means Codex chooses its native default. */
+  model?: string
 }
 
 /** What one agent takes when the phone starts it (`/api/host` `choices[<agent id>]`). */
@@ -805,7 +807,9 @@ export function agentChoicesFor(id: CodingCliId, facts: PhoneLaunchFacts): Phone
   const accounts: PhoneChoice[] = [{ id: DEFAULT_ACCOUNT_ID, label: 'Default' }]
   for (const a of accountsOf(id, facts.accounts)) {
     const problem = accountProblem(a, mode)
-    accounts.push(problem ? { id: a.id, label: a.label, problem } : { id: a.id, label: a.label })
+    const profileModel = a.apiProfile && (a.apiProfile.model || !claude)
+      ? { model: a.apiProfile.model || (facts.endpoints[id]?.mode === 'default' ? facts.endpoints[id]?.model ?? '' : '') } : {}
+    accounts.push({ id: a.id, label: a.label, ...profileModel, ...(problem ? { problem } : {}) })
   }
   const resolved = resolveLaunchAccount({ cli: id, requested: null, accounts: facts.accounts, defaults: facts.defaultAccount })
   return {
@@ -816,6 +820,12 @@ export function agentChoicesFor(id: CodingCliId, facts: PhoneLaunchFacts): Phone
     accounts,
     account: resolved.ok ? resolved.accountId : DEFAULT_ACCOUNT_ID
   }
+}
+
+/** Resolve displayed and allowed models from the selected account's own API profile. */
+export function phoneChoicesForAccount(choices: PhoneAgentChoices, account = choices.account): PhoneAgentChoices {
+  const model = choices.accounts.find(a => a.id === account)?.model
+  return model === undefined ? choices : { ...choices, models: [{ id: model, label: model || 'Chosen by the agent' }], modelFixed: true }
 }
 
 /**
@@ -868,6 +878,7 @@ export function phoneLaunchVerdict(
   choices: PhoneAgentChoices,
   label: string
 ): PhoneLaunchVerdict {
+  choices = phoneChoicesForAccount(choices, typeof body?.accountId === 'string' && body.accountId ? body.accountId : choices.account)
   const bad = (error: string): PhoneLaunchVerdict => ({ ok: false, status: 400, error })
   const given = (v: unknown): boolean => v !== undefined && v !== null
   const mode = given(body?.permissionMode) ? body?.permissionMode : 'default'

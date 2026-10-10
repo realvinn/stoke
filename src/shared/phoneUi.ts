@@ -12,6 +12,7 @@ import { folderChoices, type FolderChoice, type FolderGroup, type HostLike, type
 import { basenameOf, pathKey, pathRulesFor } from './paths.ts'
 import {
   agentChoicesFor,
+  phoneChoicesForAccount,
   hostChoices,
   MAX_FOLDER_NAME,
   newFolderNameProblem,
@@ -983,11 +984,11 @@ export function initialAgent(agents: readonly { id: string }[], defaultCli: stri
 export function phoneChoicesFor(
   served: Readonly<Record<string, PhoneAgentChoices>> | undefined,
   cli: string,
-  opts: { host?: boolean; defaultModel?: string } = {}
+  opts: { host?: boolean; defaultModel?: string; account?: string } = {}
 ): PhoneAgentChoices {
   if (opts.host) return hostChoices()
   const hit = served?.[cli]
-  if (hit) return hit
+  if (hit) return phoneChoicesForAccount(hit, opts.account)
   const id = isCodingCliId(cli) ? cli : 'claude'
   return agentChoicesFor(id, { endpoints: {}, accounts: {}, defaultAccount: {}, defaultModel: opts.defaultModel ?? '' })
 }

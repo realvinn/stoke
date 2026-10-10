@@ -856,6 +856,64 @@ await step('the active account follows the agent and fits the title bar', async 
   }
 })
 
+await step('named API profiles save in Settings and launch with their own credentials', async () => {
+  const savedDefaults = await ev<Record<string, string>>('window.stoke.settings.get().then(s => s.agents.defaultAccount)')
+  const created: string[] = []
+  const opened: string[] = []
+  try {
+    for (const cli of ['claude', 'codex'] as const) {
+      await activate(tabs[cli]!.ptyId)
+      await ev(`document.querySelector('[data-testid="active-account"]').click(), true`)
+      await waitFor('account details for API setup', () => ev<boolean>('!!document.querySelector(".account-panel")'))
+      await ev(`[...document.querySelectorAll('.account-panel button')].find(button => button.textContent === 'Manage agent accounts').click(), true`)
+      await waitFor('API account fields', () => ev<boolean>('!!document.querySelector(\'[aria-label="New API account provider"]\')'))
+      if (cli === 'codex') await ev(`(() => { const s = document.querySelector('[aria-label="New API account provider"]'); s.value = 'nanogpt'; s.dispatchEvent(new Event('change', { bubbles: true })); return true })()`)
+      const model = cli === 'claude' ? 'claude-api-probe' : 'openai/api-probe'
+      await ev(`document.querySelector('[aria-label="New API account model ID"]').focus(), true`)
+      await ui!.send('Input.insertText', { text: model })
+      await ev(`document.querySelector('.agent-account-add input:not([type="password"])').focus(), true`)
+      await ui!.send('Input.insertText', { text: 'API probe' })
+      const key = ['owned', cli, 'probe', 'credential'].join('-')
+      await ev(`document.querySelector('.agent-account-add input[type="password"]').focus(), true`)
+      await ui!.send('Input.insertText', { text: key })
+      await ev(`[...document.querySelectorAll('.agent-accounts button')].find(button => button.textContent.trim() === 'Add key account').click(), true`)
+      const accountId = `${cli}-api-probe`
+      await waitFor('the named API account to persist', () => ev<boolean>(`window.stoke.settings.get().then(s => s.accounts[${JSON.stringify(accountId)}]?.apiProfile?.model === ${JSON.stringify(model)})`))
+      created.push(accountId)
+      await ev(`document.querySelector('.agent-account-stored[data-account="${accountId}"] input[type="radio"]').click(), true`)
+      await waitFor('the API account to become the launch default', () => ev<boolean>(`window.stoke.settings.get().then(s => s.agents.defaultAccount.${cli} === ${JSON.stringify(accountId)})`))
+      await ev(`document.querySelector('.agent-account-stored[data-account="${accountId}"]').scrollIntoView({ block: 'center' }), true`)
+      await shot(`04-${cli}-api-account-settings`)
+      await ev(`document.querySelector('button[title="Close settings (Esc)"]').click(), true`)
+      const folder = join(root, `${cli}-api-project`)
+      mkdirSync(folder, { recursive: true })
+      const taken = await ev<string[]>('[...window.stokeTerminals.keys()]')
+      await stokeCli('--cli', cli, '--new', folder)
+      const ptyId = await termShowing(`STOKE-PROBE ${cli} ready`, `the ${cli} API terminal`, 45_000, taken)
+      opened.push(ptyId)
+      await activate(ptyId)
+      const pid = await pidIn(ptyId, cli)
+      const rec = await waitFor('the API agent launch record', () => stubByPid(pid), 10_000)
+      const env = rec!.start.env as Record<string, string>
+      check(`${cli}: only its selected API credential reaches the launch`, env[cli === 'claude' ? 'ANTHROPIC_API_KEY' : 'STOKE_ACCOUNT_API_KEY'] === `<set, ${key.length} chars>` && !JSON.stringify(rec!.start.argv).includes(key))
+      const flag = cli === 'claude' ? '--model' : '-m'
+      check(`${cli}: the API profile supplies the configured model`, rec!.start.argv[rec!.start.argv.indexOf(flag) + 1] === model)
+      check(`${cli}: the header names the selected API account`, await ev<boolean>(`document.querySelector('[data-testid="active-account"]')?.getAttribute('data-account') === ${JSON.stringify(accountId)} && document.querySelector('[data-testid="active-account"]')?.textContent.includes('API probe')`) === true)
+      if (cli === 'claude') check('Anthropic API route clears inherited gateway auth', env.ANTHROPIC_BASE_URL === 'https://api.anthropic.com' && !env.ANTHROPIC_AUTH_TOKEN)
+      else check('NanoGPT Codex route uses Responses without a saved OpenAI login', rec!.start.argv.includes('model_providers.stoke_account.requires_openai_auth=false') && rec!.start.argv.includes('model_providers.stoke_account.wire_api="responses"'))
+      await waitFor('the API model/account to save for resume', () => ev<boolean>(`window.stoke.tabs.restore().then(s => s.tabs.some(t => t.accountId === ${JSON.stringify(accountId)} && t.model === ${JSON.stringify(model)}))`))
+      await ev('(document.querySelector(".tablist .tab[aria-selected=\'true\'] .tab-close")?.click(), true)')
+      await waitFor('the API fixture tab to close', () => ev<boolean>(`!window.stokeTerminals.has(${JSON.stringify(ptyId)})`))
+    }
+  } finally {
+    await ev(`document.querySelector('button[title="Close settings (Esc)"]')?.click(), document.querySelector('[data-testid="active-account"][aria-expanded="true"]')?.click(), true`).catch(() => {})
+    for (const ptyId of opened) await ev(`window.stoke.pty.kill(${JSON.stringify(ptyId)})`).catch(() => {})
+    for (const id of created) await ev(`window.stoke.accounts.remove(${JSON.stringify(id)})`).catch(() => {})
+    await ev(`window.stoke.settings.get().then(s => window.stoke.settings.set({ agents: { ...s.agents, defaultAccount: ${JSON.stringify(savedDefaults)} } }))`).catch(() => {})
+    await activate(tabs.claude!.ptyId)
+  }
+})
+
 /* -------------------------------------------------------------- browser */
 
 let profileTwo = ''

@@ -273,6 +273,7 @@ import {
 } from '../shared/accounts.ts'
 import { agentSeed } from '../shared/agentColors.ts'
 import type { AccountCreateInput, AccountCreateResult } from '@shared/api'
+import { accountApiProfileProblem, defaultAccountApiProfile, hydrateAccountApiProfile } from '../shared/accountProviders.ts'
 import {
   CLAUDE_SETTINGS,
   WORKFLOW_SIZE_KEY,
@@ -1372,6 +1373,7 @@ async function startSession(
    * (agent.ts, gotcha 15).
    */
   const localAgent = !opts.host && !opts.install?.length && !opts.accountLogin
+  if (localAgent && isClaudeCode(cliId) && account?.apiProfile?.model) opts = { ...opts, model: account.apiProfile.model }
   mcpFiles ??= new McpFileStore(join(app.getPath('userData'), 'agents'))
   const launchMcp: LaunchMcp = localAgent ? await launchMcpFor(cliId, opts.cwd) : { servers: [], own: [], keep: [] }
   let agentPlan: LaunchPlan | null = null
@@ -1476,6 +1478,7 @@ async function startSession(
     if (privateLaunch) await privateChats?.abandon(privateLaunch.id).catch(() => {})
     throw err
   }
+  if (localAgent && isClaudeCode(cliId) && account?.apiProfile) started = { ...started, model: opts.model ?? '' }
   if (localAgent && ptys.sessionIdFor(started.ptyId) !== null) {
     if (cliId === 'codex') {
       const session = ptys.list().find(s => s.ptyId === started.ptyId)
@@ -1734,7 +1737,13 @@ function createAccount(input: AccountCreateInput): Promise<AccountCreateResult> 
       })
       account = { id, cli, label: name, kind, home: made.home, apiKey: '', swatch }
     } else {
-      account = { id, cli, label: name, kind, home: '', apiKey: (input.apiKey ?? '').trim(), swatch }
+      const supportsProfile = cli === 'claude' || cli === 'codex'
+      const profile = supportsProfile ? hydrateAccountApiProfile(cli, input.apiProfile ?? defaultAccountApiProfile(cli)) : null
+      if (supportsProfile) {
+        const trouble = accountApiProfileProblem(cli, profile)
+        if (trouble) return { ok: false, message: trouble }
+      }
+      account = { id, cli, label: name, kind, home: '', apiKey: typeof input.apiKey === 'string' ? input.apiKey.trim() : '', swatch, ...(profile ? { apiProfile: profile } : {}) }
     }
     const next = setSettings({ accounts: { ...getSettings().accounts, [id]: account } })
     send(CH.settingsChanged, next)

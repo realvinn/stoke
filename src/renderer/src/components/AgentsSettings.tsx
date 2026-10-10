@@ -27,6 +27,7 @@ import type { EffortLevel, PermissionMode, Settings } from '@shared/types'
 import { CLAUDE_SHARED_PLUGIN, SHARED_SKILLS_DIR, skillReport, type SkillDirScan } from '@shared/skills'
 import { AGENT_SEEDS, agentSeed } from '@shared/agentColors'
 import { agentAccessOptions, type AgentAccessMode } from '@shared/agentAccess'
+import { accountApiProfileProblem, accountProvidersFor, ACCOUNT_PROVIDER_LABELS, defaultAccountApiProfile, type AccountApiProfile } from '@shared/accountProviders'
 import {
   ACCOUNT_KEY_ENV,
   ACCOUNT_LABEL_MAX,
@@ -1456,12 +1457,13 @@ function AgentAccounts({
   /** The stored default account for this agent, or absent for its own sign-in. */
   defaultId: string | undefined
   onDefault: (id: string) => void
-  onPatchAccount: (id: string, patch: { label?: string; apiKey?: string }) => void
+  onPatchAccount: (id: string, patch: { label?: string; apiKey?: string; apiProfile?: AccountApiProfile }) => void
   onSignIn: (id: string) => void
 }): React.JSX.Element | null {
   const kinds = accountKindsFor(cli.id)
   const [name, setName] = useState('')
   const [key, setKey] = useState('')
+  const [apiProfile, setApiProfile] = useState(() => defaultAccountApiProfile(cli.id))
   const [busy, setBusy] = useState(false)
   const busyRef = useRef(false)
   const [message, setMessage] = useState<string | null>(null)
@@ -1469,7 +1471,8 @@ function AgentAccounts({
   const [identities, setIdentities] = useState<Record<string, AccountIdentity | null>>({})
   const [identityRevision, setIdentityRevision] = useState(0)
   const [mcp, setMcp] = useState<Record<string, AccountMcpSummary>>({})
-  const homes = accounts.map((a) => `${a.id}:${a.home}`).join('|')
+  const homes = accounts.map((a) => `${a.id}:${a.home}:${a.apiProfile?.provider ?? ''}:${!!a.apiKey}`).join('|')
+  useEffect(() => { setApiProfile(defaultAccountApiProfile(cli.id)) }, [cli.id])
   useEffect(() => {
     if (cli.id !== 'claude') return
     let live = true
@@ -1532,7 +1535,7 @@ function AgentAccounts({
     setBusy(true)
     setMessage(null)
     try {
-      const res = await window.stoke.accounts.create({ cli: cli.id, name, kind, apiKey: kind === 'key' ? key : undefined })
+      const res = await window.stoke.accounts.create({ cli: cli.id, name, kind, apiKey: kind === 'key' ? key : undefined, ...(kind === 'key' && apiProfile ? { apiProfile } : {}) })
       if (!res.ok) {
         setMessage(res.message)
         return
@@ -1557,7 +1560,8 @@ function AgentAccounts({
           ? `Another ${cli.label} sign-in, kept in its own folder under ~/.stoke/accounts and signed in by ${cli.label} itself.`
           : `Another ${cli.label} API key, sealed like every key Stoke holds.`}
         {cli.id === 'claude' &&
-          ' Every Claude Code account shares one history, so a conversation started on one resumes on another. Each account\u2019s plan limits are its own: the usage chip follows the account of the tab in front, and its panel lists them all.'}
+          ' Claude Code accounts share one history. Login accounts have separate plan limits; the usage chip follows the account of the tab in front.'}
+        {accountProvidersFor(cli.id).length > 0 && ' Named API accounts keep their own provider, key and model. Select one in the launcher; changes apply to new or restarted sessions. API balance and plan limits are not available here.'}
       </span>
       <div className="agent-account-list" role="radiogroup" aria-label={`Account new ${cli.label} sessions start on`}>
         <label className="agent-account-row">
@@ -1610,20 +1614,23 @@ function AgentAccounts({
         )}
       </div>
       {kinds.includes('key') && (
+        <div className="agent-account-body">
+        {apiProfile && <AccountProfileFields cli={cli.id} value={apiProfile} onChange={setApiProfile} label="New API account" />}
         <div className="agent-account-add">
           <input
             className="input mono"
             type="password"
             value={key}
-            placeholder={`${ACCOUNT_KEY_ENV[cli.id]?.key ?? 'API key'} for a key account`}
+            placeholder={apiProfile ? `${ACCOUNT_PROVIDER_LABELS[apiProfile.provider]} key or token` : `${ACCOUNT_KEY_ENV[cli.id]?.key ?? 'API key'} for a key account`}
             aria-label={`New ${cli.label} account API key`}
             spellCheck={false}
             autoComplete="off"
             onChange={(e) => setKey(e.target.value)}
           />
-          <button className="btn" disabled={busy || !key.trim()} onClick={() => void add('key')}>
+          <button className="btn" disabled={busy || !key.trim() || !!(apiProfile && accountApiProfileProblem(cli.id, apiProfile))} onClick={() => void add('key')}>
             Add key account
           </button>
+        </div>
         </div>
       )}
       {message && (
@@ -1633,6 +1640,40 @@ function AgentAccounts({
       )}
     </div>
   )
+}
+
+function AccountProfileFields({ cli, value, onChange, label }: { cli: CodingCliId; value: AccountApiProfile; onChange: (value: AccountApiProfile) => void; label: string }): React.JSX.Element {
+  const problem = accountApiProfileProblem(cli, value)
+  return <div className="agent-account-body">
+    <label className="field-hint">Provider
+      <select className="input" aria-label={`${label} provider`} value={value.provider} onChange={e => {
+        const next = defaultAccountApiProfile(cli, e.target.value as AccountApiProfile['provider'])
+        if (next) onChange(next)
+      }}>
+        {accountProvidersFor(cli).map(provider => <option key={provider} value={provider}>{ACCOUNT_PROVIDER_LABELS[provider]}</option>)}
+      </select>
+    </label>
+    {value.provider === 'custom' ? <label className="field-hint">API base URL
+      <input className="input mono" value={value.baseUrl} maxLength={2048} aria-label={`${label} API base URL`} spellCheck={false} onChange={e => onChange({ ...value, baseUrl: e.target.value })} />
+    </label> : <span className="field-hint mono">{value.baseUrl}</span>}
+    <label className="field-hint">Model ID
+      <input className="input mono" value={value.model} maxLength={200} placeholder={['anthropic', 'openai'].includes(value.provider) ? 'Blank uses the agent’s selected model' : 'Exact model ID from this provider'} aria-label={`${label} model ID`} spellCheck={false} onChange={e => onChange({ ...value, model: e.target.value })} />
+    </label>
+    <span className="field-hint">{cli === 'claude' ? 'Requires an Anthropic Messages API.' : 'Requires a Responses API with streaming and tool support.'}</span>
+    {problem && <span className="field-hint" data-tone="warning">{problem}</span>}
+  </div>
+}
+
+function StoredAccountProfile({ cli, label, profile, onSave }: { cli: CodingCliId; label: string; profile: AccountApiProfile; onSave: (value: AccountApiProfile) => void }): React.JSX.Element {
+  const [draft, setDraft] = useState(profile)
+  const changed = JSON.stringify(draft) !== JSON.stringify(profile)
+  return <>
+    <AccountProfileFields cli={cli} label={label} value={draft} onChange={setDraft} />
+    <div className="btn-row">
+      <button className="btn" disabled={!changed || !!accountApiProfileProblem(cli, draft)} onClick={() => onSave(draft)}>Save API profile</button>
+      {changed && <button className="btn" data-variant="ghost" onClick={() => setDraft(profile)}>Discard changes</button>}
+    </div>
+  </>
 }
 
 /** One stored account: its colour, name, where it lives or its key, and what can be done with it. */
@@ -1656,7 +1697,7 @@ function AccountRow({
   mcp: AccountMcpSummary | null
   checked: boolean
   onDefault: () => void
-  onPatch: (patch: { label?: string; apiKey?: string }) => void
+  onPatch: (patch: { label?: string; apiKey?: string; apiProfile?: AccountApiProfile }) => void
   onSignIn: () => void
   removing: boolean
   onRemove: () => void
@@ -1711,7 +1752,7 @@ function AccountRow({
             className="input mono"
             type="password"
             value={key}
-            placeholder={ACCOUNT_KEY_ENV[cli.id]?.key ?? 'API key'}
+            placeholder={account.apiProfile ? `${ACCOUNT_PROVIDER_LABELS[account.apiProfile.provider]} key or token` : ACCOUNT_KEY_ENV[cli.id]?.key ?? 'API key'}
             aria-label={`${account.label} API key`}
             spellCheck={false}
             autoComplete="off"
@@ -1743,6 +1784,9 @@ function AccountRow({
         )}
       </div>
       {/* Its own grid row under the name, so the radio and buttons stay level with the name. */}
+      {account.apiProfile && <div className="agent-account-mcp">
+        <StoredAccountProfile key={JSON.stringify(account.apiProfile)} cli={cli.id} label={account.label} profile={account.apiProfile} onSave={apiProfile => onPatch({ apiProfile })} />
+      </div>}
       {account.kind === 'login' && mcp && accountMcpLines(mcp).length > 0 && (
         <div className="agent-account-mcp">
           {accountMcpLines(mcp).map((line) => (

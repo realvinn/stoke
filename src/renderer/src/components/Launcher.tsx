@@ -1,4 +1,5 @@
 import { capsFor, isClaudeCode, type CodingCli, type CodingCliId } from '@shared/codingClis'
+import { ACCOUNT_PROVIDER_LABELS, type AccountApiProfile } from '@shared/accountProviders'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { CliInfo, EffortLevel, PermissionMode, Project, SessionMeta, SshHost } from '@shared/types'
 import {
@@ -122,6 +123,7 @@ interface Props {
    */
   accounts?: { id: string; label: string; colorKey: string | null }[]
   accountId?: string
+  apiProfile?: AccountApiProfile
   onPickAccount?: (id: string) => void
   onAddAgents?: () => void
   onStart: () => void
@@ -230,7 +232,7 @@ export function Launcher(props: Props): React.JSX.Element {
   const accessOptions = agentAccessOptions(primary.id)
   const showAccess = !isClaude && accessOptions.length > 1 && !!props.onAgentAccess
   const access = accessOptions.find((option) => option.id === (props.agentAccess ?? 'default')) ?? accessOptions[0]
-  const anyChip = flags.permissionMode || flags.model || flags.effort || showUltracode || showAccess
+  const anyChip = flags.permissionMode || flags.model || flags.effort || showUltracode || showAccess || !!props.apiProfile
   const bypass = flags.permissionMode && launch.permissionMode.choice === 'bypassPermissions'
 
   // A new target starts with a clean list.
@@ -694,7 +696,8 @@ export function Launcher(props: Props): React.JSX.Element {
               </Chip>
             )}
 
-            {flags.model && (
+            {props.apiProfile && <span className="field-hint mono" data-testid="launch-api-profile">{ACCOUNT_PROVIDER_LABELS[props.apiProfile.provider]} · {props.apiProfile.model || (isClaude ? launch.model.label : 'Agent default model')}</span>}
+            {flags.model && !(isClaude && props.apiProfile?.model) && (
               <Chip
                 open={pop === 'model'}
                 onOpen={(v) => setPop(v ? 'model' : null)}

@@ -124,7 +124,7 @@ if (['update', 'doctor', 'install', 'login', 'logout', 'mcp', 'config'].includes
 
 const ENV_KEYS = /^(STOKE_|OPENCODE_CONFIG_CONTENT$|KILO_CONFIG_CONTENT$|CLAUDE_CONFIG_DIR$|HOME$|USERPROFILE$|TERM$|TERM_PROGRAM$|COLORTERM$|COLORFGBG$|ANTHROPIC_|CODEX_HOME$|SHELL$)/
 const env = {}
-for (const [k, v] of Object.entries(process.env)) if (ENV_KEYS.test(k)) env[k] = k === 'STOKE_MCP_TOKEN' ? `<set, ${String(v).length} chars>` : v
+for (const [k, v] of Object.entries(process.env)) if (ENV_KEYS.test(k)) env[k] = /(?:API_KEY|AUTH_TOKEN|OAUTH_TOKEN|STOKE_MCP_TOKEN)$/.test(k) && v ? `<set, ${String(v).length} chars>` : v
 const pathKey = Object.keys(process.env).find((k) => k.toUpperCase() === 'PATH') ?? 'PATH'
 env.PATH_HEAD = String(process.env[pathKey] ?? '').split(delimiter).slice(0, 4)
 record('start', { id, pid: process.pid, argv, cwd: process.cwd(), env, platform: process.platform })

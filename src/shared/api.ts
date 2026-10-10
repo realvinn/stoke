@@ -188,6 +188,7 @@ export interface AccountCreateInput {
   kind: AccountKind
   /** A key account's key, sealed at rest like every other (`accounts.*.apiKey`). */
   apiKey?: string
+  apiProfile?: import('./accountProviders').AccountApiProfile
 }
 
 export type AccountCreateResult =

@@ -6,6 +6,7 @@ import { accountEnv, DEFAULT_ACCOUNT_ID, type AgentAccount } from '../shared/acc
 import { accountIdentityKey, nativeAccountIdentity, type AccountIdentity, type AccountIdentityTarget } from '../shared/accountIdentity.ts'
 import type { Settings } from '../shared/types.ts'
 import { spawnSpec } from './cli.ts'
+import { ACCOUNT_PROVIDER_LABELS } from '../shared/accountProviders.ts'
 
 export interface AccountIdentityPlan {
   target: AccountIdentityTarget
@@ -25,7 +26,7 @@ export function planAccountIdentity(target: AccountIdentityTarget, settings: Ide
   const plan: AccountIdentityPlan = { target: { ...target }, label: valid ? account?.label || 'Default' : target.accountId, env, cwd, claudePath: settings.claudePath, native: null, fallback: { state: 'unavailable', method: 'Agent sign-in', detail: 'This agent does not expose a readable sign-in identity to Stoke yet.' } }
   if (!valid) { plan.fallback.detail = 'This account is no longer configured for this agent.'; return plan }
   if (account?.kind === 'key') {
-    plan.fallback = { state: account.apiKey ? 'ready' : 'unavailable', method: 'API key', detail: account.apiKey ? 'This account uses its configured API key. The key owner’s email is not available.' : 'This account has no readable API key configured.' }
+    plan.fallback = { state: account.apiKey ? 'ready' : 'unavailable', method: account.apiProfile ? ACCOUNT_PROVIDER_LABELS[account.apiProfile.provider] : 'API key', detail: account.apiKey ? 'This account uses its configured API key. The key owner’s email is not available.' : 'This account has no readable API key configured.' }
     return plan
   }
   const mode = target.cli === 'claude' ? account ? 'default' : settings.providers.claudeAuth : settings.agents.endpoints[target.cli]?.mode ?? 'default'

@@ -804,7 +804,7 @@ export class PtyManager {
       cols: Math.max(20, opts.cols || 120),
       rows: Math.max(5, opts.rows || 30),
       cli: cliId,
-      launchModel: typeof opts.model === 'string' ? opts.model : '',
+      launchModel: agentPlan ? agentPlan.model : typeof opts.model === 'string' ? opts.model : '',
       launchEffort: typeof opts.effort === 'string' ? opts.effort : '',
       bracketedPaste: false,
       submits: new SubmitQueue({

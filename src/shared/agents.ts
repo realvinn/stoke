@@ -53,6 +53,9 @@ import {
 import { hydrateAgentColors, type AgentColors } from './agentColors.ts'
 import { agentAccessOption, hydrateAgentAccess, type AgentAccessMode } from './agentAccess.ts'
 import { accountEnv, accountProblem, hydrateDefaultAccounts, type AgentAccount } from './accounts.ts'
+import { isModelId } from './modelId.ts'
+import { ACCOUNT_PROVIDER_LABELS } from './accountProviders.ts'
+export { isModelId, MODEL_ID_MAX } from './modelId.ts'
 import {
   codexMcp,
   copilotMcpFile,
@@ -237,9 +240,6 @@ function isEndpointMode(v: unknown): v is EndpointMode {
 
 const str = (v: unknown): string => (typeof v === 'string' ? v.trim() : '')
 
-/** Longer than any real model id; a pasted paragraph is not one. */
-export const MODEL_ID_MAX = 200
-
 /**
  * What a model id may be before it goes anywhere near argv.
  *
@@ -252,12 +252,6 @@ export const MODEL_ID_MAX = 200
  * start with a letter, digit, `_` or `@`: an id beginning `-` would be read by
  * the agent's option parser as a flag of its own (`-m --yolo`).
  */
-const MODEL_ID = /^[A-Za-z0-9_@][A-Za-z0-9._:/@+[\]-]*$/
-
-export function isModelId(v: string): boolean {
-  return v.length <= MODEL_ID_MAX && MODEL_ID.test(v)
-}
-
 /**
  * Repair a stored endpoint. Rebuilt from named keys, like `hydrateProviders`
  * and the ui.ts clamps: a field this does not name does not survive, so a new
@@ -593,7 +587,15 @@ export function launchModel(id: CodingCliId, ep: AgentEndpoint | undefined): str
 export function agentLaunchPlan(input: LaunchPlanInput): LaunchPlanResult {
   const { id, openrouterKey, continueLast, piExtensionPath } = input
   const cli = cliFor(id)
-  const ep = input.endpoint ?? DEFAULT_ENDPOINT
+  const named = input.account?.kind === 'key' && input.account.apiProfile
+  // A named API account owns the whole route, including its model and key.
+  const ep: AgentEndpoint = named && id === 'codex'
+    ? { mode: 'custom', baseUrl: named.baseUrl, apiKey: input.account!.apiKey, model: named.model || (input.endpoint?.mode === 'default' ? input.endpoint.model : '') }
+    : input.endpoint ?? DEFAULT_ENDPOINT
+  if (named && input.account) {
+    const trouble = accountProblem(input.account)
+    if (trouble) return { ok: false, message: trouble }
+  }
   if (isClaudeCode(id)) return { ok: true, plan: { args: [], env: {}, model: '' } }
   // An agent with no confirmed route takes nothing, and Settings greys it.
   const files: PlanFile[] = []
@@ -617,7 +619,7 @@ export function agentLaunchPlan(input: LaunchPlanInput): LaunchPlanResult {
     return path
   }
 
-  const problem = endpointProblem(id, ep, openrouterKey)
+  const problem = named && id === 'codex' ? null : endpointProblem(id, ep, openrouterKey)
   if (problem) return { ok: false, message: problem }
 
   const access = agentAccessOption(id, input.access ?? 'default')
@@ -639,16 +641,17 @@ export function agentLaunchPlan(input: LaunchPlanInput): LaunchPlanResult {
   switch (id) {
     case 'codex': {
       if (ep.mode !== 'default') {
-        const pid = ep.mode === 'openrouter' ? PROVIDER_OPENROUTER : PROVIDER_CUSTOM
+        const pid = named ? 'stoke_account' : ep.mode === 'openrouter' ? PROVIDER_OPENROUTER : PROVIDER_CUSTOM
         const base = ep.mode === 'openrouter' ? OPENROUTER_OPENAI_BASE_URL : ep.baseUrl
-        const keyVar = ep.mode === 'openrouter' ? ENV_OPENROUTER_KEY : ENV_CUSTOM_KEY
+        const keyVar = named ? 'STOKE_ACCOUNT_API_KEY' : ep.mode === 'openrouter' ? ENV_OPENROUTER_KEY : ENV_CUSTOM_KEY
         args.push(
           '-c', `model_provider=${tomlString(pid)}`,
-          '-c', `model_providers.${pid}.name=${tomlString(ep.mode === 'openrouter' ? 'OpenRouter' : 'Custom endpoint')}`,
+          '-c', `model_providers.${pid}.name=${tomlString(named ? ACCOUNT_PROVIDER_LABELS[named.provider] : ep.mode === 'openrouter' ? 'OpenRouter' : 'Custom endpoint')}`,
           '-c', `model_providers.${pid}.base_url=${tomlString(base)}`,
           '-c', `model_providers.${pid}.env_key=${tomlString(keyVar)}`,
-          '-m', ep.model
+          ...(ep.model ? ['-m', ep.model] : [])
         )
+        if (named) args.push('-c', `model_providers.${pid}.wire_api="responses"`, '-c', `model_providers.${pid}.requires_openai_auth=false`, '-c', `model_providers.${pid}.supports_websockets=false`)
         env[keyVar] = ep.mode === 'openrouter' ? openrouterKey : customKey
       }
       // After the endpoint, so a server can never take a variable it set.

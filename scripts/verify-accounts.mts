@@ -24,6 +24,7 @@
  */
 import { createHash } from 'node:crypto'
 import { runAccountIdentityChecks } from './account-identity-checks.mts'
+import { runAccountApiChecks } from './account-api-checks.mts'
 import { spawnSync } from 'node:child_process'
 import {
   existsSync,
@@ -147,13 +148,14 @@ console.log('\nthe table: what moves each agent\u2019s sign-in (research, 2026-0
   ok('so Cursor holds no login account', !LOGIN_ACCOUNTS.has('cursor'))
   ok('nor Vibe, whose key sits in one keyring item whatever VIBE_HOME says', !LOGIN_ACCOUNTS.has('vibe'))
   ok('every other agent with a home variable can hold a login account', Object.keys(ACCOUNT_HOME_ENV).filter((id) => id !== 'vibe').every((id) => LOGIN_ACCOUNTS.has(id as CodingCliId)))
-  ok('Claude Code takes no key account: its key is Settings \u203a Providers (gotcha 57)', !('claude' in ACCOUNT_KEY_ENV))
+  ok('Claude and Codex named API keys have a launch-time environment route', 'claude' in ACCOUNT_KEY_ENV && 'codex' in ACCOUNT_KEY_ENV)
   check('Cursor\u2019s key always travels with the in-memory store', ACCOUNT_KEY_ENV.cursor, { key: 'CURSOR_API_KEY', with: { AGENT_CLI_CREDENTIAL_STORE: 'memory' } })
   check('Gemini\u2019s login accounts stay on the per-home file store', ACCOUNT_EXTRA_ENV.gemini, { GEMINI_FORCE_ENCRYPTED_FILE_STORAGE: 'false' })
   check('the agent\u2019s own sign-in command, where one was read', ACCOUNT_LOGIN_ARGS, { claude: ['auth', 'login'], codex: ['login'] })
   check('every other agent\u2019s sign-in tab runs the agent itself', loginArgsFor('grok'), [])
   ok('every agent in the tables is a known agent', [...Object.keys(ACCOUNT_HOME_ENV), ...Object.keys(ACCOUNT_KEY_ENV)].every((id) => CODING_CLIS.some((c) => c.id === id)))
-  check('what each agent can hold: Claude', accountKindsFor('claude'), ['login'])
+  check('what each agent can hold: Claude', accountKindsFor('claude'), ['login', 'key'])
+  check('Codex has separate login and API accounts', accountKindsFor('codex'), ['login', 'key'])
   check('Grok: both', accountKindsFor('grok'), ['login', 'key'])
   check('Cursor: a key only', accountKindsFor('cursor'), ['key'])
   check('Aider: neither', accountKindsFor('aider'), [])
@@ -657,5 +659,6 @@ try {
 }
 
 await runAccountIdentityChecks()
+await runAccountApiChecks()
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
 process.exitCode = failures ? 1 : 0

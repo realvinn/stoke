@@ -468,7 +468,7 @@ export const SETTING_ROWS: readonly SettingRow[] = [
   { id: 'agent.custom-endpoint', page: 'agent', label: 'Custom endpoint', keywords: ['base url', 'api key', 'server', 'local model'], agents: hasCustomEndpoint, fallback: 'agent.endpoint' },
   { id: 'agent.model', page: 'agent', label: 'Default model', keywords: ['model'], agents: notClaude },
   // "Add account" is the row's own button: without it, "add" prefix-matched Stoke Hub's "address" and won.
-  { id: 'agent.accounts', page: 'agent', label: 'Accounts', keywords: ['sign in', 'login', 'account', 'api key', 'work account', 'second account', 'add account', 'new account'] },
+  { id: 'agent.accounts', page: 'agent', label: 'Accounts', keywords: ['sign in', 'login', 'account', 'api key', 'work account', 'second account', 'add account', 'new account', 'named api profile', 'nanogpt', 'multiple anthropic', 'multiple codex keys', 'provider account'] },
   { id: 'agent.access', page: 'agent', label: 'Default access', keywords: ['permissions', 'full access', 'yolo', 'bypass', 'sandbox', 'approval'], agents: notClaude },
   { id: 'agent.update', page: 'agent', label: 'Installed version and updates', keywords: ['update agent', 'upgrade', 'version', 'npm', 'homebrew', 'native updater', 'updater output'], agents: notClaude, fallback: 'agent.access' },
   { id: 'agent.tools', page: 'agent', label: 'Tools (MCP)', keywords: ['mcp', 'servers', 'tools', 'browser tools', 'add mcp server', 'api keys', 'tokens', 'headers', 'environment variables', 'test connection'] },

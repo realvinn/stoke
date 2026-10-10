@@ -63,8 +63,9 @@ export class LaunchPreflight {
       const homeProblem = await this.deps.folder(account.account.home)
       add('account', 'Account', homeProblem ? 'blocked' : 'configured', homeProblem ? 'The selected account folder is unavailable. Check it in Settings.' : `${account.account.label}. The agent checks its sign-in when launched.`)
     } else add('account', 'Account', 'configured', account.ok && account.account ? `${account.account.label}. Key configured; validity is checked by the agent.` : 'Default account. The agent checks its own sign-in when launched.')
-    const provider = isClaudeCode(cli) ? validateClaudeAuth(settings.providers) : null
-    const providerProblem = provider && !provider.ok ? provider.message : isClaudeCode(cli) ? null : endpointProblem(cli, settings.agents.endpoints[cli] ?? DEFAULT_ENDPOINT, settings.providers.openrouterApiKey)
+    const ownProvider = account.ok && account.account && (isClaudeCode(cli) || !!account.account.apiProfile)
+    const provider = isClaudeCode(cli) && !ownProvider ? validateClaudeAuth(settings.providers) : null
+    const providerProblem = ownProvider ? problem : provider && !provider.ok ? provider.message : isClaudeCode(cli) ? null : endpointProblem(cli, settings.agents.endpoints[cli] ?? DEFAULT_ENDPOINT, settings.providers.openrouterApiKey)
     add('provider', 'Provider and model', providerProblem ? 'blocked' : 'configured', providerProblem ?? 'Configuration is present. Model access, credentials and quota are checked by the agent; no provider request was made.')
     const ticks = mcpTicksFor(settings.agents.mcp, cli)
     if (capsFor(cli).mcp === 'none') add('tools', 'Tools (MCP)', ticks.length ? 'warning' : 'configured', 'This agent has no Stoke launch-time MCP route. Its native configuration remains its own.')

@@ -2487,7 +2487,7 @@ export function App(): React.JSX.Element {
            * default, which it was not given, now that the status bar names a
            * model for the agents that can be handed one.
            */
-          model: isClaudeCode(launchCli) || opts.install?.length ? sessionModel : (res.model ?? ''),
+          model: opts.install?.length ? sessionModel : (res.model ?? (isClaudeCode(launchCli) ? sessionModel : '')),
           effort: sessionEffort,
           // What this session was launched with, so a relaunch or a Resume can
           // bring back the same one rather than today's global.
@@ -6443,10 +6443,11 @@ export function App(): React.JSX.Element {
                 void patchSettings({ agents: { ...agents, access } })
               }}
               accounts={launcherAccounts}
+              apiProfile={storedAccounts?.[launcherAccountId]?.apiProfile}
               setupRevision={settings}
               onFixSetup={(item) => {
                 if (item === 'folder') void openFolder()
-                else if (item === 'provider' && isClaudeCode(primaryCli)) openSettings('providers')
+                else if (item === 'provider' && isClaudeCode(primaryCli) && !storedAccounts?.[launcherAccountId]) openSettings('providers')
                 else openSettings({ page: 'agent', agent: primaryCli })
               }}
               accountId={launcherAccountId}

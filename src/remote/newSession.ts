@@ -382,8 +382,8 @@ export function openNewSession(start?: { cwd: string; name: string }): void {
      * machine nothing at all. Rebuilt when the agent changes, from the
      * desktop's defaults where that agent offers them.
      */
-    const choicesOf = (id: string): ReturnType<typeof phoneChoicesFor> =>
-      phoneChoicesFor(host?.choices, id, { host: onHost, defaultModel: defaults.model })
+    const choicesOf = (id: string, account?: string): ReturnType<typeof phoneChoicesFor> =>
+      phoneChoicesFor(host?.choices, id, { host: onHost, defaultModel: defaults.model, account })
     let choices = choicesOf(cli)
     let picks: PhonePicks = initialPicks(choices, defaults)
 
@@ -479,7 +479,12 @@ export function openNewSession(start?: { cwd: string; name: string }): void {
         parts.push(segmented('Effort', choices.efforts, () => picks.effort, (id) => (picks.effort = id), true))
       }
       if (showsAccountPicker(choices)) {
-        parts.push(segmented('Account', choices.accounts, () => picks.account, (id) => (picks.account = id)), accountHint)
+        parts.push(segmented('Account', choices.accounts, () => picks.account, (id) => {
+          picks.account = id
+          choices = choicesOf(cli, id)
+          picks.model = initialPicks(choices, defaults).model
+          drawAgent()
+        }), accountHint)
       }
       agentBox.replaceChildren(...parts)
       after()

@@ -33,6 +33,7 @@
 import { AGENT_DISTINCT_DISTANCE } from './agentColors.ts'
 import { cliFor, isCodingCliId, type CodingCliId } from './codingClis.ts'
 import { parseColor, perceptualDistance } from './color.ts'
+import { accountApiEnv, accountApiProfileProblem, accountProvidersFor, hydrateAccountApiProfile, type AccountApiProfile } from './accountProviders.ts'
 
 /** The account a launch uses when it names none and no default is chosen: no variable set. */
 export const DEFAULT_ACCOUNT_ID = 'default'
@@ -54,6 +55,8 @@ export interface AgentAccount {
   home: string
   /** A key account's key; '' in settings.json once sealed (shared/secrets.ts). */
   apiKey: string
+  /** Named Claude/Codex API route; kept with this account rather than global provider defaults. */
+  apiProfile?: AccountApiProfile
   /** One of `ACCOUNT_SWATCHES` by id; absent is the next free one (`accountSeed`). */
   swatch?: string
 }
@@ -123,12 +126,14 @@ export const ACCOUNT_EXTRA_ENV: Readonly<Partial<Record<CodingCliId, Readonly<Re
  * is `memory` — without it a launch on a key account would overwrite the
  * user's own Cursor sign-in — so the two always travel together.
  *
- * Not Claude Code: its key is Settings › Providers, the Default account's
- * auth, and a second writer for it would be gotcha 57.
+ * Named Claude/Codex API accounts own their route in apiProfile. The global
+ * Providers page still configures Default only; it never rewrites a named account.
  */
 export const ACCOUNT_KEY_ENV: Readonly<
   Partial<Record<CodingCliId, { key: string; with?: Readonly<Record<string, string>> }>>
 > = {
+  claude: { key: 'ANTHROPIC_API_KEY' },
+  codex: { key: 'STOKE_ACCOUNT_API_KEY' },
   grok: { key: 'XAI_API_KEY' },
   cursor: { key: 'CURSOR_API_KEY', with: { AGENT_CLI_CREDENTIAL_STORE: 'memory' } },
   vibe: { key: 'MISTRAL_API_KEY' },
@@ -308,6 +313,8 @@ export function hydrateAccount(id: string, raw: unknown): AgentAccount | null {
   const kind: AccountKind = raw.kind === 'key' ? 'key' : 'login'
   if (kind === 'login' && (!LOGIN_ACCOUNTS.has(cli) || !isAccountHome(raw.home))) return null
   if (kind === 'key' && !ACCOUNT_KEY_ENV[cli]) return null
+  const profile = kind === 'key' && accountProvidersFor(cli).length ? hydrateAccountApiProfile(cli, raw.apiProfile) : null
+  if (kind === 'key' && accountProvidersFor(cli).length && !profile) return null
   return {
     id,
     cli,
@@ -315,6 +322,7 @@ export function hydrateAccount(id: string, raw: unknown): AgentAccount | null {
     kind,
     home: kind === 'login' ? (raw.home as string) : '',
     apiKey: kind === 'key' && typeof raw.apiKey === 'string' ? raw.apiKey.trim() : '',
+    ...(profile ? { apiProfile: profile } : {}),
     ...(isSwatchId(raw.swatch) ? { swatch: raw.swatch } : {})
   }
 }
@@ -365,10 +373,12 @@ export function accountsFromRenderer(
       continue
     }
     const label = cleanAccountLabel(theirs.label)
+    const profile = mine.apiProfile && theirs.apiProfile !== undefined ? hydrateAccountApiProfile(mine.cli, theirs.apiProfile) : null
     out[id] = {
       ...mine,
       label: label || mine.label,
       apiKey: mine.kind === 'key' && typeof theirs.apiKey === 'string' ? theirs.apiKey.trim() : mine.apiKey,
+      ...(profile ? { apiProfile: profile } : {}),
       ...(isSwatchId(theirs.swatch) ? { swatch: theirs.swatch } : mine.swatch ? { swatch: mine.swatch } : {})
     }
   }
@@ -436,6 +446,7 @@ export function accountProblem(account: AgentAccount, endpointMode: 'default' | 
   }
   if (!ACCOUNT_KEY_ENV[account.cli]) return `${cli.label} takes no API key from Stoke.`
   if (!account.apiKey) return `${account.label} has no key yet. Add it in Settings › Agents › ${cli.label}.`
+  if (accountProvidersFor(account.cli).length) return accountApiProfileProblem(account.cli, account.apiProfile)
   if (endpointMode !== 'default') {
     return `${cli.label} is set to use ${endpointMode === 'openrouter' ? 'OpenRouter' : 'a custom endpoint'}, which brings its own key. Set it back to its own sign-in to use ${account.label}.`
   }
@@ -456,6 +467,7 @@ export function accountEnv(account: AgentAccount): Record<string, string> {
   }
   const spec = ACCOUNT_KEY_ENV[account.cli]
   if (!spec || !account.apiKey) return {}
+  if (account.apiProfile) return accountApiEnv(account.cli, account.apiKey, account.apiProfile)
   return { ...(spec.with ?? {}), [spec.key]: account.apiKey }
 }
 
