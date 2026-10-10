@@ -1366,11 +1366,31 @@ async function quitGracefully(label: string): Promise<{ code: number | null; sig
   const previous = readdirSync(agentsDir).filter(name => name.startsWith('identity-owned-'))
   writeFileSync(join(agentsDir, 'identity-hang'), 'owned CI fixture')
   let identityPid = 0
+  let identityError = ''
   try {
-    await ev(`(window.__stokeQuitIdentity = window.stoke.accounts.identity({ cli: 'codex', accountId: 'default' }, true), true)`)
-    const marker = await waitFor('the owned identity child before quit', () => readdirSync(agentsDir).find(name => name.startsWith('identity-owned-') && !previous.includes(name)), 10_000)
+    let requestedAt = 0
+    const request = async () => {
+      requestedAt = Date.now()
+      await ev(`(window.__stokeQuitIdentityFinished = false, window.__stokeQuitIdentity = window.stoke.accounts.identity({ cli: 'codex', accountId: 'default' }, true).then(value => { window.__stokeQuitIdentityResult = value; window.__stokeQuitIdentityFinished = true }).catch(() => { window.__stokeQuitIdentityFinished = true }), true)`)
+    }
+    await request()
+    const marker = await waitFor('the owned identity child before quit', async () => {
+      const marker = readdirSync(agentsDir).find(name => name.startsWith('identity-owned-') && !previous.includes(name))
+      if (marker) return marker
+      // Discovery has its own Windows PATH probes before the native child's
+      // five-second limit starts. A busy two-slot queue can also ask to retry.
+      if (Date.now() - requestedAt >= 2_000 && await ev<boolean>('window.__stokeQuitIdentityFinished === true')) await request()
+      return null
+    }, 30_000)
     identityPid = Number(marker.slice('identity-owned-'.length))
+  } catch (error) {
+    identityError = error instanceof Error ? error.message : String(error)
+    const detail = await ev<string>(`JSON.stringify({ state: window.__stokeQuitIdentityResult?.state, detail: window.__stokeQuitIdentityResult?.detail })`).catch(() => '')
+    identityError += ` ${detail}`
   } finally { rmSync(join(agentsDir, 'identity-hang'), { force: true }) }
+  check(`an owned account lookup starts before ${label}`, identityPid > 0, identityError)
+  // Preparation failure must still go through the real quit. Otherwise the
+  // next launch reuses the old app and produces misleading resume failures.
   if (isWin) {
     await ev('(window.stoke.window.close(), true)').catch(() => undefined)
   } else {
@@ -1379,9 +1399,11 @@ async function quitGracefully(label: string): Promise<{ code: number | null; sig
   ui?.close()
   ui = null
   const exit = await waitFor(`Stoke to exit after ${label}`, () => stokeExit, 60_000, 250).catch(() => null)
-  let identityAlive = true
-  try { process.kill(identityPid, 0) } catch { identityAlive = false }
-  check(`the owned account lookup is reaped before ${label} completes`, identityPid > 0 && !identityAlive, `owned pid ${identityPid}`)
+  if (identityPid) {
+    let identityAlive = true
+    try { process.kill(identityPid, 0) } catch { identityAlive = false }
+    check(`the owned account lookup is reaped before ${label} completes`, !identityAlive, `owned pid ${identityPid}`)
+  }
   if (isWin) {
     const log = readFileSync(join(logs, `stoke-${launchNo}.log`), 'utf8')
     check(`all owned PTY exit callbacks drain before ${label}`, log.includes('[stoke] PTY quit drain: 0 pending') && !/PTY quit drain: [1-9]\d* pending/.test(log))
