@@ -3,6 +3,7 @@ import { capsFor, cliFor, cliIdOf, type CodingCliId } from '@shared/codingClis'
 import type { ContextSnapshot } from '@shared/types'
 import type { WorklogButtonState } from '@shared/worklog'
 import { UsageChip } from './UsageMeter'
+import { AccountChip } from './AccountChip'
 import { PhonePopover } from './PhonePopover'
 import { ContextMenu, type MenuItem } from './ContextMenu'
 import { RemoteArrows, TabIndicator } from './TabIndicator'
@@ -81,6 +82,8 @@ interface Props {
   onOpenSettings: () => void
   /** Settings, opened straight at Phone access. */
   onOpenPhoneSettings: () => void
+  onOpenAgentSettings: (cli: CodingCliId) => void
+  onOpenSyncSettings: () => void
   /**
    * What a tab says: `New · stoke` for a New tab aimed at a project, and the
    * agent a tab runs when it is not the default one (QA L16): `agent` always,
@@ -149,6 +152,8 @@ export function TitleBar({
   onOpenPalette,
   onOpenSettings,
   onOpenPhoneSettings,
+  onOpenAgentSettings,
+  onOpenSyncSettings,
   labelFor,
   agentTagsShown = true,
   onToggleAgentTags,
@@ -593,6 +598,7 @@ export function TitleBar({
           <span className="sr-only">Toggle worklog review</span>
         </button>
         <PhonePopover onOpenSettings={onOpenPhoneSettings} settingsOpen={settingsOpen} />
+        {usageTarget && <AccountChip target={usageTarget} label={activeTab ? labelFor?.(activeTab).account?.text : undefined} settingsOpen={settingsOpen} onAgentSettings={onOpenAgentSettings} onSyncSettings={onOpenSyncSettings} />}
         {activeTab?.kind !== 'remote' && !activeTab?.hostId && <UsageChip target={usageTarget} accountLabel={activeTab ? labelFor?.(activeTab).account?.text : undefined} />}
 
         <button

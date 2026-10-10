@@ -75,6 +75,32 @@ const say = (line) => process.stdout.write(line + '\r\n')
 
 /* ------------------------------------------------------------- one-shots */
 
+// Public identity fixtures only: never enter the interactive agent contract.
+if (id === 'claude' && argv[0] === 'auth' && argv[1] === 'status') {
+  const account = process.env.CLAUDE_CONFIG_DIR?.endsWith('claude-work') ? 'work' : 'claude'
+  record('account-identity', { argv, home: process.env.CLAUDE_CONFIG_DIR || '' })
+  process.stdout.write(JSON.stringify({ loggedIn: true, email: `${account}@example.test`, orgName: 'Probe organization', subscriptionType: 'team' }) + '\n')
+  process.exit(0)
+}
+if (id === 'codex' && argv[0] === 'app-server') {
+  record('account-identity', { argv, home: process.env.CODEX_HOME || '' })
+  const hanging = existsSync(join(dir, 'identity-hang'))
+  if (hanging) {
+    process.on('SIGTERM', () => record('identity-term-ignored'))
+    writeFileSync(join(dir, `identity-owned-${process.pid}`), String(process.pid))
+    setInterval(() => {}, 1000)
+  }
+  const lines = readline.createInterface({ input: process.stdin })
+  lines.on('line', line => {
+    const request = JSON.parse(line)
+    record('account-request', { method: request.method, params: request.params })
+    if (request.method === 'initialize') process.stdout.write(JSON.stringify({ id: request.id, result: { userAgent: 'stoke-probe' } }) + '\n')
+    else if (request.method === 'account/read' && !hanging) process.stdout.write(JSON.stringify({ id: request.id, result: { account: { type: 'chatgpt', email: 'codex@example.test', planType: 'pro' } } }) + '\n')
+  })
+  await new Promise(resolve => lines.on('close', () => { if (!hanging) resolve() }))
+  process.exit(0)
+}
+
 // What Stoke asks a binary outside a session: `--version` (probeClaude, and
 // the identity check for agents that have one), a headless `-p` (the worklog
 // runner), `update`/`doctor`. Answered and exited, never a session.

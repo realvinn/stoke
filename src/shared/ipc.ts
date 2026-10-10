@@ -74,6 +74,7 @@ export const CH = {
   accountsCreate: 'accounts:create',
   accountsRemove: 'accounts:remove',
   accountsIdentify: 'accounts:identify',
+  accountsIdentity: 'accounts:identity',
   accountsMcp: 'accounts:mcp',
 
   // plan limits, per account and per source (shared/usageSources.ts)

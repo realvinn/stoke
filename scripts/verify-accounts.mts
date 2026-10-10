@@ -23,6 +23,7 @@
  * last statements (gotchas 50, 62).
  */
 import { createHash } from 'node:crypto'
+import { runAccountIdentityChecks } from './account-identity-checks.mts'
 import { spawnSync } from 'node:child_process'
 import {
   existsSync,
@@ -655,5 +656,6 @@ try {
   rmSync(scratch, { recursive: true, force: true })
 }
 
+await runAccountIdentityChecks()
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
 process.exitCode = failures ? 1 : 0

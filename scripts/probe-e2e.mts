@@ -803,6 +803,44 @@ await step('three agents side by side', async () => {
   await shot('03-three-agents')
 })
 
+await step('the active account follows the agent and fits the title bar', async () => {
+  let created = ''
+  try {
+    for (const id of AGENTS) {
+      await activate(tabs[id]!.ptyId)
+      const expected = id === 'opencode' ? 'Identity unavailable' : `${id}@example.test`
+      await waitFor(`${id}'s own account indicator`, () => ev<boolean>(`document.querySelector('[data-testid="active-account"] .account-chip-identity')?.textContent === ${JSON.stringify(expected)}`))
+      check(`${id}: the top bar names its own agent and account`, await ev<boolean>(`document.querySelector('[data-testid="active-account"]')?.textContent.includes(${JSON.stringify(id === 'claude' ? 'Claude Code' : id === 'codex' ? 'Codex' : 'OpenCode')}) && document.querySelector('[data-testid="active-account"]')?.getAttribute('data-account') === 'default'`) === true)
+    }
+    await activate(tabs.claude!.ptyId)
+    await ui!.send('Emulation.setDeviceMetricsOverride', { width: 940, height: 720, deviceScaleFactor: 1, mobile: false })
+    await sleep(300)
+    check('every visible title-bar action fits at the minimum window width', await ev<boolean>(`[...document.querySelectorAll('.titlebar-actions button')].filter(button => button.offsetWidth).every(button => { const r = button.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth + 1 && r.top >= 0 && r.bottom <= innerHeight; })`) === true)
+    await ev(`document.querySelector('[data-testid="active-account"]').click(), true`)
+    await waitFor('the account popover', () => ev<boolean>(`document.querySelector('[data-testid="account-identity"]')?.textContent === 'claude@example.test'`))
+    check('the account popover fits and receives keyboard focus', await ev<boolean>(`(() => { const panel = document.querySelector('.account-panel'), r = panel.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth + 1 && r.bottom <= innerHeight && document.activeElement === panel; })()`) === true)
+    check('the popover includes Stoke’s own sync sign-in', await ev<boolean>(`document.querySelector('.account-panel-sync')?.textContent.includes('Stoke account')`) === true)
+    await shot('04-account-details-narrow')
+    await ui!.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+    await ui!.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+    check('Escape closes account details and returns focus to its button', await ev<boolean>(`!document.querySelector('.account-panel') && document.activeElement === document.querySelector('[data-testid="active-account"]')`) === true)
+    await ui!.send('Emulation.clearDeviceMetricsOverride')
+    const account = await ev<{ ok: boolean; account?: { id: string } }>(`window.stoke.accounts.create({ cli: 'claude', kind: 'login', name: 'work' })`)
+    if (!account.ok || !account.account) throw new Error('the isolated Work account could not be created')
+    created = account.account.id
+    await ev(`document.querySelector('[data-testid="active-account"]').click(), true`)
+    await waitFor('account details reopened', () => ev<boolean>('!!document.querySelector(".account-panel")'))
+    await ev(`[...document.querySelectorAll('.account-panel button')].find(button => button.textContent === 'Manage agent accounts').click(), true`)
+    await waitFor('Default and Work identities in account settings', () => ev<boolean>(`document.querySelector('[data-testid="default-account-identity"]')?.textContent === 'claude@example.test' && document.querySelector('.agent-account-stored[data-account="${created}"]')?.textContent.includes('work@example.test')`))
+    check('Settings shows each account’s own signed-in email', await ev<boolean>(`!!document.querySelector('[data-testid="agent-accounts"]') && !document.querySelector('.account-panel')`) === true)
+    await shot('04-account-settings')
+  } finally {
+    await ui!.send('Emulation.clearDeviceMetricsOverride').catch(() => {})
+    await ev(`document.querySelector('button[title="Close settings (Esc)"]')?.click(), document.querySelector('[data-testid="active-account"][aria-expanded="true"]')?.click(), true`).catch(() => {})
+    if (created) await ev(`window.stoke.accounts.remove(${JSON.stringify(created)})`).catch(() => {})
+  }
+})
+
 /* -------------------------------------------------------------- browser */
 
 let profileTwo = ''
@@ -1322,6 +1360,18 @@ async function quitGracefully(label: string): Promise<{ code: number | null; sig
       ? await ev<QuickTerminalResult>('window.stoke.quickTerminal.restart()') : opened
     check(`a real quick shell is running before ${label}`, quick.ok && quick.state.phase === 'running' && !!quick.state.id)
     await ev('window.stoke.quickTerminal.move("hidden")')
+  }
+  // Hold an actual owned identity child at quit, including a Windows .cmd
+  // launcher tree. EOF and SIGTERM are deliberately ignored by this fixture.
+  const previous = readdirSync(agentsDir).filter(name => name.startsWith('identity-owned-'))
+  writeFileSync(join(agentsDir, 'identity-hang'), 'owned CI fixture')
+  let identityPid = 0
+  try {
+    await ev(`(window.__stokeQuitIdentity = window.stoke.accounts.identity({ cli: 'codex', accountId: 'default' }, true), true)`)
+    const marker = await waitFor('the owned identity child before quit', () => readdirSync(agentsDir).find(name => name.startsWith('identity-owned-') && !previous.includes(name)), 10_000)
+    identityPid = Number(marker.slice('identity-owned-'.length))
+  } finally { rmSync(join(agentsDir, 'identity-hang'), { force: true }) }
+  if (isWin) {
     await ev('(window.stoke.window.close(), true)').catch(() => undefined)
   } else {
     child.kill('SIGTERM')
@@ -1329,6 +1379,9 @@ async function quitGracefully(label: string): Promise<{ code: number | null; sig
   ui?.close()
   ui = null
   const exit = await waitFor(`Stoke to exit after ${label}`, () => stokeExit, 60_000, 250).catch(() => null)
+  let identityAlive = true
+  try { process.kill(identityPid, 0) } catch { identityAlive = false }
+  check(`the owned account lookup is reaped before ${label} completes`, identityPid > 0 && !identityAlive, `owned pid ${identityPid}`)
   if (isWin) {
     const log = readFileSync(join(logs, `stoke-${launchNo}.log`), 'utf8')
     check(`all owned PTY exit callbacks drain before ${label}`, log.includes('[stoke] PTY quit drain: 0 pending') && !/PTY quit drain: [1-9]\d* pending/.test(log))

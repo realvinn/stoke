@@ -1670,6 +1670,11 @@ src/main/         Electron main process
                     dev, a sandbox) shares that one file, so it is merged per userData under a
                     `mkdir` lock, never rewritten from one settings file. No electron import:
                     verify:accounts runs it on synthetic trees
+  accountIdentity.ts read-only Claude auth status / Codex account/read in owned, bounded
+                    subprocesses. Captures each PTY's launch account/home/provider source;
+                    deduplicates reads, holds two probe slots and drops late ended-session
+                    identities. Whitelisted public fields only; never refreshes tokens or
+                    starts an agent turn. No electron import. verify:accounts
   settingsSchema.ts defaults + hydrate, with no electron import so a suite can run it
   tabStore.ts       the tabs that were open at quit. Restoring is a relaunch
                     (`claude --resume`), never a reattach: a CLI child cannot outlive the app.
@@ -2073,6 +2078,13 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     the splash or picker closing ask it `activationAllowed`. Gotcha 88
   src/lib/toasts.ts  the toast store (`toast`, `dismissToast`, `useToasts`; at most three) and
                     the floor the pane in front sets for it (`setToastFloor`). Gotcha 154
+  src/components/AccountChip.tsx  active local agent's account nickname and native sign-in
+                    identity in the title bar. Its floating popover includes Stoke Hub's
+                    own sign-in and links to each account's Settings view. Unknown identity
+                    and key/provider authentication are explicit; SSH does not query a
+                    local login. Account rows show the same identities in AgentsSettings
+  src/lib/useAccountIdentity.ts  polls/focus-refreshes the exact agent/account/PTY, hides
+                    the previous identity immediately on a switch and discards late replies
   src/lib/floatingLayers.ts  every open popover, menu and picker (`useFloatingLayer`), and
                     whether one lies over `.browser-hole` (`useBrowserCovered`), which App
                     hides the docked browser for. verify:layers. Gotcha 14
@@ -2228,6 +2240,8 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     geometry, arrow-key steps, colour names for aria-valuetext, the typed-hex
                     reader, the "painted darker here" note, and the popover's flip-and-clamp.
                     Pure so verify:color can assert it
+  accountIdentity.ts public identity contract, validated target ids, scoped rendering and
+                    vendor-field whitelist. No credentials or native output cross IPC
   accounts.ts       agent accounts: a login account is a config HOME per agent
                     (`ACCOUNT_HOME_ENV`, each read from the vendor's artefact; Cursor and Vibe
                     get none, their sign-ins do not follow a home), a key account is an API key

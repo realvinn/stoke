@@ -41,6 +41,7 @@ import type { AccountKind, AgentAccount } from './accounts'
 import type { StokeCliRequest } from './stokeArgs'
 import type { TranscriptFindRequest, TranscriptFindResult } from './transcriptFind'
 import type { ClaudeLaunchDefaults } from './launch'
+import type { AccountIdentity, AccountIdentityTarget } from './accountIdentity'
 import type { LaunchPreflightRequest, LaunchPreflightResult } from './launchPreflight'
 import type { SshFilesRequest, SshFilesListResult, SshFilesSaveResult, SshFilesProgress } from './sshFiles'
 import type { SecretStoreStatus } from './secrets'
@@ -579,6 +580,8 @@ export interface StokeApi {
     create(input: AccountCreateInput): Promise<AccountCreateResult>
     remove(id: string): Promise<void>
     identify(): Promise<Record<string, string | null>>
+    /** Public native sign-in identity, bound to a live PTY when supplied. */
+    identity(target: AccountIdentityTarget, refresh?: boolean): Promise<AccountIdentity | null>
     /**
      * Per Claude login account, the Default account's user-scope MCP servers
      * it is handed at launch, the ones it keeps its own, and any that cannot be

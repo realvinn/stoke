@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { accountIdentityText, identityFor, unavailableAccountIdentity, type AccountIdentity } from '@shared/accountIdentity'
 import {
   CODING_CLIS,
   capsFor,
@@ -1465,15 +1466,13 @@ function AgentAccounts({
   const busyRef = useRef(false)
   const [message, setMessage] = useState<string | null>(null)
   const [removing, setRemoving] = useState<string | null>(null)
-  const [emails, setEmails] = useState<Record<string, string | null>>({})
+  const [identities, setIdentities] = useState<Record<string, AccountIdentity | null>>({})
+  const [identityRevision, setIdentityRevision] = useState(0)
   const [mcp, setMcp] = useState<Record<string, AccountMcpSummary>>({})
   const homes = accounts.map((a) => `${a.id}:${a.home}`).join('|')
   useEffect(() => {
     if (cli.id !== 'claude') return
     let live = true
-    void window.stoke.accounts.identify().then((e) => {
-      if (live) setEmails(e)
-    })
     // What each account is handed of Default's user-scope MCP servers.
     void window.stoke.accounts.mcp().then((m) => {
       if (live) setMcp(m)
@@ -1482,6 +1481,31 @@ function AgentAccounts({
       live = false
     }
   }, [cli.id, homes])
+  useEffect(() => {
+    let live = true
+    let running = false
+    const ids = [DEFAULT_ACCOUNT_ID, ...accounts.map(a => a.id)]
+    const pull = async (refresh = false) => {
+      if (running) return
+      running = true
+      try {
+        for (const accountId of ids) {
+          if (!live) break
+          const target = { cli: cli.id, accountId }
+          const value = await window.stoke.accounts.identity(target, refresh).catch(() => null)
+          if (live) setIdentities(prev => ({ ...prev, [accountId]: value || unavailableAccountIdentity(target) }))
+        }
+      } finally { running = false }
+    }
+    void pull(identityRevision > 0)
+    const focus = () => { void pull() }
+    window.addEventListener('focus', focus)
+    const timer = window.setInterval(focus, 30_000)
+    return () => { live = false; window.removeEventListener('focus', focus); window.clearInterval(timer) }
+    // The stable account/home list scopes these reads; labels are drawn from current props.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cli.id, homes, identityRevision])
+  const identity = (id: string) => identityFor({ cli: cli.id, accountId: id }, identities[id] ?? null)
 
   if (kinds.length === 0) {
     return (
@@ -1491,6 +1515,8 @@ function AgentAccounts({
           {cli.label} keeps one sign-in for the whole machine and takes no key from Stoke, so it
           runs on its own sign-in only.
         </span>
+        <span className="field-hint" data-testid="default-account-identity">{accountIdentityText(identity(DEFAULT_ACCOUNT_ID))}</span>
+        <button className="btn" onClick={() => setIdentityRevision(v => v + 1)}>Refresh sign-in</button>
       </div>
     )
   }
@@ -1525,6 +1551,7 @@ function AgentAccounts({
   return (
     <div className="field agent-accounts" data-testid="agent-accounts" data-setting="agent.accounts">
       <span className="field-label">Accounts</span>
+      <button className="btn" data-variant="ghost" onClick={() => setIdentityRevision(v => v + 1)}>Refresh sign-ins</button>
       <span className="field-hint">
         {kinds.includes('login')
           ? `Another ${cli.label} sign-in, kept in its own folder under ~/.stoke/accounts and signed in by ${cli.label} itself.`
@@ -1536,14 +1563,14 @@ function AgentAccounts({
         <label className="agent-account-row">
           <input type="radio" name={`account-${cli.id}`} checked={current === DEFAULT_ACCOUNT_ID} onChange={() => onDefault(DEFAULT_ACCOUNT_ID)} />
           <span className="agent-account-name">Default</span>
-          <span className="field-hint">its own sign-in, as {cli.label} is set up on this machine</span>
+          <span className="field-hint" data-testid="default-account-identity" title={identity(DEFAULT_ACCOUNT_ID)?.detail}>{accountIdentityText(identity(DEFAULT_ACCOUNT_ID))}</span>
         </label>
         {accounts.map((a) => (
           <AccountRow
             key={a.id}
             cli={cli}
             account={a}
-            email={emails[a.id] ?? null}
+            identity={identity(a.id)}
             mcp={mcp[a.id] ?? null}
             checked={current === a.id}
             onDefault={() => onDefault(a.id)}
@@ -1612,7 +1639,7 @@ function AgentAccounts({
 function AccountRow({
   cli,
   account,
-  email,
+  identity,
   mcp,
   checked,
   onDefault,
@@ -1624,7 +1651,7 @@ function AccountRow({
 }: {
   cli: CodingCli
   account: AgentAccount
-  email: string | null
+  identity: AccountIdentity | null
   /** A Claude login account: what it gets of Default's user-scope MCP servers. */
   mcp: AccountMcpSummary | null
   checked: boolean
@@ -1676,7 +1703,7 @@ function AccountRow({
         />
         {account.kind === 'login' ? (
           <span className="field-hint mono agent-account-home" title={account.home}>
-            {email && email !== account.label ? `${email} · ` : ''}
+            <span title={identity?.detail}>{accountIdentityText(identity)}</span> ·{' '}
             {account.home}
           </span>
         ) : (

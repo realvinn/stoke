@@ -7783,6 +7783,73 @@ button.color-field-swatch[aria-expanded='true'] {
   -webkit-app-region: no-drag;
 }
 
+.account-chip-wrap {
+  position: relative;
+  min-width: 0;
+  -webkit-app-region: no-drag;
+}
+
+.account-chip {
+  display: grid;
+  gap: 0.1875rem;
+  max-width: 10rem;
+  padding: 0.1875rem var(--space-8);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  line-height: 1.1;
+  text-align: left;
+  cursor: pointer;
+}
+
+.account-chip:hover,
+.account-chip[aria-expanded='true'] {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+.account-chip-label,
+.account-chip-identity {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.account-chip-identity {
+  color: var(--text);
+}
+
+.account-panel {
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  width: min(24rem, calc(100vw - 2rem));
+  max-height: calc(100vh - 5rem);
+  overflow-y: auto;
+}
+
+.account-panel-email {
+  overflow-wrap: anywhere;
+}
+
+.account-panel-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-8);
+}
+
+.account-panel-sync {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-8);
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-12);
+}
+
 /*
  * Two rows, read without a click: how much of each window is left, and when
  * the 5-hour one comes back. The chip used to be two bare percentages with no

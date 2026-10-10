@@ -25,6 +25,8 @@ import { AgentLifecycleGate } from '../shared/agentLifecycle.ts'
 import { QuickTerminal } from './quickTerminal.ts'
 import { ownedPtyExits } from './ptyExitTracker.ts'
 import { boundUsageReading, UsageBindings, usageCacheKey } from './usageBindings.ts'
+import { AccountIdentities, planAccountIdentity, probeAccountIdentity } from './accountIdentity.ts'
+import { accountIdentityTarget } from '../shared/accountIdentity.ts'
 import type { QuickTerminalAppearance, QuickTerminalMode, QuickTerminalSurface } from '../shared/quickTerminal.ts'
 import { quickTerminalLink } from '../shared/quickTerminal.ts'
 import { activeThemeId, resolveTheme } from '@shared/themes'
@@ -136,7 +138,7 @@ import { fetchRemoteTranscript, keepRemoteTranscript, readRemoteTranscript } fro
 import { TranscriptFindHost } from './transcriptFindHost.ts'
 import { ConversationFinder } from './findInConversation.ts'
 import transcriptFindWorkerPath from './transcriptFind.worker.ts?modulePath'
-import { PtyManager, type StartResult } from './pty.ts'
+import { PtyManager, ptyEnvFrom, type StartResult } from './pty.ts'
 import { findTranscriptStrict, PrivateChats } from './privateChat.ts'
 import { dropPrivateStoredTabs, privateLaunchProblem } from '../shared/privateChat.ts'
 import { checkMicrophone } from './audio/defaultDevice.ts'
@@ -653,6 +655,7 @@ const timers: NodeJS.Timeout[] = []
  */
 const usageScheduler = new UsageScheduler()
 const usageBindings = new UsageBindings()
+const accountIdentities = new AccountIdentities()
 
 /* ------------------------------------------------- keeping the CLI current */
 
@@ -1418,6 +1421,7 @@ async function startSession(
   }
   if (localAgent && ptys.sessionIdFor(started.ptyId) !== null) {
     usageBindings.capture({ cli: cliId, accountId: accountId || DEFAULT_ACCOUNT_ID, ptyId: started.ptyId }, usagePlanInput(settings), process.env, homedir(), process.env.STOKE_FAKE_USAGE || undefined)
+    accountIdentities.capture(planAccountIdentity({ cli: cliId, accountId: accountId || DEFAULT_ACCOUNT_ID, ptyId: started.ptyId }, settings, process.env, opts.cwd))
   }
   /*
    * A private chat stops here, before anything below can remember it: no
@@ -1787,6 +1791,7 @@ async function startAccountLogin(requested: LaunchOptions): Promise<StartResult>
  * one the user named keeps its name.
  */
 async function finishAccountLogin(accountId: string): Promise<void> {
+  accountIdentities.invalidate()
   try {
     const account = getSettings().accounts[accountId]
     if (!account || account.cli !== 'claude' || account.kind !== 'login') return
@@ -2986,6 +2991,7 @@ function createWindow(): void {
     },
     (ptyId, code, signal, sessionId, loggedIn) => {
       usageBindings.drop(ptyId)
+      accountIdentities.drop(ptyId)
       // `loggedIn`: whether a remote session got past authentication, which
       // the renderer's kept-tab reconnect needs and cannot see (gotcha 126).
       send(CH.ptyExit, ptyId, code, signal, loggedIn)
@@ -3261,6 +3267,7 @@ function createWindow(): void {
 
   win.on('closed', () => {
     usageBindings.clear()
+    accountIdentities.clear()
     quickTerminal?.disable()
     quickTerminalWindow?.destroy()
     quickTerminalWindow = null
@@ -3392,6 +3399,18 @@ function registerIpc(): void {
   ipcMain.handle(CH.accountsCreate, (_e, input: AccountCreateInput) => createAccount(input))
   ipcMain.handle(CH.accountsRemove, (_e, id: string) => removeAccount(id))
   ipcMain.handle(CH.accountsIdentify, () => identifyAccounts())
+  ipcMain.handle(CH.accountsIdentity, async (event, raw: unknown, refresh: unknown) => {
+    if (appQuitting || !win || event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) return null
+    const target = accountIdentityTarget(raw)
+    if (!target) return null
+    const configured = planAccountIdentity(target, getSettings(), process.env, homedir())
+    return accountIdentities.read(target, configured, async (plan, signal) => {
+      const executable = await findCli(plan.target.cli, plan.target.cli === 'claude' ? plan.claudePath : undefined)
+      if (!executable) return null
+      const env = ptyEnvFrom(plan.env, await buildEnvPath())
+      return probeAccountIdentity(plan, executable, env, undefined, undefined, signal)
+    }, Date.now(), refresh === true)
+  })
   ipcMain.handle(CH.accountsMcp, () => accountsMcp())
   ipcMain.handle(CH.mcpCatalog, () => readMcpCatalog(claudeConfigReader))
   const runningAgentSessions = (id: CodingCliId): number => ptys?.list().filter((session) => session.cli === id && !session.exited && ptys?.launchFacts(session.ptyId)?.hostId === null).length ?? 0
@@ -5530,13 +5549,15 @@ if (!app.requestSingleInstanceLock(launchRequest ? { stokeCli: launchRequest } :
     if (!isMac) app.quit()
   })
 
-  let windowsQuitReady = false
+  let quitReady = false
   app.on('before-quit', event => {
     // Window.close may have already removed the manager. The process-wide
     // tracker still owns its native callbacks, including earlier tab closes.
-    if (process.platform === 'win32' && !windowsQuitReady) event.preventDefault()
+    const drain = process.platform === 'win32' || accountIdentities.pendingCount > 0
+    if (drain && !quitReady) event.preventDefault()
     if (appQuitting) return
     appQuitting = true
+    const identityDrain = accountIdentities.shutdown()
     quickTerminal?.dispose()
     workNotion?.stop()
     workDrafts?.stop()
@@ -5564,13 +5585,13 @@ if (!app.requestSingleInstanceLock(launchRequest ? { stokeCli: launchRequest } :
     void remote?.stop()
     tunnel.stop()
     hubClient?.stop()
-    if (process.platform === 'win32') {
-      void ownedPtyExits.wait().then(remaining => {
+    if (drain) {
+      void Promise.all([identityDrain, process.platform === 'win32' ? ownedPtyExits.wait() : Promise.resolve(0)]).then(([identities, remaining]) => {
+        if (identities) console.error(`[stoke] Account identity quit drain: ${identities} pending`)
         // Bound shutdown without claiming missing exits or killing an app.
         const message = `[stoke] PTY quit drain: ${remaining} pending`
-        if (remaining) console.error(message)
-        else console.log(message)
-        windowsQuitReady = true
+        if (process.platform === 'win32') { if (remaining) console.error(message); else console.log(message) }
+        quitReady = true
         app.quit()
       })
     }

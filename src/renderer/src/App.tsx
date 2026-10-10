@@ -5829,6 +5829,8 @@ export function App(): React.JSX.Element {
         onOpenPalette={() => setPaletteOpen(true)}
         onOpenSettings={() => openSettings()}
         onOpenPhoneSettings={() => openSettings('remote')}
+        onOpenAgentSettings={(cli) => openSettings({ page: 'agent', agent: cli }, { id: 'agent.accounts', fallback: null })}
+        onOpenSyncSettings={() => openSettings('account')}
         labelFor={(t) => {
           if (t.kind !== 'new') return tabLabel(t, null, tagOptions)
           // The tab in front names what its launcher is aimed at, fallback
