@@ -1,4 +1,4 @@
-import { access, stat } from 'node:fs/promises'
+import { access, realpath, stat } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { posix, win32 } from 'node:path'
 import { buildEnvPath } from './cli.ts'
@@ -50,29 +50,34 @@ export function terminalShellCandidates(platform: NodeJS.Platform, env: NodeJS.P
 export async function discoverTerminalShells(input?: {
   platform: NodeJS.Platform; env: NodeJS.ProcessEnv; path: string
   usable?: (path: string) => Promise<boolean>
+  canonical?: (path: string) => Promise<string>
 }): Promise<ResolvedTerminalShell[]> {
   const platform = input?.platform ?? process.platform
   const env = input?.env ?? process.env
   const path = input?.path ?? await buildEnvPath()
   const p = platform === 'win32' ? win32 : posix
+  const canonical = input?.canonical ?? realpath
   const usable = input?.usable ?? (async (file: string) => {
     try { if (!(await stat(file)).isFile()) return false; await access(file, platform === 'win32' ? constants.F_OK : constants.X_OK); return true } catch { return false }
   })
   const matches = await Promise.all(terminalShellCandidates(platform, env, path).map(async candidate => {
     for (const file of [...new Set(candidate.paths)]) {
       if (!p.isAbsolute(file) || file.includes('\0') || !await usable(file)) continue
-      return { id: candidate.id, path: file, label: candidate.id === 'git-bash' ? 'Git Bash' : shellLabel(file), args: terminalShellArgs(file) }
+      let resolved: string
+      try { resolved = await canonical(file) } catch { continue }
+      return { shell: { id: candidate.id, path: file, label: candidate.id === 'git-bash' ? 'Git Bash' : shellLabel(file), args: terminalShellArgs(file) }, resolved }
     }
     return null
   }))
   if (!matches[0]) throw new Error('The default local shell is unavailable.')
   const seen = new Set<string>()
-  return matches.filter((shell): shell is ResolvedTerminalShell => {
-    if (!shell) return false
-    const key = platform === 'win32' ? p.normalize(shell.path).toLowerCase() : p.normalize(shell.path)
-    if (seen.has(key)) return false
+  return matches.flatMap(match => {
+    if (!match) return []
+    const key = platform === 'win32' ? p.normalize(match.resolved).toLowerCase() : p.normalize(match.resolved)
+    if (seen.has(key)) return []
     seen.add(key)
+    const shell = match.shell
     if (shell.id === 'default') shell.label += ' (Default)'
-    return true
+    return [shell]
   })
 }

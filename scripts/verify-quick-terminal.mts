@@ -42,12 +42,17 @@ try {
 
   console.log('\nQuick terminal: installed shell catalog')
   check('shell arguments follow the executable instead of the OS', ['C:\\Windows\\System32\\cmd.exe', 'C:\\Windows\\powershell.exe', '/opt/homebrew/bin/pwsh', '/bin/bash'].map(terminalShellArgs), [['/d'], ['-NoLogo'], ['-NoLogo'], ['-l']])
-  const windowsShells = await discoverTerminalShells({ platform: 'win32', env: { ComSpec: 'c:\\windows\\SYSTEM32\\cmd.exe', SystemRoot: 'C:\\Windows', ProgramFiles: 'C:\\Program Files' }, path: 'C:\\tools;relative', usable: async path => new Set(['c:\\windows\\system32\\cmd.exe', 'c:\\windows\\system32\\windowspowershell\\v1.0\\powershell.exe', 'c:\\tools\\pwsh.exe', 'c:\\program files\\git\\bin\\bash.exe']).has(path.toLowerCase()) })
+  const windowsShells = await discoverTerminalShells({
+    platform: 'win32', env: { ComSpec: 'c:\\windows\\SYSTEM32\\cmd.exe', SystemRoot: 'C:\\Windows', ProgramFiles: 'C:\\Program Files' }, path: 'C:\\tools;relative',
+    usable: async path => new Set(['c:\\windows\\system32\\cmd.exe', 'c:\\windows\\system32\\windowspowershell\\v1.0\\powershell.exe', 'c:\\tools\\pwsh.exe', 'c:\\program files\\git\\bin\\bash.exe']).has(path.toLowerCase()), canonical: async path => path
+  })
   check('Windows offers installed cmd, both PowerShell variants and Git Bash without duplicating Default', windowsShells.map(shell => [shell.id, shell.args]), [['default', ['/d']], ['powershell', ['-NoLogo']], ['pwsh', ['-NoLogo']], ['git-bash', ['-l']]])
-  const customDefault = await discoverTerminalShells({ platform: 'win32', env: { ComSpec: 'C:\\tools\\pwsh.exe', SystemRoot: 'C:\\Windows' }, path: 'C:\\tools', usable: async path => path === 'C:\\tools\\pwsh.exe' || path === 'C:\\Windows\\System32\\cmd.exe' })
+  const customDefault = await discoverTerminalShells({ platform: 'win32', env: { ComSpec: 'C:\\tools\\pwsh.exe', SystemRoot: 'C:\\Windows' }, path: 'C:\\tools', usable: async path => path === 'C:\\tools\\pwsh.exe' || path === 'C:\\Windows\\System32\\cmd.exe', canonical: async path => path })
   check('a PowerShell default uses PowerShell arguments and still offers cmd', customDefault.map(shell => [shell.id, shell.args]), [['default', ['-NoLogo']], ['cmd', ['/d']]])
+  const aliases = await discoverTerminalShells({ platform: 'linux', env: { SHELL: '/bin/bash' }, path: '/usr/bin', usable: async path => ['/bin/bash', '/usr/bin/bash', '/bin/sh'].includes(path), canonical: async path => path === '/bin/bash' ? '/usr/bin/bash' : path })
+  check('filesystem aliases do not create two entries for the same shell', aliases.map(shell => shell.id), ['default', 'sh'])
   const catalog = await service.shells()
-  check('listing installed shells starts no process and exposes no executable arguments', [catalog.length > 0, preparations, service.view().id, catalog.every(shell => !('args' in shell))], [true, 0, null, true])
+  check('listing installed shells starts no quick shell and exposes no executable arguments', [catalog.length > 0, preparations, service.view().id, catalog.every(shell => !('args' in shell))], [true, 0, null, true])
 
   console.log('\nQuick terminal: opt-in and a real native shell')
   check('reading does not prepare or start a process', [service.snapshot().state.phase, preparations], ['idle', 0])
