@@ -1737,7 +1737,7 @@ function createAccount(input: AccountCreateInput): Promise<AccountCreateResult> 
       })
       account = { id, cli, label: name, kind, home: made.home, apiKey: '', swatch }
     } else {
-      const supportsProfile = cli === 'claude' || cli === 'codex'
+      const supportsProfile = !!defaultAccountApiProfile(cli)
       const profile = supportsProfile ? hydrateAccountApiProfile(cli, input.apiProfile ?? defaultAccountApiProfile(cli)) : null
       if (supportsProfile) {
         const trouble = accountApiProfileProblem(cli, profile)

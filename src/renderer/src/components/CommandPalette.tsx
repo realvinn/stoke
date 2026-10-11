@@ -14,6 +14,7 @@ interface Props {
   projects: Project[]
   /** The agents with a page in Settings (`navAgents`), so a hit on one lands on its page. */
   settingsAgents: readonly CodingCliId[]
+  settingsAccountAgents: readonly CodingCliId[]
   onPick: (p: Project) => void
   /** Open Settings at a page, and at the row when the hit is one. */
   onPickSetting: (hit: SettingsHit) => void
@@ -58,6 +59,7 @@ const IS_MAC = window.stoke.platform === 'darwin'
 export function CommandPalette({
   projects,
   settingsAgents,
+  settingsAccountAgents,
   onPick,
   onPickSetting,
   onFind,
@@ -76,7 +78,8 @@ export function CommandPalette({
   }, [])
 
   const agentsKey = settingsAgents.join(',')
-  const entries = useMemo(() => settingsEntries({ agents: settingsAgents, platform: window.stoke.platform }), [agentsKey])
+  const accountsKey = settingsAccountAgents.join(',')
+  const entries = useMemo(() => settingsEntries({ agents: settingsAgents, accountAgents: settingsAccountAgents, platform: window.stoke.platform }), [agentsKey, accountsKey])
   const hasFind = !!onFind
   const hasActions = !!onPickAction
   const rows = useMemo((): Row[] => {

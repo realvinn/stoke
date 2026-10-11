@@ -134,6 +134,7 @@ export const ACCOUNT_KEY_ENV: Readonly<
 > = {
   claude: { key: 'ANTHROPIC_API_KEY' },
   codex: { key: 'STOKE_ACCOUNT_API_KEY' },
+  opencode: { key: 'STOKE_ACCOUNT_API_KEY' },
   grok: { key: 'XAI_API_KEY' },
   cursor: { key: 'CURSOR_API_KEY', with: { AGENT_CLI_CREDENTIAL_STORE: 'memory' } },
   vibe: { key: 'MISTRAL_API_KEY' },
@@ -441,11 +442,11 @@ export function accountProblem(account: AgentAccount, endpointMode: 'default' | 
     if (!ACCOUNT_HOME_ENV[account.cli] || !LOGIN_ACCOUNTS.has(account.cli)) {
       return `${cli.label} keeps one sign-in for the whole machine, so Stoke cannot start it on ${account.label}.`
     }
-    if (!isAccountHome(account.home)) return `${account.label} has no folder. Remove it and add it again in Settings › Agents.`
+    if (!isAccountHome(account.home)) return `${account.label} has no folder. Remove it and add it again in Settings › Accounts.`
     return null
   }
   if (!ACCOUNT_KEY_ENV[account.cli]) return `${cli.label} takes no API key from Stoke.`
-  if (!account.apiKey) return `${account.label} has no key yet. Add it in Settings › Agents › ${cli.label}.`
+  if (!account.apiKey) return `${account.label} has no key yet. Add it in Settings › Accounts › ${cli.label}.`
   if (accountProvidersFor(account.cli).length) return accountApiProfileProblem(account.cli, account.apiProfile)
   if (endpointMode !== 'default') {
     return `${cli.label} is set to use ${endpointMode === 'openrouter' ? 'OpenRouter' : 'a custom endpoint'}, which brings its own key. Set it back to its own sign-in to use ${account.label}.`

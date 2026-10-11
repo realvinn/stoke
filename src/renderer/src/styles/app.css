@@ -7869,10 +7869,12 @@ button.color-field-swatch[aria-expanded='true'] {
 .accounts-stoke > p { margin: 0; }
 .accounts-stoke > .btn { justify-self: start; }
 .accounts-agent-list { display: grid; gap: var(--space-12); }
-.accounts-agent { display: grid; gap: var(--space-12); padding: var(--space-16) 0; border-bottom: 1px solid var(--border-subtle); }
-.accounts-agent-heading { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-8); }
-.accounts-agent-heading > .field-hint { margin-left: auto; }
-.accounts-agent .btn-row { flex-wrap: wrap; }
+.accounts-agent { display: flex; align-items: center; gap: var(--space-12); width: 100%; text-align: left; padding: var(--space-12); border: none; border-bottom: 1px solid var(--border-subtle); border-radius: var(--r-md); background: transparent; cursor: pointer; }
+.accounts-agent:hover { background: var(--surface-hover); }
+.accounts-agent:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 2px; }
+.accounts-agent > .agent-account-body { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.accounts-count { flex-shrink: 0; }
+.accounts-back { justify-self: start; }
 
 .account-chip:hover,
 .account-chip[aria-expanded='true'] {

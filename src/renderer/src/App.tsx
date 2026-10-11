@@ -76,7 +76,7 @@ import { ChatViewer, type ChatViewTarget } from './components/ChatViewer'
 import { PausedSession } from './components/PausedSession'
 import { Resizer } from './components/Resizer'
 import { SettingsSheet, type SettingsRowTarget } from './components/SettingsSheet'
-import { ancestorsOf, navAgents, resolveSettingsTarget, type SettingsTarget } from '@shared/settingsIndex'
+import { ancestorsOf, navAgents, navAccountAgents, resolveSettingsTarget, type SettingsTarget } from '@shared/settingsIndex'
 import { Sidebar } from './components/Sidebar'
 import { StatusBar } from './components/StatusBar'
 import { TerminalView } from './components/TerminalView'
@@ -5001,7 +5001,7 @@ export function App(): React.JSX.Element {
     void window.stoke.quickTerminal.open(mode, repositoryCwd ?? undefined).then(result => { if (!result.ok) setError(result.message) }).catch(error => setError(ipcErrorMessage(error)))
   }
   const manageAgentAccounts = (cli: CodingCliId, kind?: 'login' | 'key'): void => {
-    openSettings({ page: 'agent', agent: cli }, { id: kind === 'key' ? 'agent.apiAccounts' : kind === 'login' ? 'agent.loginAccounts' : 'agent.accounts', fallback: kind ? 'agent.accounts' : null })
+    openSettings({ page: 'agent-accounts', agent: cli }, { id: kind === 'key' ? 'agent-accounts.api' : kind === 'login' ? 'agent-accounts.login' : 'agent-accounts.list', fallback: kind ? 'agent-accounts.list' : null })
   }
 
   /*
@@ -6693,6 +6693,7 @@ export function App(): React.JSX.Element {
         <CommandPalette
           projects={projects}
           settingsAgents={navAgents(installedAgentIds)}
+          settingsAccountAgents={navAccountAgents(installedAgentIds, Object.values(storedAccounts ?? {}).map(account => account.cli))}
           onPick={(p) => {
             setPaletteOpen(false)
             selectInNewTab(p.path)

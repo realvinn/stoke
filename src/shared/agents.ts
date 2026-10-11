@@ -619,7 +619,7 @@ export function agentLaunchPlan(input: LaunchPlanInput): LaunchPlanResult {
     return path
   }
 
-  const problem = named && id === 'codex' ? null : endpointProblem(id, ep, openrouterKey)
+  const problem = named && ['codex', 'opencode'].includes(id) ? null : endpointProblem(id, ep, openrouterKey)
   if (problem) return { ok: false, message: problem }
 
   const access = agentAccessOption(id, input.access ?? 'default')
@@ -635,8 +635,8 @@ export function agentLaunchPlan(input: LaunchPlanInput): LaunchPlanResult {
    * before it (the order the endpoint `-m` below has always used). Off
    * `default` each case passes the endpoint's model in its own shape instead.
    */
-  const model = launchModel(id, ep)
-  if (ep.mode === 'default' && model && cli.modelArgs) args.push(...cli.modelArgs(model))
+  const model = named && id === 'opencode' ? `stoke_account/${named.model}` : launchModel(id, ep)
+  if (!(named && id === 'opencode') && ep.mode === 'default' && model && cli.modelArgs) args.push(...cli.modelArgs(model))
 
   switch (id) {
     case 'codex': {
@@ -667,7 +667,26 @@ export function agentLaunchPlan(input: LaunchPlanInput): LaunchPlanResult {
     case 'opencode': {
       const configVar = id === 'kilo' ? 'KILO_CONFIG_CONTENT' : 'OPENCODE_CONFIG_CONTENT'
       const config: Record<string, unknown> = {}
-      if (ep.mode === 'openrouter') {
+      if (id === 'opencode' && named) {
+        // A private provider ID avoids stored OAuth/plugin auth overriding a
+        // selected API account. Native adapters speak each provider's wire
+        // format; an Anthropic key is never sent to OpenAI chat completions.
+        const provider = 'stoke_account'
+        config.provider = {
+          [provider]: {
+            npm: named.provider === 'anthropic' ? '@ai-sdk/anthropic' : named.provider === 'openai' ? '@ai-sdk/openai' : '@ai-sdk/openai-compatible',
+            name: ACCOUNT_PROVIDER_LABELS[named.provider],
+            options: { baseURL: named.baseUrl, apiKey: '{env:STOKE_ACCOUNT_API_KEY}' },
+            models: { [named.model]: { name: named.model } }
+          }
+        }
+        // Runtime overrides cannot leave the remembered model/small model
+        // using a different account, even if the user has another provider.
+        config.enabled_providers = [provider]
+        config.model = `${provider}/${named.model}`
+        config.small_model = config.model
+        args.push('-m', `${provider}/${named.model}`)
+      } else if (ep.mode === 'openrouter') {
         env.OPENROUTER_API_KEY = openrouterKey
         args.push('-m', `openrouter/${ep.model}`)
       } else if (ep.mode === 'custom') {

@@ -35,6 +35,7 @@ import {
   ancestorsOf,
   claudeSettingRows,
   navAgents,
+  navAccountAgents,
   navTree,
   nodeIdOf,
   paletteTier,
@@ -133,6 +134,7 @@ console.log('every row the sheet marks is in the index, and every row in the ind
     'components/BackupSettings.tsx': ['backup'],
     'components/AccountSyncSettings.tsx': ['account'],
     'components/AccountsSettings.tsx': ['accounts'],
+    'components/AgentAccounts.tsx': ['agent-accounts'],
     'components/RemoteSettings.tsx': ['remote', 'updates'],
     'components/AgentsSettings.tsx': ['agents', 'agent', 'claude-launch'],
     'components/AgentUpdater.tsx': ['agents', 'agent']
@@ -270,6 +272,17 @@ console.log('\nthe menu is a tree: Agents opens to the manager and your agents, 
   check('...one level in', visibleHolder(half, { page: 'providers' }), CLAUDE_NODE)
   check('...and by its own row once it is on screen', visibleHolder(both, { page: 'providers' }), 'providers')
   check("an agent's page is its own node", nodeIdOf({ page: 'agent', agent: 'codex' }), 'agent:codex')
+  const accountAgents = navAccountAgents(new Set(['gemini']), ['grok'], 'kimi')
+  check('Accounts includes the core agents, installed agents, saved accounts and a directly opened agent', accountAgents, CODING_CLIS.filter(cli => ['claude', 'codex', 'opencode', 'gemini', 'grok', 'kimi'].includes(cli.id)).map(cli => cli.id))
+  const accountTree = navTree(agents, accountAgents)
+  const accountNode = accountTree.flatMap(group => group.nodes).find(node => node.id === 'accounts')!
+  check('Accounts is an overview with a Stoke submenu and one focused page per agent', accountNode.children?.map(node => node.id), ['account', ...accountAgents.map(id => `account:${id}`)])
+  check('Stoke account sync appears once, under Accounts', accountTree.filter(group => group.title === 'System').flatMap(group => group.nodes).some(node => node.id === 'account'), false)
+  check('a closed Accounts branch holds a directly opened agent account page', visibleHolder(visibleNodes(accountTree, new Set()), { page: 'agent-accounts', agent: 'grok' }), 'accounts')
+  check('opening an account opens its parent and gives an unambiguous breadcrumb', [ancestorsOf({ page: 'agent-accounts', agent: 'codex' }), pathOf({ page: 'agent-accounts', agent: 'codex' }), nodeIdOf({ page: 'agent-accounts', agent: 'codex' })], [['accounts'], ['Accounts', 'Codex CLI'], 'account:codex'])
+  check('account deep links preserve the chosen agent across settings normalization', resolveSettingsTarget({ page: 'agent-accounts', agent: 'opencode' }), { page: 'agent-accounts', agent: 'opencode' })
+  const accountEntries = settingsEntries({ agents, accountAgents })
+  check('saved accounts are searchable even after their CLI is uninstalled', searchSettings(accountEntries, 'Grok accounts').some(hit => hit.entry.loc.page === 'agent-accounts' && hit.entry.loc.agent === 'grok'), true)
 }
 
 /* --------------------------------------------------------- old ids land */
@@ -333,7 +346,7 @@ console.log('\nsearch: what ranks first, synonyms, spellings and highlights')
   check('"font size": Font size first', top('font size'), ['row:terminal.font-size'])
   check('"Font" and "FONT" are the same query', [top('Font'), top('FONT')], [['row:terminal.font'], ['row:terminal.font']])
   check('"api key": the two Claude Code keys lead', top('api key', 2).sort(), ['row:providers.anthropic-key', 'row:providers.openrouter-key'])
-  check('...the Provider & keys page is found by it', has('api key', 'page:providers', 12), true)
+  check('...the Provider & keys page is found by it', has('api key', 'page:providers', 24), true)
   check('...so are the speech service key and where keys live', [has('api key', 'row:voice.key', 12), has('api key', 'row:backup.storage', 30)], [true, true])
   check('...and "API key" is what is highlighted in "Anthropic API key"', marked(searchSettings(entries, 'api key')[0]), ['API key'])
   check('"ssh": SSH hosts and its key login', [has('ssh', 'page:hosts', 3), has('ssh', 'row:hosts.key-enroll', 5)], [true, true])
@@ -364,7 +377,7 @@ console.log('\nsearch: what ranks first, synonyms, spellings and highlights')
     ['row:account.ssh-keys', 'row:hosts.key-enroll']
   )
   // The agent pages' own button says "Add account"; "add" used to prefix-match the hub's "address".
-  check('"add account" and "new account": an agent\'s Accounts, not the hub address', [top('add account'), top('new account')], [['row:agent.accounts@claude'], ['row:agent.accounts@claude']])
+  check('"add account" and "new account": an agent\'s Accounts, not the hub address', [top('add account'), top('new account')], [['row:agent-accounts.list@claude'], ['row:agent-accounts.list@claude']])
   check(
     '"api keys": both Claude Code key rows ahead of Where your keys live',
     [top('api keys', 2).sort(), searchSettings(entries, 'api keys').findIndex((h) => h.entry.key === 'row:backup.storage') > 1],
@@ -495,6 +508,7 @@ console.log('\nevery control the sheet labels is found by its label, on its own 
     'components/BackupSettings.tsx': ['backup'],
     'components/AccountSyncSettings.tsx': ['account'],
     'components/AccountsSettings.tsx': ['accounts'],
+    'components/AgentAccounts.tsx': ['agent-accounts'],
     'components/RemoteSettings.tsx': ['remote', 'updates'],
     'components/AgentsSettings.tsx': ['agents', 'agent', 'claude-launch'],
     'components/AgentUpdater.tsx': ['agents', 'agent']
@@ -580,7 +594,7 @@ console.log('\na row drawn only in some states says where a jump lands instead')
   const palette = read('components/CommandPalette.tsx')
   check(
     'the sheet and the palette both tell the index the platform',
-    [sheet, palette].map((src) => /settingsEntries\(\{ agents: [A-Za-z]+, platform: window\.stoke\.platform \}\)/.test(src)),
+    [sheet, palette].map((src) => /settingsEntries\(\{ agents: [A-Za-z]+, (?:accountAgents(?:: [A-Za-z]+)?, )?platform: window\.stoke\.platform \}\)/.test(src)),
     [true, true]
   )
 }

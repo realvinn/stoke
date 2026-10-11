@@ -28,6 +28,7 @@ import { TOP_BAR_DEFAULTS } from '@shared/topBar'
 import {
   ancestorsOf,
   navAgents,
+  navAccountAgents,
   navTree,
   nodeIdOf,
   pathOf,
@@ -61,7 +62,7 @@ import { VoiceSettings } from './VoiceSettings'
 import { AgentManager, AgentSettingsPage, ClaudeLaunchDefaults, type AgentPagesProps } from './AgentsSettings'
 import { BackupSettings } from './BackupSettings'
 import { AccountSyncSettings } from './AccountSyncSettings'
-import { AccountsSettings } from './AccountsSettings'
+import { AccountsSettings, AgentAccountsPage } from './AccountsSettings'
 import { ChatHistorySettings } from './ChatHistorySettings'
 import type { ChatDetection, ChatIndexStatus } from '@shared/chatIndex'
 import type { CodingCliDetection, CodingCliId } from '@shared/codingClis'
@@ -264,8 +265,10 @@ export function SettingsSheet({
    */
   const installed = installedAgents(agents.detection?.clis ?? [], cli?.ok === true)
   const menuAgents = navAgents(installed, loc.page === 'agent' ? (loc.agent ?? null) : null)
+  const accountAgents = navAccountAgents(installed, Object.values(settings.accounts).map(account => account.cli), loc.page === 'agent-accounts' ? loc.agent : undefined)
   const agentsKey = menuAgents.join(',')
-  const tree = useMemo(() => navTree(menuAgents), [agentsKey])
+  const accountsKey = accountAgents.join(',')
+  const tree = useMemo(() => navTree(menuAgents, accountAgents), [agentsKey, accountsKey])
   const open = useMemo(() => new Set(expanded), [expanded])
   const visible = useMemo(() => visibleNodes(tree, open), [tree, open])
   const holder = visibleHolder(visible, loc)
@@ -334,7 +337,7 @@ export function SettingsSheet({
   const [active, setActive] = useState(0)
   const searchRef = useRef<HTMLInputElement>(null)
   const resultsRef = useRef<HTMLDivElement>(null)
-  const entries = useMemo(() => settingsEntries({ agents: menuAgents, platform: window.stoke.platform }), [agentsKey])
+  const entries = useMemo(() => settingsEntries({ agents: menuAgents, accountAgents, platform: window.stoke.platform }), [agentsKey, accountsKey])
   const hits = useMemo(() => searchSettings(entries, query).slice(0, RESULT_LIMIT), [entries, query])
   const searching = query.trim() !== ''
 
@@ -1288,7 +1291,9 @@ export function SettingsSheet({
 
             {loc.page === 'agents' && <AgentManager {...agentProps} />}
 
-            {loc.page === 'accounts' && <AccountsSettings settings={settings} installed={menuAgents} onSync={() => go({ page: 'account' })} onManage={(agent, kind) => go({ page: 'agent', agent }, { id: kind === 'key' ? 'agent.apiAccounts' : kind === 'login' ? 'agent.loginAccounts' : 'agent.accounts', fallback: kind ? 'agent.accounts' : null })} />}
+            {loc.page === 'accounts' && <AccountsSettings settings={settings} agents={accountAgents} onSync={() => go({ page: 'account' })} onManage={agent => go({ page: 'agent-accounts', agent })} />}
+
+            {loc.page === 'agent-accounts' && <AgentAccountsPage settings={settings} agent={loc.agent ?? 'claude'} onPatch={onPatch} onSignIn={agents.onSignIn} onGo={go} />}
 
             {loc.page === 'agent' && (
               <AgentSettingsPage key={loc.agent ?? 'claude'} {...agentProps} agent={loc.agent ?? 'claude'} />

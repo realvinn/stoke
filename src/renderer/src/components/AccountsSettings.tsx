@@ -1,55 +1,85 @@
 import type { Settings } from '@shared/types'
-import { accountKindsFor, accountsOf, DEFAULT_ACCOUNT_ID } from '@shared/accounts'
-import { CODING_CLIS, type CodingCliId } from '@shared/codingClis'
+import { useRef } from 'react'
+import { accountsOf, DEFAULT_ACCOUNT_ID } from '@shared/accounts'
+import { cliFor, type CodingCliId } from '@shared/codingClis'
+import { AgentAccounts } from './AgentAccounts'
+import type { SettingsLocation } from '@shared/settingsIndex'
 import { agentMark } from '../lib/agentColor'
 import { stokeAccountSummary, useStokeAccount } from '../lib/useStokeAccount'
 
-/** A single starting point; the existing scoped editor still owns each agent's accounts. */
-export function AccountsSettings({ settings, installed, onManage, onSync }: {
+/** A compact directory; editing lives in each agent's Accounts submenu. */
+export function AccountsSettings({ settings, agents, onManage, onSync }: {
   settings: Settings
-  installed: readonly CodingCliId[]
-  onManage: (cli: CodingCliId, kind?: 'login' | 'key') => void
+  agents: readonly CodingCliId[]
+  onManage: (cli: CodingCliId) => void
   onSync: () => void
 }): React.JSX.Element {
   const hub = stokeAccountSummary(useStokeAccount())
-  const agents = CODING_CLIS.filter(cli => accountKindsFor(cli.id).length > 0 &&
-    (['claude', 'codex'].includes(cli.id) || installed.includes(cli.id) || accountsOf(cli.id, settings.accounts).length > 0))
   return <div className="accounts-settings" data-testid="accounts-overview" data-setting="accounts.overview">
     <header className="accounts-heading">
       <h2>Accounts</h2>
-      <p className="field-hint">Your Stoke sign-in connects your devices. Agent sign-ins and API keys choose how your coding sessions run.</p>
+      <p className="field-hint">Choose an agent to manage its sign-ins and API keys.</p>
     </header>
     <section className="accounts-stoke" data-setting="accounts.stoke">
       <div className="accounts-stoke-identity">
         <span className="account-avatar" aria-hidden="true">{hub.signedIn ? hub.identity.slice(0, 1).toUpperCase() : 'S'}</span>
         <div className="agent-account-body"><strong>Stoke account</strong><span className="field-hint">{hub.identity}</span></div>
       </div>
-      <p className="field-hint">Manage sign-in, device approval and the settings you sync.</p>
+      <p className="field-hint">Connect your devices and choose what syncs.</p>
       <button className="btn" onClick={onSync}>{hub.signedIn ? hub.status : 'Sign in to Stoke'}</button>
     </section>
     <section className="accounts-agent-list" data-setting="accounts.agents">
-      <div className="accounts-heading"><h3>Agent accounts</h3><p className="field-hint">Your existing CLI login is Default. Add another subscription sign-in or an API account when you need one.</p></div>
-      {agents.map(cli => {
+      <div className="accounts-heading"><h3>Coding agents</h3></div>
+      {agents.map(id => {
+        const cli = cliFor(id)
         const accounts = accountsOf(cli.id, settings.accounts)
         const selected = accounts.find(account => account.id === settings.agents.defaultAccount[cli.id])
-        const logins = accounts.filter(account => account.kind === 'login').length
-        const keys = accounts.filter(account => account.kind === 'key').length
-        const kinds = accountKindsFor(cli.id)
-        return <article className="accounts-agent" key={cli.id} data-cli={cli.id}>
-          <div className="accounts-agent-heading">
+        return <button className="accounts-agent" key={cli.id} data-cli={cli.id} onClick={() => onManage(cli.id)} aria-label={`Manage ${cli.label} accounts`}>
             <span className="agent-tab-dot" {...agentMark(cli.id)} aria-hidden="true" />
-            <strong>{cli.label}</strong>
-            <span className="field-hint">{accounts.length === 0 ? 'Existing setup' : `${logins} saved sign-in${logins === 1 ? '' : 's'} · ${keys} API account${keys === 1 ? '' : 's'}`}</span>
-          </div>
-          <span className="field-hint" data-account={selected?.id ?? DEFAULT_ACCOUNT_ID}>New sessions use <strong>{selected?.label ?? 'Default · Existing setup'}</strong></span>
-          <div className="btn-row">
-            <button className="btn" onClick={() => onManage(cli.id)}>Manage accounts</button>
-            {kinds.includes('login') && <button className="btn" data-variant="ghost" onClick={() => onManage(cli.id, 'login')}>Add sign-in</button>}
-            {kinds.includes('key') && <button className="btn" data-variant="ghost" onClick={() => onManage(cli.id, 'key')}>Add API account</button>}
-          </div>
-        </article>
+            <span className="agent-account-body">
+              <strong>{cli.label}</strong>
+              <span className="field-hint" data-account={selected?.id ?? DEFAULT_ACCOUNT_ID}>New sessions: {selected?.label ?? 'Default · Existing setup'}</span>
+            </span>
+            <span className="field-hint accounts-count">{accounts.length ? `${accounts.length + 1} accounts` : 'Default'}</span>
+            <span aria-hidden="true">›</span>
+        </button>
       })}
-      <p className="field-hint">Agent accounts are saved on this computer. API accounts use provider billing; subscription sign-ins use your agent plan.</p>
+      <p className="field-hint">Your existing CLI login is Default. Agent credentials stay on this computer.</p>
     </section>
+  </div>
+}
+
+export function AgentAccountsPage({ settings, agent, onPatch, onSignIn, onGo }: {
+  settings: Settings
+  agent: CodingCliId
+  onPatch: (patch: Partial<Settings>) => void
+  onSignIn: (accountId: string) => void
+  onGo: (location: SettingsLocation) => void
+}): React.JSX.Element {
+  // The radio writer must retain other agents' choices across rapid selections.
+  const settingsRef = useRef(settings)
+  settingsRef.current = settings
+  const cli = cliFor(agent)
+  return <div className="accounts-settings" data-testid="agent-account-page" data-cli={agent}>
+    <header className="accounts-heading">
+      <button className="btn accounts-back" data-variant="ghost" onClick={() => onGo({ page: 'accounts' })}>‹ All accounts</button>
+      <h2>{cli.label}</h2>
+      <p className="field-hint">Select the account new sessions start with, or add another.</p>
+    </header>
+    <AgentAccounts key={agent} cli={cli} accounts={accountsOf(agent, settings.accounts)} defaultId={settings.agents.defaultAccount[agent]}
+      onDefault={id => {
+        const current = settingsRef.current
+        const defaultAccount = { ...current.agents.defaultAccount }
+        if (id === DEFAULT_ACCOUNT_ID) delete defaultAccount[agent]
+        else defaultAccount[agent] = id
+        const agents = { ...current.agents, defaultAccount }
+        settingsRef.current = { ...current, agents }
+        onPatch({ agents })
+      }}
+      onPatchAccount={(id, patch) => {
+        const account = settingsRef.current.accounts[id]
+        if (account) onPatch({ accounts: { [id]: { ...account, ...patch } } })
+      }} onSignIn={onSignIn}
+      savedApiAccounts={agent === 'opencode' ? Object.values(settings.accounts).filter(account => account.cli !== 'opencode' && account.kind === 'key' && !!account.apiKey && !!account.apiProfile && account.apiProfile.provider !== 'custom') : undefined} />
   </div>
 }

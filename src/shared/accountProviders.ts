@@ -14,11 +14,12 @@ export const ACCOUNT_PROVIDER_LABELS: Record<AccountProvider, string> = {
 }
 export function accountProvidersFor(cli: CodingCliId): AccountProvider[] {
   return cli === 'claude' ? ['anthropic', 'nanogpt', 'openrouter', 'custom']
-    : cli === 'codex' ? ['openai', 'nanogpt', 'openrouter', 'custom'] : []
+    : cli === 'codex' ? ['openai', 'nanogpt', 'openrouter', 'custom']
+    : cli === 'opencode' ? ['anthropic', 'openai', 'nanogpt', 'openrouter', 'custom'] : []
 }
 export function accountProviderBase(cli: CodingCliId, provider: AccountProvider): string {
   switch (provider) {
-    case 'anthropic': return 'https://api.anthropic.com'
+    case 'anthropic': return cli === 'opencode' ? 'https://api.anthropic.com/v1' : 'https://api.anthropic.com'
     case 'openai': return 'https://api.openai.com/v1'
     case 'nanogpt': return 'https://nano-gpt.com/api/v1'
     case 'openrouter': return cli === 'claude' ? 'https://openrouter.ai/api' : 'https://openrouter.ai/api/v1'
@@ -44,7 +45,7 @@ export function accountApiProfileProblem(cli: CodingCliId, raw: unknown): string
   const p = hydrateAccountApiProfile(cli, raw)
   if (!p) return 'Choose an API provider supported by this agent.'
   if (p.model && !isModelId(p.model)) return 'Enter a model ID without spaces or shell characters.'
-  if (!p.model && p.provider !== 'anthropic' && p.provider !== 'openai') return 'Enter the model ID this provider should run.'
+  if (!p.model && (cli === 'opencode' || (p.provider !== 'anthropic' && p.provider !== 'openai'))) return 'Enter the model ID this provider should run.'
   if (cli === 'codex' && /[&|<>^%!()\r\n"']/.test(p.baseUrl)) return 'This Codex API URL contains characters unsupported by Windows CLI launchers.'
   try {
     if (p.baseUrl.length > 2048) throw new Error()

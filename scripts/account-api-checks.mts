@@ -34,11 +34,37 @@ export async function runAccountApiChecks(): Promise<void> {
     assert.equal(hydrateAccountApiProfile('codex', { ...codex.apiProfile, baseUrl: 'https://wrong.test' })?.baseUrl, 'https://nano-gpt.com/api/v1')
     pass('provider identity, URL credentials, shell arguments and required gateway models are validated')
 
+    assert.equal(accountApiProfileProblem('opencode', defaultAccountApiProfile('opencode')), 'Enter the model ID this provider should run.')
+    const openCodeAccounts: Record<string, AgentAccount> = {}
+    for (const [provider, adapter] of [['anthropic', '@ai-sdk/anthropic'], ['openai', '@ai-sdk/openai'], ['nanogpt', '@ai-sdk/openai-compatible']] as const) {
+      const profile = { ...defaultAccountApiProfile('opencode', provider)!, model: provider === 'anthropic' ? 'claude-sonnet-test' : 'vendor/model-test' }
+      const account: AgentAccount = { id: `opencode-${provider}`, cli: 'opencode', label: provider, kind: 'key', home: '', apiKey: keyA, apiProfile: profile }
+      openCodeAccounts[account.id] = account
+      const result = agentLaunchPlan({ id: 'opencode', endpoint: { mode: 'custom', baseUrl: 'https://wrong.test', apiKey: 'wrong-key', model: 'wrong-model' }, openrouterKey: keyB, mcp: [{ name: 'stoke', transport: 'http', command: '', args: [], env: {}, url: 'http://127.0.0.1:1234/mcp', headers: {} }], piExtensionPath: null, account })
+      assert(result.ok)
+      assert.equal(result.plan.model, `stoke_account/${profile.model}`)
+      assert.deepEqual(result.plan.args, ['-m', result.plan.model])
+      const config = JSON.parse(result.plan.env.OPENCODE_CONFIG_CONTENT)
+      assert.equal(config.provider.stoke_account.npm, adapter)
+      assert.equal(config.provider.stoke_account.options.baseURL, profile.baseUrl)
+      assert.equal(config.provider.stoke_account.options.apiKey, '{env:STOKE_ACCOUNT_API_KEY}')
+      assert.deepEqual(config.enabled_providers, ['stoke_account'])
+      assert.equal(config.model, result.plan.model)
+      assert.equal(config.small_model, result.plan.model)
+      assert.equal(config.mcp.stoke.url, 'http://127.0.0.1:1234/mcp')
+      assert.equal(result.plan.env.STOKE_ACCOUNT_API_KEY, keyA)
+      assert(!JSON.stringify(result.plan.args).includes(keyA))
+      assert(!JSON.stringify(config).includes(keyA) && !JSON.stringify(config).includes('wrong.test'))
+    }
+    assert.deepEqual(hydrateAccounts(openCodeAccounts), openCodeAccounts)
+    assert(!agentLaunchPlan({ id: 'opencode', openrouterKey: '', mcp: [], piExtensionPath: null, account: { ...openCodeAccounts['opencode-anthropic'], apiKey: '' } }).ok)
+    pass('OpenCode selects the named key, native vendor adapter and model, retains MCP, and cannot use a remembered competing provider')
+
     const accounts = hydrateAccounts({ [claude.id]: claude, [codex.id]: codex })
     assert.deepEqual(accounts, { [claude.id]: claude, [codex.id]: codex })
     const secondClaude = { ...claude, id: 'claude-second', label: 'Client API', apiKey: keyB }
     const secondCodex = { ...codex, id: 'codex-second', label: 'OpenAI work', apiKey: keyA, apiProfile: defaultAccountApiProfile('codex')! }
-    const multiple = hydrateAccounts({ ...accounts, [secondClaude.id]: secondClaude, [secondCodex.id]: secondCodex })
+    const multiple = hydrateAccounts({ ...accounts, [secondClaude.id]: secondClaude, [secondCodex.id]: secondCodex, ...openCodeAccounts })
     assert.equal(Object.values(multiple).filter(a => a.cli === 'claude').length, 2)
     assert.equal(Object.values(multiple).filter(a => a.cli === 'codex').length, 2)
     assert.equal(accountEnv(multiple[secondClaude.id]).ANTHROPIC_API_KEY, keyB)
@@ -141,13 +167,18 @@ export async function runAccountApiChecks(): Promise<void> {
     const vault = readFileSync(join(root, 'secrets.json'), 'utf8')
     assert(!disk.includes(keyA) && !disk.includes(keyB) && !vault.includes(keyA) && !vault.includes(keyB))
     const beforeUnlock = hydrateSettings(JSON.parse(disk))
-    assert.deepEqual(Object.keys(beforeUnlock.accounts), [claude.id, codex.id, secondClaude.id, secondCodex.id])
+    assert.deepEqual(Object.keys(beforeUnlock.accounts), [claude.id, codex.id, secondClaude.id, secondCodex.id, 'opencode-anthropic', 'opencode-openai', 'opencode-nanogpt'])
     assert.equal(beforeUnlock.accounts[codex.id].apiProfile?.provider, 'nanogpt')
     const restored = hydrateSettings(new SecretStore(root, backend, 'darwin').load())
     assert.equal(restored.accounts[claude.id].apiKey, keyA)
     assert.equal(restored.accounts[codex.id].apiKey, keyB)
     assert.equal(restored.accounts[secondClaude.id].apiKey, keyB)
     assert.equal(restored.accounts[secondCodex.id].apiKey, keyA)
-    pass('multiple Claude/Codex API keys seal separately, survive a locked-vault settings read and restore to their own named profiles')
+    assert.equal(beforeUnlock.accounts['opencode-anthropic'].apiKey, '')
+    assert.equal(restored.accounts['opencode-anthropic'].apiKey, keyA)
+    assert.equal(restored.accounts['opencode-anthropic'].apiProfile?.baseUrl, 'https://api.anthropic.com/v1')
+    assert.equal(restored.accounts['opencode-openai'].apiProfile?.provider, 'openai')
+    assert.equal(restored.accounts['opencode-nanogpt'].apiProfile?.provider, 'nanogpt')
+    pass('Claude/Codex/OpenCode API keys seal separately, survive a locked vault and restore to their own named profiles')
   } finally { rmSync(root, { recursive: true, force: true }) }
 }

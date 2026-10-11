@@ -26,6 +26,8 @@
  */
 import { CODING_CLIS, type CodingCliId } from './codingClis.ts'
 import { CLAUDE_SETTINGS, WORKFLOW_SIZE_KEY } from './claudeConfig.ts'
+import { accountKindsFor } from './accounts.ts'
+import { accountProvidersFor, ACCOUNT_PROVIDER_LABELS } from './accountProviders.ts'
 
 /* ------------------------------------------------------------------- pages */
 
@@ -37,6 +39,7 @@ export type SettingsPageId =
   /** The Agent manager: install, show in the launcher, the default, colours. */
   | 'agents'
   | 'accounts'
+  | 'agent-accounts'
   /** One agent's own page; the agent is `SettingsLocation.agent`. */
   | 'agent'
   | 'claude-launch'
@@ -121,8 +124,14 @@ export const SETTINGS_PAGES: readonly SettingsPageDef[] = [
   {
     id: 'agent',
     label: 'Agent',
-    hint: 'Where it sends requests, its default model, accounts, tools and tab tag',
+    hint: 'Where it sends requests, its default model, tools and tab tag',
     keywords: []
+  },
+  {
+    id: 'agent-accounts',
+    label: 'Agent accounts',
+    hint: 'Subscription sign-ins, API keys and the account new sessions use',
+    keywords: ['account', 'sign in', 'api key', 'switch account']
   },
   {
     id: 'claude-launch',
@@ -251,12 +260,12 @@ function agentNode(id: CodingCliId): NavNode {
   const node: NavNode = {
     id: `agent:${id}`,
     label: agentLabel(id),
-    hint: `${agentLabel(id)}: where it sends requests, its default model, accounts, tools and tab tag`,
+    hint: `${agentLabel(id)}: where it sends requests, its default model, tools and tab tag`,
     loc: { page: 'agent', agent: id },
     agent: id
   }
   if (id === 'claude') {
-    node.hint = 'Claude Code: its accounts, tools and tab tag — and under it, its launch defaults, its own settings and its keys'
+    node.hint = 'Claude Code: its tools and tab tag — and under it, its launch defaults, its own settings and its keys'
     node.children = CLAUDE_SUBPAGES.map(pageNode)
   }
   return node
@@ -280,13 +289,23 @@ export function navAgents(installed: ReadonlySet<CodingCliId>, extra?: CodingCli
  * old Agents row had and the separate Claude Code and Providers rows folded
  * into it.
  */
-export function navTree(agents: readonly CodingCliId[]): NavGroup[] {
+export function navAccountAgents(installed: ReadonlySet<CodingCliId>, saved: readonly CodingCliId[] = [], extra?: CodingCliId): CodingCliId[] {
+  return CODING_CLIS.filter(cli => ['claude', 'codex', 'opencode'].includes(cli.id) || installed.has(cli.id) || saved.includes(cli.id) || cli.id === extra).map(cli => cli.id)
+}
+
+export function navTree(agents: readonly CodingCliId[], accountAgents: readonly CodingCliId[] = navAccountAgents(new Set(agents))): NavGroup[] {
   return [
     { title: 'Appearance', nodes: ['appearance', 'terminal', 'profiles'].map((id) => pageNode(id as SettingsPageId)) },
     {
       title: 'Configuration',
       nodes: [
-        pageNode('accounts'),
+        {
+          ...pageNode('accounts'),
+          children: [
+            { ...pageNode('account'), label: 'Stoke' },
+            ...accountAgents.map(agent => ({ id: `account:${agent}`, label: agentLabel(agent), hint: `${agentLabel(agent)} sign-ins and API accounts`, loc: { page: 'agent-accounts' as const, agent }, agent }))
+          ]
+        },
         pageNode('sessions'),
         {
           id: AGENTS_NODE,
@@ -299,20 +318,22 @@ export function navTree(agents: readonly CodingCliId[]): NavGroup[] {
       ]
     },
     { title: 'Integrations', nodes: [pageNode('worklog'), pageNode('remote')] },
-    { title: 'System', nodes: [pageNode('updates'), pageNode('account'), pageNode('backup')] }
+    { title: 'System', nodes: [pageNode('updates'), pageNode('backup')] }
   ]
 }
 
 /** The node a location selects. */
 export function nodeIdOf(loc: SettingsLocation): string {
+  if (loc.page === 'agent-accounts') return `account:${loc.agent ?? 'claude'}`
   return loc.page === 'agent' ? `agent:${loc.agent ?? 'claude'}` : loc.page
 }
 
 /**
  * The nodes that must be open for `loc`'s row to be on screen, outermost
- * first. Pure: it does not need the tree, because only two nodes ever open.
+ * first. Pure: it does not need the tree, including the Accounts and Agents branches.
  */
 export function ancestorsOf(loc: SettingsLocation): string[] {
+  if (loc.page === 'agent-accounts' || loc.page === 'account') return ['accounts']
   if (CLAUDE_SUBPAGES.includes(loc.page)) return [AGENTS_NODE, CLAUDE_NODE]
   if (loc.page === 'agents' || loc.page === 'agent') return [AGENTS_NODE]
   return []
@@ -320,6 +341,8 @@ export function ancestorsOf(loc: SettingsLocation): string[] {
 
 /** The labels from the menu's top down to `loc`, for a breadcrumb or a search result. */
 export function pathOf(loc: SettingsLocation): string[] {
+  if (loc.page === 'agent-accounts') return ['Accounts', agentLabel(loc.agent ?? 'claude')]
+  if (loc.page === 'account') return ['Accounts', 'Stoke']
   if (CLAUDE_SUBPAGES.includes(loc.page)) return ['Agents', 'Claude Code', pageDef(loc.page).label]
   if (loc.page === 'agent') return ['Agents', agentLabel(loc.agent ?? 'claude')]
   if (loc.page === 'agents') return ['Agents', pageDef('agents').label]
@@ -379,16 +402,18 @@ export function visibleHolder(visible: readonly VisibleNode[], loc: SettingsLoca
 export function resolveSettingsTarget(target: SettingsTarget | null | undefined): SettingsLocation {
   if (!target) return { page: 'appearance' }
   if (typeof target === 'object') {
+    if (target.page === 'agent-accounts') return target.agent ? { page: target.page, agent: target.agent } : { page: 'accounts' }
     if (target.page === 'agent') return target.agent ? { page: 'agent', agent: target.agent } : { page: 'agents' }
     return SETTINGS_PAGE_IDS.includes(target.page) ? { page: target.page } : { page: 'appearance' }
   }
   if (target === 'claude' || target === 'claudecode' || target === 'claude-code') return { page: 'claude-settings' }
   if (target === 'agent') return { page: 'agents' }
+  if (target === 'agent-accounts') return { page: 'accounts' }
   return SETTINGS_PAGE_IDS.includes(target) ? { page: target } : { page: 'appearance' }
 }
 
 export function sameLocation(a: SettingsLocation, b: SettingsLocation): boolean {
-  return a.page === b.page && (a.page !== 'agent' || (a.agent ?? 'claude') === (b.agent ?? 'claude'))
+  return a.page === b.page && (!['agent', 'agent-accounts'].includes(a.page) || (a.agent ?? 'claude') === (b.agent ?? 'claude'))
 }
 
 /* -------------------------------------------------------------------- rows */
@@ -479,9 +504,11 @@ export const SETTING_ROWS: readonly SettingRow[] = [
   { id: 'agent.custom-endpoint', page: 'agent', label: 'Custom endpoint', keywords: ['base url', 'api key', 'server', 'local model'], agents: hasCustomEndpoint, fallback: 'agent.endpoint' },
   { id: 'agent.model', page: 'agent', label: 'Default model', keywords: ['model'], agents: notClaude },
   // "Add account" is the row's own button: without it, "add" prefix-matched Stoke Hub's "address" and won.
-  { id: 'agent.accounts', page: 'agent', label: 'Accounts', keywords: ['sign in', 'login', 'account', 'api key', 'work account', 'second account', 'add account', 'new account', 'add another sign-in', 'existing setup', 'saved sign-ins', 'saved api accounts', 'nickname', 'edit account', 'advanced details', 'named api profile', 'nanogpt', 'multiple anthropic', 'multiple codex keys', 'provider account'] },
-  { id: 'agent.apiAccounts', page: 'agent', label: 'API accounts', keywords: ['anthropic api', 'openai api', 'codex api', 'claude api', 'api key', 'token', 'nanogpt', 'openrouter', 'add api account', 'custom api', 'custom service', 'custom endpoint', 'model id'], fallback: 'agent.accounts' },
-  { id: 'agent.loginAccounts', page: 'agent', label: 'Add another sign-in', keywords: ['subscription login', 'second sign-in', 'another claude account', 'another codex account'], fallback: 'agent.accounts' },
+  { id: 'agent-accounts.list', page: 'agent-accounts', label: 'Accounts', keywords: ['sign in', 'login', 'account', 'api key', 'work account', 'second account', 'add account', 'new account', 'add another sign-in', 'existing setup', 'saved sign-ins', 'saved api accounts', 'nickname', 'edit account', 'advanced details', 'named api profile', 'multiple accounts', 'provider account'] },
+  { id: 'agent-accounts.api', page: 'agent-accounts', label: 'API accounts', keywords: ['api key', 'token', 'add api account', 'custom api', 'custom service', 'custom endpoint', 'model id', 'saved key', 'reuse key', 'api key source'], agents: id => accountKindsFor(id).includes('key'), fallback: 'agent-accounts.list' },
+  { id: 'agent-accounts.login', page: 'agent-accounts', label: 'Add another sign-in', keywords: ['subscription login', 'second sign-in', 'another claude account', 'another codex account'], agents: id => accountKindsFor(id).includes('login'), fallback: 'agent-accounts.list' },
+  { id: 'agent.account-link', page: 'agent', label: 'Accounts', keywords: ['manage accounts', 'open accounts submenu'] },
+  { id: 'agent-accounts.anthropic', page: 'agent-accounts', label: 'Claude Code key approval', keywords: ['key approval', 'declined key', 'use custom api key', 'config', 'console', 'billing'], agents: id => id === 'claude', fallback: 'agent-accounts.list' },
   { id: 'agent.access', page: 'agent', label: 'Default access', keywords: ['permissions', 'full access', 'yolo', 'bypass', 'sandbox', 'approval'], agents: notClaude },
   { id: 'agent.update', page: 'agent', label: 'Installed version and updates', keywords: ['update agent', 'upgrade', 'version', 'npm', 'homebrew', 'native updater', 'updater output'], agents: notClaude, fallback: 'agent.access' },
   { id: 'agent.tools', page: 'agent', label: 'Tools (MCP)', keywords: ['mcp', 'servers', 'tools', 'browser tools', 'add mcp server', 'api keys', 'tokens', 'headers', 'environment variables', 'test connection'] },
@@ -690,6 +717,7 @@ export interface SettingsEntry {
 export interface SettingsContext {
   /** The agents with a page in the menu (`navAgents`); Claude Code at least. */
   agents: readonly CodingCliId[]
+  accountAgents?: readonly CodingCliId[]
   /** `window.stoke.platform`, for rows drawn only on some (`SettingRow.platforms`). Absent: every row. */
   platform?: string
 }
@@ -712,11 +740,11 @@ export function settingsEntries(ctx: SettingsContext): SettingsEntry[] {
   }
   const rowEntry = (loc: SettingsLocation, r: SettingRow, extraKeywords: readonly string[] = []): void => {
     out.push({
-      key: `row:${r.id}${loc.page === 'agent' ? `@${loc.agent}` : ''}`,
+      key: `row:${r.id}${loc.agent ? `@${loc.agent}` : ''}`,
       loc,
       row: r.id,
       fallback: r.fallback ?? null,
-      label: r.label,
+      label: loc.page === 'agent-accounts' && loc.agent && r.id === 'agent-accounts.list' ? `${agentLabel(loc.agent)} accounts` : r.label,
       path: pathOf(loc),
       keywords: [...r.keywords, ...extraKeywords],
       hint: ''
@@ -724,14 +752,15 @@ export function settingsEntries(ctx: SettingsContext): SettingsEntry[] {
   }
 
   for (const p of SETTINGS_PAGES) {
-    if (p.id === 'agent') {
+    if (p.id === 'agent' || p.id === 'agent-accounts') {
+      const scope = p.id === 'agent' ? listed : new Set(ctx.accountAgents ?? navAccountAgents(listed))
       for (const c of CODING_CLIS) {
-        if (!listed.has(c.id)) continue
-        const loc: SettingsLocation = { page: 'agent', agent: c.id }
-        pageEntry(loc, c.label, [c.vendor, ...c.bins.posix, 'agent'], c.blurb)
+        if (!scope.has(c.id)) continue
+        const loc: SettingsLocation = { page: p.id, agent: c.id }
+        pageEntry(loc, p.id === 'agent' ? c.label : `${c.label} accounts`, [c.vendor, ...c.bins.posix, ...(p.id === 'agent' ? ['agent'] : p.keywords)], c.blurb)
         for (const r of SETTING_ROWS) {
-          if (r.page !== 'agent' || (r.agents && !r.agents(c.id)) || !drawnHere(r)) continue
-          rowEntry(loc, r, [c.label])
+          if (r.page !== p.id || (r.agents && !r.agents(c.id)) || !drawnHere(r)) continue
+          rowEntry(loc, r, [c.label, ...(p.id === 'agent-accounts' ? accountProvidersFor(c.id).map(provider => ACCOUNT_PROVIDER_LABELS[provider]) : [])])
         }
       }
       continue
