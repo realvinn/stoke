@@ -11,6 +11,8 @@ import { clampChatSearchFilters, hasChatSearchFilters, type ChatSearchFilters } 
 import { installedAgents, resolveDefaultAgent, visibleAgents } from '@shared/agents'
 import { agentSeed, paintAgentColors, type AgentColors } from '@shared/agentColors'
 import { accountSeed, accountsOf, DEFAULT_ACCOUNT_ID } from '@shared/accounts'
+import { accountLoginOutcome, type AccountIdentity } from '@shared/accountIdentity'
+import { accountIdentityChanged } from './lib/useAccountIdentity'
 import { canMoveTab, type TabWindowPacket, type TabWindowTransfer } from '@shared/tabWindows'
 import { nextReveal, REVEAL_ENTRY_GRACE_MS, revealKeyCounts } from '@shared/fullScreenReveal'
 import type { RevealInfo, RevealInput, RevealState } from '@shared/fullScreenReveal'
@@ -1166,6 +1168,8 @@ export function App(): React.JSX.Element {
    */
   const tabsRef = useRef<Tab[]>(tabs)
   tabsRef.current = tabs
+  const accountLoginFinishedRef = useRef<((tab: Tab, code: number, signal?: number) => void) | null>(null)
+  const accountLoginFinishing = useRef(new Set<string>())
   /** "Other machines" (src/main/hub/remote.ts), as main pushes it. */
   const hubRemote = useHubRemote()
   /** On the host: who is attached to which local session from another machine (the tab's two arrows). */
@@ -2249,7 +2253,7 @@ export function App(): React.JSX.Element {
     const offs = tabs
       .filter((t) => t.kind === 'session' && t.status === 'running')
       .map((t) =>
-        attachExit(t.ptyId, (code, _signal, loggedIn) => {
+        attachExit(t.ptyId, (code, signal, loggedIn) => {
           /*
            * A relaunch kills this process on purpose and replaces the tab in
            * place once the new one is up. Its exit arrives in between, and
@@ -2273,6 +2277,7 @@ export function App(): React.JSX.Element {
           )
           // An install tab has just changed what is on this machine.
           if (t.installing?.length) void refreshAgents(true)
+          if (t.accountLogin) accountLoginFinishedRef.current?.(t, code, signal)
           // And a session that ended has just written its last transcript
           // line, which moves its project in Recent (QA L5).
           void refreshProjects()
@@ -3400,6 +3405,7 @@ export function App(): React.JSX.Element {
       // today (pty.ts:331-333); this guard is defensive, not a fix for a
       // crash, and just keeps a nonsense call from being made at all.
       if (tab.kind === 'session' && tab.status !== 'paused') {
+        accountLoginFinishing.current.delete(tab.ptyId)
         window.stoke.pty.kill(tab.ptyId)
         forgetPty(tab.ptyId)
       }
@@ -3638,6 +3644,42 @@ export function App(): React.JSX.Element {
    * again rather than starting the agent (`restartPlan`).
    */
   const accountLoginRef = useRef(new Set<string>())
+  accountLoginFinishedRef.current = (tab, code, signal) => {
+    if (!tab.accountLogin || accountLoginFinishing.current.has(tab.ptyId)) return
+    accountLoginFinishing.current.add(tab.ptyId)
+    const target = { cli: tab.cliId, accountId: tab.accountLogin }
+    void (async () => {
+      let identity: AccountIdentity | null = null
+      if (code === 0 && !signal) {
+        try { identity = await window.stoke.accounts.identity(target, true) } catch { /* Keep unverified sign-ins visible. */ }
+      }
+      const current = tabsRef.current.find(t => t.id === tab.id && t.ptyId === tab.ptyId && t.accountLogin === target.accountId)
+      if (!current || !accountLoginFinishing.current.has(tab.ptyId)) return
+      const outcome = accountLoginOutcome(target, code, signal, identity)
+      const vendor = cliFor(tab.cliId).label
+      if (outcome === 'success') {
+        closeTab(tab.id)
+        accountIdentityChanged(target)
+        toast({
+          tone: 'success',
+          title: `Successfully signed in to ${vendor}${identity?.email ? ` as ${identity.email}` : ''}`,
+          description: identity?.email
+            ? `Account: ${identity.label}. Choose it in the launcher to start a session.`
+            : `Account: ${identity?.label || tab.projectName}. The agent did not report an email.`,
+          duration: 8000
+        })
+      } else {
+        toast({
+          tone: outcome === 'failed' ? 'error' : 'info',
+          title: outcome === 'failed' ? `${vendor} sign-in did not complete` : `${vendor} sign-in could not be verified`,
+          description: outcome === 'failed'
+            ? 'The sign-in tab stays open so you can review the output and try again.'
+            : 'The agent did not confirm a saved login. Review the tab or refresh the account in Settings.',
+          duration: 8000
+        })
+      }
+    })()
+  }
   const startAccountLogin = useCallback(
     async (accountId: string, replaceTabId?: string): Promise<void> => {
       if (accountLoginRef.current.has(accountId)) return
@@ -5941,7 +5983,7 @@ export function App(): React.JSX.Element {
         onOpenPalette={() => setPaletteOpen(true)}
         onOpenSettings={() => openSettings()}
         onOpenPhoneSettings={() => openSettings('remote')}
-        onOpenAgentSettings={(cli) => openSettings({ page: 'agent', agent: cli }, { id: 'agent.accounts', fallback: null })}
+        onOpenAgentSettings={(cli, kind) => openSettings({ page: 'agent', agent: cli }, { id: kind === 'key' ? 'agent.apiAccounts' : 'agent.accounts', fallback: kind === 'key' ? 'agent.accounts' : null })}
         onOpenSyncSettings={() => openSettings('account')}
         labelFor={(t) => {
           if (t.kind !== 'new') return tabLabel(t, null, tagOptions)

@@ -856,6 +856,86 @@ await step('the active account follows the agent and fits the title bar', async 
   }
 })
 
+await step('completed sign-ins close with the verified email; failed and unknown sign-ins stay visible', async () => {
+  const created: string[] = []
+  const signInPtys: string[] = []
+  const openAccounts = async (cli: 'claude' | 'codex') => {
+    await activate(tabs[cli]!.ptyId)
+    await ev(`document.querySelector('[data-testid="active-account"]').click(), true`)
+    await waitFor('account details for sign-in', () => ev<boolean>('!!document.querySelector(".account-panel")'))
+    await ev(`[...document.querySelectorAll('.account-panel button')].find(button => button.textContent === 'Manage agent accounts').click(), true`)
+    await waitFor('agent sign-in settings', () => ev<boolean>('!!document.querySelector(\'[data-testid="add-account"]\')'))
+    await ev(`document.querySelectorAll('.toast-close').forEach(button => button.click()), true`)
+    await waitFor('previous account notifications to dismiss', () => ev<boolean>('!document.querySelector(".toast")'))
+  }
+  try {
+    for (const cli of ['claude', 'codex'] as const) {
+      await openAccounts(cli)
+      const before = await ev<string[]>('[...window.stokeTerminals.keys()]')
+      const accountId = `${cli}-login-probe`
+      if (cli === 'claude') writeFileSync(join(agentsDir, 'login-wait'), 'owned CI fixture')
+      await ev(`document.querySelector('[aria-label="New ${cli === 'claude' ? 'Claude Code' : 'Codex'} account name"]').focus(), true`)
+      await ui!.send('Input.insertText', { text: 'Login probe' })
+      await ev(`document.querySelector('[data-testid="add-account"]').click(), true`)
+      await waitFor('the isolated login account to persist', () => ev<boolean>(`window.stoke.settings.get().then(s => !!s.accounts[${JSON.stringify(accountId)}])`))
+      created.push(accountId)
+      if (cli === 'claude') {
+        const ptyId = await termShowing('Signing in with the owned probe account', 'the owned sign-in tab', 20_000, before)
+        signInPtys.push(ptyId)
+        await activate(tabs.codex!.ptyId)
+        rmSync(join(agentsDir, 'login-wait'), { force: true })
+      }
+      // Codex exits immediately, also exercising the cached PTY-exit replay
+      // when the native process finishes before React adopts its tab.
+      const title = `Successfully signed in to ${cli === 'claude' ? 'Claude Code' : 'Codex'} as ${cli}@example.test`
+      await waitFor('a success popup naming the native account email', () => ev<boolean>(`[...document.querySelectorAll('.toast-title')].some(node => node.textContent === ${JSON.stringify(title)})`))
+      await waitFor('the completed sign-in tab to close automatically', () => ev<boolean>(`![...document.querySelectorAll('.tablist .tab')].some(tab => tab.textContent.includes('Sign in · Login probe')) && [...window.stokeTerminals.keys()].every(id => ${JSON.stringify(before)}.includes(id))`))
+      if (cli === 'claude') check('a background sign-in finishing preserves the foreground session', await ev(ACTIVE_PTY) === tabs.codex!.ptyId)
+      check(`${cli}: successful sign-in closes its tab and identifies the reported email`, true)
+      await shot(`04-${cli}-login-success`)
+    }
+
+    for (const outcome of ['failed', 'unverified'] as const) {
+      const cli = outcome === 'failed' ? 'codex' : 'claude'
+      await openAccounts(cli)
+      const before = await ev<string[]>('[...window.stokeTerminals.keys()]')
+      const marker = join(agentsDir, outcome === 'failed' ? 'login-fail' : 'identity-unavailable')
+      writeFileSync(marker, 'owned CI fixture')
+      writeFileSync(join(agentsDir, 'login-wait'), 'owned CI fixture')
+      await ev(`[...document.querySelectorAll('.agent-account-stored[data-account="${cli}-login-probe"] button')].find(button => button.textContent.trim() === 'Sign in').click(), true`)
+      const ptyId = await termShowing('Signing in with the owned probe account', 'the unsuccessful sign-in tab', 20_000, before)
+      signInPtys.push(ptyId)
+      rmSync(join(agentsDir, 'login-wait'), { force: true })
+      const title = `${cli === 'claude' ? 'Claude Code' : 'Codex'} sign-in ${outcome === 'failed' ? 'did not complete' : 'could not be verified'}`
+      await waitFor('the unsuccessful sign-in notification', () => ev<boolean>(`[...document.querySelectorAll('.toast-title')].some(node => node.textContent === ${JSON.stringify(title)})`))
+      check(`${outcome}: the sign-in output stays visible and no success is announced`, await ev<boolean>(`window.stokeTerminals.has(${JSON.stringify(ptyId)}) && ![...document.querySelectorAll('.toast-title')].some(node => node.textContent.startsWith('Successfully signed in'))`) === true)
+      await shot(`04-login-${outcome}`)
+      rmSync(marker, { force: true })
+      await activate(ptyId)
+      await ev('(document.querySelector(".tablist .tab[aria-selected=\'true\'] .tab-close")?.click(), true)')
+      await waitFor('the reviewed sign-in tab to close', () => ev<boolean>(`!window.stokeTerminals.has(${JSON.stringify(ptyId)})`))
+    }
+
+    await ev('document.querySelector(\'button[title^="New session"]\').click(), true')
+    await waitFor('Stoke account access on a New tab', () => ev<boolean>(`document.querySelector('[data-testid="active-account"] .account-chip-label')?.textContent === 'Stoke account'`))
+    check('a New tab shows Stoke sign-in without borrowing a local agent account', await ev<boolean>(`!document.querySelector('[data-testid="active-account"]').hasAttribute('data-account')`) === true)
+    await ev(`document.querySelector('[data-testid="active-account"]').click(), true`)
+    await waitFor('Stoke-only account details', () => ev<boolean>(`!!document.querySelector('.account-panel-sync') && !document.querySelector('[data-testid="account-identity"]')`))
+    await shot('04-stoke-account-new-tab')
+    await ev(`[...document.querySelectorAll('.account-panel button')].find(button => button.textContent === 'Codex / OpenAI API').click(), true`)
+    await waitFor('API setup directly from a New tab', () => ev<boolean>(`!!document.querySelector('[aria-label="New Codex API account name"]')`))
+    await ev(`document.querySelector('button[title="Close settings (Esc)"]').click(), document.querySelector('.tablist .tab[aria-selected="true"] .tab-close').click(), true`)
+  } finally {
+    for (const marker of ['login-wait', 'login-fail', 'identity-unavailable']) rmSync(join(agentsDir, marker), { force: true })
+    await ev(`document.querySelector('button[title="Close settings (Esc)"]')?.click(), document.querySelector('[data-testid="active-account"][aria-expanded="true"]')?.click(), true`).catch(() => {})
+    for (const ptyId of signInPtys) {
+      await ev(`document.querySelector('.tablist .tab[data-tab-id="${ptyId}"] .tab-close')?.click(), true`).catch(() => {})
+    }
+    for (const id of created) await ev(`window.stoke.accounts.remove(${JSON.stringify(id)})`).catch(() => {})
+    await activate(tabs.claude!.ptyId)
+  }
+})
+
 await step('named API profiles save in Settings and launch with their own credentials', async () => {
   const savedDefaults = await ev<Record<string, string>>('window.stoke.settings.get().then(s => s.agents.defaultAccount)')
   const created: string[] = []
@@ -865,18 +945,19 @@ await step('named API profiles save in Settings and launch with their own creden
       await activate(tabs[cli]!.ptyId)
       await ev(`document.querySelector('[data-testid="active-account"]').click(), true`)
       await waitFor('account details for API setup', () => ev<boolean>('!!document.querySelector(".account-panel")'))
-      await ev(`[...document.querySelectorAll('.account-panel button')].find(button => button.textContent === 'Manage agent accounts').click(), true`)
+      await ev(`[...document.querySelectorAll('.account-panel button')].find(button => button.textContent === 'Add API account').click(), true`)
       await waitFor('API account fields', () => ev<boolean>('!!document.querySelector(\'[aria-label="New API account provider"]\')'))
+      await waitFor('the API shortcut to reveal its Settings fields', () => ev<boolean>(`(() => { const r = document.querySelector('[data-setting="agent.apiAccounts"]').getBoundingClientRect(); return r.top >= 0 && r.top < innerHeight; })()`))
       if (cli === 'codex') await ev(`(() => { const s = document.querySelector('[aria-label="New API account provider"]'); s.value = 'nanogpt'; s.dispatchEvent(new Event('change', { bubbles: true })); return true })()`)
       const model = cli === 'claude' ? 'claude-api-probe' : 'openai/api-probe'
       await ev(`document.querySelector('[aria-label="New API account model ID"]').focus(), true`)
       await ui!.send('Input.insertText', { text: model })
-      await ev(`document.querySelector('.agent-account-add input:not([type="password"])').focus(), true`)
+      await ev(`document.querySelector('[aria-label="New ${cli === 'claude' ? 'Claude Code' : 'Codex'} API account name"]').focus(), true`)
       await ui!.send('Input.insertText', { text: 'API probe' })
       const key = ['owned', cli, 'probe', 'credential'].join('-')
       await ev(`document.querySelector('.agent-account-add input[type="password"]').focus(), true`)
       await ui!.send('Input.insertText', { text: key })
-      await ev(`[...document.querySelectorAll('.agent-accounts button')].find(button => button.textContent.trim() === 'Add key account').click(), true`)
+      await ev(`[...document.querySelectorAll('.agent-accounts button')].find(button => button.textContent.trim() === 'Add API account').click(), true`)
       const accountId = `${cli}-api-probe`
       await waitFor('the named API account to persist', () => ev<boolean>(`window.stoke.settings.get().then(s => s.accounts[${JSON.stringify(accountId)}]?.apiProfile?.model === ${JSON.stringify(model)})`))
       created.push(accountId)

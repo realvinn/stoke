@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { AccountIdentities, planAccountIdentity, probeAccountIdentity, type AccountIdentitySpawn } from '../src/main/accountIdentity.ts'
-import { accountIdentityTarget, identityFor, nativeAccountIdentity, type AccountIdentityTarget } from '../src/shared/accountIdentity.ts'
+import { accountIdentityTarget, accountLoginOutcome, identityFor, nativeAccountIdentity, type AccountIdentityTarget } from '../src/shared/accountIdentity.ts'
 import { hydrateSettings } from '../src/main/settingsSchema.ts'
 
 export async function runAccountIdentityChecks(): Promise<void> {
@@ -23,6 +23,16 @@ export async function runAccountIdentityChecks(): Promise<void> {
     assert.equal(accountIdentityTarget({ cli: 'codex', accountId: '../credential-store' }), null)
     assert.equal(accountIdentityTarget({ cli: 'codex', accountId: 'default', ptyId: 7 }), null)
     pass('identity requests contain validated agent/account/PTY ids, never renderer-supplied paths')
+    const loginTarget = { cli: 'codex' as const, accountId: 'codex-work' }
+    const loginIdentity = { target: loginTarget, label: 'Work', ...nativeAccountIdentity('codex', { account: { type: 'chatgpt', email: 'work@example.test' } }), checkedAt: 1 }
+    assert.equal(accountLoginOutcome(loginTarget, 0, undefined, loginIdentity), 'success')
+    assert.equal(accountLoginOutcome(loginTarget, 1, undefined, loginIdentity), 'failed')
+    assert.equal(accountLoginOutcome(loginTarget, 0, 15, loginIdentity), 'failed')
+    assert.equal(accountLoginOutcome(loginTarget, 0, undefined, { ...loginIdentity, target: { ...loginTarget, accountId: 'default' } }), 'unverified')
+    assert.equal(accountLoginOutcome(loginTarget, 0, undefined, { ...loginIdentity, target: { ...loginTarget, ptyId: 'another-pty' } }), 'unverified')
+    assert.equal(accountLoginOutcome(loginTarget, 0, undefined, null), 'unverified')
+    assert.equal(accountLoginOutcome(loginTarget, 0, undefined, { ...loginIdentity, state: 'signed-out' }), 'failed')
+    pass('login completion verifies the intended account and never promotes a cancelled, failed or unknown attempt using an old saved identity')
     const captured = planAccountIdentity(target, settings, { CLAUDE_CONFIG_DIR: join(root, 'default-claude') }, root)
     assert.equal(captured.env.CLAUDE_CONFIG_DIR, join(root, 'claude-work'))
     assert.equal(captured.native, 'claude')

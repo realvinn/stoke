@@ -2089,12 +2089,15 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
   src/lib/toasts.ts  the toast store (`toast`, `dismissToast`, `useToasts`; at most three) and
                     the floor the pane in front sets for it (`setToastFloor`). Gotcha 154
   src/components/AccountChip.tsx  active local agent's account nickname and native sign-in
-                    identity in the title bar. Its floating popover includes Stoke Hub's
-                    own sign-in and links to each account's Settings view. Unknown identity
-                    and key/provider authentication are explicit; SSH does not query a
-                    local login. Account rows show the same identities in AgentsSettings
+                    identity in the title bar; other tabs offer Stoke's own account. Its
+                    floating popover links to login/API account settings and Stoke Hub.
+                    Unknown identity and key/provider authentication are explicit; SSH
+                    does not query a local login. Account rows show the same identities
+                    in AgentsSettings. A verified successful login closes its sign-in
+                    tab and toasts the native email; failed/unverified exits retain output
   src/lib/useAccountIdentity.ts  polls/focus-refreshes the exact agent/account/PTY, hides
-                    the previous identity immediately on a switch and discards late replies
+                    the previous identity immediately on a switch and discards late replies;
+                    refreshes matching views after sign-in, skips non-agent tabs
   src/lib/floatingLayers.ts  every open popover, menu and picker (`useFloatingLayer`), and
                     whether one lies over `.browser-hole` (`useBrowserCovered`), which App
                     hides the docked browser for. verify:layers. Gotcha 14
@@ -2250,8 +2253,9 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     geometry, arrow-key steps, colour names for aria-valuetext, the typed-hex
                     reader, the "painted darker here" note, and the popover's flip-and-clamp.
                     Pure so verify:color can assert it
-  accountIdentity.ts public identity contract, validated target ids, scoped rendering and
-                    vendor-field whitelist. No credentials or native output cross IPC
+  accountIdentity.ts public identity contract, validated target ids, scoped rendering,
+                    verified login outcomes and vendor-field whitelist. No credentials
+                    or native output cross IPC
   accounts.ts       agent accounts: a login account is a config HOME per agent
                     (`ACCOUNT_HOME_ENV`, each read from the vendor's artefact; Cursor and Vibe
                     get none, their sign-ins do not follow a home), a key account is an API key

@@ -45,6 +45,14 @@ export function accountIdentityText(value: AccountIdentity | null): string {
   return value.method
 }
 
+/** A previous saved login cannot turn a cancelled/failed login attempt into success. */
+export function accountLoginOutcome(target: AccountIdentityTarget, code: number, signal: number | undefined, identity: AccountIdentity | null): 'success' | 'failed' | 'unverified' {
+  if (code !== 0 || signal) return 'failed'
+  const current = identityFor(target, identity)
+  if (current?.state === 'ready') return 'success'
+  return current?.state === 'signed-out' ? 'failed' : 'unverified'
+}
+
 export function unavailableAccountIdentity(target: AccountIdentityTarget): AccountIdentity {
   return { target: { ...target }, label: target.accountId === DEFAULT_ACCOUNT_ID ? 'Default' : target.accountId, state: 'unavailable', method: 'Agent sign-in', email: null, organization: null, plan: null, detail: 'Stoke could not read this account’s identity. Try Refresh.', checkedAt: Date.now() }
 }

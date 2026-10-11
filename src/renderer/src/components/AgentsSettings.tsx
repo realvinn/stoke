@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { accountIdentityText, identityFor, unavailableAccountIdentity, type AccountIdentity } from '@shared/accountIdentity'
+import { accountIdentityTarget, accountIdentityText, identityFor, unavailableAccountIdentity, type AccountIdentity } from '@shared/accountIdentity'
+import { ACCOUNT_IDENTITY_CHANGED } from '../lib/useAccountIdentity'
 import {
   CODING_CLIS,
   capsFor,
@@ -1462,6 +1463,7 @@ function AgentAccounts({
 }): React.JSX.Element | null {
   const kinds = accountKindsFor(cli.id)
   const [name, setName] = useState('')
+  const [apiName, setApiName] = useState('')
   const [key, setKey] = useState('')
   const [apiProfile, setApiProfile] = useState(() => defaultAccountApiProfile(cli.id))
   const [busy, setBusy] = useState(false)
@@ -1473,6 +1475,13 @@ function AgentAccounts({
   const [mcp, setMcp] = useState<Record<string, AccountMcpSummary>>({})
   const homes = accounts.map((a) => `${a.id}:${a.home}:${a.apiProfile?.provider ?? ''}:${!!a.apiKey}`).join('|')
   useEffect(() => { setApiProfile(defaultAccountApiProfile(cli.id)) }, [cli.id])
+  useEffect(() => {
+    const changed = (event: Event) => {
+      if (accountIdentityTarget((event as CustomEvent).detail)?.cli === cli.id) setIdentityRevision(v => v + 1)
+    }
+    window.addEventListener(ACCOUNT_IDENTITY_CHANGED, changed)
+    return () => window.removeEventListener(ACCOUNT_IDENTITY_CHANGED, changed)
+  }, [cli.id])
   useEffect(() => {
     if (cli.id !== 'claude') return
     let live = true
@@ -1535,13 +1544,12 @@ function AgentAccounts({
     setBusy(true)
     setMessage(null)
     try {
-      const res = await window.stoke.accounts.create({ cli: cli.id, name, kind, apiKey: kind === 'key' ? key : undefined, ...(kind === 'key' && apiProfile ? { apiProfile } : {}) })
+      const res = await window.stoke.accounts.create({ cli: cli.id, name: kind === 'key' ? apiName : name, kind, apiKey: kind === 'key' ? key : undefined, ...(kind === 'key' && apiProfile ? { apiProfile } : {}) })
       if (!res.ok) {
         setMessage(res.message)
         return
       }
-      setName('')
-      setKey('')
+      if (kind === 'key') { setApiName(''); setKey('') } else setName('')
       if (!res.created) setMessage(`${res.account.label} is already here.`)
       // A login account is signed in at once, in a tab: that is what it is for.
       if (kind === 'login') onSignIn(res.account.id)
@@ -1614,23 +1622,34 @@ function AgentAccounts({
         )}
       </div>
       {kinds.includes('key') && (
-        <div className="agent-account-body">
-        {apiProfile && <AccountProfileFields cli={cli.id} value={apiProfile} onChange={setApiProfile} label="New API account" />}
-        <div className="agent-account-add">
+        <div className="agent-account-body" data-setting="agent.apiAccounts">
+          <span className="field-label">API accounts</span>
+          <span className="field-hint">Name the account, choose its provider and model, then add its API key. API accounts are saved on this computer.</span>
           <input
-            className="input mono"
-            type="password"
-            value={key}
-            placeholder={apiProfile ? `${ACCOUNT_PROVIDER_LABELS[apiProfile.provider]} key or token` : `${ACCOUNT_KEY_ENV[cli.id]?.key ?? 'API key'} for a key account`}
-            aria-label={`New ${cli.label} account API key`}
+            className="input"
+            value={apiName}
+            placeholder={`Name, e.g. work API (blank: ${cli.label} ${nextNumber})`}
+            aria-label={`New ${cli.label} API account name`}
+            maxLength={ACCOUNT_LABEL_MAX}
             spellCheck={false}
-            autoComplete="off"
-            onChange={(e) => setKey(e.target.value)}
+            onChange={(e) => setApiName(e.target.value)}
           />
-          <button className="btn" disabled={busy || !key.trim() || !!(apiProfile && accountApiProfileProblem(cli.id, apiProfile))} onClick={() => void add('key')}>
-            Add key account
-          </button>
-        </div>
+          {apiProfile && <AccountProfileFields cli={cli.id} value={apiProfile} onChange={setApiProfile} label="New API account" />}
+          <div className="agent-account-add">
+            <input
+              className="input mono"
+              type="password"
+              value={key}
+              placeholder={apiProfile ? `${ACCOUNT_PROVIDER_LABELS[apiProfile.provider]} key or token` : `${ACCOUNT_KEY_ENV[cli.id]?.key ?? 'API key'} for a key account`}
+              aria-label={`New ${cli.label} account API key`}
+              spellCheck={false}
+              autoComplete="off"
+              onChange={(e) => setKey(e.target.value)}
+            />
+            <button className="btn" disabled={busy || !key.trim() || !!(apiProfile && accountApiProfileProblem(cli.id, apiProfile))} onClick={() => void add('key')}>
+              Add API account
+            </button>
+          </div>
         </div>
       )}
       {message && (

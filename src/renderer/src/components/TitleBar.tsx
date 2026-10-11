@@ -84,7 +84,7 @@ interface Props {
   onOpenSettings: () => void
   /** Settings, opened straight at Phone access. */
   onOpenPhoneSettings: () => void
-  onOpenAgentSettings: (cli: CodingCliId) => void
+  onOpenAgentSettings: (cli: CodingCliId, kind?: 'login' | 'key') => void
   onOpenSyncSettings: () => void
   /**
    * What a tab says: `New · stoke` for a New tab aimed at a project, and the
@@ -602,7 +602,7 @@ export function TitleBar({
           <span className="sr-only">Toggle worklog review</span>
         </button>
         <PhonePopover onOpenSettings={onOpenPhoneSettings} settingsOpen={settingsOpen} />
-        {usageTarget && <AccountChip target={usageTarget} label={activeTab ? labelFor?.(activeTab).account?.text : undefined} settingsOpen={settingsOpen} onAgentSettings={onOpenAgentSettings} onSyncSettings={onOpenSyncSettings} />}
+        <AccountChip target={usageTarget} label={usageTarget && activeTab ? labelFor?.(activeTab).account?.text : undefined} settingsOpen={settingsOpen} onAgentSettings={onOpenAgentSettings} onSyncSettings={onOpenSyncSettings} />
         {activeTab?.kind !== 'remote' && !activeTab?.hostId && <UsageChip target={usageTarget} accountLabel={activeTab ? labelFor?.(activeTab).account?.text : undefined} />}
 
         <button

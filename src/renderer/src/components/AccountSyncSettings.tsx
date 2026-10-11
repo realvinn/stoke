@@ -216,13 +216,14 @@ function Overview({ view, now }: { view: HubView; now: number }): React.JSX.Elem
             keys exchanged between your devices with X25519). The hub stores what it cannot open. It does see your account
             email, each device&rsquo;s name and platform, how many items you sync and how big they are, and when they change.
             Your password only decides who may sign in: no key is made from it, so resetting it on the hub cannot open the
-            vault. Agent sign-ins (Claude, Codex and the rest), the phone access key and this computer&rsquo;s folders never
-            sync.
+            vault. Supported provider and MCP keys sync only when their credential tier is enabled. Named agent accounts,
+            including their API keys, and native Claude/Codex sign-ins stay on this computer. The phone access key and this
+            computer&rsquo;s folders also stay here.
           </>
         }
       >
-        Your settings, API keys, SSH hosts and — only the ones you pick — SSH keys, kept in step on every computer you sign
-        in on.
+        Portable settings, supported provider keys, SSH hosts and the SSH keys you pick, kept in step on computers approved
+        to join your encrypted vault. Signing in to Stoke is the first step; a new computer also needs vault access.
       </FieldHint>
       {view.phase !== 'off' && view.email && (
         <span className="field-hint">

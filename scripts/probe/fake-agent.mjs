@@ -76,10 +76,18 @@ const say = (line) => process.stdout.write(line + '\r\n')
 /* ------------------------------------------------------------- one-shots */
 
 // Public identity fixtures only: never enter the interactive agent contract.
+if ((id === 'claude' && argv[0] === 'auth' && argv[1] === 'login') || (id === 'codex' && argv[0] === 'login')) {
+  process.stdout.write('Signing in with the owned probe account\n')
+  while (existsSync(join(dir, 'login-wait'))) await new Promise(resolve => setTimeout(resolve, 50))
+  const failed = existsSync(join(dir, 'login-fail'))
+  record('account-login', { argv, home: process.env[id === 'claude' ? 'CLAUDE_CONFIG_DIR' : 'CODEX_HOME'] || '', failed })
+  process.stdout.write(failed ? 'Sign-in cancelled by the user\n' : 'Successfully signed in\n')
+  process.exit(failed ? 1 : 0)
+}
 if (id === 'claude' && argv[0] === 'auth' && argv[1] === 'status') {
   const account = process.env.CLAUDE_CONFIG_DIR?.endsWith('claude-work') ? 'work' : 'claude'
   record('account-identity', { argv, home: process.env.CLAUDE_CONFIG_DIR || '' })
-  process.stdout.write(JSON.stringify({ loggedIn: true, email: `${account}@example.test`, orgName: 'Probe organization', subscriptionType: 'team' }) + '\n')
+  process.stdout.write(JSON.stringify(existsSync(join(dir, 'identity-unavailable')) ? {} : { loggedIn: true, email: `${account}@example.test`, orgName: 'Probe organization', subscriptionType: 'team' }) + '\n')
   process.exit(0)
 }
 if (id === 'codex' && argv[0] === 'app-server') {
