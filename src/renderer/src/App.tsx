@@ -3656,7 +3656,7 @@ export function App(): React.JSX.Element {
       const current = tabsRef.current.find(t => t.id === tab.id && t.ptyId === tab.ptyId && t.accountLogin === target.accountId)
       if (!current || !accountLoginFinishing.current.has(tab.ptyId)) return
       const outcome = accountLoginOutcome(target, code, signal, identity)
-      const vendor = cliFor(tab.cliId).label
+      const vendor = tab.cliId === 'codex' ? 'Codex' : cliFor(tab.cliId).label
       if (outcome === 'success') {
         closeTab(tab.id)
         accountIdentityChanged(target)

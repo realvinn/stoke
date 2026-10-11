@@ -66,6 +66,7 @@
  */
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { windowsProcessTableSpec } from '../src/main/windowsProcessTable.ts'
+import { cliFor } from '../src/shared/codingClis.ts'
 import {
   copyFileSync,
   existsSync,
@@ -874,7 +875,7 @@ await step('completed sign-ins close with the verified email; failed and unknown
       const before = await ev<string[]>('[...window.stokeTerminals.keys()]')
       const accountId = `${cli}-login-probe`
       if (cli === 'claude') writeFileSync(join(agentsDir, 'login-wait'), 'owned CI fixture')
-      await ev(`document.querySelector('[aria-label="New ${cli === 'claude' ? 'Claude Code' : 'Codex'} account name"]').focus(), true`)
+      await ev(`document.querySelector('[aria-label="New ${cliFor(cli).label} account name"]').focus(), true`)
       await ui!.send('Input.insertText', { text: 'Login probe' })
       await ev(`document.querySelector('[data-testid="add-account"]').click(), true`)
       await waitFor('the isolated login account to persist', () => ev<boolean>(`window.stoke.settings.get().then(s => !!s.accounts[${JSON.stringify(accountId)}])`))
@@ -923,7 +924,7 @@ await step('completed sign-ins close with the verified email; failed and unknown
     await waitFor('Stoke-only account details', () => ev<boolean>(`!!document.querySelector('.account-panel-sync') && !document.querySelector('[data-testid="account-identity"]')`))
     await shot('04-stoke-account-new-tab')
     await ev(`[...document.querySelectorAll('.account-panel button')].find(button => button.textContent === 'Codex / OpenAI API').click(), true`)
-    await waitFor('API setup directly from a New tab', () => ev<boolean>(`!!document.querySelector('[aria-label="New Codex API account name"]')`))
+    await waitFor('API setup directly from a New tab', () => ev<boolean>(`!!document.querySelector('[aria-label="New ${cliFor('codex').label} API account name"]')`))
     await ev(`document.querySelector('button[title="Close settings (Esc)"]').click(), document.querySelector('.tablist .tab[aria-selected="true"] .tab-close').click(), true`)
   } finally {
     for (const marker of ['login-wait', 'login-fail', 'identity-unavailable']) rmSync(join(agentsDir, marker), { force: true })
@@ -952,7 +953,7 @@ await step('named API profiles save in Settings and launch with their own creden
       const model = cli === 'claude' ? 'claude-api-probe' : 'openai/api-probe'
       await ev(`document.querySelector('[aria-label="New API account model ID"]').focus(), true`)
       await ui!.send('Input.insertText', { text: model })
-      await ev(`document.querySelector('[aria-label="New ${cli === 'claude' ? 'Claude Code' : 'Codex'} API account name"]').focus(), true`)
+      await ev(`document.querySelector('[aria-label="New ${cliFor(cli).label} API account name"]').focus(), true`)
       await ui!.send('Input.insertText', { text: 'API probe' })
       const key = ['owned', cli, 'probe', 'credential'].join('-')
       await ev(`document.querySelector('.agent-account-add input[type="password"]').focus(), true`)
