@@ -352,3 +352,11 @@ The title-bar account menu is available on every tab. Local agent sessions show 
 The sync audit confirms that portable settings and enabled supported provider/MCP credentials can sync to approved encrypted-vault devices. Stoke sign-in alone does not unlock another device's vault; it needs approval or a Recovery Kit. Named agent profiles and their API keys, plus native Claude/Codex logins, remain local. Settings now states this explicitly. No credential-sharing behavior changed.
 
 Validation: focused accounts/settings-search checks, the complete `npm run check` gate, latest typechecking and both builds pass. Packaged native fixtures cover verified completion, immediate PTY exit, background focus, failed exit with an existing identity, unavailable identity and API setup from agent/New tabs. Native results are available in source CI on the implementation commit. The published beta.5 binaries and tag are unchanged.
+
+## Account manager clarity — after beta.5
+
+The account manager puts Existing setup (Default) first and explains that the current CLI login does not need to be added again. Saved subscription sign-ins and API accounts have separate groups. New-account forms open on demand; stored accounts show their nickname and verified identity or provider/model, with keys and configuration behind Edit. Nickname, key and profile changes use one explicit Save/Cancel flow. Account paths and MCP information are under Advanced details; removal requires confirmation.
+
+NanoGPT and OpenRouter are presets under Custom API. Anthropic API and OpenAI API remain direct choices for their respective CLIs. Existing preset provider IDs, URLs, model IDs, keys and launch isolation are preserved; no account migration or credential-sync change is involved. API shortcuts and Settings search reveal the collapsed setup form.
+
+Focused account and Settings search suites, typechecking, script syntax checks and the complete `npm run check` gate pass, including both builds. Packaged native fixtures check compact rows at the minimum window width, the existing login, Custom presets, edit cancellation, saving nickname/model/key together and launching the resulting account with only its selected credential. Native CI results are pending on the implementation commit. These changes are not in the published beta.5 binaries.

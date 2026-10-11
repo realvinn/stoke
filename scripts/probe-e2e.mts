@@ -849,7 +849,12 @@ await step('the active account follows the agent and fits the title bar', async 
     await ev(`[...document.querySelectorAll('.account-panel button')].find(button => button.textContent === 'Manage agent accounts').click(), true`)
     await waitFor('Default and Work identities in account settings', () => ev<boolean>(`document.querySelector('[data-testid="default-account-identity"]')?.textContent === 'claude@example.test' && document.querySelector('.agent-account-stored[data-account="${created}"]')?.textContent.includes('work@example.test')`))
     check('Settings shows each account’s own signed-in email', await ev<boolean>(`!!document.querySelector('[data-testid="agent-accounts"]') && !document.querySelector('.account-panel')`) === true)
+    check('the existing login is clearly Default; saved accounts and add forms start compact', await ev<boolean>(`document.querySelector('.account-manager-existing')?.textContent.includes('You don’t need to add it again') && !document.querySelector('.agent-account-stored form') && !document.querySelector('[data-testid="add-login-account"]').open && !document.querySelector('[data-testid="add-api-account"]').open`) === true)
+    await ui!.send('Emulation.setDeviceMetricsOverride', { width: 940, height: 720, deviceScaleFactor: 1, mobile: false })
+    await sleep(300)
+    check('account summaries and actions fit the minimum desktop width', await ev<boolean>(`(() => { const pane = document.querySelector('[data-testid="agent-accounts"]'), r = pane.getBoundingClientRect(); return [...pane.querySelectorAll('.account-manager-existing, .account-manager-summary, button')].filter(el => el.offsetWidth).every(el => { const box = el.getBoundingClientRect(); return box.left >= r.left && box.right <= r.right + 1 }); })()`) === true)
     await shot('04-account-settings')
+    await ui!.send('Emulation.clearDeviceMetricsOverride')
   } finally {
     await ui!.send('Emulation.clearDeviceMetricsOverride').catch(() => {})
     await ev(`document.querySelector('button[title="Close settings (Esc)"]')?.click(), document.querySelector('[data-testid="active-account"][aria-expanded="true"]')?.click(), true`).catch(() => {})
@@ -872,6 +877,8 @@ await step('completed sign-ins close with the verified email; failed and unknown
   try {
     for (const cli of ['claude', 'codex'] as const) {
       await openAccounts(cli)
+      await ev(`document.querySelector('[data-testid="add-login-account"] > summary').click(), true`)
+      await waitFor('the add sign-in form to open', () => ev<boolean>(`document.querySelector('[data-testid="add-login-account"]').open`))
       const before = await ev<string[]>('[...window.stokeTerminals.keys()]')
       const accountId = `${cli}-login-probe`
       if (cli === 'claude') writeFileSync(join(agentsDir, 'login-wait'), 'owned CI fixture')
@@ -949,19 +956,51 @@ await step('named API profiles save in Settings and launch with their own creden
       await ev(`[...document.querySelectorAll('.account-panel button')].find(button => button.textContent === 'Add API account').click(), true`)
       await waitFor('API account fields', () => ev<boolean>('!!document.querySelector(\'[aria-label="New API account provider"]\')'))
       await waitFor('the API shortcut to reveal its Settings fields', () => ev<boolean>(`(() => { const r = document.querySelector('[data-setting="agent.apiAccounts"]').getBoundingClientRect(); return r.top >= 0 && r.top < innerHeight; })()`))
-      if (cli === 'codex') await ev(`(() => { const s = document.querySelector('[aria-label="New API account provider"]'); s.value = 'nanogpt'; s.dispatchEvent(new Event('change', { bubbles: true })); return true })()`)
-      const model = cli === 'claude' ? 'claude-api-probe' : 'openai/api-probe'
+      check(`${cli}: the API provider menu groups gateways under Custom`, await ev<boolean>(`(() => { const options = [...document.querySelector('[aria-label="New API account provider"]').options].map(option => option.value); return options.length === 2 && options.includes('${cli === 'claude' ? 'anthropic' : 'openai'}') && options.includes('custom') })()`) === true)
+      if (cli === 'codex') {
+        await ev(`(() => { const s = document.querySelector('[aria-label="New API account provider"]'); s.value = 'custom'; s.dispatchEvent(new Event('change', { bubbles: true })); return true })()`)
+        await waitFor('custom gateway presets', () => ev<boolean>(`!!document.querySelector('[aria-label="New API account custom service"]')`))
+        await ev(`(() => { const s = document.querySelector('[aria-label="New API account custom service"]'); s.value = 'nanogpt'; s.dispatchEvent(new Event('change', { bubbles: true })); return true })()`)
+        await waitFor('the NanoGPT preset to apply its route', () => ev<boolean>(`document.querySelector('[data-testid="add-api-account"] [data-api-provider="nanogpt"]')?.textContent.includes('https://nano-gpt.com/api/v1')`))
+      }
+      let model = cli === 'claude' ? 'claude-api-probe' : 'openai/api-probe'
       await ev(`document.querySelector('[aria-label="New API account model ID"]').focus(), true`)
       await ui!.send('Input.insertText', { text: model })
       await ev(`document.querySelector('[aria-label="New ${cliFor(cli).label} API account name"]').focus(), true`)
       await ui!.send('Input.insertText', { text: 'API probe' })
-      const key = ['owned', cli, 'probe', 'credential'].join('-')
-      await ev(`document.querySelector('.agent-account-add input[type="password"]').focus(), true`)
+      let key = ['owned', cli, 'probe', 'credential'].join('-')
+      await ev(`document.querySelector('[data-testid="add-api-account"] input[type="password"]').focus(), true`)
       await ui!.send('Input.insertText', { text: key })
       await ev(`[...document.querySelectorAll('.agent-accounts button')].find(button => button.textContent.trim() === 'Add API account').click(), true`)
       const accountId = `${cli}-api-probe`
       await waitFor('the named API account to persist', () => ev<boolean>(`window.stoke.settings.get().then(s => s.accounts[${JSON.stringify(accountId)}]?.apiProfile?.model === ${JSON.stringify(model)})`))
       created.push(accountId)
+      await waitFor('the saved API account summary', () => ev<boolean>(`document.querySelector('.agent-account-stored[data-account="${accountId}"]')?.textContent.includes('API probe')`))
+      check(`${cli}: saved API keys and settings stay behind Edit`, await ev<boolean>(`!document.querySelector('.agent-account-stored[data-account="${accountId}"] input[type="password"]') && !document.querySelector('[data-testid="add-api-account"]').open`) === true)
+      const edit = async () => {
+        await ev(`[...document.querySelectorAll('.agent-account-stored[data-account="${accountId}"] button')].find(button => button.textContent.trim() === 'Edit').click(), true`)
+        await waitFor('the account editor', () => ev<boolean>(`!!document.querySelector('.agent-account-stored[data-account="${accountId}"] form')`))
+      }
+      const fill = async (aria: string, text: string) => {
+        await ev(`(() => { const input = document.querySelector(${JSON.stringify(`[aria-label="${aria}"]`)}); input.scrollIntoView({ block: 'center' }); input.focus(); input.select(); return true })()`)
+        await ui!.send('Input.insertText', { text })
+      }
+      await edit()
+      if (cli === 'codex') check('saved NanoGPT accounts retain their preset, pinned URL and model under Custom', await ev<boolean>(`document.querySelector('[aria-label="API probe provider"]').value === 'custom' && document.querySelector('[aria-label="API probe custom service"]').value === 'nanogpt' && document.querySelector('[data-api-provider="nanogpt"]').textContent.includes('https://nano-gpt.com/api/v1') && document.querySelector('[aria-label="API probe model ID"]').value === ${JSON.stringify(model)}`) === true)
+      await fill('API probe name', 'Unsaved nickname')
+      await fill('API probe model ID', 'unsaved-model')
+      await fill('API probe API key', ['owned', 'unsaved', 'credential'].join('-'))
+      await ev(`[...document.querySelectorAll('.agent-account-stored[data-account="${accountId}"] form button')].find(button => button.textContent.trim() === 'Cancel').click(), true`)
+      check(`${cli}: Cancel discards nickname, model and key drafts`, await ev<boolean>(`window.stoke.settings.get().then(s => s.accounts[${JSON.stringify(accountId)}].label === 'API probe' && s.accounts[${JSON.stringify(accountId)}].apiProfile.model === ${JSON.stringify(model)} && s.accounts[${JSON.stringify(accountId)}].apiKey === ${JSON.stringify(key)} && !document.querySelector('.agent-account-stored[data-account="${accountId}"] form'))`) === true)
+      await edit()
+      model += '-edited'
+      key += '-edited'
+      await fill('API probe name', 'API edited')
+      await fill('API probe model ID', model)
+      await fill('API probe API key', key)
+      await shot(`04-${cli}-api-account-edit`)
+      await ev(`[...document.querySelectorAll('.agent-account-stored[data-account="${accountId}"] form button')].find(button => button.textContent.trim() === 'Save changes').click(), true`)
+      await waitFor('nickname, model and key to save together', () => ev<boolean>(`window.stoke.settings.get().then(s => s.accounts[${JSON.stringify(accountId)}].label === 'API edited' && s.accounts[${JSON.stringify(accountId)}].apiProfile.model === ${JSON.stringify(model)} && s.accounts[${JSON.stringify(accountId)}].apiKey === ${JSON.stringify(key)} && s.accounts[${JSON.stringify(accountId)}].apiProfile.provider === '${cli === 'claude' ? 'anthropic' : 'nanogpt'}' && !document.querySelector('.agent-account-stored[data-account="${accountId}"] form'))`))
       await ev(`document.querySelector('.agent-account-stored[data-account="${accountId}"] input[type="radio"]').click(), true`)
       await waitFor('the API account to become the launch default', () => ev<boolean>(`window.stoke.settings.get().then(s => s.agents.defaultAccount.${cli} === ${JSON.stringify(accountId)})`))
       await ev(`document.querySelector('.agent-account-stored[data-account="${accountId}"]').scrollIntoView({ block: 'center' }), true`)
@@ -980,7 +1019,7 @@ await step('named API profiles save in Settings and launch with their own creden
       check(`${cli}: only its selected API credential reaches the launch`, env[cli === 'claude' ? 'ANTHROPIC_API_KEY' : 'STOKE_ACCOUNT_API_KEY'] === `<set, ${key.length} chars>` && !JSON.stringify(rec!.start.argv).includes(key))
       const flag = cli === 'claude' ? '--model' : '-m'
       check(`${cli}: the API profile supplies the configured model`, rec!.start.argv[rec!.start.argv.indexOf(flag) + 1] === model)
-      check(`${cli}: the header names the selected API account`, await ev<boolean>(`document.querySelector('[data-testid="active-account"]')?.getAttribute('data-account') === ${JSON.stringify(accountId)} && document.querySelector('[data-testid="active-account"]')?.textContent.includes('API probe')`) === true)
+      check(`${cli}: the header names the selected API account`, await ev<boolean>(`document.querySelector('[data-testid="active-account"]')?.getAttribute('data-account') === ${JSON.stringify(accountId)} && document.querySelector('[data-testid="active-account"]')?.textContent.includes('API edited')`) === true)
       if (cli === 'claude') check('Anthropic API route clears inherited gateway auth', env.ANTHROPIC_BASE_URL === 'https://api.anthropic.com' && !env.ANTHROPIC_AUTH_TOKEN)
       else check('NanoGPT Codex route uses Responses without a saved OpenAI login', rec!.start.argv.includes('model_providers.stoke_account.requires_openai_auth=false') && rec!.start.argv.includes('model_providers.stoke_account.wire_api="responses"'))
       await waitFor('the API model/account to save for resume', () => ev<boolean>(`window.stoke.tabs.restore().then(s => s.tabs.some(t => t.accountId === ${JSON.stringify(accountId)} && t.model === ${JSON.stringify(model)}))`))

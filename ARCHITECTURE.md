@@ -2095,6 +2095,13 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     does not query a local login. Account rows show the same identities
                     in AgentsSettings. A verified successful login closes its sign-in
                     tab and toasts the native email; failed/unverified exits retain output
+  src/components/AgentsSettings.tsx  account manager distinguishes Existing setup (Default),
+                    saved sign-ins and saved API accounts. Add forms are disclosures; stored
+                    nicknames/keys/profiles edit together with explicit Save/Cancel. Paths
+                    and MCP details live under Advanced details, removal behind Edit.
+                    Direct Anthropic/OpenAI API choices sit beside Custom API, whose
+                    NanoGPT/OpenRouter presets retain their existing provider IDs/routes.
+                    Account profiles and their keys remain local to this computer
   src/lib/useAccountIdentity.ts  polls/focus-refreshes the exact agent/account/PTY, hides
                     the previous identity immediately on a switch and discards late replies;
                     refreshes matching views after sign-in, skips non-agent tabs

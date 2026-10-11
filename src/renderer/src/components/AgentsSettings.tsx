@@ -57,6 +57,7 @@ import { removeMcpServer } from '@shared/mcpSetup'
 import { agentMark } from '../lib/agentColor'
 import { agentRowId, type SettingsLocation } from '@shared/settingsIndex'
 import { EFFORT_LEVELS, MODEL_OPTIONS, PERMISSION_MODES, ULTRACODE_HINT } from '../lib/permissions'
+import { ipcErrorMessage } from '../lib/format'
 
 /*
  * Settings › Agents: every coding agent Stoke can run, Claude Code included.
@@ -1440,10 +1441,10 @@ function AgentLook({
  * agent and a label, never a folder — and signed in by the agent's own login,
  * in a tab (`onSignIn`). A key account's key is sealed like every other.
  *
- * Labels and keys commit on blur or Enter and are flushed on unmount through
- * a ref (gotcha 63). The whole map is not needed on a commit: main applies a
- * label, swatch or key to the one account named and ignores everything else
- * (`accountsFromRenderer`).
+ * Saved accounts are summaries until Edit is chosen; their drafts are saved
+ * together explicitly. The whole map is not needed on a commit: main applies
+ * a label, key or API profile to the one account named and ignores everything
+ * else (`accountsFromRenderer`).
  */
 function AgentAccounts({
   cli,
@@ -1469,10 +1470,12 @@ function AgentAccounts({
   const [busy, setBusy] = useState(false)
   const busyRef = useRef(false)
   const [message, setMessage] = useState<string | null>(null)
+  const [messageError, setMessageError] = useState(false)
   const [removing, setRemoving] = useState<string | null>(null)
   const [identities, setIdentities] = useState<Record<string, AccountIdentity | null>>({})
   const [identityRevision, setIdentityRevision] = useState(0)
   const [mcp, setMcp] = useState<Record<string, AccountMcpSummary>>({})
+  const apiAddRef = useRef<HTMLDetailsElement>(null)
   const homes = accounts.map((a) => `${a.id}:${a.home}:${a.apiProfile?.provider ?? ''}:${!!a.apiKey}`).join('|')
   useEffect(() => { setApiProfile(defaultAccountApiProfile(cli.id)) }, [cli.id])
   useEffect(() => {
@@ -1543,16 +1546,25 @@ function AgentAccounts({
     busyRef.current = true
     setBusy(true)
     setMessage(null)
+    setMessageError(false)
     try {
       const res = await window.stoke.accounts.create({ cli: cli.id, name: kind === 'key' ? apiName : name, kind, apiKey: kind === 'key' ? key : undefined, ...(kind === 'key' && apiProfile ? { apiProfile } : {}) })
       if (!res.ok) {
         setMessage(res.message)
+        setMessageError(true)
         return
       }
-      if (kind === 'key') { setApiName(''); setKey('') } else setName('')
+      if (kind === 'key') {
+        setApiName(''); setKey('')
+        if (apiAddRef.current) apiAddRef.current.open = false
+        setMessage(res.created ? `${res.account.label} added. Choose it for new sessions here or in the launcher.` : `${res.account.label} is already here.`)
+      } else setName('')
       if (!res.created) setMessage(`${res.account.label} is already here.`)
       // A login account is signed in at once, in a tab: that is what it is for.
       if (kind === 'login') onSignIn(res.account.id)
+    } catch (error) {
+      setMessage(ipcErrorMessage(error))
+      setMessageError(true)
     } finally {
       busyRef.current = false
       setBusy(false)
@@ -1561,141 +1573,136 @@ function AgentAccounts({
 
   return (
     <div className="field agent-accounts" data-testid="agent-accounts" data-setting="agent.accounts">
-      <span className="field-label">Accounts</span>
-      <button className="btn" data-variant="ghost" onClick={() => setIdentityRevision(v => v + 1)}>Refresh sign-ins</button>
-      <span className="field-hint">
-        {kinds.includes('login')
-          ? `Another ${cli.label} sign-in, kept in its own folder under ~/.stoke/accounts and signed in by ${cli.label} itself.`
-          : `Another ${cli.label} API key, sealed like every key Stoke holds.`}
-        {cli.id === 'claude' &&
-          ' Claude Code accounts share one history. Login accounts have separate plan limits; the usage chip follows the account of the tab in front.'}
-        {accountProvidersFor(cli.id).length > 0 && ' Named API accounts keep their own provider, key and model. Select one in the launcher; changes apply to new or restarted sessions. API balance and plan limits are not available here.'}
-      </span>
-      <div className="agent-account-list" role="radiogroup" aria-label={`Account new ${cli.label} sessions start on`}>
-        <label className="agent-account-row">
-          <input type="radio" name={`account-${cli.id}`} checked={current === DEFAULT_ACCOUNT_ID} onChange={() => onDefault(DEFAULT_ACCOUNT_ID)} />
-          <span className="agent-account-name">Default</span>
-          <span className="field-hint" data-testid="default-account-identity" title={identity(DEFAULT_ACCOUNT_ID)?.detail}>{accountIdentityText(identity(DEFAULT_ACCOUNT_ID))}</span>
-        </label>
-        {accounts.map((a) => (
-          <AccountRow
-            key={a.id}
-            cli={cli}
-            account={a}
-            identity={identity(a.id)}
-            mcp={mcp[a.id] ?? null}
-            checked={current === a.id}
-            onDefault={() => onDefault(a.id)}
-            onPatch={(patch) => onPatchAccount(a.id, patch)}
-            onSignIn={() => onSignIn(a.id)}
-            removing={removing === a.id}
-            onRemove={() => {
-              if (removing !== a.id) {
-                setRemoving(a.id)
-                return
-              }
-              setRemoving(null)
-              void window.stoke.accounts.remove(a.id)
-            }}
-            onKeepIt={() => setRemoving(null)}
-          />
-        ))}
+      <div className="account-manager-heading">
+        <span className="field-label">Accounts</span>
+        <button className="btn" data-variant="ghost" onClick={() => setIdentityRevision(v => v + 1)}>Refresh</button>
       </div>
-      <div className="agent-account-add">
-        <input
-          className="input"
-          value={name}
-          placeholder={`Name, e.g. work (blank: ${cli.label} ${nextNumber})`}
-          aria-label={`New ${cli.label} account name`}
-          maxLength={ACCOUNT_LABEL_MAX}
-          spellCheck={false}
-          onChange={(e) => setName(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && kinds.includes('login')) void add('login')
-          }}
-        />
-        {kinds.includes('login') && (
+      <span className="field-hint">Choose which account new sessions use. Running sessions keep their current account.</span>
+      <div className="agent-account-list" role="radiogroup" aria-label={`Account new ${cli.label} sessions start on`}>
+        <label className="account-manager-existing">
+          <input type="radio" name={`account-${cli.id}`} checked={current === DEFAULT_ACCOUNT_ID} onChange={() => onDefault(DEFAULT_ACCOUNT_ID)} aria-label={`Use the existing ${cli.label} setup for new sessions`} />
+          <span className="agent-account-body">
+            <strong className="agent-account-name">Existing setup <span className="field-hint">· Default</span></strong>
+            <span className="account-manager-identity" data-testid="default-account-identity" title={identity(DEFAULT_ACCOUNT_ID)?.detail}>{accountIdentityText(identity(DEFAULT_ACCOUNT_ID))}</span>
+            <span className="field-hint">Uses your existing {cli.label} login or API configuration. You don’t need to add it again.</span>
+          </span>
+          {current === DEFAULT_ACCOUNT_ID && <span className="account-manager-selected">New sessions</span>}
+        </label>
+        {(['login', 'key'] as const).map(kind => {
+          const saved = accounts.filter(account => account.kind === kind)
+          return saved.length > 0 && <section className="account-manager-group" key={kind} aria-label={kind === 'login' ? 'Saved sign-ins' : 'Saved API accounts'}>
+            <span className="field-label">{kind === 'login' ? 'Saved sign-ins' : 'Saved API accounts'}</span>
+            {saved.map(a => <AccountRow
+              key={a.id} cli={cli} account={a} identity={identity(a.id)} mcp={mcp[a.id] ?? null}
+              checked={current === a.id} onDefault={() => onDefault(a.id)}
+              onPatch={patch => onPatchAccount(a.id, patch)} onSignIn={() => onSignIn(a.id)}
+              removing={removing === a.id}
+              onRemove={() => {
+                if (removing !== a.id) { setRemoving(a.id); return }
+                setRemoving(null)
+                void window.stoke.accounts.remove(a.id)
+              }}
+              onKeepIt={() => setRemoving(null)}
+            />)}
+          </section>
+        })}
+      </div>
+      {kinds.includes('login') && <details className="account-manager-add" data-testid="add-login-account">
+        <summary>Add another sign-in <span className="field-hint">{cli.id === 'claude' ? 'Use a Claude subscription' : cli.id === 'codex' ? 'Use a ChatGPT subscription' : `Use another ${cli.label} login`}</span></summary>
+        <div className="account-manager-form">
+          <span className="field-hint">Sign in to another {cli.label} account in a new tab. Keep a nickname to tell your accounts apart.</span>
+          <label className="account-manager-field">Account nickname
+            <input className="input" value={name} placeholder={`e.g. Work (blank: ${cli.label} ${nextNumber})`}
+              aria-label={`New ${cli.label} account name`} maxLength={ACCOUNT_LABEL_MAX} spellCheck={false}
+              onChange={e => setName(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') void add('login') }} />
+          </label>
           <button className="btn" data-testid="add-account" disabled={busy} aria-busy={busy} onClick={() => void add('login')}>
             {busy && <Spinner />}
-            Add account
+            Add and sign in
           </button>
-        )}
-      </div>
+        </div>
+      </details>}
       {kinds.includes('key') && (
-        <div className="agent-account-body" data-setting="agent.apiAccounts">
-          <span className="field-label">API accounts</span>
-          <span className="field-hint">Name the account, choose its provider and model, then add its API key. API accounts are saved on this computer.</span>
-          <input
-            className="input"
-            value={apiName}
-            placeholder={`Name, e.g. work API (blank: ${cli.label} ${nextNumber})`}
-            aria-label={`New ${cli.label} API account name`}
-            maxLength={ACCOUNT_LABEL_MAX}
-            spellCheck={false}
-            onChange={(e) => setApiName(e.target.value)}
-          />
-          {apiProfile && <AccountProfileFields cli={cli.id} value={apiProfile} onChange={setApiProfile} label="New API account" />}
-          <div className="agent-account-add">
-            <input
-              className="input mono"
-              type="password"
-              value={key}
-              placeholder={apiProfile ? `${ACCOUNT_PROVIDER_LABELS[apiProfile.provider]} key or token` : `${ACCOUNT_KEY_ENV[cli.id]?.key ?? 'API key'} for a key account`}
-              aria-label={`New ${cli.label} account API key`}
-              spellCheck={false}
-              autoComplete="off"
-              onChange={(e) => setKey(e.target.value)}
-            />
+        <details className="account-manager-add" ref={apiAddRef} data-testid="add-api-account">
+          <summary>Add an API account <span className="field-hint">Use an API key</span></summary>
+          <div className="account-manager-form" data-setting="agent.apiAccounts">
+            <span className="field-hint">API access is billed by the provider, separately from subscription sign-ins.</span>
+            <label className="account-manager-field">Account nickname
+              <input
+                className="input"
+                value={apiName}
+                placeholder={`Name, e.g. work API (blank: ${cli.label} ${nextNumber})`}
+                aria-label={`New ${cli.label} API account name`}
+                maxLength={ACCOUNT_LABEL_MAX}
+                spellCheck={false}
+                onChange={(e) => setApiName(e.target.value)}
+              />
+            </label>
+            {apiProfile && <AccountProfileFields cli={cli.id} value={apiProfile} onChange={setApiProfile} label="New API account" />}
+            <label className="account-manager-field">API key
+              <input
+                className="input mono"
+                type="password"
+                value={key}
+                placeholder={apiProfile ? `${ACCOUNT_PROVIDER_LABELS[apiProfile.provider]} key or token` : `${ACCOUNT_KEY_ENV[cli.id]?.key ?? 'API key'} for a key account`}
+                aria-label={`New ${cli.label} account API key`}
+                spellCheck={false}
+                autoComplete="off"
+                onChange={(e) => setKey(e.target.value)}
+              />
+            </label>
             <button className="btn" disabled={busy || !key.trim() || !!(apiProfile && accountApiProfileProblem(cli.id, apiProfile))} onClick={() => void add('key')}>
               Add API account
             </button>
           </div>
-        </div>
+        </details>
       )}
       {message && (
-        <span className="field-hint" data-tone="warning">
+        <span className="field-hint" role="status" data-tone={messageError ? 'warning' : undefined}>
           {message}
         </span>
       )}
+      <span className="field-hint">These agent accounts are saved on this computer. Stoke account &amp; sync is managed separately.</span>
     </div>
   )
 }
 
 function AccountProfileFields({ cli, value, onChange, label }: { cli: CodingCliId; value: AccountApiProfile; onChange: (value: AccountApiProfile) => void; label: string }): React.JSX.Element {
   const problem = accountApiProfileProblem(cli, value)
-  return <div className="agent-account-body">
-    <label className="field-hint">Provider
-      <select className="input" aria-label={`${label} provider`} value={value.provider} onChange={e => {
+  const direct = cli === 'claude' ? 'anthropic' : 'openai'
+  const custom = value.provider !== direct
+  const select = (provider: AccountApiProfile['provider']) => {
+    const next = defaultAccountApiProfile(cli, provider)
+    if (next) onChange(next)
+  }
+  return <div className="agent-account-body account-manager-profile" data-api-provider={value.provider}>
+    <label className="account-manager-field">API provider
+      <select className="input" aria-label={`${label} provider`} value={custom ? 'custom' : direct} onChange={e => {
         const next = defaultAccountApiProfile(cli, e.target.value as AccountApiProfile['provider'])
         if (next) onChange(next)
       }}>
-        {accountProvidersFor(cli).map(provider => <option key={provider} value={provider}>{ACCOUNT_PROVIDER_LABELS[provider]}</option>)}
+        <option value={direct}>{ACCOUNT_PROVIDER_LABELS[direct]}</option>
+        <option value="custom">Custom API</option>
       </select>
     </label>
-    {value.provider === 'custom' ? <label className="field-hint">API base URL
+    {custom && <label className="account-manager-field">Custom service
+      <select className="input" aria-label={`${label} custom service`} value={value.provider} onChange={e => select(e.target.value as AccountApiProfile['provider'])}>
+        <option value="custom">Custom endpoint</option>
+        {accountProvidersFor(cli).filter(provider => provider !== direct && provider !== 'custom').map(provider => <option key={provider} value={provider}>{ACCOUNT_PROVIDER_LABELS[provider]}</option>)}
+      </select>
+    </label>}
+    {value.provider === 'custom' ? <label className="account-manager-field">API base URL
       <input className="input mono" value={value.baseUrl} maxLength={2048} aria-label={`${label} API base URL`} spellCheck={false} onChange={e => onChange({ ...value, baseUrl: e.target.value })} />
     </label> : <span className="field-hint mono">{value.baseUrl}</span>}
-    <label className="field-hint">Model ID
+    <label className="account-manager-field">Model ID {custom ? <span className="field-hint">· Required</span> : <span className="field-hint">· Optional</span>}
       <input className="input mono" value={value.model} maxLength={200} placeholder={['anthropic', 'openai'].includes(value.provider) ? 'Blank uses the agent’s selected model' : 'Exact model ID from this provider'} aria-label={`${label} model ID`} spellCheck={false} onChange={e => onChange({ ...value, model: e.target.value })} />
     </label>
-    <span className="field-hint">{cli === 'claude' ? 'Requires an Anthropic Messages API.' : 'Requires a Responses API with streaming and tool support.'}</span>
+    {custom && <span className="field-hint">{cli === 'claude' ? 'Choose a service that supports the Anthropic Messages API.' : 'Choose a service that supports the OpenAI Responses API.'}</span>}
     {problem && <span className="field-hint" data-tone="warning">{problem}</span>}
   </div>
 }
 
-function StoredAccountProfile({ cli, label, profile, onSave }: { cli: CodingCliId; label: string; profile: AccountApiProfile; onSave: (value: AccountApiProfile) => void }): React.JSX.Element {
-  const [draft, setDraft] = useState(profile)
-  const changed = JSON.stringify(draft) !== JSON.stringify(profile)
-  return <>
-    <AccountProfileFields cli={cli} label={label} value={draft} onChange={setDraft} />
-    <div className="btn-row">
-      <button className="btn" disabled={!changed || !!accountApiProfileProblem(cli, draft)} onClick={() => onSave(draft)}>Save API profile</button>
-      {changed && <button className="btn" data-variant="ghost" onClick={() => setDraft(profile)}>Discard changes</button>}
-    </div>
-  </>
-}
-
-/** One stored account: its colour, name, where it lives or its key, and what can be done with it. */
+/** Readable account summary; nickname, key and provider edits save together. */
 function AccountRow({
   cli,
   account,
@@ -1724,49 +1731,47 @@ function AccountRow({
 }): React.JSX.Element {
   const [label, setLabel] = useState(account.label)
   const [key, setKey] = useState(account.apiKey)
-  const editing = useRef(false)
-  const latest = useRef({ label, key, account, onPatch })
-  latest.current = { label, key, account, onPatch }
+  const [profile, setProfile] = useState(account.apiProfile)
+  const [editing, setEditing] = useState(false)
   useEffect(() => {
-    if (!editing.current) {
+    if (!editing) {
       setLabel(account.label)
       setKey(account.apiKey)
+      setProfile(account.apiProfile)
     }
-  }, [account.label, account.apiKey])
-  const commit = (): void => {
-    editing.current = false
-    const { label: l, key: k, account: a, onPatch: set } = latest.current
-    const patch: { label?: string; apiKey?: string } = {}
-    if (l.trim() && l.trim() !== a.label) patch.label = l.trim()
-    if (a.kind === 'key' && k.trim() !== a.apiKey) patch.apiKey = k.trim()
-    if (Object.keys(patch).length) set(patch)
-  }
-  useEffect(() => () => commit(), [])
-  const edit = (f: () => void): void => {
-    editing.current = true
-    f()
+  }, [editing, account.label, account.apiKey, account.apiProfile])
+  const changed = label.trim() !== account.label || key.trim() !== account.apiKey || JSON.stringify(profile) !== JSON.stringify(account.apiProfile)
+  const problem = profile ? accountApiProfileProblem(cli.id, profile) : null
+  const save = (): void => {
+    if (!label.trim() || !changed || problem) return
+    const patch: { label?: string; apiKey?: string; apiProfile?: AccountApiProfile } = {}
+    if (label.trim() !== account.label) patch.label = label.trim()
+    if (account.kind === 'key' && key.trim() !== account.apiKey) patch.apiKey = key.trim()
+    if (profile && JSON.stringify(profile) !== JSON.stringify(account.apiProfile)) patch.apiProfile = profile
+    onPatch(patch)
+    setEditing(false)
+    onKeepIt()
   }
   return (
-    <div className="agent-account-row agent-account-stored" data-account={account.id}>
-      <input type="radio" name={`account-${cli.id}`} checked={checked} onChange={onDefault} aria-label={`Start new ${cli.label} sessions on ${account.label}`} />
-      <span className="agent-tab-dot" {...agentMark(account.id)} aria-hidden="true" />
-      <div className="agent-account-body">
-        <input
-          className="input agent-account-label"
-          value={label}
-          maxLength={ACCOUNT_LABEL_MAX}
-          spellCheck={false}
-          aria-label={`${account.label} name`}
-          onChange={(e) => edit(() => setLabel(e.target.value))}
-          onBlur={commit}
-          onKeyDown={(e) => e.key === 'Enter' && commit()}
-        />
-        {account.kind === 'login' ? (
-          <span className="field-hint mono agent-account-home" title={account.home}>
-            <span title={identity?.detail}>{accountIdentityText(identity)}</span> ·{' '}
-            {account.home}
-          </span>
-        ) : (
+    <div className="agent-account-stored" data-account={account.id} data-editing={editing || undefined}>
+      <div className="account-manager-summary">
+        <input type="radio" name={`account-${cli.id}`} checked={checked} onChange={onDefault} aria-label={`Start new ${cli.label} sessions on ${account.label}`} />
+        <span className="agent-tab-dot" {...agentMark(account.id)} aria-hidden="true" />
+        <div className="agent-account-body">
+          <strong className="agent-account-name">{account.label}</strong>
+          <span className="field-hint" title={identity?.detail}>{account.kind === 'login' ? accountIdentityText(identity) : account.apiProfile ? `${ACCOUNT_PROVIDER_LABELS[account.apiProfile.provider]} · ${account.apiProfile.model || 'Selected model'}` : 'API key account'}</span>
+        </div>
+        {checked && <span className="account-manager-selected">New sessions</span>}
+        <div className="btn-row">
+          {account.kind === 'login' && <button className="btn" onClick={onSignIn}>Sign in</button>}
+          <button className="btn" data-variant="ghost" aria-expanded={editing} onClick={() => { onKeepIt(); setEditing(v => !v) }}>{editing ? 'Cancel edit' : 'Edit'}</button>
+        </div>
+      </div>
+      {editing && <form className="account-manager-form account-manager-edit" onSubmit={e => { e.preventDefault(); save() }}>
+        <label className="account-manager-field">Account nickname
+          <input className="input" value={label} maxLength={ACCOUNT_LABEL_MAX} spellCheck={false} aria-label={`${account.label} name`} onChange={e => setLabel(e.target.value)} />
+        </label>
+        {account.kind === 'key' && <label className="account-manager-field">API key
           <input
             className="input mono"
             type="password"
@@ -1775,51 +1780,40 @@ function AccountRow({
             aria-label={`${account.label} API key`}
             spellCheck={false}
             autoComplete="off"
-            onChange={(e) => edit(() => setKey(e.target.value))}
-            onBlur={commit}
-            onKeyDown={(e) => e.key === 'Enter' && commit()}
+            onChange={e => setKey(e.target.value)}
           />
-        )}
-      </div>
-      <div className="btn-row">
-        {account.kind === 'login' && (
-          <button className="btn" onClick={onSignIn} title={`Run ${cli.label}'s own sign-in for this account, in a tab`}>
-            Sign in
-          </button>
-        )}
-        {removing ? (
-          <>
-            <button className="btn" data-variant="danger" onClick={onRemove} title="Its folder stays on disk">
-              Remove
-            </button>
-            <button className="btn" data-variant="ghost" onClick={onKeepIt}>
-              Keep
-            </button>
-          </>
-        ) : (
-          <button className="btn" data-variant="ghost" onClick={onRemove}>
-            Remove…
-          </button>
-        )}
-      </div>
-      {/* Its own grid row under the name, so the radio and buttons stay level with the name. */}
-      {account.apiProfile && <div className="agent-account-mcp">
-        <StoredAccountProfile key={JSON.stringify(account.apiProfile)} cli={cli.id} label={account.label} profile={account.apiProfile} onSave={apiProfile => onPatch({ apiProfile })} />
-      </div>}
-      {account.kind === 'login' && mcp && accountMcpLines(mcp).length > 0 && (
-        <div className="agent-account-mcp">
-          {accountMcpLines(mcp).map((line) => (
-            <span
-              key={line}
-              className="field-hint"
-              data-testid="account-mcp"
-              data-tone={mcp.error || line.startsWith('Not passed') ? 'warning' : undefined}
-            >
-              {line}
-            </span>
-          ))}
+        </label>}
+        {profile && <AccountProfileFields cli={cli.id} label={account.label} value={profile} onChange={setProfile} />}
+        <span className="field-hint">Changes apply to new or restarted sessions.</span>
+        <div className="btn-row">
+          <button type="submit" className="btn" disabled={!label.trim() || !changed || !!problem}>Save changes</button>
+          <button type="button" className="btn" data-variant="ghost" onClick={() => { setEditing(false); onKeepIt() }}>Cancel</button>
         </div>
-      )}
+        {account.kind === 'login' && <details className="account-manager-advanced">
+          <summary>Advanced details</summary>
+          <span className="field-hint mono account-manager-path">{account.home}</span>
+          {mcp && accountMcpLines(mcp).map(line => <span key={line} className="field-hint" data-testid="account-mcp" data-tone={mcp.error || line.startsWith('Not passed') ? 'warning' : undefined}>{line}</span>)}
+        </details>}
+        <div className="account-manager-remove">
+          {removing && <span className="field-hint">Remove this account from Stoke? {account.kind === 'login' ? 'Its sign-in files stay on this computer.' : 'This removes its saved key and settings.'}</span>}
+          <div className="btn-row">
+            {removing ? (
+              <>
+                <button type="button" className="btn" data-variant="danger" onClick={onRemove}>
+                  Remove account
+                </button>
+                <button type="button" className="btn" data-variant="ghost" onClick={onKeepIt}>
+                  Keep
+                </button>
+              </>
+            ) : (
+              <button type="button" className="btn" data-variant="ghost" onClick={onRemove}>
+                Remove account…
+              </button>
+            )}
+          </div>
+        </div>
+      </form>}
     </div>
   )
 }
