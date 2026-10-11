@@ -872,10 +872,19 @@ await step('sidebar accounts, repository details and bottom-left terminal are di
   const hadSidebar = await ev<boolean>('!!document.querySelector(".sidebar")')
   const closeSettings = async () => { await ev(`document.querySelector('button[title="Close settings (Esc)"]')?.click(), true`) }
   const resizeSidebar = async (width: number) => {
+    await waitFor('the sidebar resize handle to be live and unobstructed', () => ev<boolean>(`(() => { const handle = document.querySelector('[aria-label="Resize sidebar"]'); if (!handle || handle.closest('[inert]')) return false; const r = handle.getBoundingClientRect(); return r.width > 0 && r.height > 0 && document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2) === handle; })()`))
     const point = await ev<{ x: number; y: number; delta: number }>(`(() => { const handle = document.querySelector('[aria-label="Resize sidebar"]'), r = handle.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2, delta: ${width} - Number(handle.getAttribute('aria-valuenow')) }; })()`)
-    await ui!.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: point.x, y: point.y, button: 'left', clickCount: 1 })
-    await ui!.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x + point.delta, y: point.y, button: 'left', buttons: 1 })
-    await ui!.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: point.x + point.delta, y: point.y, button: 'left', clickCount: 1 })
+    await ui!.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: point.x, y: point.y, button: 'left', buttons: 1, clickCount: 1 })
+    try {
+      // Resizer's pointer-move handler uses React's committed dragging state.
+      // CDP can otherwise move and release before that first render lands.
+      await waitFor('the sidebar drag to start', () => ev<boolean>(`document.querySelector('[aria-label="Resize sidebar"]')?.getAttribute('data-dragging') === 'true'`))
+      await ui!.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x + point.delta, y: point.y, button: 'left', buttons: 1 })
+      await waitFor('the sidebar resize to reach the renderer', () => ev<boolean>(`document.querySelector('[aria-label="Resize sidebar"]')?.getAttribute('aria-valuenow') === '${width}'`))
+    } finally {
+      await ui!.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: point.x + point.delta, y: point.y, button: 'left', buttons: 0, clickCount: 1 })
+    }
+    await waitFor('the sidebar drag to finish', () => ev<boolean>(`document.querySelector('[aria-label="Resize sidebar"]')?.getAttribute('data-dragging') === 'false'`))
     await waitFor('the sidebar resize to reach the renderer', () => ev<boolean>(`document.querySelector('[aria-label="Resize sidebar"]')?.getAttribute('aria-valuenow') === '${width}'`))
   }
   const overview = async () => {
