@@ -36,6 +36,13 @@ export async function runAccountIdentityChecks(): Promise<void> {
     const captured = planAccountIdentity(target, settings, { CLAUDE_CONFIG_DIR: join(root, 'default-claude') }, root)
     assert.equal(captured.env.CLAUDE_CONFIG_DIR, join(root, 'claude-work'))
     assert.equal(captured.native, 'claude')
+    const inheritedApi = { ANTHROPIC_API_KEY: 'fixture-key', ANTHROPIC_AUTH_TOKEN: 'fixture-gateway', ANTHROPIC_BASE_URL: 'https://gateway.example.test', CLAUDE_CODE_OAUTH_TOKEN: 'fixture-other-login', CLAUDE_CODE_USE_BEDROCK: '1', CLAUDE_SECURESTORAGE_CONFIG_DIR: join(root, 'other-login') }
+    const isolated = planAccountIdentity(target, settings, inheritedApi, root)
+    assert.equal(isolated.native, 'claude', 'a selected login account must identify its own saved sign-in despite inherited API authentication')
+    assert.equal(isolated.env.CLAUDE_CONFIG_DIR, join(root, 'claude-work'))
+    for (const name of Object.keys(inheritedApi)) assert.equal(isolated.env[name], undefined, `${name} must not select another account`)
+    assert.deepEqual(inheritedApi.ANTHROPIC_API_KEY, 'fixture-key')
+    pass('a named Claude login reads its own identity without inherited API, gateway, OAuth or Keychain overrides')
     const codex = planAccountIdentity({ cli: 'codex', accountId: 'codex-work' }, settings, { CODEX_HOME: join(root, 'default-codex') }, root)
     assert.equal(codex.env.CODEX_HOME, join(root, 'codex-work'))
     assert.equal(planAccountIdentity({ cli: 'codex', accountId: 'claude-work' }, settings, {}, root).native, null)

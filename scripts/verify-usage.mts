@@ -506,6 +506,7 @@ console.log('\neach Claude account reads its own token, from its own two stores'
   const inherited = credentialSources(null, { CLAUDE_CONFIG_DIR: '/cfg' }, user)
   check('Default under an inherited CLAUDE_CONFIG_DIR reads that folder', [slashed(inherited.file), inherited.keychainService], ['/cfg/.credentials.json', `Claude Code-credentials-${hash8('/cfg')}`])
   check('an account overrides an inherited one, as its launch does', slashed(credentialSources(work, { CLAUDE_CONFIG_DIR: '/cfg' }, user).file), `${work}/.credentials.json`)
+  check('a named login never borrows an inherited Keychain override', credentialSources(work, { CLAUDE_SECURESTORAGE_CONFIG_DIR: '/other-account' }, user), w)
 
   // Two synthetic homes, each with a live token of its own. The blob puts a
   // connector's token first, as the real one does (gotcha 36).
@@ -709,7 +710,7 @@ console.log('\nusage bindings: private launch configuration survives Settings ch
   bindings.capture(named, input, {}, '/isolated-home')
   check('named Claude login binds its own home', bindings.for(named)?.claudeHome, account.home)
   bindings.capture({ ...named, ptyId: 'pty-inherited' }, input, { ANTHROPIC_API_KEY: 'external-api-fixture' }, '/isolated-home')
-  check('a named account with an inherited API override stays unknown too', bindings.for({ ...named, ptyId: 'pty-inherited' }), null)
+  check('a selected login clears the inherited API override and binds its own subscription', bindings.for({ ...named, ptyId: 'pty-inherited' })?.claudeHome, account.home)
   const codex = { ...newer, ptyId: 'pty-codex' }
   const own = { ...input, endpointModes: {} }; const env = { CODEX_HOME: '/isolated-old-codex' }
   bindings.capture(codex, own, env, '/isolated-home'); env.CODEX_HOME = '/isolated-new-codex'

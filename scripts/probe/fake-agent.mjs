@@ -72,6 +72,8 @@ function record(kind, data = {}) {
 }
 
 const say = (line) => process.stdout.write(line + '\r\n')
+// Names only: login/status probes must never record credential values.
+const authOverrides = () => Object.keys(process.env).filter(name => /^(ANTHROPIC_(API_KEY|AUTH_TOKEN|BASE_URL|PROFILE)|CLAUDE_CODE_(OAUTH_TOKEN|USE_BEDROCK|USE_VERTEX)|CLAUDE_SECURESTORAGE_CONFIG_DIR)$/i.test(name))
 
 /* ------------------------------------------------------------- one-shots */
 
@@ -80,13 +82,15 @@ if ((id === 'claude' && argv[0] === 'auth' && argv[1] === 'login') || (id === 'c
   process.stdout.write('Signing in with the owned probe account\n')
   while (existsSync(join(dir, 'login-wait'))) await new Promise(resolve => setTimeout(resolve, 50))
   const failed = existsSync(join(dir, 'login-fail'))
-  record('account-login', { argv, home: process.env[id === 'claude' ? 'CLAUDE_CONFIG_DIR' : 'CODEX_HOME'] || '', failed })
+  record('account-login', { argv, home: process.env[id === 'claude' ? 'CLAUDE_CONFIG_DIR' : 'CODEX_HOME'] || '', failed, authOverrides: authOverrides() })
   process.stdout.write(failed ? 'Sign-in cancelled by the user\n' : 'Successfully signed in\n')
   process.exit(failed ? 1 : 0)
 }
 if (id === 'claude' && argv[0] === 'auth' && argv[1] === 'status') {
-  const account = process.env.CLAUDE_CONFIG_DIR?.endsWith('claude-work') ? 'work' : 'claude'
-  record('account-identity', { argv, home: process.env.CLAUDE_CONFIG_DIR || '' })
+  const account = process.env.CLAUDE_CONFIG_DIR?.endsWith('claude-work') ? 'work'
+    : process.env.CLAUDE_CONFIG_DIR?.endsWith('claude-profile-1') ? 'profile1'
+    : process.env.CLAUDE_CONFIG_DIR?.endsWith('claude-profile-2') ? 'profile2' : 'claude'
+  record('account-identity', { argv, home: process.env.CLAUDE_CONFIG_DIR || '', authOverrides: authOverrides() })
   process.stdout.write(JSON.stringify(existsSync(join(dir, 'identity-unavailable')) ? {} : { loggedIn: true, email: `${account}@example.test`, orgName: 'Probe organization', subscriptionType: 'team' }) + '\n')
   process.exit(0)
 }
@@ -130,9 +134,9 @@ if (['update', 'doctor', 'install', 'login', 'logout', 'mcp', 'config'].includes
 
 /* ------------------------------------------------------------ the record */
 
-const ENV_KEYS = /^(STOKE_|OPENCODE_CONFIG_CONTENT$|KILO_CONFIG_CONTENT$|CLAUDE_CONFIG_DIR$|HOME$|USERPROFILE$|TERM$|TERM_PROGRAM$|COLORTERM$|COLORFGBG$|ANTHROPIC_|CODEX_HOME$|SHELL$)/
+const ENV_KEYS = /^(STOKE_|OPENCODE_CONFIG_CONTENT$|KILO_CONFIG_CONTENT$|CLAUDE_CONFIG_DIR$|CLAUDE_SECURESTORAGE_CONFIG_DIR$|CLAUDE_CODE_(OAUTH_TOKEN|USE_BEDROCK|USE_VERTEX)$|HOME$|USERPROFILE$|TERM$|TERM_PROGRAM$|COLORTERM$|COLORFGBG$|ANTHROPIC_|CODEX_HOME$|SHELL$)/i
 const env = {}
-for (const [k, v] of Object.entries(process.env)) if (ENV_KEYS.test(k)) env[k] = /(?:API_KEY|AUTH_TOKEN|OAUTH_TOKEN|STOKE_MCP_TOKEN)$/.test(k) && v ? `<set, ${String(v).length} chars>` : v
+for (const [k, v] of Object.entries(process.env)) if (ENV_KEYS.test(k)) env[k] = /(?:API_KEY|AUTH_TOKEN|OAUTH_TOKEN|STOKE_MCP_TOKEN)$/.test(k.toUpperCase()) && v ? `<set, ${String(v).length} chars>` : v
 const pathKey = Object.keys(process.env).find((k) => k.toUpperCase() === 'PATH') ?? 'PATH'
 env.PATH_HEAD = String(process.env[pathKey] ?? '').split(delimiter).slice(0, 4)
 record('start', { id, pid: process.pid, argv, cwd: process.cwd(), env, platform: process.platform })

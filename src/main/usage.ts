@@ -6,6 +6,7 @@ import { promisify } from 'node:util'
 import type { UsageSnapshot, UsageWindow } from '../shared/types'
 import { claudeConfigDir } from './claudePaths.ts'
 import { claudeKeychainService } from './accounts.ts'
+import { applyClaudeAccountEnv } from '../shared/claudeAccountEnv.ts'
 
 export type { UsageSnapshot, UsageWindow }
 
@@ -142,17 +143,14 @@ export function usageCredentialsPath(env: Record<string, string | undefined> = p
 /**
  * The environment a Claude account's `claude` runs with, which is what names
  * its credentials: Stoke's own, plus the account's config dir
- * (`accountEnv`, shared/accounts.ts — `CLAUDE_CONFIG_DIR` is the one variable
- * a login account sets). Null is the Default account: the environment as
- * inherited. Mirrors the launch exactly, including an inherited
- * `CLAUDE_SECURESTORAGE_CONFIG_DIR`, because the child's Keychain name is
- * computed from what the CHILD sees.
+ * (`accountEnv`, shared/accounts.ts), with conflicting auth selectors cleared
+ * exactly as at launch. Null is Default: the environment as inherited.
  */
 export function claudeAccountEnv(
   home: string | null | undefined,
   base: Record<string, string | undefined> = process.env
 ): Record<string, string | undefined> {
-  return home ? { ...base, CLAUDE_CONFIG_DIR: home } : base
+  return home ? applyClaudeAccountEnv({ ...base }, { CLAUDE_CONFIG_DIR: home }, process.platform) : base
 }
 
 /**

@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { accountEnv, accountProblem, accountsFromRenderer, hydrateAccounts, resolveLaunchAccount, type AgentAccount } from '../src/shared/accounts.ts'
+import { applyClaudeAccountEnv, CLAUDE_ACCOUNT_AUTH_ENV } from '../src/shared/claudeAccountEnv.ts'
 import { accountApiProfileProblem, accountProvidersFor, defaultAccountApiProfile, hydrateAccountApiProfile } from '../src/shared/accountProviders.ts'
 import { agentLaunchPlan } from '../src/shared/agents.ts'
 import { usageRouteFor } from '../src/shared/usageSources.ts'
@@ -65,6 +66,30 @@ export async function runAccountApiChecks(): Promise<void> {
     assert.equal(accountEnv(gateway).ANTHROPIC_API_KEY, '')
     assert.equal(accountEnv(gateway).ANTHROPIC_AUTH_TOKEN, keyA)
     assert.equal(accountEnv(gateway).ANTHROPIC_BASE_URL, 'https://nano-gpt.com/api/v1')
+    for (const platform of ['win32', 'darwin', 'linux']) {
+      const source: Record<string, string> = { ...inherited, CLAUDE_CONFIG_DIR: join(root, 'old-login'), CLAUDE_SECURESTORAGE_CONFIG_DIR: join(root, 'old-keychain'), CLAUDE_CODE_USE_VERTEX: '1', HTTP_PROXY: 'http://proxy.example.test', UNRELATED_SETTING: 'keep' }
+      if (platform === 'win32') Object.assign(source, { anthropic_api_key: 'old-lowercase-key', Anthropic_Auth_Token: 'old-mixed-token', Claude_Config_Dir: join(root, 'wrong-home') })
+      const original = { ...source }
+      const child = applyClaudeAccountEnv({ ...source }, accountEnv(claude), platform)
+      assert.equal(child.ANTHROPIC_API_KEY, keyA)
+      assert.equal(child.CLAUDE_CODE_USE_VERTEX, undefined)
+      const firstHome = join(root, 'claude-profile-1')
+      applyClaudeAccountEnv(child, { CLAUDE_CONFIG_DIR: firstHome }, platform)
+      assert.equal(child.CLAUDE_CONFIG_DIR, firstHome)
+      for (const name of CLAUDE_ACCOUNT_AUTH_ENV) assert.equal(child[name], undefined, `${platform}: a login must not keep ${name}`)
+      if (platform === 'win32') {
+        assert.equal(child.anthropic_api_key, undefined)
+        assert.equal(child.Anthropic_Auth_Token, undefined)
+        assert.equal(child.Claude_Config_Dir, undefined)
+      }
+      const secondHome = join(root, 'claude-profile-2')
+      applyClaudeAccountEnv(child, { CLAUDE_CONFIG_DIR: secondHome }, platform)
+      assert.equal(child.CLAUDE_CONFIG_DIR, secondHome)
+      assert.equal(child.HTTP_PROXY, source.HTTP_PROXY)
+      assert.equal(child.UNRELATED_SETTING, 'keep')
+      assert.deepEqual(source, original, 'account selection must not change the parent environment or its Default credentials')
+    }
+    pass('API → Profile 1 → Profile 2 selects only that account; Windows casing cannot retain an old credential, and Default/proxy settings survive')
     const input = { id: 'codex' as const, endpoint: { mode: 'openrouter' as const, baseUrl: '', model: 'wrong/model', apiKey: 'wrong-key' }, openrouterKey: 'wrong-router-key', mcp: [], piExtensionPath: null, account: codex, access: 'yolo' as const, continueLast: true, resumeId: '01234567-89ab-4def-8123-456789abcdef' }
     const launch = agentLaunchPlan(input)
     assert(launch.ok)

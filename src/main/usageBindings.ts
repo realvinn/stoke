@@ -3,6 +3,7 @@ import type { UsageSnapshot, UsageTarget } from '../shared/types.ts'
 import { usageKey, usageRouteFor, usageTargetKey } from '../shared/usageSources.ts'
 import { planUsageSources, toReading, type UsagePlanInput, type UsageSourcePlan } from './usageBoard.ts'
 import { accountEnv } from '../shared/accounts.ts'
+import { applyClaudeAccountEnv } from '../shared/claudeAccountEnv.ts'
 
 /** Cache identity includes private read configuration, never the display name. */
 export function usageCacheKey(plan: UsageSourcePlan): string {
@@ -21,7 +22,11 @@ export class UsageBindings {
   capture(target: UsageTarget, input: UsagePlanInput, environment: Record<string, string | undefined>, home: string, fake?: string): void {
     if (!target.ptyId || this.sessions.size >= 512) return
     const account = input.accounts[target.accountId]
-    const env = { ...environment, ...(account?.kind === 'login' ? accountEnv(account) : {}) }
+    const env = { ...environment }
+    if (account?.kind === 'login') {
+      if (target.cli === 'claude') applyClaudeAccountEnv(env, accountEnv(account), process.platform)
+      else Object.assign(env, accountEnv(account))
+    }
     const route = usageRouteFor(target, input)
     // An inherited external credential/gateway can override the Default
     // sign-in. Reading another token from its native store cannot prove usage.

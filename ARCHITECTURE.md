@@ -2294,6 +2294,10 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
   accountProviders.ts named Claude/Codex API profiles: provider/address/model validation,
                     pinned vendor routes and child-only credentials; selected accounts override
                     Default provider settings. Keys use accounts.*.apiKey in the existing vault
+  claudeAccountEnv.ts clears conflicting inherited credential/provider selectors before a
+                    named Claude login/API launch. Login, auth status and usage locations use
+                    the same rule; Windows removes case-insensitive duplicates first. Default
+                    retains inherited auth and unrelated proxy/tool environment is preserved
   modelId.ts        shared CLI model argument validation, including Windows shim safety;
                     re-exported by agents.ts for existing callers
   skills.ts         which skill folders each agent reads, and the report of who can see

@@ -1127,6 +1127,76 @@ await step('named API profiles save in Settings and launch with their own creden
   }
 })
 
+await step('selected Claude logins own their authentication despite inherited and global API settings', async () => {
+  const saved = await ev<{ providers: Record<string, unknown>; defaults: Record<string, string> }>('window.stoke.settings.get().then(s => ({ providers: s.providers, defaults: s.agents.defaultAccount }))')
+  const target = await waitFor('the owned account fixture main inspector', async () => (await listTargets(nativeInspectorPort)).find(t => t.type === 'node' && t.webSocketDebuggerUrl), 10_000)
+  const main = await CdpClient.open(target)
+  const created: string[] = []
+  const opened: string[] = []
+  const poison = { ANTHROPIC_API_KEY: 'owned-old-api-key', ANTHROPIC_AUTH_TOKEN: 'owned-old-gateway-token', ANTHROPIC_BASE_URL: 'https://gateway.example.test', CLAUDE_CODE_OAUTH_TOKEN: 'owned-other-login', CLAUDE_CODE_USE_BEDROCK: '1', CLAUDE_SECURESTORAGE_CONFIG_DIR: join(home, 'wrong-keychain') }
+  const names = Object.keys(poison)
+  const oneShots = (): Array<Record<string, unknown>> => readdirSync(agentsDir).filter(name => /^claude-\d+\.jsonl$/.test(name)).flatMap(name => readFileSync(join(agentsDir, name), 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line)))
+  const accountSettings = async (): Promise<void> => {
+    await ev(`document.querySelector('[data-testid="active-account"]').click(), true`)
+    await waitFor('the selected account popup', () => ev<boolean>('!!document.querySelector(".account-panel")'))
+    await ev(`[...document.querySelectorAll('.account-panel button')].find(button => button.textContent === 'Manage agent accounts').click(), true`)
+    await waitFor('Claude account settings', () => ev<boolean>('!!document.querySelector(\'[data-testid="agent-accounts"]\')'))
+  }
+  try {
+    // This is the disposable fixture's main process only. Keep original values
+    // inside it, never in the probe's output, and restore them before later tests.
+    await main.evaluate(`(() => { const names = ${JSON.stringify(names)}; globalThis.__stokeProbeAccountAuth = Object.fromEntries(Object.entries(process.env).filter(([name]) => names.includes(name.toUpperCase()))); Object.assign(process.env, ${JSON.stringify(poison)}); return true; })()`)
+    await ev(`window.stoke.settings.set({ providers: { ...${JSON.stringify(saved.providers)}, claudeAuth: 'anthropic', anthropicApiKey: 'owned-global-api-key' } })`)
+    await activate(tabs.claude!.ptyId)
+    for (const number of [1, 2]) {
+      const made = await ev<{ ok: boolean; account?: { id: string; home: string } }>(`window.stoke.accounts.create({ cli: 'claude', kind: 'login', name: 'Profile ${number}' })`)
+      if (!made.ok || !made.account) throw new Error(`owned Profile ${number} could not be created`)
+      const account = made.account
+      created.push(account.id)
+      await accountSettings()
+      await waitFor('the named login row', () => ev<boolean>(`!!document.querySelector('.agent-account-stored[data-account="${account.id}"]')`))
+      await ev(`document.querySelector('.agent-account-stored[data-account="${account.id}"] input[type="radio"]').click(), true`)
+      await waitFor('the named login to be selected', () => ev<boolean>(`window.stoke.settings.get().then(s => s.agents.defaultAccount.claude === ${JSON.stringify(account.id)})`))
+      await ev(`[...document.querySelectorAll('.agent-account-stored[data-account="${account.id}"] button')].find(button => button.textContent.trim() === 'Sign in').click(), true`)
+      await waitFor('the named login completion to report its own email', () => ev<boolean>(`[...document.querySelectorAll('.toast-title')].some(node => node.textContent === 'Successfully signed in to Claude Code as profile${number}@example.test')`))
+      const login = await waitFor('the named sign-in process record', async () => oneShots().find(event => event.kind === 'account-login' && event.home === account.home))
+      check(`Profile ${number}: auth login receives its own home and no inherited credential selectors`, Array.isArray(login.authOverrides) && login.authOverrides.length === 0)
+      await ev(`document.querySelector('button[title="Close settings (Esc)"]')?.click(), true`)
+      const folder = join(root, `claude-profile-${number}-project`)
+      mkdirSync(folder, { recursive: true })
+      const taken = await ev<string[]>('[...window.stokeTerminals.keys()]')
+      await stokeCli('--cli', 'claude', '--new', folder)
+      const ptyId = await termShowing('STOKE-PROBE claude ready', `Profile ${number}'s terminal`, 45_000, taken)
+      opened.push(ptyId)
+      await activate(ptyId)
+      const pid = await pidIn(ptyId, 'claude')
+      const rec = await waitFor('the selected login launch record', () => stubByPid(pid), 10_000)
+      check(`Profile ${number}: the selected login launches in its own credential home`, rec!.start.env.CLAUDE_CONFIG_DIR === account.home)
+      check(`Profile ${number}: API, gateway, OAuth and cloud-provider overrides cannot leak into the login`, names.every(name => !Object.keys(rec!.start.env).some(key => key.toUpperCase() === name)))
+      await waitFor('the header to identify the running login account', () => ev<boolean>(`document.querySelector('[data-testid="active-account"]')?.getAttribute('data-account') === ${JSON.stringify(account.id)} && document.querySelector('[data-testid="active-account"]')?.textContent.includes('profile${number}@example.test')`))
+      check(`Profile ${number}: the active account matches its native signed-in email`, true)
+      const identity = await waitFor('the native identity process record', async () => oneShots().find(event => event.kind === 'account-identity' && event.home === account.home))
+      check(`Profile ${number}: auth status uses the same isolated credential environment`, Array.isArray(identity.authOverrides) && identity.authOverrides.length === 0)
+      await shot(`04-claude-profile-${number}-selected`)
+    }
+    await activate(opened[0])
+    check('choosing Profile 2 for new sessions keeps the existing Profile 1 session on its own account', await ev<boolean>(`document.querySelector('[data-testid="active-account"]')?.getAttribute('data-account') === ${JSON.stringify(created[0])} && document.querySelector('[data-testid="active-account"]')?.textContent.includes('profile1@example.test')`) === true)
+    for (const ptyId of opened) {
+      await activate(ptyId)
+      await ev(`document.querySelector('.tablist .tab[aria-selected="true"] .tab-close').click(), true`)
+      await waitFor('the owned login fixture tab to close', () => ev<boolean>(`!window.stokeTerminals.has(${JSON.stringify(ptyId)})`))
+    }
+  } finally {
+    await ev(`document.querySelector('button[title="Close settings (Esc)"]')?.click(), document.querySelector('[data-testid="active-account"][aria-expanded="true"]')?.click(), true`).catch(() => {})
+    for (const ptyId of opened) await ev(`window.stoke.pty.kill(${JSON.stringify(ptyId)})`).catch(() => {})
+    for (const id of created) await ev(`window.stoke.accounts.remove(${JSON.stringify(id)})`).catch(() => {})
+    await ev(`window.stoke.settings.get().then(s => window.stoke.settings.set({ providers: ${JSON.stringify(saved.providers)}, agents: { ...s.agents, defaultAccount: ${JSON.stringify(saved.defaults)} } }))`).catch(() => {})
+    await main.evaluate(`(() => { const names = ${JSON.stringify(names)}; for (const name of Object.keys(process.env)) if (names.includes(name.toUpperCase())) delete process.env[name]; Object.assign(process.env, globalThis.__stokeProbeAccountAuth ?? {}); delete globalThis.__stokeProbeAccountAuth; return true; })()`).catch(() => {})
+    main.close()
+    await activate(tabs.claude!.ptyId)
+  }
+})
+
 /* -------------------------------------------------------------- browser */
 
 let profileTwo = ''

@@ -43,6 +43,7 @@ import {
 } from '../shared/sshAuth.ts'
 import { claimSessionFiles, releaseSessionFiles } from './statusLine.ts'
 import { PRIVATE_ENV } from '../shared/privateChat.ts'
+import { applyClaudeAccountEnv } from '../shared/claudeAccountEnv.ts'
 import type { RegistryTarget } from '../shared/claudeRegistry.ts'
 import {
   isEndedExpired,
@@ -730,14 +731,15 @@ export class PtyManager {
        */
       if (instrumented && accountEnv) {
         // Another Claude account: its own sign-in, never the Providers keys.
-        Object.assign(env, accountEnv)
+        applyClaudeAccountEnv(env, accountEnv, process.platform)
       } else if (instrumented) {
         const check = validateClaudeAuth(providers)
         if (!check.ok) throw new Error(check.message)
         applyProviderEnv(env, providers)
       } else if (!remote && !installing && agentPlan) {
         // Last, so a key the plan sets wins over one inherited from a shell.
-        Object.assign(env, agentPlan.env)
+        if (loggingIn && isClaudeCode(cliId)) applyClaudeAccountEnv(env, agentPlan.env, process.platform)
+        else Object.assign(env, agentPlan.env)
       } else if (installFile) {
         // Where windowsInstallerArgs' stub reads the script from.
         env[INSTALL_SCRIPT_ENV] = installFile

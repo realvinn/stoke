@@ -7,6 +7,7 @@ import { accountIdentityKey, nativeAccountIdentity, type AccountIdentity, type A
 import type { Settings } from '../shared/types.ts'
 import { spawnSpec } from './cli.ts'
 import { ACCOUNT_PROVIDER_LABELS } from '../shared/accountProviders.ts'
+import { applyClaudeAccountEnv } from '../shared/claudeAccountEnv.ts'
 
 export interface AccountIdentityPlan {
   target: AccountIdentityTarget
@@ -22,7 +23,11 @@ type IdentitySettings = Pick<Settings, 'accounts' | 'providers' | 'agents' | 'cl
 export function planAccountIdentity(target: AccountIdentityTarget, settings: IdentitySettings, environment: Record<string, string | undefined>, cwd: string): AccountIdentityPlan {
   const account: AgentAccount | undefined = target.accountId === DEFAULT_ACCOUNT_ID ? undefined : settings.accounts[target.accountId]
   const valid = target.accountId === DEFAULT_ACCOUNT_ID || account?.cli === target.cli
-  const env = { ...environment, ...(valid && account?.kind === 'login' ? accountEnv(account) : {}) }
+  const env = { ...environment }
+  if (valid && account?.kind === 'login') {
+    if (target.cli === 'claude') applyClaudeAccountEnv(env, accountEnv(account), process.platform)
+    else Object.assign(env, accountEnv(account))
+  }
   const plan: AccountIdentityPlan = { target: { ...target }, label: valid ? account?.label || 'Default' : target.accountId, env, cwd, claudePath: settings.claudePath, native: null, fallback: { state: 'unavailable', method: 'Agent sign-in', detail: 'This agent does not expose a readable sign-in identity to Stoke yet.' } }
   if (!valid) { plan.fallback.detail = 'This account is no longer configured for this agent.'; return plan }
   if (account?.kind === 'key') {
