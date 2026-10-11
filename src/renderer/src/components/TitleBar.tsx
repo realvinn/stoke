@@ -86,6 +86,7 @@ interface Props {
   onOpenPhoneSettings: () => void
   onOpenAgentSettings: (cli: CodingCliId, kind?: 'login' | 'key') => void
   onOpenSyncSettings: () => void
+  onOpenAccounts: () => void
   /**
    * What a tab says: `New · stoke` for a New tab aimed at a project, and the
    * agent a tab runs when it is not the default one (QA L16): `agent` always,
@@ -157,6 +158,7 @@ export function TitleBar({
   onOpenPhoneSettings,
   onOpenAgentSettings,
   onOpenSyncSettings,
+  onOpenAccounts,
   labelFor,
   agentTagsShown = true,
   onToggleAgentTags,
@@ -602,7 +604,7 @@ export function TitleBar({
           <span className="sr-only">Toggle worklog review</span>
         </button>
         <PhonePopover onOpenSettings={onOpenPhoneSettings} settingsOpen={settingsOpen} />
-        <AccountChip target={usageTarget} label={usageTarget && activeTab ? labelFor?.(activeTab).account?.text : undefined} settingsOpen={settingsOpen} onAgentSettings={onOpenAgentSettings} onSyncSettings={onOpenSyncSettings} />
+        <AccountChip target={usageTarget} label={usageTarget && activeTab ? labelFor?.(activeTab).account?.text : undefined} settingsOpen={settingsOpen} onAgentSettings={onOpenAgentSettings} onSyncSettings={onOpenSyncSettings} onAccounts={onOpenAccounts} />
         {activeTab?.kind !== 'remote' && !activeTab?.hostId && <UsageChip target={usageTarget} accountLabel={activeTab ? labelFor?.(activeTab).account?.text : undefined} />}
 
         <button

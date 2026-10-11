@@ -36,6 +36,7 @@ export type SettingsPageId =
   | 'sessions'
   /** The Agent manager: install, show in the launcher, the default, colours. */
   | 'agents'
+  | 'accounts'
   /** One agent's own page; the agent is `SettingsLocation.agent`. */
   | 'agent'
   | 'claude-launch'
@@ -110,6 +111,12 @@ export const SETTINGS_PAGES: readonly SettingsPageDef[] = [
     label: 'Agent manager',
     hint: 'Install agents, choose which the launcher shows, the default agent, and each one’s colour',
     keywords: ['agents', 'install', 'download', 'launcher', 'colours', 'coding agents', 'cli']
+  },
+  {
+    id: 'accounts',
+    label: 'Accounts',
+    hint: 'Stoke sign-in, coding-agent subscriptions and named API accounts',
+    keywords: ['account manager', 'manage accounts', 'subscriptions', 'claude login', 'codex login', 'anthropic api', 'openai api', 'nanogpt', 'custom api', 'multiple accounts']
   },
   {
     id: 'agent',
@@ -279,6 +286,7 @@ export function navTree(agents: readonly CodingCliId[]): NavGroup[] {
     {
       title: 'Configuration',
       nodes: [
+        pageNode('accounts'),
         pageNode('sessions'),
         {
           id: AGENTS_NODE,
@@ -417,6 +425,9 @@ const hasCustomEndpoint = (id: CodingCliId): boolean =>
  * them — search breaks ties by this order.
  */
 export const SETTING_ROWS: readonly SettingRow[] = [
+  { id: 'accounts.overview', page: 'accounts', label: 'Account manager', keywords: ['all accounts', 'manage accounts', 'subscriptions', 'saved logins', 'multiple accounts'] },
+  { id: 'accounts.stoke', page: 'accounts', label: 'Stoke sign-in', keywords: ['stoke account', 'connect devices', 'sign in to stoke', 'device approval', 'sync'] },
+  { id: 'accounts.agents', page: 'accounts', label: 'Agent accounts overview', keywords: ['coding accounts', 'subscription sign-ins', 'api accounts', 'default login', 'existing cli login'] },
   // Appearance
   // Both drawn only while no theme is being edited; the editor is where a jump lands then.
   { id: 'appearance.follow-system', page: 'appearance', label: 'Follow my system', keywords: ['dark mode', 'light mode', 'auto theme', 'system appearance', 'night'], fallback: 'appearance.make-theme' },
@@ -470,6 +481,7 @@ export const SETTING_ROWS: readonly SettingRow[] = [
   // "Add account" is the row's own button: without it, "add" prefix-matched Stoke Hub's "address" and won.
   { id: 'agent.accounts', page: 'agent', label: 'Accounts', keywords: ['sign in', 'login', 'account', 'api key', 'work account', 'second account', 'add account', 'new account', 'add another sign-in', 'existing setup', 'saved sign-ins', 'saved api accounts', 'nickname', 'edit account', 'advanced details', 'named api profile', 'nanogpt', 'multiple anthropic', 'multiple codex keys', 'provider account'] },
   { id: 'agent.apiAccounts', page: 'agent', label: 'API accounts', keywords: ['anthropic api', 'openai api', 'codex api', 'claude api', 'api key', 'token', 'nanogpt', 'openrouter', 'add api account', 'custom api', 'custom service', 'custom endpoint', 'model id'], fallback: 'agent.accounts' },
+  { id: 'agent.loginAccounts', page: 'agent', label: 'Add another sign-in', keywords: ['subscription login', 'second sign-in', 'another claude account', 'another codex account'], fallback: 'agent.accounts' },
   { id: 'agent.access', page: 'agent', label: 'Default access', keywords: ['permissions', 'full access', 'yolo', 'bypass', 'sandbox', 'approval'], agents: notClaude },
   { id: 'agent.update', page: 'agent', label: 'Installed version and updates', keywords: ['update agent', 'upgrade', 'version', 'npm', 'homebrew', 'native updater', 'updater output'], agents: notClaude, fallback: 'agent.access' },
   { id: 'agent.tools', page: 'agent', label: 'Tools (MCP)', keywords: ['mcp', 'servers', 'tools', 'browser tools', 'add mcp server', 'api keys', 'tokens', 'headers', 'environment variables', 'test connection'] },

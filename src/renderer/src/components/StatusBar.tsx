@@ -10,6 +10,7 @@ import type { ActivityView } from '@shared/activityView'
 import type { Tab } from '../types'
 
 interface Props {
+  tools?: React.ReactNode
   tab: Tab | null
   context: ContextSnapshot | null
   /**
@@ -108,6 +109,7 @@ function RemoteSessionItems({ status, device }: { status: RemoteSessionStatus; d
 }
 
 export function StatusBar({
+  tools,
   tab,
   context,
   activity,
@@ -279,6 +281,7 @@ export function StatusBar({
     const device = tab.remote?.deviceLabel ?? 'another machine'
     return (
       <footer className="statusbar" data-remote-status={remoteSession ? 'on' : 'off'}>
+        {tools}
         {/* Another machine's session: what its own status bar says, named as
             that machine's — nothing here is claimed for this one. */}
         <span className="status-item" title="Another machine’s session, through your hub">
@@ -303,6 +306,7 @@ export function StatusBar({
   if (!tab || tab.kind === 'new') {
     return (
       <footer className="statusbar">
+        {tools}
         <span className="status-item">No active session</span>
         {profilePill}
         <span className="status-spacer" />
@@ -355,6 +359,7 @@ export function StatusBar({
 
   return (
     <footer className="statusbar">
+      {tools}
       {/*
         The one item allowed to shrink. Everything else in this bar is a fixed
         few characters; the path is unbounded, so when the window is narrow it

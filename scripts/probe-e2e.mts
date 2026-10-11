@@ -199,6 +199,8 @@ const logs = join(root, 'logs')
 const stubBin = join(home, '.local', 'bin')
 for (const d of [home, tmp, ud, proj, projContinue, agentsDir, shots, logs, stubBin]) mkdirSync(d, { recursive: true })
 writeFileSync(join(proj, 'README.md'), '# Probe project\n\nA folder the CI probe opens sessions in.\n')
+const gitInit = spawnSync('git', ['-c', 'init.defaultBranch=probe-ui', 'init', '--template=', proj], { encoding: 'utf8', env: { ...process.env, GIT_CONFIG_GLOBAL: join(home, 'empty-gitconfig'), GIT_CONFIG_NOSYSTEM: '1' } })
+if (gitInit.status !== 0) throw new Error(`the owned Git UI fixture could not be initialized: ${gitInit.stderr}`)
 
 const pkg = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8')) as { version: string }
 const port = Number(opt.port)
@@ -863,6 +865,79 @@ await step('the active account follows the agent and fits the title bar', async 
   }
 })
 
+await step('sidebar accounts, repository details and bottom-left terminal are discoverable', async () => {
+  const savedWidth = await ev<number>('Number(document.querySelector(\'[aria-label="Resize sidebar"]\')?.getAttribute("aria-valuenow") || 260)')
+  const hadSidebar = await ev<boolean>('!!document.querySelector(".sidebar")')
+  const closeSettings = async () => { await ev(`document.querySelector('button[title="Close settings (Esc)"]')?.click(), true`) }
+  const resizeSidebar = async (width: number) => {
+    const point = await ev<{ x: number; y: number; delta: number }>(`(() => { const handle = document.querySelector('[aria-label="Resize sidebar"]'), r = handle.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2, delta: ${width} - Number(handle.getAttribute('aria-valuenow')) }; })()`)
+    await ui!.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: point.x, y: point.y, button: 'left', clickCount: 1 })
+    await ui!.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x + point.delta, y: point.y, button: 'left', buttons: 1 })
+    await ui!.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: point.x + point.delta, y: point.y, button: 'left', clickCount: 1 })
+    await waitFor('the sidebar resize to reach the renderer', () => ev<boolean>(`document.querySelector('[aria-label="Resize sidebar"]')?.getAttribute('aria-valuenow') === '${width}'`))
+  }
+  const overview = async () => {
+    await ev(`document.querySelector('[data-testid="stoke-account"]').click(), true`)
+    await waitFor('the sidebar account menu', () => ev<boolean>('!!document.querySelector(".account-panel")'))
+    await ev(`[...document.querySelectorAll('.account-panel button')].find(button => button.textContent === 'Manage accounts').click(), true`)
+    await waitFor('the shared Accounts overview', () => ev<boolean>('!!document.querySelector(\'[data-testid="accounts-overview"]\')'))
+  }
+  try {
+    await activate(tabs.claude!.ptyId)
+    if (!hadSidebar) await ev('document.querySelector(\'button[title="Toggle sidebar"]\').click(), true')
+    await ui!.send('Emulation.setDeviceMetricsOverride', { width: 940, height: 720, deviceScaleFactor: 1, mobile: false })
+    await resizeSidebar(200)
+    await waitFor('the owned repository branch in the sidebar', () => ev<boolean>(`document.querySelector('[data-testid="sidebar-repository"] strong')?.textContent === 'probe-ui'`))
+    check('sidebar Git shows the actual local branch without needing the title-bar toolbar', true)
+    await ev(`document.querySelector('.sidebar-repository-button').click(), true`)
+    await waitFor('repository details', () => ev<boolean>('!!document.querySelector(".context-menu")'))
+    check('repository details name untracked files and the last-fetch caveat', await ev<boolean>(`document.querySelector('.context-menu')?.textContent.includes('untracked') && document.querySelector('.context-menu')?.textContent.includes('last fetch')`) === true)
+    await ev(`[...document.querySelectorAll('.context-menu-item')].find(button => button.textContent === 'Copy branch name').click(), true`)
+    check('Copy branch name uses the actual repository branch', (await ev<{ ok: boolean; text?: string }>('window.stoke.clipboard.readSync()')).text === 'probe-ui')
+    await ev(`document.querySelector('[data-testid="stoke-account"]').click(), true`)
+    await waitFor('sidebar Stoke account details', () => ev<boolean>('!!document.querySelector(".account-panel")'))
+    check('the sidebar popup opens above its account row, fits at 940px and receives focus', await ev<boolean>(`(() => { const panel = document.querySelector('.account-panel'), r = panel.getBoundingClientRect(), button = document.querySelector('[data-testid="stoke-account"]').getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth + 1 && r.top >= 0 && r.bottom <= button.top && document.activeElement === panel; })()`) === true)
+    check('Stoke sign-in is distinct from the active agent email', await ev<boolean>(`document.querySelector('.account-panel-sync')?.textContent.includes('Not signed in') && !document.querySelector('[data-testid="account-identity"]') && document.querySelector('[data-testid="active-account"]')?.textContent.includes('claude@example.test')`) === true)
+    await waitFor('the account popup animation to finish', () => ev<boolean>(`getComputedStyle(document.querySelector('.account-panel')).opacity === '1'`))
+    await shot('04-sidebar-account-git')
+    await ui!.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+    await ui!.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+    check('Escape returns focus to the sidebar account row', await ev<boolean>(`!document.querySelector('.account-panel') && document.activeElement === document.querySelector('[data-testid="stoke-account"]')`) === true)
+    await overview()
+    check('the overview separates Stoke sign-in and the Claude/Codex account editors', await ev<boolean>(`!!document.querySelector('[data-setting="accounts.stoke"]') && ['claude','codex'].every(cli => document.querySelector('.accounts-agent[data-cli="' + cli + '"]')?.textContent.includes('Default · Existing setup')) && !document.querySelector('.accounts-settings input')`) === true)
+    check('overview actions fit inside the narrow settings pane', await ev<boolean>(`(() => { const pane = document.querySelector('[data-testid="accounts-overview"]').getBoundingClientRect(); return [...document.querySelectorAll('.accounts-settings button')].every(button => { const r = button.getBoundingClientRect(); return r.left >= pane.left && r.right <= pane.right + 1 }); })()`) === true)
+    await waitFor('overview highlight to settle', () => ev<boolean>(`!document.querySelector('[data-testid="accounts-overview"]').hasAttribute('data-flash')`))
+    await waitFor('the settings animation to finish', () => ev<boolean>(`getComputedStyle(document.querySelector('.settings-modal')).opacity === '1'`))
+    await shot('04-accounts-overview')
+    await ev(`[...document.querySelectorAll('.accounts-agent[data-cli="codex"] button')].find(button => button.textContent === 'Add sign-in').click(), true`)
+    await waitFor('Codex subscription setup from the overview', () => ev<boolean>(`document.querySelector('[data-testid="add-login-account"]')?.open && !!document.querySelector('[aria-label="New ${cliFor('codex').label} account name"]')`))
+    check('Add sign-in opens the correct scoped subscription form', true)
+    await closeSettings()
+    await overview()
+    await ev(`[...document.querySelectorAll('.accounts-agent[data-cli="claude"] button')].find(button => button.textContent === 'Add API account').click(), true`)
+    await waitFor('Claude API setup from the overview', () => ev<boolean>(`document.querySelector('[data-testid="add-api-account"]')?.open && !!document.querySelector('[aria-label="New Claude Code API account name"]')`))
+    check('Add API account opens the correct scoped API form', true)
+    await closeSettings()
+    const before = await ev<{ state: QuickTerminalState }>('window.stoke.quickTerminal.read()')
+    check('quick terminal remains disabled until the user enables it', before.state.enabled === false && !before.state.id)
+    await ev(`document.querySelector('[data-testid="footer-terminal"]').focus(), true`)
+    await pressEnter()
+    await waitFor('terminal opt-in Settings from the footer', () => ev<boolean>(`!!document.querySelector('[data-setting="appearance.quick-terminal"]')`))
+    check('pressing Enter on the disabled terminal button opens setup without starting a shell', await ev<boolean>(`!document.querySelector('[data-setting="appearance.quick-terminal"] input').checked && window.stoke.quickTerminal.read().then(snapshot => !snapshot.state.id && !snapshot.state.enabled)`) === true)
+    await closeSettings()
+    await ev('document.querySelector(\'button[title="Toggle sidebar"]\').click(), true')
+    check('Terminal stays at bottom left with the sidebar hidden', await ev<boolean>(`(() => { const r = document.querySelector('[data-testid="footer-terminal"]').getBoundingClientRect(); return !document.querySelector('.sidebar') && r.left <= 16 && r.bottom <= innerHeight && r.top > innerHeight - 50; })()`) === true)
+    await ev('document.querySelector(\'button[title="Toggle sidebar"]\').click(), true')
+  } finally {
+    await ui!.send('Emulation.clearDeviceMetricsOverride').catch(() => {})
+    await closeSettings().catch(() => {})
+    await ev(`document.querySelector('[data-testid="stoke-account"][aria-expanded="true"]')?.click(), true`).catch(() => {})
+    if (!await ev<boolean>('!!document.querySelector(".sidebar")')) await ev('document.querySelector(\'button[title="Toggle sidebar"]\').click(), true')
+    await resizeSidebar(savedWidth).catch(() => {})
+    if (!hadSidebar && await ev<boolean>('!!document.querySelector(".sidebar")')) await ev('document.querySelector(\'button[title="Toggle sidebar"]\').click(), true')
+  }
+})
+
 await step('completed sign-ins close with the verified email; failed and unknown sign-ins stay visible', async () => {
   const created: string[] = []
   const signInPtys: string[] = []
@@ -926,7 +1001,7 @@ await step('completed sign-ins close with the verified email; failed and unknown
     }
 
     await ev('document.querySelector(\'button[title^="New session"]\').click(), true')
-    await waitFor('Stoke account access on a New tab', () => ev<boolean>(`document.querySelector('[data-testid="active-account"] .account-chip-label')?.textContent === 'Stoke account'`))
+    await waitFor('Stoke account access on a New tab', () => ev<boolean>(`document.querySelector('[data-testid="active-account"] .account-chip-label')?.textContent === 'Accounts'`))
     check('a New tab shows Stoke sign-in without borrowing a local agent account', await ev<boolean>(`!document.querySelector('[data-testid="active-account"]').hasAttribute('data-account')`) === true)
     await ev(`document.querySelector('[data-testid="active-account"]').click(), true`)
     await waitFor('Stoke-only account details', () => ev<boolean>(`!!document.querySelector('.account-panel-sync') && !document.querySelector('[data-testid="account-identity"]')`))
@@ -1426,9 +1501,19 @@ await step('quick terminal opens wrapped links and retains its shell through a p
   let id = ''
   let popup: CdpClient | null = null
   try {
-    const result = await ev<QuickTerminalResult>(`window.stoke.quickTerminal.open('panel', ${JSON.stringify(proj)})`)
+    await activate(tabs.claude!.ptyId)
+    await waitFor('the enabled footer Terminal button', () => ev<boolean>(`document.querySelector('[data-testid="footer-terminal"]')?.title === 'Open local quick terminal'`))
+    await ev(`document.querySelector('[data-testid="footer-terminal"]').click(), true`)
+    const result = await waitFor('the shell opened from the footer', () => ev<QuickTerminalResult | null>('window.stoke.quickTerminal.read().then(snapshot => snapshot.state.mode === "panel" && snapshot.state.phase === "running" ? { ok: true, state: snapshot.state } : null)'))
     if (!result.ok || !result.state.id) throw new Error('the quick shell did not start')
     id = result.state.id
+    check('the footer opens a local shell in the current project', result.state.cwd === proj)
+    await ev(`document.querySelector('[data-testid="footer-terminal"]').click(), true`)
+    await waitFor('the footer hiding the panel', () => ev<boolean>('window.stoke.quickTerminal.read().then(snapshot => snapshot.state.mode === "hidden")'))
+    check('hiding from the footer preserves the running shell', (await ev<{ state: QuickTerminalState }>('window.stoke.quickTerminal.read()')).state.id === id)
+    await waitFor('the footer reflects the hidden panel', () => ev<boolean>(`document.querySelector('[data-testid="footer-terminal"]')?.getAttribute('aria-pressed') === 'false'`))
+    await ev(`document.querySelector('[data-testid="footer-terminal"]').click(), true`)
+    await waitFor('the existing shell shown again', () => ev<boolean>(`window.stoke.quickTerminal.read().then(snapshot => snapshot.state.mode === 'panel' && snapshot.state.id === ${JSON.stringify(id)})`))
     const cols = await waitFor('the fitted quick shell', () => ev<number | null>(`(() => {
       const t = window.stokeQuickTerminals.get(${JSON.stringify(id)}), screen = t?.element?.querySelector('.xterm-screen');
       return screen && screen.getBoundingClientRect().width <= t.element.clientWidth + 1 ? t.cols : null;
@@ -1458,7 +1543,10 @@ await step('quick terminal opens wrapped links and retains its shell through a p
     const opened = await waitFor('the quick-shell URL in Stoke', () => ev<BrowserState | null>(`window.__stokeQuickLinkState?.url === ${JSON.stringify(target)} && !window.__stokeQuickLinkState.loading ? window.__stokeQuickLinkState : null`))
     check('a real quick-terminal tail click retains the complete query', opened.url === target)
     await shot('05-quick-terminal-panel')
-    const popoutButton = await ev<{ x: number; y: number }>(`(() => { const r = document.querySelector('.quick-terminal-actions button').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`)
+    await ev(`document.querySelector('[aria-label="Terminal options"]').click(), true`)
+    await waitFor('footer terminal options', () => ev<boolean>(`!![...document.querySelectorAll('.context-menu-item')].find(button => button.textContent === 'Open in separate window')`))
+    check('footer options are visible above the clipped status bar', await ev<boolean>(`(() => { const menu = document.querySelector('.context-menu'), r = menu.getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight && menu.contains(document.elementFromPoint(r.left + 10, r.top + 10)); })()`) === true)
+    const popoutButton = await ev<{ x: number; y: number }>(`(() => { const r = [...document.querySelectorAll('.context-menu-item')].find(button => button.textContent === 'Open in separate window').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`)
     await ui!.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...popoutButton, button: 'left', clickCount: 1 })
     await ui!.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...popoutButton, button: 'left', clickCount: 1 })
     const moved = await waitFor('the clicked native pop-out', () => ev<QuickTerminalResult | null>('window.stoke.quickTerminal.read().then(snapshot => snapshot.state.mode === "popout" ? { ok: true, state: snapshot.state } : null)'))
@@ -1552,6 +1640,7 @@ if (opt.ssh) {
     await typeLine(ptyId, 'echo STOKE-SSH-$((6*7))')
     const echoed = await waitFor('the remote echo', async () => ((await bufferOf(ptyId)).includes('STOKE-SSH-42') ? true : null), 30_000).catch(() => false)
     check('an echo makes the round trip to the remote shell', echoed === true, echoed ? '' : (await bufferOf(ptyId)).slice(-1200))
+    check('an SSH tab never shows the local project’s Git branch or account', await ev<boolean>(`(!document.querySelector('.sidebar') || document.querySelector('.sidebar-repository-button')?.disabled === true) && !document.querySelector('[data-testid="active-account"]')?.hasAttribute('data-account')`) === true)
     await typeLine(ptyId, '[ -n "$TMUX" ] && echo IN-TMUX-$((1+1))')
     const inTmux = await waitFor('the tmux check', async () => ((await bufferOf(ptyId)).includes('IN-TMUX-2') ? true : null), 15_000).catch(() => false)
     check('the shell is inside the tab\'s managed tmux session (gotcha 126)', inTmux === true)

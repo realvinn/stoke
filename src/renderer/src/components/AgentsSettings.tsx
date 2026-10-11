@@ -1609,7 +1609,7 @@ function AgentAccounts({
       </div>
       {kinds.includes('login') && <details className="account-manager-add" data-testid="add-login-account">
         <summary>Add another sign-in <span className="field-hint">{cli.id === 'claude' ? 'Use a Claude subscription' : cli.id === 'codex' ? 'Use a ChatGPT subscription' : `Use another ${cli.label} login`}</span></summary>
-        <div className="account-manager-form">
+        <div className="account-manager-form" data-setting="agent.loginAccounts">
           <span className="field-hint">Sign in to another {cli.label} account in a new tab. Keep a nickname to tell your accounts apart.</span>
           <label className="account-manager-field">Account nickname
             <input className="input" value={name} placeholder={`e.g. Work (blank: ${cli.label} ${nextNumber})`}

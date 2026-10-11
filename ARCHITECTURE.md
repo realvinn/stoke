@@ -1899,6 +1899,15 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
   src/components/QuickTerminal.tsx  optional command shell panel and pop-out; one live
                     shell, replay, find, selection and web/OSC links. The panel opens in
                     Stoke; the pop-out has only a current-shell HTTP(S) external-link bridge
+  src/components/QuickTerminalButton.tsx  bottom-left Terminal control on every footer,
+                    including when the sidebar is hidden. Off opens opt-in Settings;
+                    enabled toggles the panel without ending its shell. Options open
+                    the same shell in a separate window; the top-bar shortcut remains
+  src/components/SidebarRepository.tsx  read-only local project branch/change summary
+                    above the sidebar account row. Its menu shares the safe Git reader,
+                    shows changes/upstream/worktree details, refreshes, copies the branch
+                    and reveals the repository. No fetch or credential storage; SSH,
+                    remote, browser and private tabs never read a local repository
   src/components/BusyDialog.tsx  "a prompt is running — Force restart / Wait / Cancel", asked
                     before the relaunch pill or "Restart and install" kills a turn in flight.
                     Wait is the focused button. In `overlayOpen`, so the docked browser comes
@@ -2089,12 +2098,19 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
   src/lib/toasts.ts  the toast store (`toast`, `dismissToast`, `useToasts`; at most three) and
                     the floor the pane in front sets for it (`setToastFloor`). Gotcha 154
   src/components/AccountChip.tsx  active local agent's account nickname and native sign-in
-                    identity in the title bar; other tabs offer Stoke's own account. Its
+                    identity in the title bar; other tabs offer Accounts. The sidebar
+                    footer always names Stoke's own sign-in with an upward-opening menu. Its
                     floating popover links to login/API account settings and Stoke Hub.
                     Unknown identity and key/provider authentication are explicit; SSH
                     does not query a local login. Account rows show the same identities
                     in AgentsSettings. A verified successful login closes its sign-in
                     tab and toasts the native email; failed/unverified exits retain output
+  src/components/AccountsSettings.tsx  Settings > Accounts: shared starting point for Stoke
+                    sign-in/device sync and per-agent account management. Claude/Codex,
+                    installed agents and saved accounts appear with new-session defaults;
+                    Add sign-in / Add API account reveal the correct scoped setup form
+  src/lib/useStokeAccount.ts  shared hub-view subscription; a remembered signed-out email
+                    is never presented as an active Stoke account
   src/components/AgentsSettings.tsx  account manager distinguishes Existing setup (Default),
                     saved sign-ins and saved API accounts. Add forms are disclosures; stored
                     nicknames/keys/profiles edit together with explicit Save/Cancel. Paths

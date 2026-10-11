@@ -132,6 +132,7 @@ console.log('every row the sheet marks is in the index, and every row in the ind
     'components/BrowserSettings.tsx': ['browser'],
     'components/BackupSettings.tsx': ['backup'],
     'components/AccountSyncSettings.tsx': ['account'],
+    'components/AccountsSettings.tsx': ['accounts'],
     'components/RemoteSettings.tsx': ['remote', 'updates'],
     'components/AgentsSettings.tsx': ['agents', 'agent', 'claude-launch'],
     'components/AgentUpdater.tsx': ['agents', 'agent']
@@ -227,6 +228,7 @@ console.log('\nthe menu is a tree: Agents opens to the manager and your agents, 
     ['Launch defaults', 'Claude Code settings', 'Provider & keys']
   )
   check('Providers and Claude Code are no longer rows of their own at the top', config?.nodes.map((n) => n.id), [
+    'accounts',
     'sessions',
     AGENTS_NODE,
     'chats',
@@ -251,7 +253,8 @@ console.log('\nthe menu is a tree: Agents opens to the manager and your agents, 
   check('Agents open, Claude Code closed: its pages are not on screen', half.some((v) => v.parent === CLAUDE_NODE), false)
   const both = visibleNodes(tree, new Set([AGENTS_NODE, CLAUDE_NODE]))
   const at = (id: string) => both.find((v) => v.node.id === id)
-  check('both open: the rows walk depth first', both.map((v) => v.node.id).slice(3, 12), [
+  check('both open: the rows walk depth first', both.map((v) => v.node.id).slice(3, 13), [
+    'accounts',
     'sessions',
     AGENTS_NODE,
     'agents',
@@ -491,6 +494,7 @@ console.log('\nevery control the sheet labels is found by its label, on its own 
     'components/BrowserSettings.tsx': ['browser'],
     'components/BackupSettings.tsx': ['backup'],
     'components/AccountSyncSettings.tsx': ['account'],
+    'components/AccountsSettings.tsx': ['accounts'],
     'components/RemoteSettings.tsx': ['remote', 'updates'],
     'components/AgentsSettings.tsx': ['agents', 'agent', 'claude-launch'],
     'components/AgentUpdater.tsx': ['agents', 'agent']

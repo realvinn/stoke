@@ -140,6 +140,7 @@ interface Props {
   onOpenRemoteChat?: (group: RemoteChatGroup, hit: RemoteChatHit) => void
   /** The "Other machines" group (OtherMachines.tsx), shown above the projects while browsing. */
   otherMachines?: React.ReactNode
+  footer?: React.ReactNode
 }
 
 export function Sidebar({
@@ -186,7 +187,8 @@ export function Sidebar({
   onSetUpChats,
   remoteChats,
   onOpenRemoteChat,
-  otherMachines
+  otherMachines,
+  footer
 }: Props): React.JSX.Element {
   /* One picker open at a time, keyed by path — two open popovers in a scrolling
      list is a way to change the wrong folder without noticing. */
@@ -962,6 +964,8 @@ export function Sidebar({
           </button>
         )}
       </div>
+
+      {footer && <div className="sidebar-footer">{footer}</div>}
 
       {projectMenu && menuProject && projectPlan && (
         <ContextMenu

@@ -62,7 +62,7 @@ export function QuickTerminalPanel({ api, state, appearance, surface, onOpenUrl 
       </form>}
       {error && <p className="quick-terminal-error" role="alert">{error}</p>}
       {state.id && <QuickTerminalScreen api={api} id={state.id} appearance={appearance} phase={state.phase} find={find} focusTerminal={focusTerminal} onOpenUrl={onOpenUrl} />}
-      {!state.id && <div className="quick-terminal-empty">{state.phase === 'starting' ? 'Opening shell…' : 'Use Terminal in the top bar to open a shell.'}</div>}
+      {!state.id && <div className="quick-terminal-empty">{state.phase === 'starting' ? 'Opening shell…' : 'Use Terminal in the bottom bar to open a shell.'}</div>}
       <footer className="quick-terminal-footer">
         <span role="status">{state.phase === 'running' ? 'Commands keep running when hidden' : state.phase === 'exited' ? `Shell ended${state.exitCode === null ? '' : ` · Exit ${state.exitCode}`}` : state.phase === 'stopping' ? 'Stopping shell…' : 'Opening shell…'}</span>
         {state.phase === 'exited' || state.phase === 'idle'

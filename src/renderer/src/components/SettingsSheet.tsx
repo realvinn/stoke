@@ -61,6 +61,7 @@ import { VoiceSettings } from './VoiceSettings'
 import { AgentManager, AgentSettingsPage, ClaudeLaunchDefaults, type AgentPagesProps } from './AgentsSettings'
 import { BackupSettings } from './BackupSettings'
 import { AccountSyncSettings } from './AccountSyncSettings'
+import { AccountsSettings } from './AccountsSettings'
 import { ChatHistorySettings } from './ChatHistorySettings'
 import type { ChatDetection, ChatIndexStatus } from '@shared/chatIndex'
 import type { CodingCliDetection, CodingCliId } from '@shared/codingClis'
@@ -1286,6 +1287,8 @@ export function SettingsSheet({
             )}
 
             {loc.page === 'agents' && <AgentManager {...agentProps} />}
+
+            {loc.page === 'accounts' && <AccountsSettings settings={settings} installed={menuAgents} onSync={() => go({ page: 'account' })} onManage={(agent, kind) => go({ page: 'agent', agent }, { id: kind === 'key' ? 'agent.apiAccounts' : kind === 'login' ? 'agent.loginAccounts' : 'agent.accounts', fallback: kind ? 'agent.accounts' : null })} />}
 
             {loc.page === 'agent' && (
               <AgentSettingsPage key={loc.agent ?? 'claude'} {...agentProps} agent={loc.agent ?? 'claude'} />
