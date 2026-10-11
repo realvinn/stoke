@@ -663,7 +663,114 @@ try {
  * rather than merely untested. Said out loud rather than left as a gap in the
  * output.
  */
-console.log('  NOTE  install.ps1 has never been parsed by any PowerShell: there is none on this machine.')
+const powershell = ['pwsh', 'powershell.exe'].find((bin) =>
+  spawnSync(bin, ['-NoProfile', '-Command', 'exit 0'], { stdio: 'pipe' }).status === 0
+)
+
+// ---------------------------------------------------------------------------
+console.log('\nexplicit beta versions and upgrade order')
+// ---------------------------------------------------------------------------
+const versionCases: [string, string, number][] = [
+  ['1.0.0-beta.5', '1.0.0-beta.6', -1],
+  ['1.0.0-beta.10', '1.0.0-beta.6', 1],
+  ['1.0.0-beta.6', '1.0.0-beta.6', 0],
+  ['1.0.0-beta.6', '1.0.0', -1],
+  ['1.0.0', '1.0.0-beta.6', 1],
+  ['0.9.99', '1.0.0-beta.6', -1],
+  ['1.1.0-beta.1', '1.0.0', 1],
+  ['1.0.0-alpha', '1.0.0-beta', -1],
+  ['1.0.0-alpha.1', '1.0.0-alpha', 1],
+  ['1.0.0-1', '1.0.0-alpha', -1],
+  ['1.0.0-beta.A', '1.0.0-beta.a', -1],
+  ['1.0.0-beta.6+build.1', '1.0.0-beta.6+build.2', 0]
+]
+const betaBase = 'https://github.com/realvinn/stoke/releases/download/v1.0.0-beta.6'
+const invalidVersions = ['v1.0.0-beta.6', '../beta', '1.0.0?x=1', '1.0.0\nother', '1.0.0-beta..6']
+const betaTmp = mkdtempSync(join(tmpdir(), 'stoke-beta-install-'))
+try {
+  const payload = Buffer.from('owned beta installer fixture\n')
+  const digest = createHash('sha512').update(payload).digest('base64')
+  const manifest = (extension: string, version = '1.0.0-beta.6'): string =>
+    `version: ${version}\nfiles:\n  - url: Stoke-1.0.0-beta.6${extension}\n    sha512: ${digest}\n    size: ${payload.length}\n`
+  if (POSIX_SH) {
+    const bin = join(betaTmp, 'bin'); mkdirSync(bin)
+    const home = join(betaTmp, 'home'); mkdirSync(join(home, '.local', 'share', 'stoke'), { recursive: true })
+    writeFileSync(join(home, '.local', 'share', 'stoke', 'installed-version'), '1.0.0-beta.5\n')
+    writeFileSync(join(betaTmp, 'asset'), payload)
+    writeFileSync(join(betaTmp, 'manifest'), manifest('.AppImage'))
+    writeFileSync(join(bin, 'uname'), '#!/bin/sh\ncase "$1" in -s) echo Linux;; -m) echo x86_64;; esac\n', { mode: 0o755 })
+    writeFileSync(join(bin, 'id'), '#!/bin/sh\necho 1000\n', { mode: 0o755 })
+    writeFileSync(join(bin, 'curl'), `#!/bin/sh
+dest=''
+while [ "$#" -gt 0 ]; do
+  case "$1" in -o) dest=$2; shift 2;; *) url=$1; shift;; esac
+done
+printf '%s\\n' "$url" >> "$STOKE_TEST_REQUESTS"
+case "$url" in
+  '${betaBase}/latest-linux.yml') cp "$STOKE_TEST_ROOT/manifest" "$dest";;
+  '${betaBase}/Stoke-1.0.0-beta.6.AppImage') cp "$STOKE_TEST_ROOT/asset" "$dest";;
+  *) exit 22;;
+esac
+`, { mode: 0o755 })
+    for (const shell of SHELLS.filter(existsSync)) {
+      const env = { ...process.env, STOKE_VERSION: '', STOKE_FORCE: '', TERM_PROGRAM: '', OS: '', HOME: home }
+      check(`${shell}: default remains stable`, execFileSync(shell, [SH, '--print-release'], { env, encoding: 'utf8' }).trim(), 'https://github.com/realvinn/stoke/releases/latest/download')
+      check(`${shell}: explicit beta URL`, execFileSync(shell, [SH, '--print-release'], { env: { ...env, STOKE_VERSION: '1.0.0-beta.6' }, encoding: 'utf8' }).trim(), betaBase)
+      for (const [a, b, want] of versionCases) {
+        check(`${shell}: ${a} vs ${b}`, Number(execFileSync(shell, [SH, '--compare-versions', a, b], { env, encoding: 'utf8' }).trim()), want)
+      }
+      for (const version of invalidVersions) {
+        ok(`${shell}: refuses invalid version ${JSON.stringify(version)}`, spawnSync(shell, [SH, '--print-release'], { env: { ...env, STOKE_VERSION: version } }).status !== 0)
+      }
+      const requests = join(betaTmp, 'requests'); writeFileSync(requests, '')
+      const fixtureEnv = { ...env, PATH: `${bin}:${process.env.PATH}`, STOKE_VERSION: '1.0.0-beta.6', STOKE_DRY_RUN: '1', STOKE_NO_ANIMATION: '1', STOKE_TEST_ROOT: betaTmp, STOKE_TEST_REQUESTS: requests }
+      const result = spawnSync(shell, [SH], { env: fixtureEnv, encoding: 'utf8' })
+      ok(`${shell}: beta.5 upgrades through beta.6 download and digest verification`, result.status === 0 && result.stdout.includes('sha512 matches') && result.stdout.includes('STOKE_DRY_RUN'), result.stdout + result.stderr)
+      check(`${shell}: manifest and asset use the same beta tag`, readFileSync(requests, 'utf8').trim().split('\n'), [`${betaBase}/latest-linux.yml`, `${betaBase}/Stoke-1.0.0-beta.6.AppImage`])
+      writeFileSync(join(betaTmp, 'manifest'), manifest('.AppImage', '1.0.0-beta.5'))
+      writeFileSync(requests, '')
+      const mismatch = spawnSync(shell, [SH], { env: fixtureEnv, encoding: 'utf8' })
+      ok(`${shell}: wrong manifest version refuses before downloading the asset`, mismatch.status !== 0 && mismatch.stderr.includes('but the manifest describes') && readFileSync(requests, 'utf8').trim().split('\n').length === 1)
+      writeFileSync(join(betaTmp, 'manifest'), manifest('.AppImage'))
+    }
+  }
+  if (powershell) {
+    const psHarness = join(betaTmp, 'beta.ps1')
+    const calls = versionCases.map(([a, b]) => `Compare-StokeVersion '${a}' '${b}'`).join('\n')
+    const invalid = invalidVersions.map((version) => Buffer.from(version).toString('base64'))
+    writeFileSync(psHarness, ps1Text.replace(/\nInstall-Stoke\s*$/, '\n') + `
+Get-StokeDownloadBase ''
+Get-StokeDownloadBase '1.0.0-beta.6'
+${calls}
+${invalid.map((version) => `try { Get-StokeDownloadBase ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${version}'))); throw 'accepted invalid version' } catch { if ($_.Exception.Message -eq 'accepted invalid version') { throw }; 'refused' }`).join('\n')}
+`)
+    const result = spawnSync(powershell, ['-NoProfile', '-File', psHarness], { encoding: 'utf8' })
+    ok('PowerShell parses the complete installer and executes version selection', result.status === 0, result.stderr)
+    check('PowerShell beta URL, semantic order and invalid versions agree with POSIX', result.stdout.trim().split(/\r?\n/), ['https://github.com/realvinn/stoke/releases/latest/download', betaBase, ...versionCases.map(([, , want]) => String(want)), ...invalidVersions.map(() => 'refused')])
+    if (process.platform === 'win32') {
+      // Exercise Install-Stoke itself, with no vendor requests or user app access.
+      writeFileSync(psHarness, ps1Text.replace(/\nInstall-Stoke\s*$/, '\n') + `
+$env:STOKE_DRY_RUN='1'; $env:STOKE_VERSION='1.0.0-beta.6'; $env:STOKE_FORCE=''; $env:TERM_PROGRAM=''
+$script:Requests = @()
+function Invoke-RestMethod { param($Uri, [switch]$UseBasicParsing); $script:Requests += $Uri; return [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${Buffer.from(manifest('-x64-setup.exe')).toString('base64')}')) }
+function Get-StokeDownload { param($Uri, $OutFile, $Total, $Plan); $script:Requests += $Uri; [IO.File]::WriteAllBytes($OutFile, [Convert]::FromBase64String('${payload.toString('base64')}')) }
+function Get-InstalledStoke { return [pscustomobject]@{ Version='1.0.0-beta.5'; Location=''; PerMachine=$false } }
+$env:PROCESSOR_ARCHITECTURE='AMD64'
+function Get-ItemProperty { throw 'owned fixture' }
+function Get-CimInstance { throw 'owned fixture' }
+function Stop-StokeGracefully { throw 'a dry run must not close Stoke' }
+Install-Stoke
+if (($script:Requests -join '|') -cne '${betaBase}/latest.yml|${betaBase}/Stoke-1.0.0-beta.6-x64-setup.exe') { throw 'wrong release URLs' }
+`)
+      const dry = spawnSync(powershell, ['-NoProfile', '-File', psHarness], { encoding: 'utf8' })
+      ok('Windows: beta.5 upgrades through a pinned beta.6 manifest, asset and checksum', dry.status === 0 && dry.stdout.includes('sha512 matches') && dry.stdout.includes('STOKE_DRY_RUN'), dry.stdout + dry.stderr)
+    }
+  } else {
+    console.log('  SKIP  PowerShell is unavailable; native CI executes its beta fixture.')
+  }
+} finally {
+  rmSync(betaTmp, { recursive: true, force: true })
+}
 
 // ---------------------------------------------------------------------------
 console.log('\nthe campfire art is generated, not typed')

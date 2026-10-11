@@ -43,6 +43,22 @@ that resolves the latest release, checks every byte against the sha512 in the
 release's own update manifest, and puts the app where it goes. run the same line
 again to upgrade. `STOKE_DRY_RUN=1` does all of it except the installing.
 
+To install a published beta, select its exact version. The plain command selects
+the latest stable release. On macOS, Linux or Git Bash:
+
+```bash
+curl -fsSL https://stoke.vinn.dev/install.sh | STOKE_VERSION=1.0.0-beta.6 sh
+```
+
+In Windows PowerShell:
+
+```powershell
+$env:STOKE_VERSION='1.0.0-beta.6'; irm https://stoke.vinn.dev/install.ps1 | iex
+Remove-Item Env:STOKE_VERSION
+```
+
+Run from a terminal outside Stoke; installing closes the existing app cleanly.
+
 then, from any terminal, `stoke .` opens the folder you are in (or brings the tab
 already running there forward), `stoke --new` always opens another tab,
 `stoke --cli codex` starts a different coding cli, and `stoke --help` lists the

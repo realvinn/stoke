@@ -391,6 +391,9 @@ stoke installer
 
   STOKE_DRY_RUN=1     resolve, download and verify, then stop. Installs nothing.
   STOKE_FORCE=1       install even when the installed copy is the same or newer.
+  STOKE_VERSION=1.0.0-beta.6  install this exact published version (including betas).
+                      Set it on sh: curl -fsSL https://stoke.vinn.dev |
+                        STOKE_VERSION=1.0.0-beta.6 sh
   STOKE_NO_ANIMATION=1  no fire; one honest line per decile instead.
   NO_COLOR=1          the fire, in one colour. (It still burns: NO_COLOR is
                       about colour, not about motion.)
@@ -402,6 +405,8 @@ stoke installer
   --print-wrapper [APPIMAGE]  the Linux launcher this would install.
   --preflight         what this script makes of THIS machine. Resolves nothing,
                       downloads nothing, writes nothing.
+  --print-release     the selected release's download URL; no network or writes.
+  --compare-versions A B  print -1, 0 or 1 in semantic version order.
   --sha512 FILE       a file's sha512 in the base64 form the release manifests
                       use, so a download can be checked against one by hand.
   --link-cli SHIM     run SHIM's own `install-cli`, exactly as a macOS install
@@ -904,36 +909,48 @@ asset_matches() {
   return 1
 }
 
-# The numeric part of a version, as three integers in VER_MAJOR/MINOR/PATCH. A
-# `-beta.3` suffix is deliberately ignored: comparing prerelease identifiers
-# properly is a rabbit hole, and the only thing this comparison has to get right
-# is "same" versus "older" versus "newer" on the release line.
-version_parts() {
-  ver_rest=${1%%-*}
-  VER_MAJOR=${ver_rest%%.*}
-  ver_rest=${ver_rest#*.}
-  VER_MINOR=${ver_rest%%.*}
-  VER_PATCH=${ver_rest#*.}
-  case $VER_MAJOR in '' | *[!0-9]*) VER_MAJOR=0 ;; esac
-  case $VER_MINOR in '' | *[!0-9]*) VER_MINOR=0 ;; esac
-  case $VER_PATCH in '' | *[!0-9]*) VER_PATCH=0 ;; esac
+release_download() {
+  STOKE_REQUESTED_VERSION=${STOKE_VERSION:-}
+  if [ -n "$STOKE_REQUESTED_VERSION" ]; then
+    case $STOKE_REQUESTED_VERSION in
+      *[!0-9A-Za-z.-]*) die 'STOKE_VERSION contains invalid characters.' ;;
+    esac
+    if ! printf '%s\n' "$STOKE_REQUESTED_VERSION" | LC_ALL=C awk '
+      /^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$/ { valid=1 }
+      END { exit !valid }
+    '; then
+      die 'STOKE_VERSION must be a version such as 1.0.0-beta.6, without a v prefix.'
+    fi
+    STOKE_LATEST_DL="$STOKE_RELEASES/download/v$STOKE_REQUESTED_VERSION"
+  fi
 }
 
-# -1, 0 or 1 for $1 against $2, in VER_CMP.
+# Semver precedence, including beta.5 < beta.6 < beta.10 < the stable version.
+# Build metadata does not affect precedence. Ordinal text order agrees with PS.
 version_cmp() {
-  version_parts "$1"
-  cmp_a=$VER_MAJOR
-  cmp_b=$VER_MINOR
-  cmp_c=$VER_PATCH
-  version_parts "$2"
-  VER_CMP=0
-  if [ "$cmp_a" -lt "$VER_MAJOR" ]; then VER_CMP=-1
-  elif [ "$cmp_a" -gt "$VER_MAJOR" ]; then VER_CMP=1
-  elif [ "$cmp_b" -lt "$VER_MINOR" ]; then VER_CMP=-1
-  elif [ "$cmp_b" -gt "$VER_MINOR" ]; then VER_CMP=1
-  elif [ "$cmp_c" -lt "$VER_PATCH" ]; then VER_CMP=-1
-  elif [ "$cmp_c" -gt "$VER_PATCH" ]; then VER_CMP=1
-  fi
+  VER_CMP=$(printf '%s\n%s\n' "$1" "$2" | LC_ALL=C awk '
+    NR == 1 { a=$0; sub(/\+.*/, "", a); next }
+    NR == 2 { b=$0; sub(/\+.*/, "", b) }
+    END {
+      ac=a; bc=b; sub(/-.*/, "", ac); sub(/-.*/, "", bc)
+      split(ac, x, "."); split(bc, y, ".")
+      for (i=1; i<=3; i++) {
+        if (x[i]+0 < y[i]+0) { print -1; exit }
+        if (x[i]+0 > y[i]+0) { print 1; exit }
+      }
+      ap=index(a, "-"); bp=index(b, "-")
+      if (!ap || !bp) { print ap ? -1 : (bp ? 1 : 0); exit }
+      an=split(substr(a, ap+1), x, "."); bn=split(substr(b, bp+1), y, ".")
+      for (i=1; i<=an && i<=bn; i++) {
+        if (x[i] == y[i]) continue
+        xn=x[i] ~ /^[0-9]+$/; yn=y[i] ~ /^[0-9]+$/
+        if (xn && yn) { print (x[i]+0 < y[i]+0 ? -1 : 1); exit }
+        if (xn != yn) { print xn ? -1 : 1; exit }
+        print (("x" x[i]) < ("x" y[i]) ? -1 : 1); exit
+      }
+      print (an < bn ? -1 : (an > bn ? 1 : 0))
+    }
+  ')
 }
 
 # --- installing ----------------------------------------------------------
@@ -1568,6 +1585,17 @@ main() {
       do_preflight
       return 0
       ;;
+    --print-release)
+      release_download
+      printf '%s\n' "$STOKE_LATEST_DL"
+      return 0
+      ;;
+    --compare-versions)
+      if [ -z "${2:-}" ] || [ -z "${3:-}" ]; then die 'usage: --compare-versions A B'; fi
+      version_cmp "$2" "$3"
+      printf '%s\n' "$VER_CMP"
+      return 0
+      ;;
     --print-wrapper)
       # The Linux launcher, as install_linux would write it. Takes the AppImage
       # path so a suite can point it at a stand-in and RUN both branches.
@@ -1590,6 +1618,8 @@ main() {
     '') : ;;
     *) die "Unknown option: $1" 'Run with --help to see what this understands.' ;;
   esac
+
+  release_download
 
   # Windows first, because sniffing cannot catch it: curl.exe ships in every
   # Windows 10 1803+ and sends `curl/8.x`, indistinguishable from curl on Linux,
@@ -1681,7 +1711,7 @@ main() {
         'That page lists what each release actually has.'
     fi
     fetch_said
-    die "Could not fetch $MANIFEST from the latest release." \
+    die "Could not fetch $MANIFEST from the selected release." \
       'Check your network, or download a build by hand from' \
       "  $STOKE_RELEASES"
   fi
@@ -1699,6 +1729,9 @@ main() {
   read_manifest "$TMPD/$MANIFEST" "$WANT_EXT" "$ARCH"
   if [ -z "$REL_VERSION" ]; then
     die "Could not read a version out of $MANIFEST."
+  fi
+  if [ -n "$STOKE_REQUESTED_VERSION" ] && [ "$REL_VERSION" != "$STOKE_REQUESTED_VERSION" ]; then
+    die "Requested Stoke $STOKE_REQUESTED_VERSION, but the manifest describes $REL_VERSION."
   fi
   if [ -z "$REL_FILE" ]; then
     # The honest sentence, not a 404 later. v0.9.4 is arm64-only on macOS; the

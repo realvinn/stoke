@@ -15,6 +15,8 @@
 # byte against the sha512 in that release's own update manifest before running
 # anything. $env:STOKE_DRY_RUN = '1' does all of that and stops before running
 # the installer.
+# For a published beta, set $env:STOKE_VERSION = '1.0.0-beta.6' before running
+# the one-liner. With no version selected, it installs the latest stable release.
 #
 # ---------------------------------------------------------------------------
 # Everything is inside Install-Stoke, which is called on the LAST line. `iex`
@@ -344,6 +346,14 @@ $FireStride = 3
 
 $StokeReleases = 'https://github.com/realvinn/stoke/releases'
 $StokeLatestDownload = "$StokeReleases/latest/download"
+
+function Get-StokeDownloadBase([string]$Version) {
+  if (-not $Version) { return $StokeLatestDownload }
+  if ($Version -cnotmatch '\A[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?\z') {
+    throw 'STOKE_VERSION must be a version such as 1.0.0-beta.6, without a v prefix.'
+  }
+  return "$StokeReleases/download/v$Version"
+}
 $StokeShLine = 'curl -fsSL https://stoke.vinn.dev | sh'
 $Esc = [char]27
 
@@ -432,7 +442,9 @@ function Install-Stoke {
     # script and the app agree about what "latest" means by construction. The
     # /releases/latest/download/ redirect needs no API token and has no rate
     # limit worth thinking about.
-    $manifestText = Invoke-RestMethod -Uri "$StokeLatestDownload/latest.yml" -UseBasicParsing
+    $requestedVersion = $env:STOKE_VERSION
+    $downloadBase = Get-StokeDownloadBase $requestedVersion
+    $manifestText = Invoke-RestMethod -Uri "$downloadBase/latest.yml" -UseBasicParsing
 
     # Assert the body is a manifest before trusting a byte of it. Cloudflare's
     # bot defences answer a challenge with HTML and HTTP 200, which no error
@@ -443,6 +455,9 @@ function Install-Stoke {
 
     $release = Read-StokeManifest -Text $manifestText -Extension '.exe' -Arch $arch
     if (-not $release.Version) { throw 'Could not read a version out of latest.yml.' }
+    if ($requestedVersion -and $release.Version -cne $requestedVersion) {
+      throw "Requested Stoke $requestedVersion, but the manifest describes $($release.Version)."
+    }
     if (-not $release.File) {
       throw "Stoke $($release.Version) has no Windows $arch build. The release lists no installer for this architecture, so there is nothing to install. See $StokeReleases"
     }
@@ -486,7 +501,7 @@ function Install-Stoke {
 
     $exe = Join-Path $tmp $release.File
     Write-Host ''
-    Get-StokeDownload -Uri "$StokeLatestDownload/$($release.File)" -OutFile $exe -Total $release.Size -Plan $plan
+    Get-StokeDownload -Uri "$downloadBase/$($release.File)" -OutFile $exe -Total $release.Size -Plan $plan
     Write-Host ''
 
     $got = (Get-Item $exe).Length
@@ -624,10 +639,10 @@ function Test-StokeAsset([string]$Name, [string]$Extension, [string]$Arch) {
   return ($Name -match 'x64|x86_64|amd64')
 }
 
-# The numeric part only. A -beta.3 suffix is ignored: comparing prerelease
-# identifiers properly is a rabbit hole, and all this has to get right is
-# same/older/newer on the release line.
+# Core versions and prerelease identifiers follow semver precedence, including
+# beta.5 < beta.6 < stable. Build metadata does not affect that order.
 function Compare-StokeVersion([string]$A, [string]$B) {
+  $A = ($A -split '\+')[0]; $B = ($B -split '\+')[0]
   $pa = ($A -split '-')[0] -split '\.'
   $pb = ($B -split '-')[0] -split '\.'
   for ($i = 0; $i -lt 3; $i++) {
@@ -637,6 +652,26 @@ function Compare-StokeVersion([string]$A, [string]$B) {
     if ($x -lt $y) { return -1 }
     if ($x -gt $y) { return 1 }
   }
+  $aDash = $A.IndexOf('-'); $bDash = $B.IndexOf('-')
+  if ($aDash -lt 0 -or $bDash -lt 0) {
+    if ($aDash -ge 0) { return -1 }
+    if ($bDash -ge 0) { return 1 }
+    return 0
+  }
+  $ap = $A.Substring($aDash + 1) -split '\.'
+  $bp = $B.Substring($bDash + 1) -split '\.'
+  for ($i = 0; $i -lt [Math]::Min($ap.Count, $bp.Count); $i++) {
+    if ($ap[$i] -ceq $bp[$i]) { continue }
+    $xn = $ap[$i] -match '^[0-9]+$'; $yn = $bp[$i] -match '^[0-9]+$'
+    if ($xn -and $yn) {
+      if ([decimal]$ap[$i] -lt [decimal]$bp[$i]) { return -1 }
+      return 1
+    }
+    if ($xn -ne $yn) { if ($xn) { return -1 }; return 1 }
+    return [Math]::Sign([string]::CompareOrdinal($ap[$i], $bp[$i]))
+  }
+  if ($ap.Count -lt $bp.Count) { return -1 }
+  if ($ap.Count -gt $bp.Count) { return 1 }
   return 0
 }
 
