@@ -1,3 +1,4 @@
+import { prepareSshRoute } from './sshRoutes.ts'
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { constants } from 'node:fs'
 import { mkdtemp, open, rm, type FileHandle } from 'node:fs/promises'
@@ -78,8 +79,10 @@ export class SshFiles {
     const root = sshDownloadFolder(host.downloadFolder)
     if (!root) fail(403, 'SSH downloads are off. Set a download folder for this host in Stoke’s SSH settings.')
     if (!phoneRelativePath(path) || (operation === 'download' && !path)) fail(400, 'Choose a relative path inside the configured download folder.')
-    const args = sshFileArgs(host)
+    let args = sshFileArgs(host)
     if (!args) fail(400, 'This SSH host has no usable alias. Check its settings.')
+    if (!this.options.start) args = await prepareSshRoute(args, sshExecutable(), sshChildEnv(), signal)
+    if (signal.aborted) fail(408, 'The SSH transfer was cancelled.')
     let folder: string | null = null
     let file: FileHandle | null = null
     let child: ChildProcessWithoutNullStreams | null = null

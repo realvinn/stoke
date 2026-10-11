@@ -1,3 +1,4 @@
+import { usePlugins } from '../lib/usePlugins'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Project } from '@shared/types'
 import type { CodingCliId } from '@shared/codingClis'
@@ -68,6 +69,7 @@ export function CommandPalette({
   actionBlocked = null,
   onClose
 }: Props): React.JSX.Element {
+  const { view: plugins } = usePlugins()
   const [query, setQuery] = useState('')
   const [index, setIndex] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -79,7 +81,7 @@ export function CommandPalette({
 
   const agentsKey = settingsAgents.join(',')
   const accountsKey = settingsAccountAgents.join(',')
-  const entries = useMemo(() => settingsEntries({ agents: settingsAgents, accountAgents: settingsAccountAgents, platform: window.stoke.platform }), [agentsKey, accountsKey])
+  const entries = useMemo(() => settingsEntries({ agents: settingsAgents, accountAgents: settingsAccountAgents, enabledPlugins: plugins?.entries.filter(entry => entry.enabled).map(entry => entry.manifest.id) ?? [], platform: window.stoke.platform }), [agentsKey, accountsKey, plugins])
   const hasFind = !!onFind
   const hasActions = !!onPickAction
   const rows = useMemo((): Row[] => {

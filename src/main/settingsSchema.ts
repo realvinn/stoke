@@ -1,3 +1,4 @@
+import { sshDirectIp } from '../shared/sshRoutes.ts'
 /**
  * The settings schema: defaults and repair, with no `electron` import.
  *
@@ -419,6 +420,9 @@ export function hydrateSettings(raw: unknown): Settings {
             const { syncId, ...rest } = h
             return {
               ...rest,
+              remoteDeviceId: isId('device', h.remoteDeviceId) ? h.remoteDeviceId : '',
+              preferredAddress: sshDirectIp(h.preferredAddress) ?? '',
+              mergedAliases: Array.isArray(h.mergedAliases) ? h.mergedAliases.filter(alias => typeof alias === 'string' && alias.length <= 256 && !/[\u0000-\u001f]/.test(alias)).slice(0, 32) : [],
               ...(isId('host', syncId) ? { syncId } : {}),
               worklog: h.worklog === true,
               // Find's consent to copy this host's conversation here: the

@@ -1,3 +1,4 @@
+import { sshDirectIp } from '../shared/sshRoutes.ts'
 /**
  * SSH sessions: reaching a VPS or a NUC from the Stoke that is already running,
  * rather than installing Stoke on a headless box.
@@ -410,10 +411,17 @@ export function sshChildEnv(source: Record<string, string | undefined> = process
  * wrapper (`buildPersistentCommand`), which carries the user's own command
  * inside it verbatim. See `sshHostArgs`, which is what the pty actually calls.
  */
+export function preferredSshArgs(host: SshHost): string[] {
+  if (!host.preferredAddress?.trim()) return []
+  const ip = sshDirectIp(host.preferredAddress)
+  if (!ip) throw new Error('The preferred SSH address must be a literal IP.')
+  return ['-o', `Hostname=${ip}`]
+}
+
 export function buildSshArgs(host: SshHost, remoteCommand?: string): string[] {
   const alias = host.alias.trim()
   const command = (remoteCommand ?? host.command).trim()
-  const args: string[] = []
+  const args: string[] = preferredSshArgs(host)
 
   /*
    * 4. **`-e none`, or pasting into a remote session corrupts itself.**
@@ -662,6 +670,7 @@ function batchArgs(host: SshHost, body: string): string[] | null {
   if (!alias || alias.startsWith('-')) return null
   if (body.includes("'")) return null
   return [
+    ...preferredSshArgs(host),
     '-o',
     'BatchMode=yes',
     '-o',
@@ -759,6 +768,7 @@ export function buildUploadArgs(host: SshHost, name: string, size: number): stri
   if (!alias || alias.startsWith('-')) return null
   if (body.includes("'")) return null
   return [
+    ...preferredSshArgs(host),
     '-T',
     '-x',
     '-o',
@@ -1133,7 +1143,7 @@ export function buildTranscriptCommand(sessionId?: string | null): string {
  */
 export function buildTranscriptArgs(host: SshHost, sessionId?: string | null): string[] {
   const alias = host.alias.trim()
-  const args = ['-o', 'BatchMode=yes']
+  const args = [...preferredSshArgs(host), '-o', 'BatchMode=yes']
   if (alias.startsWith('-')) args.push('--')
   args.push(alias, buildTranscriptCommand(sessionId))
   return args

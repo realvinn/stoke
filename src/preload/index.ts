@@ -343,6 +343,7 @@ const api: StokeApi = {
   },
 
   ssh: {
+    mergeRoutes: () => ipcRenderer.invoke(CH.sshMergeRoutes),
     filesList: (request) => ipcRenderer.invoke(CH.sshFilesList, request),
     filesSave: (request) => ipcRenderer.invoke(CH.sshFilesSave, request),
     filesCancel: (requestId) => ipcRenderer.send(CH.sshFilesCancel, requestId),
@@ -378,6 +379,27 @@ const api: StokeApi = {
 
   activity: {
     read: (from: number, to: number) => ipcRenderer.invoke(CH.activityRead, from, to)
+  },
+  plugins: {
+    read: () => ipcRenderer.invoke(CH.pluginsRead),
+    onChange: (cb) => on<[Parameters<typeof cb>[0]]>(CH.pluginsChanged, cb),
+    toggle: (id, enabled) => ipcRenderer.invoke(CH.pluginsToggle, id, enabled),
+    install: (id) => ipcRenderer.invoke(CH.pluginsInstall, id),
+    import: () => ipcRenderer.invoke(CH.pluginsImport),
+    export: (id) => ipcRenderer.invoke(CH.pluginsExport, id),
+    create: (id, name) => ipcRenderer.invoke(CH.pluginsCreate, id, name),
+    remove: (id) => ipcRenderer.invoke(CH.pluginsRemove, id),
+    run: (id, action, project) => ipcRenderer.invoke(CH.pluginsRun, id, action, project),
+    onOpen: (cb) => on<[string]>(CH.pluginsOpen, cb),
+    pending: (consume) => ipcRenderer.invoke(CH.pluginsPending, consume)
+  },
+  grokBot: {
+    read: () => ipcRenderer.invoke(CH.grokBotRead),
+    install: () => ipcRenderer.invoke(CH.grokBotInstall),
+    sources: () => ipcRenderer.invoke(CH.grokBotSources),
+    change: (command) => ipcRenderer.invoke(CH.grokBotChange, command),
+    operate: (operation) => ipcRenderer.invoke(CH.grokBotOperate, operation),
+    onChange: (cb) => on<[Parameters<typeof cb>[0]]>(CH.grokBotChanged, cb)
   },
   work: {
     read: () => ipcRenderer.invoke(CH.workRead),

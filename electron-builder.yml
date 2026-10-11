@@ -1,3 +1,6 @@
+protocols:
+  - name: Stoke plugin marketplace
+    schemes: [stoke]
 appId: dev.vinn.stoke
 productName: Stoke
 # Where electron-updater looks for new versions. Publishing a GitHub release
@@ -30,6 +33,7 @@ electronFuses:
   enableCookieEncryption: true
   runAsNode: true
 files:
+  - build/licenses/**
   - out/**
   - package.json
   - '!**/*.map'

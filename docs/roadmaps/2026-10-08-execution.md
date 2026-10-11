@@ -2,7 +2,7 @@
 
 The [product roadmap](2026-10-08-product-roadmap.md) defines the requested scope. This record distinguishes implemented behavior from remaining work and live verification.
 
-## Current coverage — 11 October 2026
+## Current coverage — 12 October 2026
 
 The complete roadmap is still in progress. This table reflects the current code; the sections below record verification and limitations.
 
@@ -410,3 +410,17 @@ OpenCode supports named Anthropic, OpenAI, OpenRouter, NanoGPT and custom API ac
 Claude Code's Anthropic account form explains its native key approval: approve the selected key on launch, or enable “Use custom API key” in `/config` after a previous decline. This is supported by the [Claude Code authentication documentation](https://code.claude.com/docs/en/authentication). The user's specific failure is not diagnosed without its error/prompt; Stoke does not automatically rewrite Claude's approval state. OpenCode's provider/config mapping follows its [provider documentation](https://opencode.ai/docs/providers/) and [runtime config documentation](https://opencode.ai/docs/config/).
 
 Validation: the full `npm run check` gate passes. Account tests cover OpenCode's provider adapters, conflicting global endpoint settings, model selection, retained MCP, missing keys/models and sealed persistence. Settings tests cover submenu ancestry, retained agent targets, saved/uninstalled accounts, row search and both search surfaces. An isolated packaged Mac ARM64 probe has 213 passes and zero failures, including the rendered saved-key workflow and selected-account PTY launch. Accounts and OpenCode form screenshots were inspected. Separately, the real OpenCode 1.18.34 CLI completed two local Anthropic Messages requests against an owned mock endpoint with the selected X-Api-Key/model, despite a conflicting remembered OpenAI model/key; no paid API calls or user authentication files were used. These source changes are not in published beta.6.
+
+## Native plugin packages, Grok Bot and SSH routes after beta.6
+
+Implemented in source: central Settings → Plugins lifecycle, native package review/import/export/creation, Node command panels, appearance overrides, strict package validation, disabled-by-default installation and revocation of pending/live commands. Work integrates with the durable registry, and its disabled controls are omitted from search. Grok Bot contributes no account or bot controls while disabled.
+
+Grok Bot uses the reviewed unofficial grok-bot-cli 0.12.4, pinned by archive/runtime hashes, without install hooks. Named accounts are separately sealed with OS protection; explicit desktop session import works with macOS/Linux/Windows descriptor formats, including multiple slots. Every operation receives the selected gateway tuple and routing headers. Five isolated accounts and unknown-send handling are proven against an owned local gateway using the actual published npm artifact. Plugin credentials remain local; a shared API connection registry and cross-device plugin-account sync are still open. See [native plugin guide](../plugins.md).
+
+SSH supports a preferred literal direct IP, retaining config aliases and fallback on TCP unreachability. Duplicate-route suggestions compare resolved SSH identities and shared known host keys; merges are explicit and exclude hosts with active sessions. Saved hosts can be linked to a verified Stoke device to group SSH routes and shared sessions under Other machines. Direct routes sort before Tailscale. Existing shared sessions retain their authenticated encrypted Hub relay. Live IP/Tailscale switching on the user's devices is not yet proven.
+
+Marketplace: /marketplace, /marketplace/sdk, catalog and package-download endpoints added to the installer Worker without changing the shell or PowerShell payloads. Native stoke: links open review, never automatic code execution. This API is not in the published beta.6. Public deployment and packaged-native validation are recorded after completion below.
+
+Validation completed on 12 October 2026: the full `npm run check` gate passes, including typechecks, all existing suites, 38 new plugin/account/marketplace/SSH checks, the real Electron selection test and both builds. The actual pinned CLI also passes the owned five-account gateway exercise. Packaged macOS ARM64 verification passes 229 checks with zero failures, including the selected-account list/send actions, encrypted storage, disabled-plugin IPC/UI gates, generic extension execution and graceful quit/relaunch. The focused Grok account page was inspected at 940×720 and shows all five accounts plus the active nickname. Windows/Linux desktop-session crypto formats are tested with owned fixtures; real account imports and user-device IP/Tailscale failover remain unproven.
+
+Marketplace deployed successfully as Worker version `76f1642f-1924-4fdf-acf4-a002e84557b0`. Live catalog/package responses match the compiled source. Shell and PowerShell installer bodies and their content-negotiation routes remain byte-identical. The published marketplace was visually inspected in a separate disposable Electron browser. No real bots received messages and no user's login files were read during verification. No new beta release was cut.

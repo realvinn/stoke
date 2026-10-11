@@ -31,6 +31,7 @@ import {
   routeFor,
   type InstallerBody
 } from './route.ts'
+import { marketplaceResponse } from './marketplace.ts'
 import sh from '../install/install.sh'
 import ps1 from '../install/install.ps1'
 import html from '../install/index.html'
@@ -65,6 +66,9 @@ export default {
         }
       })
     }
+
+    const marketplace = marketplaceResponse(request)
+    if (marketplace) return marketplace
 
     const route = routeFor(request.url, headers)
 

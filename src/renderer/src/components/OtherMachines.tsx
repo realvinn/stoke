@@ -1,3 +1,5 @@
+import { linkedSshRoutes, sshDirectIp } from '@shared/sshRoutes'
+import type { SshHost } from '@shared/types'
 import { useState } from 'react'
 import type { HubRemoteView, OtherMachineView, RemoteSessionSummary } from '@shared/hub/remote'
 import { ContextBar } from './ContextMeter'
@@ -27,11 +29,13 @@ const STATUS_WORDS: Record<RemoteSessionSummary['status'], string> = {
 }
 
 interface Props {
+  hosts?: readonly SshHost[]
+  onSsh?: (host: SshHost) => void
   view: HubRemoteView
   onOpen: (machine: OtherMachineView, session: RemoteSessionSummary) => void
 }
 
-export function OtherMachines({ view, onOpen }: Props): React.JSX.Element | null {
+export function OtherMachines({ view, onOpen, hosts = [], onSsh }: Props): React.JSX.Element | null {
   const [folded, setFolded] = useState(false)
   if (!view.available) return null
   const open = new Set(view.tabs.map((t) => `${t.device}\n${t.ptyId}`))
@@ -53,6 +57,7 @@ export function OtherMachines({ view, onOpen }: Props): React.JSX.Element | null
               <span className="machine-name truncate">{m.label}</span>
               <span className="machine-platform">{platformName(m.platform)}</span>
             </div>
+            {onSsh && linkedSshRoutes(hosts, m.id).map(host => <button className="session remote-session" key={host.id} data-machine-ssh={host.id} onClick={() => onSsh(host)} title={`SSH through ${host.alias}; shared Stoke sessions below use the authenticated hub relay.`}><span className="session-title">Open SSH · {host.label || host.alias}</span><span className="session-meta">{sshDirectIp(host.preferredAddress) ?? sshDirectIp(host.alias.split('@').at(-1)) ?? host.alias} · {host.preferredAddress ? 'IP preferred · alias fallback' : 'SSH route'}</span></button>)}
             {m.status === null ? (
               <p className="sidebar-note machine-note">Waiting for it to say what it runs…</p>
             ) : !m.status.open ? (

@@ -50,6 +50,7 @@ export type SettingsPageId =
   | 'projects'
   | 'hosts'
   | 'browser'
+  | 'plugins'
   | 'worklog'
   | 'remote'
   | 'updates'
@@ -85,6 +86,7 @@ export interface SettingsPageDef {
  * in. `agent` is a template: its label is the agent's.
  */
 export const SETTINGS_PAGES: readonly SettingsPageDef[] = [
+  { id: 'plugins', label: 'Plugins', hint: 'Install, create and manage native Stoke plugins and mods', keywords: ['marketplace', 'extension', 'mod', 'create plugin'] },
   {
     id: 'appearance',
     label: 'Appearance',
@@ -306,6 +308,7 @@ export function navTree(agents: readonly CodingCliId[], accountAgents: readonly 
             ...accountAgents.map(agent => ({ id: `account:${agent}`, label: agentLabel(agent), hint: `${agentLabel(agent)} sign-ins and API accounts`, loc: { page: 'agent-accounts' as const, agent }, agent }))
           ]
         },
+        pageNode('plugins'),
         pageNode('sessions'),
         {
           id: AGENTS_NODE,
@@ -419,6 +422,7 @@ export function sameLocation(a: SettingsLocation, b: SettingsLocation): boolean 
 /* -------------------------------------------------------------------- rows */
 
 export interface SettingRow {
+  plugin?: string
   /** `<page>.<name>`, or `agent.<name>` for a row every agent's page draws. */
   id: string
   page: SettingsPageId
@@ -450,6 +454,7 @@ const hasCustomEndpoint = (id: CodingCliId): boolean =>
  * them — search breaks ties by this order.
  */
 export const SETTING_ROWS: readonly SettingRow[] = [
+  { id: 'plugins.manager', page: 'plugins', label: 'Plugin manager', keywords: ['install', 'import', 'export', 'create', 'enable', 'disable', 'remove', 'marketplace'] },
   { id: 'accounts.overview', page: 'accounts', label: 'Account manager', keywords: ['all accounts', 'manage accounts', 'subscriptions', 'saved logins', 'multiple accounts'] },
   { id: 'accounts.stoke', page: 'accounts', label: 'Stoke sign-in', keywords: ['stoke account', 'connect devices', 'sign in to stoke', 'device approval', 'sync'] },
   { id: 'accounts.agents', page: 'accounts', label: 'Agent accounts overview', keywords: ['coding accounts', 'subscription sign-ins', 'api accounts', 'default login', 'existing cli login'] },
@@ -570,7 +575,7 @@ export const SETTING_ROWS: readonly SettingRow[] = [
     id: 'hosts.list',
     page: 'hosts',
     label: 'Remote machines',
-    keywords: ['ssh hosts', 'add host', 'server', 'alias', 'ssh config', 'command on connect', 'keep sessions running', 'kept session', 'persistent', 'tmux', 'byobu', 'write up work done', 'worklog', 'offer to add a key', 'asks for a password']
+    keywords: ['ssh hosts', 'add host', 'server', 'alias', 'ssh config', 'preferred direct IP (optional)', 'show under other machines', 'merge', 'tailscale', 'route', 'fallback', 'command on connect', 'keep sessions running', 'kept session', 'persistent', 'tmux', 'byobu', 'write up work done', 'worklog', 'offer to add a key', 'asks for a password']
   },
   { id: 'hosts.key-enroll', page: 'hosts', label: 'When a remote asks for a password', keywords: ['ssh key', 'key login', 'password', 'ssh-copy-id'] },
   /*
@@ -596,11 +601,11 @@ export const SETTING_ROWS: readonly SettingRow[] = [
 
   // Worklog
   { id: 'worklog.agent', page: 'worklog', label: 'Worklog agent', keywords: ['review', 'notion', 'clickup', 'profiles'] },
-  { id: 'worklog.plugin', page: 'worklog', label: 'Work plugin', keywords: ['enable', 'disable', 'ideas', 'approved', 'tasks', 'daily plans'] },
-  { id: 'worklog.boards', page: 'worklog', label: 'Work boards', keywords: ['daily work', 'today', 'to-do', 'working on', 'completed', 'task board', 'backlog', 'completion evidence'], fallback: 'worklog.plugin' },
-  { id: 'worklog.drafts', page: 'worklog', label: 'Sonnet drafts', keywords: ['draft purpose', 'source notes', 'session notes', 'conversation excerpts', 'idea brief', 'daily summary', 'completion evidence', 'budget', 'claude provider'], fallback: 'worklog.plugin' },
-  { id: 'worklog.connection', page: 'worklog', label: 'Notion connection', keywords: ['integration token', 'api key', 'direct api', 'task data source id', 'daily data source id', 'mapping', 'properties', 'schema', 'stoke id'], fallback: 'worklog.plugin' },
-  { id: 'worklog.publish', page: 'worklog', label: 'Publish Work to Notion', keywords: ['publish review', 'saved fields', 'sync', 'retry', 'conflicts', 'journal', 'Notion history', 'Notion publish history', 'read current Notion fields', 'refresh Notion'], fallback: 'worklog.connection' },
+  { plugin: 'work', id: 'worklog.plugin', page: 'worklog', label: 'Work plugin', keywords: ['enable', 'disable', 'ideas', 'approved', 'tasks', 'daily plans'] },
+  { plugin: 'work', id: 'worklog.boards', page: 'worklog', label: 'Work boards', keywords: ['daily work', 'today', 'to-do', 'working on', 'completed', 'task board', 'backlog', 'completion evidence'], fallback: 'worklog.plugin' },
+  { plugin: 'work', id: 'worklog.drafts', page: 'worklog', label: 'Sonnet drafts', keywords: ['draft purpose', 'source notes', 'session notes', 'conversation excerpts', 'idea brief', 'daily summary', 'completion evidence', 'budget', 'claude provider'], fallback: 'worklog.plugin' },
+  { plugin: 'work', id: 'worklog.connection', page: 'worklog', label: 'Notion connection', keywords: ['integration token', 'api key', 'direct api', 'task data source id', 'daily data source id', 'mapping', 'properties', 'schema', 'stoke id'], fallback: 'worklog.plugin' },
+  { plugin: 'work', id: 'worklog.publish', page: 'worklog', label: 'Publish Work to Notion', keywords: ['publish review', 'saved fields', 'sync', 'retry', 'conflicts', 'journal', 'Notion history', 'Notion publish history', 'read current Notion fields', 'refresh Notion'], fallback: 'worklog.connection' },
   { id: 'worklog.auto', page: 'worklog', label: 'Scan while I work', keywords: ['automatic', 'auto scan', 'background'] },
   { id: 'worklog.targets', page: 'worklog', label: 'Where reviews are filed', keywords: ['notion', 'clickup', 'destination'] },
   { id: 'worklog.notion', page: 'worklog', label: 'Notion data source', keywords: ['notion id', 'database'] },
@@ -715,6 +720,7 @@ export interface SettingsEntry {
 }
 
 export interface SettingsContext {
+  enabledPlugins?: readonly string[]
   /** The agents with a page in the menu (`navAgents`); Claude Code at least. */
   agents: readonly CodingCliId[]
   accountAgents?: readonly CodingCliId[]
@@ -731,7 +737,7 @@ export interface SettingsContext {
 export function settingsEntries(ctx: SettingsContext): SettingsEntry[] {
   const out: SettingsEntry[] = []
   const listed = new Set<CodingCliId>(ctx.agents.length ? ctx.agents : ['claude'])
-  const drawnHere = (r: SettingRow): boolean => !r.platforms || !ctx.platform || r.platforms.includes(ctx.platform)
+  const drawnHere = (r: SettingRow): boolean => (!r.plugin || ctx.enabledPlugins === undefined || ctx.enabledPlugins.includes(r.plugin)) && (!r.platforms || !ctx.platform || r.platforms.includes(ctx.platform))
   const rowsOf = (page: SettingsPageId): SettingRow[] =>
     page === 'claude-settings' ? claudeSettingRows() : SETTING_ROWS.filter((r) => r.page === page && drawnHere(r))
   const pageEntry = (loc: SettingsLocation, label: string, keywords: readonly string[], hint: string): void => {

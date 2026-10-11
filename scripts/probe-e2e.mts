@@ -1,3 +1,4 @@
+import { createServer as createHttpServer } from 'node:http'
 /*
  * The packaged-app probe: boot a real, PACKAGED Stoke and drive it over CDP
  * through the flows a person depends on, on the machine it runs on.
@@ -109,6 +110,7 @@ const { values: opt } = parseArgs({
     work: { type: 'string' },
     port: { type: 'string', default: '9339' },
     ssh: { type: 'boolean', default: false },
+    'gbot-cli': { type: 'string' },
     'ssh-key-alias': { type: 'string', default: 'stoke-key' },
     'ssh-pw-alias': { type: 'string', default: 'stoke-pw' }
   }
@@ -809,6 +811,81 @@ await step('Codex reports its native model and current context', async () => {
     check('the renderer receives the confirmed native Codex thread', /^[a-f0-9-]{36}$/i.test(codexNativeId))
     check('the status bar names the reported Codex model', await ev<boolean>('document.querySelector(\'[data-model-source="reported"]\')?.textContent.includes("gpt-6.1-sol")') === true)
   } finally { await ev('(window.__stokeCodexContextOff?.(), delete window.__stokeCodexContextOff, true)') }
+})
+
+await step('native plugin lifecycle and Grok Bot account isolation', async () => {
+  const openPlugins = async () => {
+    await ev(`document.querySelector('[data-testid="active-account"]').click(), true`)
+    await waitFor('owned account menu for plugin navigation', () => ev<boolean>('!!document.querySelector(".account-panel")'))
+    await ev(`[...document.querySelectorAll('.account-panel button')].find(button => button.textContent === 'Manage agent accounts').click(), true`)
+    await waitFor('settings navigation mounted', () => ev<boolean>(`!!document.querySelector('[data-node="plugins"]')`))
+    await ev(`document.querySelector('[data-node="plugins"]').click(), true`)
+    await waitFor('native plugin manager', () => ev<boolean>(`!!document.querySelector('[data-setting="plugins.manager"]')`))
+  }
+  let server: ReturnType<typeof createHttpServer> | null = null
+  try {
+    await openPlugins()
+    check('Grok Bot contributes no account controls while disabled', await ev<boolean>(`!document.querySelector('[aria-label="Grok Bot"]') && !document.querySelector('[aria-label="Saved Grok Bot accounts"]')`) === true)
+    await ev(`window.stoke.plugins.install('project-summary')`)
+    check('native marketplace package installs disabled', await ev<boolean>(`window.stoke.plugins.read().then(view => view.entries.find(entry => entry.manifest.id === 'project-summary').installed && !view.entries.find(entry => entry.manifest.id === 'project-summary').enabled)`) === true)
+    await ev(`window.stoke.plugins.toggle('project-summary', true)`)
+    await ev(`[...document.querySelectorAll('.plugin-row')].find(row => row.textContent.includes('Project summary')).querySelector('button').click(), true`)
+    const output = await ev<{ ok: boolean; output: string }>(`window.stoke.plugins.run('project-summary', 'read', ${JSON.stringify(proj)})`)
+    check('packaged Electron runs a native extension with chosen project context', output.ok && JSON.parse(output.output).project === proj, output.output)
+    await shot('04-plugin-manager')
+    await ev(`window.stoke.plugins.toggle('project-summary', false)`)
+    check('disabled extension panel disappears immediately', await waitFor('extension panel unmounted', () => ev<boolean>(`![...document.querySelectorAll('.plugin-panel h3')].some(node => node.textContent === 'Project summary')`)) === true)
+    await ev(`window.stoke.plugins.remove('project-summary')`)
+    await ev(`document.querySelector('[data-testid="plugin-back"]').click(), true`)
+    await ev(`window.stoke.plugins.install('grok-bot')`)
+    await ev(`window.stoke.plugins.toggle('grok-bot', true)`)
+    await ev(`[...document.querySelectorAll('.plugin-row')].find(row => row.textContent.includes('Grok Bot')).querySelector('button').click(), true`)
+    await waitFor('enabled Grok Bot panel', () => ev<boolean>(`!!document.querySelector('[aria-label="Grok Bot"]')`))
+    if (opt['gbot-cli']) {
+      const runtime = join(ud, 'plugins', 'runtime', 'grok-bot', '0.12.4'); mkdirSync(runtime, { recursive: true })
+      for (const filename of ['gbot.mjs', 'gbot-flight.mjs']) copyFileSync(join(resolve(opt['gbot-cli']), filename), join(runtime, filename))
+      const requests: { token: string; route: string; method: string }[] = []
+      server = createHttpServer(async (request, response) => {
+        for await (const _chunk of request) { /* drain only owned request bodies */ }
+        const method = request.url?.split('/').at(-1) ?? ''
+        requests.push({ token: String(request.headers.authorization), route: String(request.headers['x-owned-route']), method })
+        response.setHeader('content-type', 'application/json')
+        response.end(JSON.stringify(method === 'listAgents' ? { agents: [{ id: 'owned-bot', name: 'Owned native bot' }, { id: 'owned-group', name: 'Owned group', isGroup: true }] } : method === 'sendPrompt' ? { messageId: 'owned-message' } : { entries: [] }))
+      })
+      await new Promise<void>(resolve => server!.listen(0, '127.0.0.1', resolve))
+      const gateway = `http://127.0.0.1:${(server.address() as { port: number }).port}`
+      for (let index = 1; index <= 5; index++) await ev(`window.stoke.grokBot.change(${JSON.stringify({ kind: 'manual', label: `Grok account ${index}`, gatewayUrl: gateway, token: `owned-native-token-${index}`, headers: { 'x-owned-route': `route-${index}` }, allowLocal: true })})`)
+      const view = await ev<{ accounts: { id: string }[] }>('window.stoke.grokBot.read()')
+      await waitFor('five native account rows', () => ev<boolean>(`document.querySelectorAll('.plugin-account-list .plugin-account').length === 5`))
+      check('native manager supports five separately sealed account sessions', view.accounts.length === 5)
+      for (let index = 0; index < 5; index++) {
+        const result = await ev<{ ok: boolean; message?: string }>(`window.stoke.grokBot.operate(${JSON.stringify({ accountId: view.accounts[index].id, kind: 'list' })})`, 30000)
+        check(`native pinned CLI selects Grok account ${index + 1}`, result.ok && requests.slice(-2).every(request => request.token === `Bearer owned-native-token-${index + 1}` && request.route === `route-${index + 1}`), result.message ?? '')
+      }
+      await ev(`document.querySelectorAll('.plugin-account-list .plugin-account')[4].click(), true`)
+      check('selecting a native account changes the visible active nickname', await waitFor('fifth account selection', () => ev<boolean>(`[...document.querySelectorAll('[aria-label="Grok Bot"] .plugin-controls')].some(node => node.textContent.includes('Active: Grok account 5'))`)) === true)
+      await ev(`[...document.querySelectorAll('[aria-label="Grok Bot"] button')].find(button => button.textContent.includes('List bots and groups')).click(), true`)
+      await waitFor('selected-account native bot roster', () => ev<boolean>(`document.querySelector('[aria-label="Grok Bot"] .plugin-output')?.textContent.includes('Owned native bot') && document.querySelector('[aria-label="Grok Bot"] select')?.options.length >= 3`))
+      check('the visible list action routes through the selected fifth account', requests.slice(-2).every(request => request.token === 'Bearer owned-native-token-5'))
+      await ev(`(() => { const field = document.querySelector('[aria-label="Grok Bot"] textarea'); Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(field, 'owned native message'); field.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`)
+      await waitFor('native send action enabled', () => ev<boolean>(`[...document.querySelectorAll('[aria-label="Grok Bot"] button')].some(button => button.textContent === 'Send message' && !button.disabled)`))
+      await ev(`[...document.querySelectorAll('[aria-label="Grok Bot"] button')].find(button => button.textContent === 'Send message').click(), true`)
+      await waitFor('native send receipt', () => ev<boolean>(`document.querySelector('[aria-label="Grok Bot"] .plugin-output')?.textContent.includes('accepted')`))
+      check('the native send action uses account 5 and the owned local gateway', requests.at(-1)?.method === 'sendPrompt' && requests.at(-1)?.token === 'Bearer owned-native-token-5')
+      await ui!.send('Emulation.setDeviceMetricsOverride', { width: 940, height: 720, deviceScaleFactor: 1, mobile: false })
+      await sleep(200); await shot('04-grok-bot-five-accounts'); await ui!.send('Emulation.clearDeviceMetricsOverride')
+      const sealed = readFileSync(join(ud, 'plugins', 'grok-bot-accounts.json'), 'utf8')
+      check('native saved accounts expose no gateway token in the file', !sealed.includes('owned-native-token-'))
+    }
+    await ev(`window.stoke.plugins.toggle('grok-bot', false)`)
+    check('disabling Grok Bot removes its account rows and all controls', await waitFor('Grok controls unmounted', () => ev<boolean>(`!document.querySelector('[aria-label="Grok Bot"]') && !document.querySelector('.plugin-account-list')`)) === true)
+    check('disabled Grok Bot cannot run through preload IPC', await ev<boolean>(`window.stoke.grokBot.read().then(() => false, () => true)`) === true)
+  } finally {
+    await ui!.send('Emulation.clearDeviceMetricsOverride').catch(() => {})
+    await ev(`window.stoke.plugins.toggle('grok-bot', false).catch(() => null)`).catch(() => {})
+    await ev(`document.querySelector('button[title="Close settings (Esc)"]')?.click(), true`).catch(() => {})
+    if (server) { server.closeAllConnections(); await new Promise<void>(resolve => server!.close(() => resolve())) }
+  }
 })
 
 await step('three agents side by side', async () => {

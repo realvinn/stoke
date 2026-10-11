@@ -650,6 +650,11 @@ export interface Theme {
  * the machine reads. Stoke keeps only what is Stoke's: a label and what to run.
  */
 export interface SshHost {
+  /** Direct IP preference; the alias remains the config and fallback route. */
+  preferredAddress?: string
+  mergedAliases?: string[]
+  /** Explicit association with a verified Stoke Hub device; never guessed by name. */
+  remoteDeviceId?: string
   id: string
   label: string
   /** A Host alias from ~/.ssh/config, or a bare user@host. */

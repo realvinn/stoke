@@ -1,3 +1,4 @@
+import { prepareSshRoute } from './sshRoutes.ts'
 import { execFile } from 'node:child_process'
 import type { RemoteSessionList, SshHost } from '@shared/types'
 import {
@@ -44,11 +45,12 @@ export type SshRunner = (args: string[]) => Promise<RunResult>
  * `killed: true, code: null`. `sshChildEnv`, or a Stoke started inside a
  * Windows ssh login hands ssh.exe a stdio description that hangs it (gotcha 153).
  */
-export const runSsh: SshRunner = (args) =>
-  new Promise((resolve) => {
+export const runSsh: SshRunner = async (args) => {
+  const prepared = await prepareSshRoute(args, sshExecutable(), sshChildEnv())
+  return new Promise((resolve) => {
     execFile(
       sshExecutable(),
-      args,
+      prepared,
       { timeout: TIMEOUT_MS, maxBuffer: MAX_BUFFER, encoding: 'utf8', windowsHide: true, env: sshChildEnv() },
       (err, stdout, stderr) => {
         if (!err) {
@@ -68,6 +70,7 @@ export const runSsh: SshRunner = (args) =>
       }
     )
   })
+}
 
 /** ssh's own last line of complaint, which is the useful one ("Permission denied (publickey…)"). */
 function sshReason(r: RunResult): string {

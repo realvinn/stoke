@@ -489,11 +489,30 @@ export const CH = {
   /** renderer -> main: send a prepared image (by id) over a second BatchMode ssh. */
   sshImageSend: 'ssh:image-send',
   /** renderer -> main: stop a send in flight, or drop a prepared image. */
+  sshMergeRoutes: 'ssh:merge-routes',
   sshImageCancel: 'ssh:image-cancel',
 
   // tab restore
   tabsSave: 'tabs:save',
   tabsRestore: 'tabs:restore',
+
+  pluginsRead: 'plugins:read',
+  pluginsChanged: 'plugins:changed',
+  pluginsToggle: 'plugins:toggle',
+  pluginsInstall: 'plugins:install',
+  pluginsImport: 'plugins:import',
+  pluginsExport: 'plugins:export',
+  pluginsCreate: 'plugins:create',
+  pluginsRemove: 'plugins:remove',
+  pluginsRun: 'plugins:run',
+  pluginsOpen: 'plugins:open',
+  pluginsPending: 'plugins:pending',
+  grokBotRead: 'plugins:grok-bot:read',
+  grokBotChanged: 'plugins:grok-bot:changed',
+  grokBotInstall: 'plugins:grok-bot:install',
+  grokBotSources: 'plugins:grok-bot:sources',
+  grokBotChange: 'plugins:grok-bot:change',
+  grokBotOperate: 'plugins:grok-bot:operate',
 
   // worklog
   workRead: 'work:read',

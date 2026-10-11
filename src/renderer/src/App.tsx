@@ -1,3 +1,4 @@
+import { usePluginAppearance } from './lib/usePlugins'
 import { capsFor, cliFor, cliStatusLine, DEFAULT_CLI, isClaudeCode, resumableClis } from '@shared/codingClis'
 import {
   CHAT_SEARCH_MIN_CHARS,
@@ -276,6 +277,7 @@ const EMPTY_BROWSER: BrowserState = {
 const NO_REVEAL: RevealInfo = { inset: 0, onEntry: false }
 
 export function App(): React.JSX.Element {
+  usePluginAppearance()
   const platform = window.stoke.platform
   const isMac = platform === 'darwin'
 
@@ -743,6 +745,7 @@ export function App(): React.JSX.Element {
     },
     [expandSettingsNodes]
   )
+  useEffect(() => { const off = window.stoke.plugins.onOpen(() => openSettings('plugins')); window.stoke.plugins.pending(false).then(id => { if (id) openSettings('plugins') }).catch(() => {}); return off }, [openSettings])
   const settingsOpenRef = useRef(false)
   settingsOpenRef.current = settingsOpen
   const paletteOpenRef = useRef(false)
@@ -6127,7 +6130,7 @@ export function App(): React.JSX.Element {
                 remoteChats={remoteChatGroupsShown}
                 onOpenRemoteChat={openRemoteChat}
                 onSetUpChats={() => openSettings('chats')}
-                otherMachines={<OtherMachines view={hubRemote} onOpen={openRemoteSession} />}
+                otherMachines={<OtherMachines view={hubRemote} hosts={settings?.hosts ?? []} onSsh={host => void startHostSession(host)} onOpen={openRemoteSession} />}
                 footer={<>
                   <AccountChip target={null} surface="sidebar" settingsOpen={settingsOpen} onAgentSettings={manageAgentAccounts} onSyncSettings={() => openSettings('account')} onAccounts={() => openSettings('accounts')} />
                 </>}

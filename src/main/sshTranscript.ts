@@ -1,3 +1,4 @@
+import { prepareSshRoute } from './sshRoutes.ts'
 import { execFile } from 'node:child_process'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -67,7 +68,8 @@ export interface FetchOptions {
   run?: (host: SshHost, sessionId: string | null) => Promise<string>
 }
 
-function runSsh(host: SshHost, sessionId: string | null, timeoutMs: number): Promise<string> {
+async function runSsh(host: SshHost, sessionId: string | null, timeoutMs: number): Promise<string> {
+  const args = await prepareSshRoute(buildTranscriptArgs(host, sessionId), sshExecutable(), sshChildEnv())
   /*
    * `execFile` with an args array, never a shell string.
    *
@@ -83,7 +85,7 @@ function runSsh(host: SshHost, sessionId: string | null, timeoutMs: number): Pro
   return new Promise((resolve, reject) => {
     execFile(
       sshExecutable(),
-      buildTranscriptArgs(host, sessionId),
+      args,
       { timeout: timeoutMs, maxBuffer: MAX_BUFFER, encoding: 'utf8', windowsHide: true, env: sshChildEnv() },
       (err, stdout) => {
         // A non-zero exit with usable output still answers the question: the

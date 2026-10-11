@@ -118,6 +118,7 @@ console.log('every row the sheet marks is in the index, and every row in the ind
    */
   const pagesOf: Record<string, string[]> = {
     'components/SettingsSheet.tsx': ['appearance', 'terminal', 'sessions', 'projects', 'updates'],
+    'components/PluginsSettings.tsx': ['plugins'],
     'components/ThemeEditor.tsx': ['appearance'],
     'components/ProfilesSettings.tsx': ['profiles'],
     'components/ProvidersSettings.tsx': ['providers'],
@@ -231,6 +232,7 @@ console.log('\nthe menu is a tree: Agents opens to the manager and your agents, 
   )
   check('Providers and Claude Code are no longer rows of their own at the top', config?.nodes.map((n) => n.id), [
     'accounts',
+    'plugins',
     'sessions',
     AGENTS_NODE,
     'chats',
@@ -255,8 +257,9 @@ console.log('\nthe menu is a tree: Agents opens to the manager and your agents, 
   check('Agents open, Claude Code closed: its pages are not on screen', half.some((v) => v.parent === CLAUDE_NODE), false)
   const both = visibleNodes(tree, new Set([AGENTS_NODE, CLAUDE_NODE]))
   const at = (id: string) => both.find((v) => v.node.id === id)
-  check('both open: the rows walk depth first', both.map((v) => v.node.id).slice(3, 13), [
+  check('both open: the rows walk depth first', both.map((v) => v.node.id).slice(3, 14), [
     'accounts',
+    'plugins',
     'sessions',
     AGENTS_NODE,
     'agents',
@@ -594,7 +597,7 @@ console.log('\na row drawn only in some states says where a jump lands instead')
   const palette = read('components/CommandPalette.tsx')
   check(
     'the sheet and the palette both tell the index the platform',
-    [sheet, palette].map((src) => /settingsEntries\(\{ agents: [A-Za-z]+, (?:accountAgents(?:: [A-Za-z]+)?, )?platform: window\.stoke\.platform \}\)/.test(src)),
+    [sheet, palette].map((src) => /settingsEntries\(\{[^}]*platform: window\.stoke\.platform \}\)/.test(src)),
     [true, true]
   )
 }
@@ -713,6 +716,9 @@ console.log('\nthe stylesheet keeps the jump honest')
   )
   check('marking a row as a hit costs no layout: no margin, padding, border or outline', /(margin|padding|border(?!-radius)|outline)\s*:/.test(rule('[data-setting][data-hit]')), false)
 }
+
+check('disabled Work contributes no plugin rows to either search surface', settingsEntries({ agents: ['claude'], enabledPlugins: [] }).filter(entry => entry.row && ['worklog.plugin', 'worklog.boards', 'worklog.drafts', 'worklog.connection', 'worklog.publish'].includes(entry.row)), [])
+check('enabling Work restores its contribution', settingsEntries({ agents: ['claude'], enabledPlugins: ['work'] }).some(entry => entry.row === 'worklog.connection'), true)
 
 /*
  * The tally is the LAST statement in this file and has to stay that way:

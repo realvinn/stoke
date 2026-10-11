@@ -1,4 +1,6 @@
+import { sshChildEnv, sshExecutable } from './ssh.ts'
 import './threadPool.ts'
+import { PLUGIN_CATALOG, SAMPLE_PLUGIN, isPluginId, pluginInstallLink, parsePluginPackage } from '../shared/pluginPackages.ts'
 import { access, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import {
   app,
@@ -2273,7 +2275,7 @@ function remoteDeps(): RemoteDeps {
 
 function send(channel: string, ...args: unknown[]): void {
   // A shell launch is adopted once, by the primary window. State updates fan out.
-  let targets = channel === CH.cliRequest || channel === CH.remoteSessionStarted ? (win ? [win] : []) : appWindows()
+  let targets = channel === CH.cliRequest || channel === CH.remoteSessionStarted || channel === CH.pluginsOpen ? (win ? [win] : []) : appWindows()
   if (channel === CH.ptyData) {
     const owner = [...windowTabs.tabs].find(([_id, tabs]) => tabs.some(t => t.ptyId === args[0]))?.[0]
     if (owner !== undefined) targets = targets.filter(w => w.id === owner)
@@ -2597,6 +2599,34 @@ function serialCommand(fn: () => Promise<StokeCommandState>): Promise<StokeComma
   const run = commandChain.then(fn, fn)
   commandChain = run.catch(() => {})
   return run
+}
+
+let pluginPackages: import('./plugins/packageManager.ts').PluginPackages | null = null
+let pluginPackagesLoading: Promise<import('./plugins/packageManager.ts').PluginPackages> | null = null
+let grokBotPlugin: import('./plugins/grokBot.ts').GrokBotPlugin | null = null
+let grokBotLoading: Promise<import('./plugins/grokBot.ts').GrokBotPlugin> | null = null
+function pluginPackagesFor(): Promise<import('./plugins/packageManager.ts').PluginPackages> {
+  return pluginPackagesLoading ??= import('./plugins/packageManager.ts').then(({ PluginPackages }) => {
+    pluginPackages = new PluginPackages({ root: join(app.getPath('userData'), 'plugins'), executable: process.execPath, environment: process.env,
+      workEnabled: async () => (await (await workPluginFor()).read()).enabled,
+      builtinRevoke: (id) => { if (id === 'grok-bot') grokBotPlugin?.stop(); if (id === 'work') { workNotion?.pause(); workDrafts?.pause() } },
+      builtinToggle: async (id, enabled) => { if (id === 'work') { const view = await (await workPluginFor()).change({ kind: 'enable', enabled }); send(CH.workChanged, view) }; if (id === 'grok-bot' && !enabled) grokBotPlugin?.stop() },
+      changed: view => send(CH.pluginsChanged, view)
+    }); return pluginPackages
+  })
+}
+function grokBotFor(): Promise<import('./plugins/grokBot.ts').GrokBotPlugin> {
+  return grokBotLoading ??= Promise.all([import('./plugins/grokBot.ts'), import('./plugins/grokBotSession.ts'), import('./secrets.ts')]).then(([{ GrokBotPlugin }, { GrokBotSessionReader }, { safeStorageBackend }]) => {
+    grokBotPlugin = new GrokBotPlugin({ root: join(app.getPath('userData'), 'plugins'), executable: process.execPath, runner: join(__dirname, 'cliRunner.js'), platform: process.platform, environment: process.env,
+      backend: safeStorageBackend(safeStorage, process.platform), reader: new GrokBotSessionReader({ home: homedir(), platform: process.platform, environment: process.env }),
+      enabled: async () => (await pluginPackagesFor()).enabled('grok-bot'), changed: view => send(CH.grokBotChanged, view)
+    }); return grokBotPlugin
+  })
+}
+let pendingPlugin: string | null = null
+function acceptPluginLink(raw: unknown): boolean {
+  const id = pluginInstallLink(raw); if (!id) return false
+  pendingPlugin = id; bringForward(); send(CH.pluginsOpen, id); return true
 }
 
 /* --------------------------------------------------------------- worklog */
@@ -5223,7 +5253,7 @@ function registerIpc(): void {
     return consumeUpdateRestart(updateRestartFile(userData)) ? { ...state, afterUpdate: true } : state
   })
 
-  /* --------------------------------------------------------------- worklog */
+/* --------------------------------------------------------------- worklog */
   /*
    * Both runs cost money and can fail, so every handler returns a result object
    * rather than throwing across the bridge - a rejected invoke in the renderer
@@ -5231,6 +5261,48 @@ function registerIpc(): void {
    * propose" from "the run broke".
    */
   const queue = worklogQueue
+
+  const pluginFrame = (event: Electron.IpcMainInvokeEvent): void => { if (!appFrame(event)) throw new Error('Open Plugins in Stoke.') }
+  ipcMain.handle(CH.sshMergeRoutes, async event => {
+    pluginFrame(event)
+    const { sshMergeGroups } = await import('./sshRoutes.ts')
+    const active = new Set([...sessionHosts.values()].map(host => host.id))
+    return sshMergeGroups(getSettings().hosts, sshExecutable(), process.platform === 'win32' ? join(dirname(sshExecutable()), 'ssh-keygen.exe') : 'ssh-keygen', sshChildEnv(), AbortSignal.timeout(12000), active)
+  })
+  ipcMain.handle(CH.pluginsRead, async event => { pluginFrame(event); return (await pluginPackagesFor()).read() })
+  ipcMain.handle(CH.pluginsToggle, async (event, id, enabled) => { pluginFrame(event); return (await pluginPackagesFor()).setEnabled(id, enabled) })
+  ipcMain.handle(CH.pluginsRemove, async (event, id) => { pluginFrame(event); return (await pluginPackagesFor()).remove(id) })
+  ipcMain.handle(CH.pluginsRun, async (event, id, action, project) => { pluginFrame(event); return (await pluginPackagesFor()).run(id, action, project) })
+  ipcMain.handle(CH.pluginsInstall, async (event, id) => { pluginFrame(event); const entry = PLUGIN_CATALOG.find(entry => entry.package.id === id); if (!entry) throw new Error('Choose a marketplace plugin.'); return (await pluginPackagesFor()).install(entry.package) })
+  ipcMain.handle(CH.pluginsImport, async event => {
+    pluginFrame(event); const choice = await dialog.showOpenDialog({ title: 'Import Stoke plugin', properties: ['openFile'], filters: [{ name: 'Stoke plugin package', extensions: ['json'] }] })
+    if (choice.canceled || !choice.filePaths[0]) return null
+    const path = choice.filePaths[0], info = await stat(path)
+    if (!info.isFile() || info.size > 3 * 1024 * 1024) throw new Error('Choose a plugin package smaller than 3 MB.')
+    const data = await readFile(path, { encoding: 'utf8', signal: AbortSignal.timeout(8000) }); return (await pluginPackagesFor()).install(JSON.parse(data))
+  })
+  ipcMain.handle(CH.pluginsExport, async (event, id) => {
+    pluginFrame(event); const pkg = await (await pluginPackagesFor()).package(id)
+    const choice = await dialog.showSaveDialog({ title: 'Export Stoke plugin', defaultPath: `${pkg.id}.stoke-plugin.json`, filters: [{ name: 'Stoke plugin package', extensions: ['json'] }] })
+    if (choice.canceled || !choice.filePath) return false
+    await writeFile(choice.filePath, JSON.stringify(pkg, null, 2) + '\n', { signal: AbortSignal.timeout(8000) }); return true
+  })
+  ipcMain.handle(CH.pluginsCreate, async (event, id, name) => {
+    pluginFrame(event); if (!isPluginId(id) || typeof name !== 'string') throw new Error('Choose a plugin ID and name.')
+    const pkg = parsePluginPackage({ ...structuredClone(SAMPLE_PLUGIN), id, name, author: 'Local developer' })
+    const choice = await dialog.showOpenDialog({ title: 'Choose a parent folder for your plugin source', properties: ['openDirectory', 'createDirectory'] })
+    if (choice.canceled || !choice.filePaths[0]) return null
+    const root = join(choice.filePaths[0], id); await mkdir(root, { recursive: false })
+    await writeFile(join(root, `${id}.stoke-plugin.json`), JSON.stringify(pkg, null, 2) + '\n', { mode: 0o600, signal: AbortSignal.timeout(8000) })
+    await writeFile(join(root, 'README.md'), 'Edit the bundled files and panel actions in the JSON package, then import it in Stoke. See https://stoke.vinn.dev/marketplace/sdk.\n')
+    await shell.openPath(root); return (await pluginPackagesFor()).install(pkg)
+  })
+  ipcMain.handle(CH.pluginsPending, (event, consume) => { pluginFrame(event); if (appFrame(event) !== win) return null; const id = pendingPlugin; if (consume === true) pendingPlugin = null; return id })
+  ipcMain.handle(CH.grokBotRead, async event => { pluginFrame(event); return (await grokBotFor()).read() })
+  ipcMain.handle(CH.grokBotInstall, async event => { pluginFrame(event); return (await grokBotFor()).install() })
+  ipcMain.handle(CH.grokBotSources, async event => { pluginFrame(event); return (await grokBotFor()).sources() })
+  ipcMain.handle(CH.grokBotChange, async (event, command) => { pluginFrame(event); return (await grokBotFor()).change(command) })
+  ipcMain.handle(CH.grokBotOperate, async (event, operation) => { pluginFrame(event); return (await grokBotFor()).operate(operation) })
 
   ipcMain.handle(CH.workRead, async (event) => {
     if (!appFrame(event)) throw new Error('Open Work in Stoke.')
@@ -5245,6 +5317,7 @@ function registerIpc(): void {
       }
       const view = await (await workPluginFor()).change(command)
       if (!view.enabled) { workNotion?.pause(); workDrafts?.pause() }
+      if (command && typeof command === 'object' && 'kind' in command && command.kind === 'enable') await (await pluginPackagesFor()).syncWork(view.enabled)
       send(CH.workChanged, view)
       return { ok: true, view }
     } catch (err) {
@@ -5699,6 +5772,8 @@ const launchRequest = parseStokeArgs(process.argv, { home: homedir(), platform: 
  * boot-lifecycle surgery on the scale of gotchas 35/73/74, not a
  * `requestSingleInstanceLock` one-liner.
  */
+app.on('open-url', (event, url) => { if (pluginInstallLink(url)) { event.preventDefault(); acceptPluginLink(url) } })
+
 if (!app.requestSingleInstanceLock(launchRequest ? { stokeCli: launchRequest } : undefined)) {
   app.quit()
 } else {
@@ -5713,6 +5788,7 @@ if (!app.requestSingleInstanceLock(launchRequest ? { stokeCli: launchRequest } :
     const req =
       requestFrom(data?.stokeCli, process.platform) ??
       parseStokeArgs(argv, { home: homedir(), platform: process.platform })
+    for (const arg of argv) if (acceptPluginLink(arg)) return
     bringForward()
     if (req) acceptLaunch(req)
   })
@@ -5725,6 +5801,8 @@ if (!app.requestSingleInstanceLock(launchRequest ? { stokeCli: launchRequest } :
      * and every IPC answer should already see the keys.
      */
     initSecretStore()
+    if (app.isPackaged && !app.commandLine.hasSwitch('user-data-dir')) app.setAsDefaultProtocolClient('stoke')
+    for (const arg of process.argv) acceptPluginLink(arg)
     /*
      * The `stoke` command's copy of the account list (accounts.ts), brought
      * up to date now — an upgrade, or a settings.json edited by hand — and
@@ -5864,6 +5942,8 @@ if (!app.requestSingleInstanceLock(launchRequest ? { stokeCli: launchRequest } :
     workNotion?.stop()
     workDrafts?.stop()
     workPlugin?.stop()
+    pluginPackages?.stop()
+    grokBotPlugin?.stop()
     if (lastTabState) writeTabState(tabStateFile(app.getPath('userData')), lastTabState)
     // Settings coalesce bursts of writes (see store.ts). Anything still waiting
     // is written here rather than lost with the process.

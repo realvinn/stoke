@@ -1,3 +1,6 @@
+import type { SshMergeGroup } from './sshRoutes.ts'
+import type { PluginsView, PluginRunResult } from './pluginPackages.ts'
+import type { GrokBotView, GrokBotSource, GrokBotAccountCommand, GrokBotOperation, GrokBotResult } from './grokBot.ts'
 import type { InstallKind } from './installKind'
 import type { RevealInfo } from './fullScreenReveal'
 
@@ -1067,6 +1070,7 @@ export interface StokeApi {
   }
 
   ssh: {
+    mergeRoutes(): Promise<SshMergeGroup[]>
     filesList(request: SshFilesRequest): Promise<SshFilesListResult>
     filesSave(request: SshFilesRequest): Promise<SshFilesSaveResult>
     filesCancel(requestId: string): void
@@ -1135,6 +1139,27 @@ export interface StokeApi {
    * The worklog review queue. A scan only ever proposes; nothing reaches Notion
    * or ClickUp until `accept` is called on an item.
    */
+  plugins: {
+    read(): Promise<PluginsView>
+    onChange(cb: (view: PluginsView) => void): () => void
+    toggle(id: string, enabled: boolean): Promise<PluginsView>
+    install(id: string): Promise<PluginsView>
+    import(): Promise<PluginsView | null>
+    export(id: string): Promise<boolean>
+    create(id: string, name: string): Promise<PluginsView | null>
+    remove(id: string): Promise<PluginsView>
+    run(id: string, action: string, project: string | null): Promise<PluginRunResult>
+    onOpen(cb: (id: string) => void): () => void
+    pending(consume?: boolean): Promise<string | null>
+  }
+  grokBot: {
+    read(): Promise<GrokBotView>
+    install(): Promise<GrokBotView>
+    sources(): Promise<GrokBotSource[]>
+    change(command: GrokBotAccountCommand): Promise<GrokBotView>
+    operate(operation: GrokBotOperation): Promise<GrokBotResult>
+    onChange(cb: (view: GrokBotView) => void): () => void
+  }
   work: {
     read(): Promise<WorkView>
     change(command: WorkCommand): Promise<WorkResult>

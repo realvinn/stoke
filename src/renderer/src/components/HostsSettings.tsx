@@ -1,3 +1,5 @@
+import { useHubRemote } from '../lib/hubRemote'
+import { applySshMerge, type SshMergeGroup } from '@shared/sshRoutes'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { SshHost, SshKeyEnroll } from '@shared/types'
 import { isEnrollableAlias } from '@shared/sshAuth'
@@ -119,7 +121,7 @@ export function newHostId(hosts: SshHost[]): string {
   }
 }
 
-export type HostTextField = 'label' | 'alias' | 'command' | 'downloadFolder'
+export type HostTextField = 'label' | 'alias' | 'command' | 'downloadFolder' | 'preferredAddress'
 
 /**
  * What committing an edited box should change, or null when it changes nothing.
@@ -170,6 +172,11 @@ export function HostsSettings({
    * that write is in flight — the same hazard PLAN records against the remote
    * panel, where a status poll landing mid-edit parks the caret at the end.
    */
+  const remoteMachines = useHubRemote()
+  const [mergeGroups, setMergeGroups] = useState<SshMergeGroup[]>([])
+  const [mergeError, setMergeError] = useState('')
+  const [merging, setMerging] = useState(false)
+  const mergeClaim = useRef(false)
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   const [confirming, setConfirming] = useState<string | null>(null)
   const [filesHost, setFilesHost] = useState<string | null>(null)
@@ -425,6 +432,12 @@ export function HostsSettings({
         </FieldHint>
       </div>
 
+      <div className="field">
+        <button className="btn" disabled={merging} onClick={() => { if (mergeClaim.current) return; mergeClaim.current = true; setMerging(true); setMergeError(''); window.stoke.ssh.mergeRoutes().then(groups => { setMergeGroups(groups); if (!groups.length) setMergeError('No matching duplicate routes found. You can set a preferred direct IP on each host below.') }).catch(error => setMergeError(String(error))).finally(() => { mergeClaim.current = false; setMerging(false) }) }}>Find duplicate SSH routes</button>
+        {mergeGroups.map(group => <div key={group.members[0].id} className="field-hint"><span>{group.members.map(member => member.alias).join(' + ')} · {group.reason}{group.preferredAddress ? ` · Prefer ${group.preferredAddress}` : ''}</span><button className="btn" onClick={() => { try { onChange(applySshMerge(hosts, group)); setMergeGroups([]) } catch (error) { setMergeError(String(error)) } }}>Merge saved entries</button></div>)}
+        {mergeError && <p role="status" className="field-hint">{mergeError}</p>}
+      </div>
+
       {/* Native datalist: the box stays free-form, so a host that is not in the
           config can still be typed out in full as user@host. */}
       <datalist id={ALIAS_LIST_ID}>
@@ -529,6 +542,11 @@ export function HostsSettings({
                   }}
                 />
               </label>
+              <label className="cc-text"><span className="field-label">Preferred direct IP (optional)</span><input className="input mono" value={valueOf(host, 'preferredAddress')} placeholder="192.168.1.10" spellCheck={false} onChange={event => setDrafts(d => ({ ...d, [keyFor(host.id, 'preferredAddress')]: event.target.value }))} onBlur={() => commit(host, 'preferredAddress')} onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur() }} /></label>
+              <span className="field-hint">Use this IP first, with the alias’s user, port, keys and jump hosts. If its TCP port is unreachable, use the alias. Host-key and login failures stay visible.</span>
+              <label className="cc-text"><span className="field-label">Show under Other machines</span><select className="input" value={host.remoteDeviceId ?? ''} onChange={event => onChange(hosts.map(item => item.id === host.id ? { ...item, remoteDeviceId: event.target.value } : item))}><option value="">Separate SSH host</option>{host.remoteDeviceId && !remoteMachines.machines.some(machine => machine.id === host.remoteDeviceId) && <option value={host.remoteDeviceId}>Linked device (offline)</option>}{remoteMachines.machines.map(machine => <option key={machine.id} value={machine.id}>{machine.label} · {machine.platform}</option>)}</select></label>
+              <span className="field-hint">Link this SSH route to a signed-in Stoke device. Its direct SSH route and shared Stoke sessions appear under one machine; device names are never used to guess a match.</span>
+              {!!host.mergedAliases?.length && <span className="field-hint">Merged routes: {host.mergedAliases.join(', ')}</span>}
               {/* The one hint that stays inside the map: it is about THIS alias. */}
               {unknownAlias && (
                 <span className="field-hint">

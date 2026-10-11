@@ -68,6 +68,8 @@ import type { ChatDetection, ChatIndexStatus } from '@shared/chatIndex'
 import type { CodingCliDetection, CodingCliId } from '@shared/codingClis'
 import { WorklogSettings } from './WorklogSettings'
 import { WorkPanel } from './WorkPanel'
+import { PluginsSettings } from './PluginsSettings'
+import { usePlugins } from '../lib/usePlugins'
 
 /**
  * The zoom targets, worded as what they move rather than as their ids.
@@ -254,6 +256,7 @@ export function SettingsSheet({
   onCustomiseTitleBar,
   onClose
 }: Props): React.JSX.Element {
+  const { view: plugins } = usePlugins()
   const themes: Theme[] = [...BUILT_IN_THEMES, ...settings.customThemes]
   const [loc, setLoc] = useState<SettingsLocation>(() => resolveSettingsTarget(initialSection))
 
@@ -337,7 +340,7 @@ export function SettingsSheet({
   const [active, setActive] = useState(0)
   const searchRef = useRef<HTMLInputElement>(null)
   const resultsRef = useRef<HTMLDivElement>(null)
-  const entries = useMemo(() => settingsEntries({ agents: menuAgents, accountAgents, platform: window.stoke.platform }), [agentsKey, accountsKey])
+  const entries = useMemo(() => settingsEntries({ agents: menuAgents, accountAgents, enabledPlugins: plugins?.entries.filter(entry => entry.enabled).map(entry => entry.manifest.id) ?? [], platform: window.stoke.platform }), [agentsKey, accountsKey, plugins])
   const hits = useMemo(() => searchSettings(entries, query).slice(0, RESULT_LIMIT), [entries, query])
   const searching = query.trim() !== ''
 
@@ -1314,9 +1317,11 @@ export function SettingsSheet({
               <ProfilesSettings settings={settings} onPatch={onPatch} onCreated={onProfileCreated} />
             )}
 
+            {loc.page === 'plugins' && <PluginsSettings defaultProject={defaultCwd} />}
+
             {loc.page === 'worklog' && (
               <>
-              <WorkPanel />
+              {plugins?.entries.some(entry => entry.manifest.id === 'work' && entry.enabled) && <WorkPanel />}
               <WorklogSettings
                 profiles={profiles}
                 worklogGroups={settings.worklogGroups}

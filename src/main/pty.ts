@@ -1,3 +1,4 @@
+import { prepareSshRoute } from './sshRoutes.ts'
 import { randomUUID } from 'node:crypto'
 import { releaseExitedPtyTransports } from './ptyTransportCleanup.ts'
 import { ownedPtyExits } from './ptyExitTracker.ts'
@@ -26,7 +27,7 @@ import {
   spawnSpec
 } from './cli.ts'
 import { windowFromBanner } from './sessionFile.ts'
-import { sshExecutable, sshHostArgs } from './ssh.ts'
+import { sshExecutable, sshHostArgs, sshChildEnv } from './ssh.ts'
 // Relative and with the extension, like every other main-process import here:
 // this module is loaded directly under `node --experimental-strip-types`, which
 // resolves no aliases. The detector itself is pure and lives in shared/ so a
@@ -647,6 +648,7 @@ export class PtyManager {
      * Decided before anything is written or spawned.
      */
     const hostPlan = remote ? sshHostArgs(opts.host!, opts.remoteSession) : null
+    if (hostPlan?.ok && opts.host?.preferredAddress) { hostPlan.args = await prepareSshRoute(hostPlan.args, sshExecutable(), sshChildEnv()); if (this.stopping) throw new Error('The Stoke window is closing.') }
     if (hostPlan && !hostPlan.ok) throw new Error(hostPlan.message)
     const installFile = installing && process.platform === 'win32' ? join(tmpdir(), `stoke-install-${ptyId}.ps1`) : null
     if (installFile && script) await writeInstallerFile(installFile, script)

@@ -1,3 +1,4 @@
+import { prepareSshRoute } from './sshRoutes.ts'
 import { spawn } from 'node:child_process'
 import { constants, type Stats } from 'node:fs'
 import { lstat, open, realpath, stat, type FileHandle } from 'node:fs/promises'
@@ -226,7 +227,7 @@ export function spawnWithInput(exe: string, args: string[], input: UploadInput, 
   })
 }
 
-export const runSshWithInput: InputRunner = (args, input, opts) => spawnWithInput(sshExecutable(), args, input, opts)
+export const runSshWithInput: InputRunner = async (args, input, opts) => spawnWithInput(sshExecutable(), await prepareSshRoute(args, sshExecutable(), sshChildEnv(), opts.signal), input, opts)
 
 export type SendImageResult =
   | { ok: true; path: string }
