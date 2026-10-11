@@ -3,6 +3,7 @@ import { terminalHttpLink } from './terminalLinks.ts'
 
 export type QuickTerminalMode = 'hidden' | 'panel' | 'popout'
 export type QuickTerminalSurface = Exclude<QuickTerminalMode, 'hidden'>
+export interface QuickTerminalShell { id: string; label: string; path: string }
 export interface QuickTerminalState {
   enabled: boolean
   revision: number
@@ -11,6 +12,8 @@ export interface QuickTerminalState {
   mode: QuickTerminalMode
   cwd: string
   shell: string
+  shellId: string
+  sessions: { shellId: string; id: string; phase: QuickTerminalState['phase'] }[]
   cols: number
   rows: number
   exitCode: number | null
@@ -29,6 +32,8 @@ export type QuickTerminalResult = { ok: true; state: QuickTerminalState } | { ok
 export interface QuickTerminalApi {
   platform: string
   read(): Promise<QuickTerminalSnapshot>
+  shells(): Promise<QuickTerminalShell[]>
+  selectShell(shellId: string): Promise<QuickTerminalResult>
   open(mode: QuickTerminalSurface, cwd?: string): Promise<QuickTerminalResult>
   move(mode: QuickTerminalMode): Promise<QuickTerminalResult>
   restart(): Promise<QuickTerminalResult>

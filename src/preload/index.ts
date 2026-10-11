@@ -21,6 +21,8 @@ import type {
 const quickTerminal: QuickTerminalApi = {
   platform: process.platform,
   read: () => ipcRenderer.invoke(CH.quickTerminalRead),
+  shells: () => ipcRenderer.invoke(CH.quickTerminalShells),
+  selectShell: shellId => ipcRenderer.invoke(CH.quickTerminalSelectShell, shellId),
   open: (mode, cwd) => ipcRenderer.invoke(CH.quickTerminalOpen, mode, cwd),
   move: (mode) => ipcRenderer.invoke(CH.quickTerminalMove, mode),
   restart: () => ipcRenderer.invoke(CH.quickTerminalRestart),

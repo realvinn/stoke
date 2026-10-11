@@ -1,6 +1,8 @@
 /** Single source of truth for IPC channel names. */
 export const CH = {
   quickTerminalRead: 'quick-terminal:read',
+  quickTerminalShells: 'quick-terminal:shells',
+  quickTerminalSelectShell: 'quick-terminal:select-shell',
   quickTerminalOpen: 'quick-terminal:open',
   quickTerminalMove: 'quick-terminal:move',
   quickTerminalRestart: 'quick-terminal:restart',

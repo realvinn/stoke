@@ -1579,7 +1579,7 @@ await step('a click on a hard-wrapped terminal URL opens its complete address', 
   }
 })
 
-await step('quick terminal opens wrapped links and retains its shell through a pop-out', async () => {
+await step('quick terminal switches installed shells, opens wrapped links and retains processes through a pop-out', async () => {
   const fixture = join(root, 'quick-link.mjs')
   const base = `${site.base}/whoami?terminal=quick&padding=`
   writeFileSync(fixture, `const cols = Number(process.argv[2]); const url = ${JSON.stringify(base)} + 'x'.repeat(cols * 2) + '&end=quick-tail'; process.stdout.write('\\r\\n\\x1b[?7l'); for (let at = 0; at < url.length; at += cols) process.stdout.write(url.slice(at, at + cols) + '\\r\\n'); process.stdout.write('\\x1b[?7h');`)
@@ -1629,6 +1629,30 @@ await step('quick terminal opens wrapped links and retains its shell through a p
     const opened = await waitFor('the quick-shell URL in Stoke', () => ev<BrowserState | null>(`window.__stokeQuickLinkState?.url === ${JSON.stringify(target)} && !window.__stokeQuickLinkState.loading ? window.__stokeQuickLinkState : null`))
     check('a real quick-terminal tail click retains the complete query', opened.url === target)
     await shot('05-quick-terminal-panel')
+    const shellChoices = await waitFor('the installed-shell picker', () => ev<{ id: string; label: string }[] | null>(`(() => {
+      const select = document.querySelector('[aria-label="Terminal shell"]');
+      return select && !select.disabled && select.options.length > 1 ? [...select.options].map(option => ({ id: option.value, label: option.textContent })) : null;
+    })()`))
+    check('Windows offers PowerShell alongside Command Prompt; Unix offers another installed shell', isWin ? shellChoices.some(shell => shell.id === 'powershell') : shellChoices.length > 1, JSON.stringify(shellChoices))
+    const otherShell = shellChoices[1].id
+    const pickShell = async (client: CdpClient, bridge: string, shellId: string): Promise<QuickTerminalState> => {
+      // CDP key injection does not commit macOS's native select menu. Exercise
+      // the rendered form's change event, then read the actual owned PTY.
+      await client.evaluate(`(() => { const select = document.querySelector('[aria-label="Terminal shell"]'); if (!select || select.disabled || ![...select.options].some(option => option.value === ${JSON.stringify(shellId)})) throw new Error('the shell picker is unavailable'); select.focus(); select.value = ${JSON.stringify(shellId)}; select.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`)
+      return waitFor('the shell selected through its picker', () => client.evaluate(`${bridge}.read().then(snapshot => snapshot.state.shellId === ${JSON.stringify(shellId)} && snapshot.state.phase === 'running' && document.querySelector('[aria-label="Terminal shell"]').value === ${JSON.stringify(shellId)} ? snapshot.state : null)`))
+    }
+    const other = await pickShell(ui!, 'window.stoke.quickTerminal', otherShell)
+    check('the panel switches to another process without ending the first', other.id !== id && other.sessions.filter(session => session.phase === 'running').length === 2)
+    await waitFor('the second shell buffer to attach', () => ev<boolean>(`!!window.stokeQuickTerminals.get(${JSON.stringify(other.id)})`))
+    await ev(`(window.stokeQuickTerminals.get(${JSON.stringify(other.id)}).focus(), true)`)
+    await ui!.send('Input.insertText', { text: 'echo STOKE_UI_OTHER_SHELL' })
+    await pressEnter()
+    const hasMarker = `(() => { const t = window.stokeQuickTerminals.get(${JSON.stringify(other.id)}); if (!t) return false; const b = t.buffer.active; for (let i = 0; i < b.length; i++) if (b.getLine(i)?.translateToString(true).trim() === 'STOKE_UI_OTHER_SHELL') return true; return false; })()`
+    await waitFor('real output from the second shell', () => ev<boolean>(hasMarker))
+    check('the newly selected shell accepts commands through xterm', true)
+    await shot('05-quick-terminal-shell-picker')
+    const original = await pickShell(ui!, 'window.stoke.quickTerminal', 'default')
+    check('switching back retains the original shell and its wrapped link', original.id === id && (await ev<{ data: string }>('window.stoke.quickTerminal.read()')).data.includes('&end=quick-tail'))
     await ev(`document.querySelector('[aria-label="Terminal options"]').click(), true`)
     // ContextMenu is deliberately hidden for its first frame, then positioned.
     // A native click must wait for that effect and the pop animation to finish.
@@ -1658,6 +1682,13 @@ await step('quick terminal opens wrapped links and retains its shell through a p
     })()`))
     check('the native pop-out replays the existing shell output', snapshot.state.id === id && !!replayed)
     await popup.screenshot(join(shots, '06-quick-terminal-popout.png'))
+    await waitFor('the pop-out shell picker', () => popup!.evaluate(`!document.querySelector('[aria-label="Terminal shell"]').disabled`))
+    const otherInPopup = await pickShell(popup, 'window.stokeQuickTerminal', otherShell)
+    check('the pop-out reuses the second shell instead of launching another', otherInPopup.id === other.id && otherInPopup.sessions.length === 2)
+    await waitFor('the retained second-shell output in the pop-out', () => popup!.evaluate(hasMarker))
+    await popup.screenshot(join(shots, '06-quick-terminal-shell-picker.png'))
+    const originalInPopup = await pickShell(popup, 'window.stokeQuickTerminal', 'default')
+    check('switching back in the pop-out still preserves the original process', originalInPopup.id === id)
     const dockButton = await popup.evaluate(`(() => { const r = document.querySelector('.quick-terminal-actions button').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`)
     await popup.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...dockButton, button: 'left', clickCount: 1 })
     await popup.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...dockButton, button: 'left', clickCount: 1 })
@@ -1674,6 +1705,7 @@ await step('quick terminal opens wrapped links and retains its shell through a p
     await ev('(window.__stokeQuickLinkOff?.(), delete window.__stokeQuickLinkOff, delete window.__stokeQuickLinkState, true)').catch(() => {})
     await ev('window.stoke.quickTerminal.move("hidden")').catch(() => {})
     await ev('window.stoke.settings.set({ quickTerminal: false })').catch(() => {})
+    check('turning off Quick terminal ends inactive shells too', await waitFor('all disposable quick shells to exit', () => ev('window.stoke.quickTerminal.read().then(snapshot => snapshot.state.sessions.every(session => session.phase === "exited"))'), 10_000).catch(() => false) === true)
   }
 })
 

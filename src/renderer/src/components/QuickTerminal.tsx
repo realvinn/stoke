@@ -5,7 +5,7 @@ import { SearchAddon } from '@xterm/addon-search'
 import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { terminalLinkClick, terminalLinkRepairs } from '@shared/terminalLinks'
-import { QuickTerminalReplay, type QuickTerminalApi, type QuickTerminalAppearance, type QuickTerminalState, type QuickTerminalSurface } from '@shared/quickTerminal'
+import { QuickTerminalReplay, type QuickTerminalApi, type QuickTerminalAppearance, type QuickTerminalShell, type QuickTerminalState, type QuickTerminalSurface } from '@shared/quickTerminal'
 import { terminalTheme } from '../lib/theme'
 import { installShiftSelection } from '../lib/terminalSelection'
 import '@xterm/xterm/css/xterm.css'
@@ -30,11 +30,17 @@ interface Props { api: QuickTerminalApi; state: QuickTerminalState; appearance: 
 export function QuickTerminalPanel({ api, state, appearance, surface, onOpenUrl }: Props): React.JSX.Element {
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [shells, setShells] = useState<QuickTerminalShell[]>([])
   const claimed = useRef(false)
   const [query, setQuery] = useState<string | null>(null)
   const find = useRef<SearchAddon | null>(null)
   const focusTerminal = useRef<(() => void) | null>(null)
   const closeFind = (): void => { setQuery(null); find.current?.clearDecorations(); focusTerminal.current?.() }
+  useEffect(() => {
+    let alive = true
+    void api.shells().then(choices => { if (alive) setShells(choices) }).catch(() => { if (alive) setError('Installed shells could not be listed. Hide and reopen the terminal to try again.') })
+    return () => { alive = false }
+  }, [api])
   const run = async (action: () => ReturnType<QuickTerminalApi['end']>): Promise<void> => {
     if (claimed.current) return
     claimed.current = true
@@ -55,6 +61,13 @@ export function QuickTerminalPanel({ api, state, appearance, surface, onOpenUrl 
           <button className="btn" data-variant="ghost" disabled={busy} onClick={() => void run(() => api.move('hidden'))} title="Hide the view; commands keep running">Hide</button>
         </div>
       </header>
+      <label className="quick-terminal-shell">
+        <span>Shell</span>
+        <select aria-label="Terminal shell" value={state.shellId} disabled={busy || !shells.length || state.phase === 'starting' || state.phase === 'stopping'} onChange={event => { const id = event.target.value; void run(() => api.selectShell(id)) }} title={shells.find(shell => shell.id === state.shellId)?.path}>
+          {!shells.length && <option value={state.shellId}>Loading installed shells…</option>}
+          {shells.map(shell => <option key={shell.id} value={shell.id}>{shell.label}{state.sessions.some(session => session.shellId === shell.id && session.phase === 'running') ? ' · Running' : ''}</option>)}
+        </select>
+      </label>
       <div className="quick-terminal-folder" title={state.cwd}>{state.cwd || 'Opening local shell…'}</div>
       {query !== null && <form className="quick-terminal-find" onSubmit={event => { event.preventDefault(); find.current?.findNext(query) }}>
         <input aria-label="Find in quick terminal" autoFocus value={query} onChange={event => { setQuery(event.target.value); find.current?.findNext(event.target.value) }} onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); closeFind() } }} />
@@ -64,7 +77,7 @@ export function QuickTerminalPanel({ api, state, appearance, surface, onOpenUrl 
       {state.id && <QuickTerminalScreen api={api} id={state.id} appearance={appearance} phase={state.phase} find={find} focusTerminal={focusTerminal} onOpenUrl={onOpenUrl} />}
       {!state.id && <div className="quick-terminal-empty">{state.phase === 'starting' ? 'Opening shell…' : 'Use Terminal in the bottom bar to open a shell.'}</div>}
       <footer className="quick-terminal-footer">
-        <span role="status">{state.phase === 'running' ? 'Commands keep running when hidden' : state.phase === 'exited' ? `Shell ended${state.exitCode === null ? '' : ` · Exit ${state.exitCode}`}` : state.phase === 'stopping' ? 'Stopping shell…' : 'Opening shell…'}</span>
+        <span role="status">{state.phase === 'running' ? 'Switch or hide; commands keep running' : state.phase === 'exited' ? `Shell ended${state.exitCode === null ? '' : ` · Exit ${state.exitCode}`}` : state.phase === 'stopping' ? 'Stopping shell…' : 'Opening shell…'}</span>
         {state.phase === 'exited' || state.phase === 'idle'
           ? <button className="btn" disabled={busy || !state.enabled} onClick={() => void run(() => api.restart())}>New shell</button>
           : <button className="btn" data-variant="ghost" disabled={busy || state.phase === 'stopping'} onClick={() => void run(() => api.end())}>End shell</button>}
@@ -139,7 +152,7 @@ function QuickTerminalScreen({ api, id, appearance, phase, find, focusTerminal, 
     term.options.disableStdin = phase !== 'running'
     // ResizeObserver alone cannot detect glyph-width changes at the same box size.
     fitCurrent.current?.()
-  }, [appearance, phase])
+  }, [appearance, phase, id])
   // FitAddon measures its parent's full CSS box; keep padding on the outer
   // wrapper so the fitted grid uses the actual inner content area (gotcha 87).
   return <div className="quick-terminal-screen" title="Copy: Cmd+C on Mac, Ctrl+Shift+C elsewhere. Paste: Cmd+V / Ctrl+Shift+V. Right-click copies a selection or pastes."><div className="quick-terminal-host" ref={host} /></div>

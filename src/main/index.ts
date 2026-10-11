@@ -4630,6 +4630,11 @@ function registerIpc(): void {
     const snapshot = quickTerminalFor().snapshot()
     return owner && owner !== quickPanelOwner() ? { ...snapshot, state: { ...snapshot.state, mode: 'hidden' }, data: '' } : snapshot
   })
+  ipcMain.handle(CH.quickTerminalShells, event => {
+    if (!appFrame(event) && !quickTerminalSurface(event)) throw new Error('Open the terminal in Stoke.')
+    return quickTerminalFor().shells()
+  })
+  ipcMain.handle(CH.quickTerminalSelectShell, (event, shellId) => quickAction(event, surface => quickTerminalFor().selectShell(surface, shellId)))
   ipcMain.handle(CH.quickTerminalOpen, (event, mode, cwd) => {
     const owner = appFrame(event)
     if (owner && (mode === 'panel' || mode === 'popout')) quickTerminalOwner = owner.id

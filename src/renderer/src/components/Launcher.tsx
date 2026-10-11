@@ -591,7 +591,7 @@ export function Launcher(props: Props): React.JSX.Element {
                   />
                   <p className="popover-text">
                     New {primary.label} sessions start on this account; a tab keeps the account it
-                    started on. Settings › Agents adds and signs in accounts.
+                    started on. Settings › Accounts adds and signs in accounts.
                   </p>
                 </Chip>
               </div>

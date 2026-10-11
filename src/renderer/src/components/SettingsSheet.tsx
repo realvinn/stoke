@@ -897,8 +897,8 @@ export function SettingsSheet({
                 <label className="check-row" data-setting="appearance.quick-terminal">
                   <input type="checkbox" checked={settings.quickTerminal} onChange={event => onPatch({ quickTerminal: event.target.checked })} />
                   <span><span className="field-label">Quick terminal</span><FieldHint>
-                    Off by default. Enable it here to use the bottom-left Terminal button. You can also add it to the title bar and open the same shell in a side panel or separate window.
-                    Hiding keeps commands running. Turning this off ends the shell. Shells are never restored on startup.
+                    Off by default. Enable it here to use the bottom-left Terminal button, or add Terminal to the title bar. Open it in a side panel or separate window and choose an installed shell, including PowerShell on Windows.
+                    Switching shells or hiding keeps commands running. Turning this off ends all quick shells. Shells are never restored on startup.
                   </FieldHint></span>
                 </label>
 

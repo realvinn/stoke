@@ -2,6 +2,7 @@ import { access, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'nod
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { QuickTerminal, quickTerminalEnv } from '../src/main/quickTerminal.ts'
+import { discoverTerminalShells, terminalShellArgs } from '../src/main/terminalShells.ts'
 import { ownedPtyExits } from '../src/main/ptyExitTracker.ts'
 import { QuickTerminalReplay, quickTerminalLink } from '../src/shared/quickTerminal.ts'
 import type { QuickTerminalFrame, QuickTerminalState } from '../src/shared/quickTerminal.ts'
@@ -39,6 +40,15 @@ try {
   const fit = fitTopBar({ room: 60, gap: 4, fixed: 20, more: 20, items: [{ id: 'one', kind: 'terminal', full: 90, compact: 90 }] })
   check('a narrow top bar keeps the terminal in its actionable overflow', fit.overflow, ['one'])
 
+  console.log('\nQuick terminal: installed shell catalog')
+  check('shell arguments follow the executable instead of the OS', ['C:\\Windows\\System32\\cmd.exe', 'C:\\Windows\\powershell.exe', '/opt/homebrew/bin/pwsh', '/bin/bash'].map(terminalShellArgs), [['/d'], ['-NoLogo'], ['-NoLogo'], ['-l']])
+  const windowsShells = await discoverTerminalShells({ platform: 'win32', env: { ComSpec: 'c:\\windows\\SYSTEM32\\cmd.exe', SystemRoot: 'C:\\Windows', ProgramFiles: 'C:\\Program Files' }, path: 'C:\\tools;relative', usable: async path => new Set(['c:\\windows\\system32\\cmd.exe', 'c:\\windows\\system32\\windowspowershell\\v1.0\\powershell.exe', 'c:\\tools\\pwsh.exe', 'c:\\program files\\git\\bin\\bash.exe']).has(path.toLowerCase()) })
+  check('Windows offers installed cmd, both PowerShell variants and Git Bash without duplicating Default', windowsShells.map(shell => [shell.id, shell.args]), [['default', ['/d']], ['powershell', ['-NoLogo']], ['pwsh', ['-NoLogo']], ['git-bash', ['-l']]])
+  const customDefault = await discoverTerminalShells({ platform: 'win32', env: { ComSpec: 'C:\\tools\\pwsh.exe', SystemRoot: 'C:\\Windows' }, path: 'C:\\tools', usable: async path => path === 'C:\\tools\\pwsh.exe' || path === 'C:\\Windows\\System32\\cmd.exe' })
+  check('a PowerShell default uses PowerShell arguments and still offers cmd', customDefault.map(shell => [shell.id, shell.args]), [['default', ['-NoLogo']], ['cmd', ['/d']]])
+  const catalog = await service.shells()
+  check('listing installed shells starts no process and exposes no executable arguments', [catalog.length > 0, preparations, service.view().id, catalog.every(shell => !('args' in shell))], [true, 0, null, true])
+
   console.log('\nQuick terminal: opt-in and a real native shell')
   check('reading does not prepare or start a process', [service.snapshot().state.phase, preparations], ['idle', 0])
   check('disabled open is refused before preparation', await refused(() => service.open('panel', root)), true)
@@ -54,6 +64,41 @@ try {
   service.write('panel', id, process.platform === 'win32' ? 'echo STOKE_QUICK_ONE>verified.txt & type verified.txt\r' : "printf 'STOKE_QUICK_ONE🔥\\n' > verified.txt; cat verified.txt\r")
   check('native shell really executes the command in its folder', await until(async () => { try { return (await readFile(join(root, 'verified.txt'), 'utf8')).includes('STOKE_QUICK_ONE') } catch { return false } }), true)
   check('native shell output reaches the mirror', await until(() => service.snapshot().data.includes('STOKE_QUICK_ONE')), true)
+
+  console.log('\nQuick terminal: real shell switching retains processes, commands and buffers')
+  const alternate = catalog.find(shell => shell.id === (process.platform === 'win32' ? 'powershell' : 'bash')) ?? catalog.find(shell => shell.id !== 'default')
+  check('a second native shell is installed on this target', !!alternate, true)
+  if (alternate) {
+    check('arbitrary executable paths cannot be selected', await refused(() => service.selectShell('panel', process.execPath)), true)
+    check('a stale view cannot switch shells', await refused(() => service.selectShell('popout', alternate.id)), true)
+    const waiter = join(root, 'wait-for-switch.cjs')
+    await writeFile(waiter, `const fs = require('node:fs'); const timer = setInterval(() => { if (fs.existsSync('switch.ready')) { clearInterval(timer); fs.writeFileSync('background.txt', 'STOKE_BACKGROUND_DONE'); process.stdout.write('STOKE_BACKGROUND_DONE\\n'); } }, 20);`)
+    const quote = (text: string): string => process.platform === 'win32' ? `"${text}"` : `'${text.replace(/'/g, "'\\''")}'`
+    const keepVariable = process.platform === 'win32' ? 'set STOKE_SWAP_VALUE=retained & ' : 'STOKE_SWAP_VALUE=retained; '
+    service.write('panel', id, `${keepVariable}${quote(process.execPath)} ${quote(waiter)}\r`)
+    const switching = service.selectShell('panel', alternate.id)
+    check('simultaneous switches cannot create duplicate shells', await refused(() => service.selectShell('panel', 'default')), true)
+    const selected = await switching
+    const alternateId = selected.id!
+    check('the selected native shell has its own identity and the same folder', [selected.shellId, alternateId !== id, selected.cwd], [alternate.id, true, state.cwd])
+    check('both shells stay running', selected.sessions.filter(session => session.phase === 'running').length, 2)
+    service.write('panel', id, process.platform === 'win32' ? 'echo WRONG>wrong-shell.txt\r' : 'printf WRONG > wrong-shell.txt\r')
+    service.resize('panel', id, 121, 31)
+    check('the inactive shell id cannot resize the selected shell', [service.view().cols, service.view().rows], [80, 24])
+    check('the inactive shell id cannot dispatch links', quickTerminalLink(selected, 'panel', id, 'https://example.com'), null)
+    const readyCommand = process.platform === 'win32' ? "Set-Content -Path switch.ready -Value READY; Write-Output STOKE_OTHER_SHELL\r" : "printf READY > switch.ready; printf 'STOKE_OTHER_SHELL\\n'\r"
+    service.write('panel', alternateId, readyCommand)
+    check('a command in the original shell completes while another shell is selected', await until(async () => { try { return (await readFile(join(root, 'background.txt'), 'utf8')) === 'STOKE_BACKGROUND_DONE' } catch { return false } }), true)
+    check('the selected shell also executes real commands', await until(() => service.snapshot().data.includes('STOKE_OTHER_SHELL')), true)
+    check('invalid selection preserves the selected process', [await refused(() => service.selectShell('panel', 'missing')), service.view().id], [true, alternateId])
+    const restored = await service.selectShell('panel', 'default')
+    check('switching back reuses the original process and retained output', [restored.id, service.snapshot().data.includes('STOKE_QUICK_ONE'), await until(() => service.snapshot().data.includes('STOKE_BACKGROUND_DONE'))], [id, true, true])
+    const variableFrames = frames.length
+    service.write('panel', id, process.platform === 'win32' ? 'echo VALUE=%STOKE_SWAP_VALUE%\r' : 'printf "VALUE=%s\\n" "$STOKE_SWAP_VALUE"\r')
+    check('switching back retains shell variables', await until(() => frames.slice(variableFrames).some(frame => frame.data.includes('VALUE=retained'))), true)
+    check('obsolete input did not create a file', await refused(() => access(join(root, 'wrong-shell.txt'))), true)
+    check('state revisions remain monotonic across shell switches', states.every((value, index) => !index || value.revision > states[index - 1].revision), true)
+  }
   const before = service.snapshot()
   service.move('popout')
   check('handoff keeps the same shell and output', [service.view().id, service.snapshot().sequence >= before.sequence, service.snapshot().data.includes('STOKE_QUICK_ONE')], [id, true, true])
@@ -83,6 +128,7 @@ try {
   check('explicit new shell has a new identity', next.id !== id, true)
   enabled = false; service.disable()
   check('disable hides and waits for process exit', [service.view().mode, await until(() => service.view().phase === 'exited')], ['hidden', true])
+  check('disabling also closes inactive shell processes', await until(() => service.view().sessions.every(session => session.phase === 'exited')), true)
   enabled = true; service.refreshSettings()
   check('reenabling does not relaunch commands', service.view().phase, 'exited')
   if (process.platform !== 'win32') {
@@ -117,6 +163,39 @@ try {
   check('canceled state is idle', [pending.view().phase, calls], ['idle', 1]); pending.dispose()
   check('a disposed service refuses a later open', await refused(() => pending.open('panel', root)), true)
   check('a disposed service refuses a restart', await refused(() => pending.restart('panel')), true)
+  let releaseCatalog!: () => void
+  const catalogGate = new Promise<void>(resolve => { releaseCatalog = resolve })
+  let latePreparations = 0
+  const slowCatalog = new QuickTerminal({ enabled: () => enabled, onState: () => {}, onData: () => {}, shells: async () => { await catalogGate; return [{ id: 'default', label: 'Default', path: process.execPath, args: [] }] }, environment: async () => { latePreparations++; return env } })
+  slowCatalog.move('panel')
+  const selecting = slowCatalog.selectShell('panel', 'default')
+  enabled = false; slowCatalog.disable(); enabled = true; slowCatalog.refreshSettings()
+  check('a disable while discovering shells retains its operation claim', await refused(() => slowCatalog.selectShell('panel', 'default')), true)
+  releaseCatalog()
+  check('reenabling cannot resurrect a canceled shell selection', [await refused(() => selecting), latePreparations, slowCatalog.view().id, slowCatalog.view().mode], [true, 0, null, 'hidden'])
+  slowCatalog.dispose()
+  const resolved = await discoverTerminalShells()
+  let releaseSwitch!: () => void
+  const switchGate = new Promise<void>(resolve => { releaseSwitch = resolve })
+  let switchPreparations = 0
+  const guarded = new QuickTerminal({ enabled: () => enabled, onState: () => {}, onData: () => {}, shells: async () => [...resolved, { id: 'removed', label: 'Removed', path: join(root, 'missing-shell'), args: [] }], environment: async () => { if (++switchPreparations === 3) await switchGate; return quickTerminalEnv({ ...process.env, HOME: root, ZDOTDIR: root }, process.env.PATH || '/usr/bin:/bin') } })
+  try {
+    const original = await guarded.open('panel', root)
+    check('a failed shell launch preserves the active process and view', [await refused(() => guarded.selectShell('panel', 'removed')), guarded.view().id, guarded.view().phase, guarded.view().sessions.length], [true, original.id, 'running', 1])
+    const other = resolved.find(shell => shell.id !== 'default')
+    if (other) {
+      const delayedSwitch = guarded.selectShell('panel', other.id)
+      await until(() => switchPreparations === 3)
+      enabled = false; guarded.disable(); enabled = true; guarded.refreshSettings()
+      releaseSwitch()
+      check('disabling and reenabling during shell preparation never launches the pending selection', [await refused(() => delayedSwitch), guarded.view().shellId, guarded.view().mode, guarded.view().sessions.length], [true, 'default', 'hidden', 1])
+      await until(() => guarded.view().phase === 'exited')
+      await guarded.restart('panel'); await guarded.selectShell('panel', other.id)
+      check('two saved shell processes remain owned before app disposal', guarded.view().sessions.filter(session => session.phase === 'running').length, 2)
+      guarded.dispose()
+      check('app disposal drains both the visible and inactive shells', await until(() => guarded.view().sessions.every(session => session.phase === 'exited')), true)
+    }
+  } finally { releaseSwitch?.(); guarded.dispose() }
   const file = join(root, 'file'); await writeFile(file, 'bystander')
   const bad = new QuickTerminal({ enabled: () => enabled, onState: () => {}, onData: () => {} })
   check('files are not working folders', await refused(() => bad.open('panel', file)), true)
