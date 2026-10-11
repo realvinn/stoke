@@ -1694,7 +1694,7 @@ function AccountProfileFields({ cli, value, onChange, label }: { cli: CodingCliI
     {value.provider === 'custom' ? <label className="account-manager-field">API base URL
       <input className="input mono" value={value.baseUrl} maxLength={2048} aria-label={`${label} API base URL`} spellCheck={false} onChange={e => onChange({ ...value, baseUrl: e.target.value })} />
     </label> : <span className="field-hint mono">{value.baseUrl}</span>}
-    <label className="account-manager-field">Model ID {custom ? <span className="field-hint">· Required</span> : <span className="field-hint">· Optional</span>}
+    <label className="account-manager-field"><span>Model ID <span className="field-hint">· {custom ? 'Required' : 'Optional'}</span></span>
       <input className="input mono" value={value.model} maxLength={200} placeholder={['anthropic', 'openai'].includes(value.provider) ? 'Blank uses the agent’s selected model' : 'Exact model ID from this provider'} aria-label={`${label} model ID`} spellCheck={false} onChange={e => onChange({ ...value, model: e.target.value })} />
     </label>
     {custom && <span className="field-hint">{cli === 'claude' ? 'Choose a service that supports the Anthropic Messages API.' : 'Choose a service that supports the OpenAI Responses API.'}</span>}

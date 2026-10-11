@@ -853,6 +853,7 @@ await step('the active account follows the agent and fits the title bar', async 
     await ui!.send('Emulation.setDeviceMetricsOverride', { width: 940, height: 720, deviceScaleFactor: 1, mobile: false })
     await sleep(300)
     check('account summaries and actions fit the minimum desktop width', await ev<boolean>(`(() => { const pane = document.querySelector('[data-testid="agent-accounts"]'), r = pane.getBoundingClientRect(); return [...pane.querySelectorAll('.account-manager-existing, .account-manager-summary, button')].filter(el => el.offsetWidth).every(el => { const box = el.getBoundingClientRect(); return box.left >= r.left && box.right <= r.right + 1 }); })()`) === true)
+    await waitFor('the Settings highlight to settle before its screenshot', () => ev<boolean>(`!document.querySelector('[data-testid="agent-accounts"]').hasAttribute('data-flash')`))
     await shot('04-account-settings')
     await ui!.send('Emulation.clearDeviceMetricsOverride')
   } finally {
