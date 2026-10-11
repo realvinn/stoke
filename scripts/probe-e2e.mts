@@ -1544,8 +1544,12 @@ await step('quick terminal opens wrapped links and retains its shell through a p
     check('a real quick-terminal tail click retains the complete query', opened.url === target)
     await shot('05-quick-terminal-panel')
     await ev(`document.querySelector('[aria-label="Terminal options"]').click(), true`)
-    await waitFor('footer terminal options', () => ev<boolean>(`!![...document.querySelectorAll('.context-menu-item')].find(button => button.textContent === 'Open in separate window')`))
-    check('footer options are visible above the clipped status bar', await ev<boolean>(`(() => { const menu = document.querySelector('.context-menu'), r = menu.getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight && menu.contains(document.elementFromPoint(r.left + 10, r.top + 10)); })()`) === true)
+    // ContextMenu is deliberately hidden for its first frame, then positioned.
+    // A native click must wait for that effect and the pop animation to finish.
+    await waitFor('visible, settled footer terminal options', () => ev<boolean>(`(() => { const menu = document.querySelector('.context-menu'); return !!menu && getComputedStyle(menu).visibility === 'visible' && getComputedStyle(menu).opacity === '1' && !![...menu.querySelectorAll('.context-menu-item')].find(button => button.textContent === 'Open in separate window'); })()`))
+    const menuBounds = await ev<{ top: number; bottom: number; height: number; hit: boolean; visible: string }>(`(() => { const menu = document.querySelector('.context-menu'), r = menu.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, height: innerHeight, hit: menu.contains(document.elementFromPoint(r.left + 10, r.top + 10)), visible: getComputedStyle(menu).visibility }; })()`)
+    check('footer options are visible above the clipped status bar', menuBounds.top >= 0 && menuBounds.bottom <= menuBounds.height && menuBounds.hit, JSON.stringify(menuBounds))
+    await shot('05-quick-terminal-options')
     const popoutButton = await ev<{ x: number; y: number }>(`(() => { const r = [...document.querySelectorAll('.context-menu-item')].find(button => button.textContent === 'Open in separate window').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`)
     await ui!.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...popoutButton, button: 'left', clickCount: 1 })
     await ui!.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...popoutButton, button: 'left', clickCount: 1 })
