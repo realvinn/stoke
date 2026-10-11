@@ -2,10 +2,10 @@ import { useEffect, useRef, useState } from 'react'
 import { gitChip, shownGitStatus } from '@shared/gitStatus'
 import { useGitStatus } from '../lib/useGitStatus'
 import { ContextMenu } from './ContextMenu'
-import { IconChevron } from './Icons'
+import { IconBranch } from './Icons'
 
-/** Uses the same read-only reader as the title bar; never fetches or stores credentials. */
-export function SidebarRepository({ cwd, busy, onReveal }: {
+/** Read-only local repository state beside the folder; never fetches or stores credentials. */
+export function RepositoryChip({ cwd, busy, onReveal }: {
   cwd: string | null
   busy: boolean
   onReveal: (path: string) => void
@@ -22,14 +22,14 @@ export function SidebarRepository({ cwd, busy, onReveal }: {
   const status = shownGitStatus(git.status, now)
   const chip = gitChip(status)
   const close = (): void => { setMenu(null); button.current?.focus() }
-  return <div className="sidebar-repository" data-testid="sidebar-repository" onKeyDown={event => { if (!event.metaKey && !event.ctrlKey && !event.altKey) event.stopPropagation() }}>
-    <button className="sidebar-repository-button" ref={button} disabled={!cwd} aria-haspopup="menu" aria-expanded={!!menu} title={chip?.title ?? cwd ?? 'Select a local project to see Git details'} onClick={() => {
+  if (!cwd || status?.repo === false) return <></>
+  return <div className="status-repository" data-testid="footer-repository" onKeyDown={event => { if (!event.metaKey && !event.ctrlKey && !event.altKey) event.stopPropagation() }}>
+    <button className="status-btn status-repository-button" ref={button} aria-label="Repository details" aria-haspopup="menu" aria-expanded={!!menu} title={chip?.title ?? cwd} onClick={() => {
       const rect = button.current?.getBoundingClientRect()
       if (rect) setMenu({ x: rect.left, y: rect.top })
     }}>
-      <span className="sidebar-repository-copy"><span className="sidebar-footer-label">Repository</span><strong className="mono">{chip?.head ?? (cwd ? status ? 'No Git repository' : 'Reading Git…' : 'Select a local project')}</strong></span>
-      {chip && <span className="sidebar-git-changes">{chip.changes === null ? '…' : chip.changes === 0 ? 'Clean' : `${chip.changes} changes`}</span>}
-      <IconChevron />
+      <IconBranch /><span className="status-repository-branch mono">{chip?.head ?? 'Reading Git…'}</span>
+      {chip && <span className="status-git-changes">{chip.changes === null ? '…' : chip.changes === 0 ? 'Clean' : `${chip.changes} ${chip.changes === 1 ? 'change' : 'changes'}`}</span>}
     </button>
     {menu && cwd && <ContextMenu x={menu.x} y={menu.y} header={{ title: chip?.head ?? 'Repository', subtitle: status?.root ?? cwd, lines: chip?.title.split('\n').slice(1) ?? [status?.error ?? 'No Git repository in this folder.'] }} items={[
       { label: 'Refresh Git status', onSelect: git.refresh },

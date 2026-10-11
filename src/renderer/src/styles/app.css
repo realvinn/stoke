@@ -1314,40 +1314,6 @@ body {
 }
 
 /*
- * Git is one square icon button (the owner, 2026-10-03), its branch and counts
- * in the tooltip and the menu a click opens. A dot says there are changes.
- * Only out of edit mode: there it is a chip with a grip and a ×, like any other.
- * Scoped to the bar, not to `.topbar-items`, so the hidden measurer draws it
- * square too: measured otherwise, it read 4-5px wider than it is drawn.
- */
-.topbar:not([data-editing]) .tb-chip[data-kind='git'] {
-  justify-content: center;
-  width: var(--control-h);
-  padding: 0;
-}
-
-.tb-git-badge {
-  position: absolute;
-  pointer-events: none;
-  top: calc(var(--space-4) + 1px);
-  right: calc(var(--space-4) + 1px);
-  width: 0.4375rem;
-  height: 0.4375rem;
-  border-radius: var(--r-full);
-  background: var(--warning);
-  /* Ring in the bar's own colour, so the dot reads apart from the icon's strokes. */
-  box-shadow: 0 0 0 2px var(--bg-sunken);
-}
-
-.tb-chip:hover .tb-git-badge {
-  box-shadow: 0 0 0 2px var(--surface-hover);
-}
-
-.tb-git-badge[data-tone='unknown'] {
-  background: var(--text-faint);
-}
-
-/*
  * Somewhere to grab the window that the tabs and the items do not take:
  * `dragGapPx` of DRAG_GAP_REM (shared/topBar.ts), written as `--topbar-drag`,
  * the first thing to give way on a bar that runs out — and it can still shrink
@@ -7875,27 +7841,13 @@ button.color-field-swatch[aria-expanded='true'] {
   max-height: calc(100vh - 9rem);
 }
 
-.sidebar-repository-button {
-  display: flex;
-  align-items: center;
-  gap: var(--space-8);
-  width: 100%;
-  min-width: 0;
-  padding: var(--space-8);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
-  background: transparent;
-  color: var(--text);
-  text-align: left;
-  cursor: pointer;
-}
-.sidebar-repository-button:hover:not(:disabled) { background: var(--bg-elevated); border-color: var(--border-strong); }
-.sidebar-repository-button:disabled { cursor: default; }
-.sidebar-repository-copy { display: grid; gap: 0.1875rem; min-width: 0; flex: 1; }
-.sidebar-repository-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-xs); font-weight: 500; }
-.sidebar-footer-label, .sidebar-git-changes { color: var(--text-muted); font-size: var(--fs-xs); }
-.sidebar-git-changes { flex-shrink: 0; }
-.sidebar-repository-button > svg,
+.status-repository { display: flex; flex-shrink: 1; min-width: 8rem; max-width: 16rem; }
+.status-repository-button { display: flex; align-items: center; gap: var(--space-8); min-width: 0; width: 100%; }
+.status-repository-button[aria-expanded='true'] { color: var(--text); background: var(--bg-elevated); }
+.status-repository-branch { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.status-git-changes { flex-shrink: 0; color: var(--text-muted); white-space: nowrap; }
+.statusbar > .pill[data-tone='accent'] { flex-shrink: 1; min-width: 3rem; max-width: 10rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.status-repository-button > svg { width: 0.875rem; height: 0.875rem; flex-shrink: 0; }
 .account-chip-wrap[data-surface='sidebar'] .account-chip > svg { width: 0.75rem; height: 0.75rem; flex-shrink: 0; }
 
 .status-terminal { display: flex; align-items: center; flex-shrink: 0; border-right: 1px solid var(--border-subtle); padding-right: var(--space-8); }

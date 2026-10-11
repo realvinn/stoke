@@ -518,6 +518,8 @@ function seedSettings(): void {
     worklogAuto: false,
     claudePath: launcherOf.claude,
     defaultCwd: proj,
+    // Saved legacy title-bar Git remains readable but is drawn only in the footer.
+    topBar: { enabled: true, items: [{ id: 'legacy-git', kind: 'git' }] },
     hosts,
     // A port of its own: 7878 may be an installed Stoke's phone server.
     remote: { port: remotePort },
@@ -887,9 +889,10 @@ await step('sidebar accounts, repository details and bottom-left terminal are di
     if (!hadSidebar) await ev('document.querySelector(\'button[title="Toggle sidebar"]\').click(), true')
     await ui!.send('Emulation.setDeviceMetricsOverride', { width: 940, height: 720, deviceScaleFactor: 1, mobile: false })
     await resizeSidebar(200)
-    await waitFor('the owned repository branch in the sidebar', () => ev<boolean>(`document.querySelector('[data-testid="sidebar-repository"] strong')?.textContent === 'probe-ui'`))
-    check('sidebar Git shows the actual local branch without needing the title-bar toolbar', true)
-    await ev(`document.querySelector('.sidebar-repository-button').click(), true`)
+    await waitFor('the owned repository branch in the bottom bar', () => ev<boolean>(`document.querySelector('[data-testid="footer-repository"] .status-repository-branch')?.textContent === 'probe-ui'`))
+    check('Git sits immediately after the local folder in the bottom bar and is absent from the title bar', await ev<boolean>(`document.querySelector('.statusbar > .status-shrink')?.nextElementSibling === document.querySelector('[data-testid="footer-repository"]') && !document.querySelector('.topbar [data-kind="git"]')`) === true)
+    check('footer repository and fixed actions fit at the minimum window width', await ev<boolean>(`[...document.querySelectorAll('.statusbar button, .statusbar > .pill')].filter(el => el.offsetWidth).every(el => { const r = el.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth + 1; })`) === true)
+    await ev(`document.querySelector('.status-repository-button').click(), true`)
     await waitFor('repository details', () => ev<boolean>('!!document.querySelector(".context-menu")'))
     check('repository details name untracked files and the last-fetch caveat', await ev<boolean>(`document.querySelector('.context-menu')?.textContent.includes('untracked') && document.querySelector('.context-menu')?.textContent.includes('last fetch')`) === true)
     await ev(`[...document.querySelectorAll('.context-menu-item')].find(button => button.textContent === 'Copy branch name').click(), true`)
@@ -926,7 +929,7 @@ await step('sidebar accounts, repository details and bottom-left terminal are di
     check('pressing Enter on the disabled terminal button opens setup without starting a shell', await ev<boolean>(`!document.querySelector('[data-setting="appearance.quick-terminal"] input').checked && window.stoke.quickTerminal.read().then(snapshot => !snapshot.state.id && !snapshot.state.enabled)`) === true)
     await closeSettings()
     await ev('document.querySelector(\'button[title="Toggle sidebar"]\').click(), true')
-    check('Terminal stays at bottom left with the sidebar hidden', await ev<boolean>(`(() => { const r = document.querySelector('[data-testid="footer-terminal"]').getBoundingClientRect(); return !document.querySelector('.sidebar') && r.left <= 16 && r.bottom <= innerHeight && r.top > innerHeight - 50; })()`) === true)
+    check('Terminal stays at bottom left with the sidebar hidden', await ev<boolean>(`(() => { const r = document.querySelector('[data-testid="footer-terminal"]').getBoundingClientRect(); return !document.querySelector('.sidebar') && !!document.querySelector('[data-testid="footer-repository"]') && r.left <= 16 && r.bottom <= innerHeight && r.top > innerHeight - 50; })()`) === true)
     await ev('document.querySelector(\'button[title="Toggle sidebar"]\').click(), true')
   } finally {
     await ui!.send('Emulation.clearDeviceMetricsOverride').catch(() => {})
@@ -1648,7 +1651,7 @@ if (opt.ssh) {
     await typeLine(ptyId, 'echo STOKE-SSH-$((6*7))')
     const echoed = await waitFor('the remote echo', async () => ((await bufferOf(ptyId)).includes('STOKE-SSH-42') ? true : null), 30_000).catch(() => false)
     check('an echo makes the round trip to the remote shell', echoed === true, echoed ? '' : (await bufferOf(ptyId)).slice(-1200))
-    check('an SSH tab never shows the local project’s Git branch or account', await ev<boolean>(`(!document.querySelector('.sidebar') || document.querySelector('.sidebar-repository-button')?.disabled === true) && !document.querySelector('[data-testid="active-account"]')?.hasAttribute('data-account')`) === true)
+    check('an SSH tab never shows the local project’s Git branch or account', await ev<boolean>(`!document.querySelector('[data-testid="footer-repository"]') && !document.querySelector('[data-testid="active-account"]')?.hasAttribute('data-account')`) === true)
     await typeLine(ptyId, '[ -n "$TMUX" ] && echo IN-TMUX-$((1+1))')
     const inTmux = await waitFor('the tmux check', async () => ((await bufferOf(ptyId)).includes('IN-TMUX-2') ? true : null), 15_000).catch(() => false)
     check('the shell is inside the tab\'s managed tmux session (gotcha 126)', inTmux === true)

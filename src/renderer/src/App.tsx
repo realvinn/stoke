@@ -84,7 +84,7 @@ import { TitleBar } from './components/TitleBar'
 import { TopBar } from './components/TopBar'
 import { QuickTerminalPanel, useQuickTerminal } from './components/QuickTerminal'
 import { QuickTerminalButton } from './components/QuickTerminalButton'
-import { SidebarRepository } from './components/SidebarRepository'
+import { RepositoryChip } from './components/RepositoryChip'
 import { AccountChip } from './components/AccountChip'
 import { WorkDock } from './components/WorkDock'
 import { SshKeyPrompt } from './components/SshKeyPrompt'
@@ -6129,7 +6129,6 @@ export function App(): React.JSX.Element {
                 onSetUpChats={() => openSettings('chats')}
                 otherMachines={<OtherMachines view={hubRemote} onOpen={openRemoteSession} />}
                 footer={<>
-                  <SidebarRepository key={repositoryCwd ?? 'no-local-project'} cwd={repositoryCwd} busy={!!activeTab && ['working', 'background'].includes(activityViews[activeTab.id]?.dot ?? '')} onReveal={revealFolder} />
                   <AccountChip target={null} surface="sidebar" settingsOpen={settingsOpen} onAgentSettings={manageAgentAccounts} onSyncSettings={() => openSettings('account')} onAccounts={() => openSettings('accounts')} />
                 </>}
               />
@@ -6646,6 +6645,7 @@ export function App(): React.JSX.Element {
       </div>
 
       <StatusBar
+        repository={<RepositoryChip key={repositoryCwd ?? 'no-local-project'} cwd={repositoryCwd} busy={!!activeTab && ['working', 'background'].includes(activityViews[activeTab.id]?.dot ?? '')} onReveal={revealFolder} />}
         tools={<QuickTerminalButton enabled={settings?.quickTerminal === true} visible={!!quickPanelVisible} onToggle={() => {
           if (quickPanelVisible) void window.stoke.quickTerminal.move('hidden').then(result => { if (!result.ok) setError(result.message) }).catch(error => setError(ipcErrorMessage(error)))
           else openQuickTerminal('panel')

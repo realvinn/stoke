@@ -73,7 +73,8 @@ export interface TopBarSettings {
 }
 
 /**
- * On, with git alone — one icon button. The folder chip was a default too
+ * On, with no items. Git now lives beside the bottom bar's folder/device.
+ * The folder chip was a default too
  * (2026-10-02) until the owner asked for it gone (2026-10-03): "we already
  * have the right click and the bottom left for that", and the title bar's
  * width is wanted for the tabs and for grabbing the window. It is one Add
@@ -84,7 +85,7 @@ export interface TopBarSettings {
  */
 export const TOP_BAR_DEFAULTS: TopBarSettings = {
   enabled: true,
-  items: [{ id: 'git', kind: 'git' }]
+  items: []
 }
 
 /**

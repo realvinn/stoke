@@ -11,6 +11,7 @@ import type { Tab } from '../types'
 
 interface Props {
   tools?: React.ReactNode
+  repository?: React.ReactNode
   tab: Tab | null
   context: ContextSnapshot | null
   /**
@@ -110,6 +111,7 @@ function RemoteSessionItems({ status, device }: { status: RemoteSessionStatus; d
 
 export function StatusBar({
   tools,
+  repository,
   tab,
   context,
   activity,
@@ -287,6 +289,7 @@ export function StatusBar({
         <span className="status-item" title="Another machine’s session, through your hub">
           On {device}
         </span>
+        {repository}
         {profilePill}
         {remoteSession ? (
           <RemoteSessionItems status={remoteSession} device={device} />
@@ -308,6 +311,7 @@ export function StatusBar({
       <footer className="statusbar">
         {tools}
         <span className="status-item">No active session</span>
+        {repository}
         {profilePill}
         <span className="status-spacer" />
         {/* Carried here too: a relaunch kills its session before the
@@ -392,6 +396,7 @@ export function StatusBar({
         </span>
       )}
 
+      {repository}
       {profilePill}
 
       {/*

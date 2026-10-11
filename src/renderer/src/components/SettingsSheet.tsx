@@ -871,10 +871,10 @@ export function SettingsSheet({
                       onChange={(e) => onPatch({ topBar: { ...settings.topBar, enabled: e.target.checked } })}
                     />
                     <span>
-                      <span className="field-label">Show git and text shortcuts in the title bar</span>
+                      <span className="field-label">Show text shortcuts and tools in the title bar</span>
                       <FieldHint>
                         Between the tabs and the buttons on the right. A shortcut types its text into the session in
-                        front; one marked to send presses Enter too.
+                        front; one marked to send presses Enter too. Git is beside the folder in the bottom bar.
                       </FieldHint>
                     </span>
                   </label>
@@ -889,7 +889,7 @@ export function SettingsSheet({
                         onPatch({ topBar: { enabled: true, items: TOP_BAR_DEFAULTS.items.map((i) => ({ ...i })) } })
                       }
                     >
-                      Reset to the default (git)
+                      Reset to an empty title bar
                     </button>
                   </div>
                 </div>
@@ -897,7 +897,7 @@ export function SettingsSheet({
                 <label className="check-row" data-setting="appearance.quick-terminal">
                   <input type="checkbox" checked={settings.quickTerminal} onChange={event => onPatch({ quickTerminal: event.target.checked })} />
                   <span><span className="field-label">Quick terminal</span><FieldHint>
-                    Off by default. Add Terminal through “Customise on the title bar…” to enable it and open a local shell in a side panel or pop-out.
+                    Off by default. Enable it here to use the bottom-left Terminal button. You can also add it to the title bar and open the same shell in a side panel or separate window.
                     Hiding keeps commands running. Turning this off ends the shell. Shells are never restored on startup.
                   </FieldHint></span>
                 </label>

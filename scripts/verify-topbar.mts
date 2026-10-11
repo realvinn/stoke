@@ -55,12 +55,12 @@ const kinds = (items: readonly TopBarItem[]): string[] => items.map((i) => `${i.
 
 /* ------------------------------------------------------- default and repair */
 
-console.log('the default: on, with git alone')
+console.log('the default: on, with no items; Git lives in the bottom bar')
 {
-  // Git alone since 2026-10-03: the owner asked for the folder chip gone (it is one Add away).
+  // Existing serialized Git items remain readable; the renderer omits them.
   check('TOP_BAR_DEFAULTS', TOP_BAR_DEFAULTS, {
     enabled: true,
-    items: [{ id: 'git', kind: 'git' }]
+    items: []
   })
   check('a missing block is the default', clampTopBar(undefined), TOP_BAR_DEFAULTS)
   check('junk is the default', [clampTopBar(7), clampTopBar('x'), clampTopBar([])], [TOP_BAR_DEFAULTS, TOP_BAR_DEFAULTS, TOP_BAR_DEFAULTS])
@@ -323,7 +323,7 @@ console.log('\nthe folder chip')
     const bar = readFileSync(new URL('../src/renderer/src/components/TopBar.tsx', import.meta.url), 'utf8')
     const app = readFileSync(new URL('../src/renderer/src/App.tsx', import.meta.url), 'utf8')
     check('the bar hands the chip the tab\u2019s private flag', /private: tab\.private/.test(bar), true)
-    check('and never asks git about a private chat\u2019s folder', /const local = [^\n]*!tab\.private/.test(bar), true)
+    check('Git lives in the footer and never reads a private or remote folder', !bar.includes('useGitStatus') && /const repositoryCwd = [^\n]*!activeTab\.hostId[^\n]*!activeTab\.private/.test(app), true)
     check(
       'App opens the chip\u2019s folder through revealFolder, so a folder that has gone says so (revealProblem)',
       /<TopBar[\s\S]*?onReveal=\{revealFolder\}/.test(app),

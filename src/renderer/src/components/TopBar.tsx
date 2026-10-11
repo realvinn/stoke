@@ -28,10 +28,8 @@ import {
   type TopBarSettings,
   type TopBarShortcut
 } from '@shared/topBar'
-import { gitChip, shownGitStatus } from '@shared/gitStatus'
 import { ContextMenu, type MenuItem } from './ContextMenu'
 import {
-  IconBranch,
   IconChevronsRight,
   IconClose,
   IconEnter,
@@ -44,7 +42,6 @@ import {
   IconTerminal
 } from './Icons'
 import { useFloatingLayer } from '../lib/floatingLayers'
-import { useGitStatus } from '../lib/useGitStatus'
 import { useTabDrag } from '../lib/useTabDrag'
 import { moveTab } from '../lib/tabs'
 import { noteInput } from '../lib/ptyBus'
@@ -53,14 +50,14 @@ import type { Tab } from '../types'
 
 /**
  * The title bar's own items, between the tab strip and the actions: where the
- * tab in front is, its git state, and the owner's text shortcuts — and the
+ * tab in front is, local shell access, and the owner's text shortcuts — and the
  * WYSIWYG editor that arranges them (asked for 2026-10-02: "make it
  * customisable with being able to add text shortcuts moving them around and
  * just a nice visual editor").
  *
  * It lives INSIDE the 44px title bar, so width is what it spends. A hidden
  * measurer draws every chip in both forms off screen, and `fitTopBar` decides
- * how the bar gives way — folder to its name, git to its branch, shortcuts into
+ * how the bar gives way — folder to its name, shortcuts into
  * "»" — while the tab strip keeps `TABS_FLOOR_REM`, written onto the bar as
  * `--tabs-floor`. Nothing here can widen the shell (gotcha 14).
  *
@@ -84,7 +81,7 @@ interface Props {
   tabCount: number
   /** The SSH host's label for an SSH tab (its `cwd` is the alias, gotcha 18). */
   hostLabel: string | null
-  /** The tab's activity dot (`activityView`): `waiting` refuses a shortcut; the end of `working` re-reads git. */
+  /** The tab's activity dot (`activityView`): `waiting` refuses a shortcut. */
   dot: string | null
   onReveal: (path: string) => void
   terminalEnabled: boolean
@@ -152,7 +149,9 @@ export function TopBar({
     const t = window.setTimeout(() => setPending(null), 4000)
     return () => window.clearTimeout(t)
   }, [pending, topBar.items])
-  const items = pending ?? topBar.items
+  // Old profiles can still contain Git; repository details now live beside
+  // the folder in StatusBar. Keep the serialized kind readable for rollback.
+  const items = useMemo(() => (pending ?? topBar.items).filter(item => item.kind !== 'git'), [pending, topBar.items])
 
   // A drag's commit already runs inside useTabDrag's `flushSync`, so the new
   // order is in the DOM before its settle measures it.
@@ -162,20 +161,6 @@ export function TopBar({
   }
 
   /* ------------------------------------------------------- the tab in front */
-
-  /*
-   * A folder on this computer git may be asked about: never an SSH tab (its
-   * cwd is an alias, gotcha 18) and never a private chat, whose folder is
-   * Stoke's own scratch under userData — git there would walk up into
-   * whatever repo holds it (a home kept in git) and show that as the chat's.
-   */
-  const local = !!tab && tab.kind === 'session' && !tab.hostId && !tab.private && !!tab.cwd
-  const hasGit = items.some((i) => i.kind === 'git')
-  const busy = dot === 'working' || dot === 'background'
-  const git = useGitStatus(local && tab ? tab.cwd : null, { enabled: hasGit && local, busy })
-  const [now, setNow] = useState(() => Date.now())
-  useEffect(() => setNow(Date.now()), [git.status])
-  const chip = gitChip(shownGitStatus(git.status, now))
 
   const target: ShortcutTarget | null = tab
     ? {
@@ -229,45 +214,6 @@ export function TopBar({
             ]
           : [customise],
         key: `${f.text}|${f.compact}|${f.where}`
-      })
-    } else if (item.kind === 'git') {
-      if (!chip) {
-        if (editing) views.push(placeholder(item, <IconBranch />, 'Git', 'Branch, changes and ahead/behind of a local tab’s folder'))
-        continue
-      }
-      /*
-       * One icon button (the owner, 2026-10-03: "move the git as a button like
-       * that git tree"), a dot when there are changes. The branch, the counts
-       * and ahead/behind are its tooltip and its click: a menu headed by the
-       * branch with the rest as lines — width the tabs and the window's drag
-       * space need more than a branch name does.
-       */
-      const [heading, ...details] = chip.title.split('\n')
-      const actions: MenuItem[] = [
-        { label: 'Look again', onSelect: git.refresh },
-        { label: 'Copy branch name', disabled: !git.status?.branch, onSelect: () => window.stoke.clipboard.writeText(git.status?.branch ?? '') },
-        customise
-      ]
-      const dirty = chip.changes === null ? 'unknown' : chip.changes > 0 ? 'dirty' : null
-      views.push({
-        item,
-        full: (
-          <>
-            <IconBranch />
-            {/* Not while editing: there it sat on the chip's × and took its clicks. */}
-            {dirty && !editing && <span className="tb-git-badge" data-tone={dirty} aria-hidden="true" />}
-            <span className="sr-only">
-              Git: {chip.head}
-              {chip.changes === null ? ', changes unknown' : chip.changes > 0 ? `, ${chip.changes} changed` : ''}
-            </span>
-          </>
-        ),
-        compact: null,
-        title: chip.title,
-        act: (el) => openMenu(el, actions, { title: heading, lines: details }, item.id),
-        disabled: false,
-        menu: actions,
-        key: `${chip.head}|${dirty}`
       })
     } else if (item.kind === 'terminal') {
       const actions: MenuItem[] = [
@@ -590,11 +536,10 @@ export function TopBar({
 
   const addItems: MenuItem[] = [
     { label: 'Folder', hint: 'where the tab is', disabled: addRefusal('folder', items) !== null, onSelect: () => add('folder') },
-    { label: 'Git', hint: 'branch, changes', disabled: addRefusal('git', items) !== null, onSelect: () => add('git') },
     { label: 'Terminal', hint: 'enable a local command shell', disabled: addRefusal('terminal', items) !== null, onSelect: () => add('terminal') },
     { label: 'Flexible space', disabled: addRefusal('spacer', items) !== null, onSelect: () => add('spacer') },
     { label: 'New text shortcut…', separated: true, disabled: addRefusal('shortcut', items) !== null, onSelect: () => add('shortcut') },
-    { label: 'Reset to the default (git)', separated: true, onSelect: () => commit(TOP_BAR_DEFAULTS.items.map((i) => ({ ...i }))) }
+    { label: 'Reset to an empty title bar', separated: true, onSelect: () => commit(TOP_BAR_DEFAULTS.items.map((i) => ({ ...i }))) }
   ]
   const moreItems: MenuItem[] = [
     ...overflowed.map(
@@ -654,7 +599,6 @@ export function TopBar({
               role="button"
               tabIndex={0}
               aria-disabled={(!editing && v.disabled) || undefined}
-              aria-haspopup={!editing && v.item.kind === 'git' ? 'menu' : undefined}
               title={editing ? editTitle(v.item) : v.title}
               onPointerDown={editing ? (e) => drag.onPointerDown(e, v.item.id) : undefined}
               // Out of edit mode a press leaves focus in the terminal, as a tab's does.
@@ -721,7 +665,7 @@ export function TopBar({
         ) : (
           <button
             className="icon-btn tb-pencil"
-            title="Customise the title bar: git, text shortcuts, folder"
+            title="Customise the title bar: text shortcuts, terminal, folder"
             onMouseDown={(e) => e.preventDefault()}
             onClick={() => onEditing(true)}
           >

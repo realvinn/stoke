@@ -1903,10 +1903,11 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     including when the sidebar is hidden. Off opens opt-in Settings;
                     enabled toggles the panel without ending its shell. Options open
                     the same shell in a separate window; the top-bar shortcut remains
-  src/components/SidebarRepository.tsx  read-only local project branch/change summary
-                    above the sidebar account row. Its menu shares the safe Git reader,
+  src/components/RepositoryChip.tsx  read-only local project branch/change summary
+                    beside the bottom bar's folder/device information. Its menu shares the safe Git reader,
                     shows changes/upstream/worktree details, refreshes, copies the branch
-                    and reveals the repository. No fetch or credential storage; SSH,
+                    and reveals the repository. Legacy title-bar Git items are hidden;
+                    serialized settings remain readable. No fetch or credential storage; SSH,
                     remote, browser and private tabs never read a local repository
   src/components/BusyDialog.tsx  "a prompt is running — Force restart / Wait / Cancel", asked
                     before the relaunch pill or "Restart and install" kills a turn in flight.
@@ -2065,8 +2066,7 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     page, which could not be reached again once a project was clicked
   src/components/TopBar.tsx  the title bar's own items between the tab strip and the actions
                     (TitleBar's `toolbar` slot): the folder (opens it; an SSH tab's host,
-                    never opened), git (branch, changes, ahead/behind as of the last fetch,
-                    worktree), text shortcuts (typed through `pty:type`, Enter only when the
+                    never opened), local terminal, text shortcuts (typed through `pty:type`, Enter only when the
                     shortcut sends, refused with a reason where they cannot go) and spaces.
                     Its editor is the bar itself: a pencil, grips and ×, drag (useTabDrag),
                     Alt+arrows, Delete, + Add, the shortcut form (saved by its button or
@@ -2449,8 +2449,9 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     object from named keys, so a settings file written by an older build
                     hydrates a field they miss as undefined and the pane that reads it
                     renders blank. settingsSchema.ts only spreads the defaults
-  topBar.ts         the title bar's own items (`Settings.topBar`): folder, git, text
-                    shortcuts, flexible spaces. TOP_BAR_DEFAULTS (on, folder + git) and
+  topBar.ts         the title bar's own items (`Settings.topBar`): folder, terminal, text
+                    shortcuts, flexible spaces; legacy Git stays readable but is hidden.
+                    TOP_BAR_DEFAULTS (on, no items) and
                     `clampTopBar` (rebuilt from named keys; one folder, one git, ids never
                     minted by a read, gotcha 116; shortcut text held to one hub item's size,
                     counted JSON-escaped by `shortcutCost`, as the item carries it),
