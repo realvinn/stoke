@@ -1032,6 +1032,9 @@ await step('named API profiles save in Settings and launch with their own creden
       await ev(`[...document.querySelectorAll('.account-panel button')].find(button => button.textContent === 'Add API account').click(), true`)
       await waitFor('API account fields', () => ev<boolean>('!!document.querySelector(\'[aria-label="New API account provider"]\')'))
       await waitFor('the API shortcut to reveal its Settings fields', () => ev<boolean>(`(() => { const r = document.querySelector('[data-setting="agent.apiAccounts"]').getBoundingClientRect(); return r.top >= 0 && r.top < innerHeight; })()`))
+      // The settings jump focuses its first control after the disclosure settles.
+      // Starting to type before that focus transfer can put a key in the nickname.
+      await waitFor('the API shortcut to finish moving focus', () => ev<boolean>(`document.activeElement === document.querySelector('[aria-label="New ${cliFor(cli).label} API account name"]')`))
       check(`${cli}: the API provider menu groups gateways under Custom`, await ev<boolean>(`(() => { const options = [...document.querySelector('[aria-label="New API account provider"]').options].map(option => option.value); return options.length === 2 && options.includes('${cli === 'claude' ? 'anthropic' : 'openai'}') && options.includes('custom') })()`) === true)
       if (cli === 'codex') {
         await ev(`(() => { const s = document.querySelector('[aria-label="New API account provider"]'); s.value = 'custom'; s.dispatchEvent(new Event('change', { bubbles: true })); return true })()`)
@@ -1047,6 +1050,7 @@ await step('named API profiles save in Settings and launch with their own creden
       let key = ['owned', cli, 'probe', 'credential'].join('-')
       await ev(`document.querySelector('[data-testid="add-api-account"] input[type="password"]').focus(), true`)
       await ui!.send('Input.insertText', { text: key })
+      await waitFor('the three API account fields to retain their typed values', () => ev<boolean>(`document.querySelector('[aria-label="New ${cliFor(cli).label} API account name"]').value === 'API probe' && document.querySelector('[aria-label="New API account model ID"]').value === ${JSON.stringify(model)} && document.querySelector('[data-testid="add-api-account"] input[type="password"]').value === ${JSON.stringify(key)}`))
       await ev(`[...document.querySelectorAll('.agent-accounts button')].find(button => button.textContent.trim() === 'Add API account').click(), true`)
       const accountId = `${cli}-api-probe`
       await waitFor('the named API account to persist', () => ev<boolean>(`window.stoke.settings.get().then(s => s.accounts[${JSON.stringify(accountId)}]?.apiProfile?.model === ${JSON.stringify(model)})`))
