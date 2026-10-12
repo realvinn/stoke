@@ -2,7 +2,7 @@ import { access, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'nod
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { QuickTerminal, quickTerminalEnv } from '../src/main/quickTerminal.ts'
-import { discoverTerminalShells, terminalShellArgs } from '../src/main/terminalShells.ts'
+import { discoverTerminalShells, terminalEnvironmentPath, terminalShellArgs } from '../src/main/terminalShells.ts'
 import { ownedPtyExits } from '../src/main/ptyExitTracker.ts'
 import { QuickTerminalReplay, quickTerminalLink } from '../src/shared/quickTerminal.ts'
 import type { QuickTerminalFrame, QuickTerminalState } from '../src/shared/quickTerminal.ts'
@@ -42,6 +42,12 @@ try {
 
   console.log('\nQuick terminal: installed shell catalog')
   check('shell arguments follow the executable instead of the OS', ['C:\\Windows\\System32\\cmd.exe', 'C:\\Windows\\powershell.exe', '/opt/homebrew/bin/pwsh', '/bin/bash'].map(terminalShellArgs), [['/d'], ['-NoLogo'], ['-NoLogo'], ['-l']])
+  let finishPath!: (path: string) => void
+  const refreshing = new Promise<string>(resolve => { finishPath = resolve })
+  check('a slow environment refresh cannot consume the shell startup deadline', await terminalEnvironmentPath(refreshing, 'owned-inherited-path', 10), 'owned-inherited-path')
+  finishPath('owned-refreshed-path')
+  check('later shell discovery uses the completed environment refresh', await terminalEnvironmentPath(refreshing, 'owned-inherited-path', 10), 'owned-refreshed-path')
+  check('a failed refresh still permits an absolute installed shell', await terminalEnvironmentPath(Promise.reject(new Error('owned registry refusal')), 'owned-inherited-path', 10), 'owned-inherited-path')
   const windowsShells = await discoverTerminalShells({
     platform: 'win32', env: { ComSpec: 'c:\\windows\\SYSTEM32\\cmd.exe', SystemRoot: 'C:\\Windows', ProgramFiles: 'C:\\Program Files' }, path: 'C:\\tools;relative',
     usable: async path => new Set(['c:\\windows\\system32\\cmd.exe', 'c:\\windows\\system32\\windowspowershell\\v1.0\\powershell.exe', 'c:\\tools\\pwsh.exe', 'c:\\program files\\git\\bin\\bash.exe']).has(path.toLowerCase()), canonical: async path => path

@@ -4,6 +4,15 @@ import { posix, win32 } from 'node:path'
 import { buildEnvPath } from './cli.ts'
 import type { QuickTerminalShell } from '../shared/quickTerminal.ts'
 
+/** Windows' registry refresh can consume its own five-second deadline. An
+ * absolute shell can start on the inherited PATH while that refresh finishes. */
+export async function terminalEnvironmentPath(fresh = buildEnvPath(), inherited = process.env.PATH ?? '', waitMs = 1000): Promise<string> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([fresh.catch(() => inherited), new Promise<string>(resolve => { timer = setTimeout(() => resolve(inherited), waitMs) })])
+  } finally { clearTimeout(timer) }
+}
+
 export interface ResolvedTerminalShell extends QuickTerminalShell { args: string[] }
 interface Candidate { id: string; paths: string[] }
 
@@ -54,7 +63,7 @@ export async function discoverTerminalShells(input?: {
 }): Promise<ResolvedTerminalShell[]> {
   const platform = input?.platform ?? process.platform
   const env = input?.env ?? process.env
-  const path = input?.path ?? await buildEnvPath()
+  const path = input?.path ?? await terminalEnvironmentPath()
   const p = platform === 'win32' ? win32 : posix
   const canonical = input?.canonical ?? realpath
   const usable = input?.usable ?? (async (file: string) => {

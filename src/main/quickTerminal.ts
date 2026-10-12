@@ -3,10 +3,10 @@ import { constants } from 'node:fs'
 import { homedir } from 'node:os'
 import { isAbsolute } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { buildEnvPath, setPathKey } from './cli.ts'
+import { setPathKey } from './cli.ts'
 import { releaseExitedPtyTransports } from './ptyTransportCleanup.ts'
 import { ownedPtyExits } from './ptyExitTracker.ts'
-import { discoverTerminalShells, type ResolvedTerminalShell } from './terminalShells.ts'
+import { discoverTerminalShells, terminalEnvironmentPath, type ResolvedTerminalShell } from './terminalShells.ts'
 import type { IPty } from '@lydell/node-pty'
 import type { ScreenMirror } from './screenMirror.ts'
 import type { QuickTerminalFrame, QuickTerminalMode, QuickTerminalShell, QuickTerminalSnapshot, QuickTerminalState, QuickTerminalSurface } from '../shared/quickTerminal.ts'
@@ -69,7 +69,7 @@ class QuickTerminalSession {
       const prepare = async () => {
         const [folder, shell, env, runtime] = await Promise.all([
           realpath(cwd || homedir()).then(async path => { if (!(await stat(path)).isDirectory()) throw new Error('The shell folder is unavailable.'); return path }),
-          this.options.shell().then(async shell => { if (!(await stat(shell.path)).isFile()) throw new Error('The selected shell is unavailable.'); await access(shell.path, process.platform === 'win32' ? constants.F_OK : constants.X_OK); return shell }), this.options.environment?.() ?? buildEnvPath().then(path => quickTerminalEnv(process.env, path)),
+          this.options.shell().then(async shell => { if (!(await stat(shell.path)).isFile()) throw new Error('The selected shell is unavailable.'); await access(shell.path, process.platform === 'win32' ? constants.F_OK : constants.X_OK); return shell }), this.options.environment?.() ?? terminalEnvironmentPath().then(path => quickTerminalEnv(process.env, path)),
           this.options.runtime?.() ?? Promise.all([import('@lydell/node-pty'), import('./screenMirror.ts')]).then(([pty, screen]) => ({ spawn: pty.spawn, mirror: (cols: number, rows: number) => new screen.ScreenMirror(cols, rows) }))
         ])
         return { folder, shell, env, runtime }
