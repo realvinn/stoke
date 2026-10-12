@@ -50,6 +50,7 @@ export interface SyncScope {
   settings: boolean
   hosts: boolean
   keys: boolean
+  accounts?: boolean
 }
 
 /**
@@ -69,6 +70,8 @@ export function inScope(path: string, scope: SyncScope): boolean {
       return scope.hosts
     case 't4':
       return false
+    case 't5':
+      return scope.accounts === true
     case 'acct':
       return true
   }
@@ -77,12 +80,13 @@ export function inScope(path: string, scope: SyncScope): boolean {
 /** A deletion is an edit only where a value can be absent: an API key cleared, a host removed. */
 function tombstonable(path: string): boolean {
   const p = parseItemPath(path)
-  return p?.tier === 't2' || p?.tier === 't3'
+  return p?.tier === 't2' || p?.tier === 't3' || p?.tier === 't5'
 }
 
 /** Account preferences, held in hub-state.json (never Settings). Null: this device has no value yet. */
 export interface HubPrefs {
   syncKeys: { on: boolean } | null
+  syncAccounts?: { on: boolean } | null
   deviceNames: { names: Record<string, string> } | null
 }
 
@@ -124,6 +128,7 @@ export function localValues(f: {
     }
   }
   if (f.prefs.syncKeys) out.set('acct/pref/sync-keys', { deleted: false, value: { on: f.prefs.syncKeys.on } })
+  if (f.prefs.syncAccounts) out.set('acct/pref/sync-accounts', { deleted: false, value: { on: f.prefs.syncAccounts.on } })
   if (f.prefs.deviceNames) out.set('acct/pref/device-names', { deleted: false, value: { names: f.prefs.deviceNames.names } })
   return out
 }
@@ -370,9 +375,11 @@ export function incomingFrom(items: readonly RemoteItem[]): {
       case 'acct':
         if (it.deleted || !isRecord(it.value)) break
         if (p.pref === 'sync-keys' && typeof it.value.on === 'boolean') prefs.syncKeys = { on: it.value.on }
+        if (p.pref === 'sync-accounts' && typeof it.value.on === 'boolean') prefs.syncAccounts = { on: it.value.on }
         if (p.pref === 'device-names' && isRecord(it.value.names)) prefs.deviceNames = { names: cleanNames(it.value.names) }
         break
       case 't4':
+      case 't5':
         break
     }
   }
@@ -621,6 +628,8 @@ export interface HubLocalState {
   resealOwed: number
   alarm: HubAlarm | null
   lastSyncAt: number | null
+  /** Replay previously ignored account items once after upgrading from a pre-sync client. */
+  accountSyncReady?: boolean
 }
 
 export function emptyHubState(account: string): HubLocalState {
@@ -695,6 +704,7 @@ export const MAX_CONFLICT_NOTES = 50
 export function hydrateHubState(raw: unknown, account: string): HubLocalState {
   const out = emptyHubState(account)
   if (!isRecord(raw) || raw.v !== HUB_STATE_VERSION || raw.account !== account) return out
+  if (raw.accountSyncReady === true) out.accountSyncReady = true
   if (Array.isArray(raw.chain) && raw.chain.every((e) => chainEntryProblem(e) === null)) out.chain = raw.chain as ChainEntry[]
   if (isRecord(raw.pinned) && isNonNegInt(raw.pinned.seq) && isB64u(raw.pinned.head, 32)) out.pinned = { seq: raw.pinned.seq, head: raw.pinned.head }
   if (isRecord(raw.anchor) && isNonNegInt(raw.anchor.seq) && isB64u(raw.anchor.link, 32)) out.anchor = { seq: raw.anchor.seq, link: raw.anchor.link }
@@ -716,6 +726,7 @@ export function hydrateHubState(raw: unknown, account: string): HubLocalState {
   if (isRecord(raw.prefs)) {
     const p = raw.prefs
     if (isRecord(p.syncKeys) && typeof p.syncKeys.on === 'boolean') out.prefs.syncKeys = { on: p.syncKeys.on }
+    if (isRecord(p.syncAccounts) && typeof p.syncAccounts.on === 'boolean') out.prefs.syncAccounts = { on: p.syncAccounts.on }
     if (isRecord(p.deviceNames) && isRecord(p.deviceNames.names)) out.prefs.deviceNames = { names: cleanNames(p.deviceNames.names) }
   }
   if (isRecord(raw.keyRefs)) {
@@ -883,10 +894,11 @@ export interface HubView {
   busy: string | null
   lastSyncAt: number | null
   error: { message: string; at: number; retryAt: number | null } | null
-  scope: SyncScope & { keysDevice: boolean }
+  scope: SyncScope & { keysDevice: boolean; accountsDevice?: boolean }
   /** The account's `sync-keys` switch; null before anyone set it. */
   accountKeys: boolean | null
-  counts: { settings: number; keys: number; hosts: number; sshKeys: number }
+  accountSync?: boolean | null
+  counts: { settings: number; keys: number; hosts: number; sshKeys: number; accounts?: number }
   epoch: number
   devices: HubDeviceView[]
   pairs: HubPairView[]
@@ -936,7 +948,7 @@ export function emptyHubView(): HubView {
 
 /** Items per tier among the records (live ones only), for the panel's counts. */
 export function recordCounts(records: Record<string, SyncedRecord>): HubView['counts'] {
-  const c = { settings: 0, keys: 0, hosts: 0, sshKeys: 0 }
+  const c = { settings: 0, keys: 0, hosts: 0, sshKeys: 0, accounts: 0 }
   for (const [path, r] of Object.entries(records)) {
     if (r.deleted) continue
     const p = parseItemPath(path)
@@ -944,6 +956,7 @@ export function recordCounts(records: Record<string, SyncedRecord>): HubView['co
     else if (p?.tier === 't2') c.keys++
     else if (p?.tier === 't3') c.hosts++
     else if (p?.tier === 't4') c.sshKeys++
+    else if (p?.tier === 't5') c.accounts++
   }
   return c
 }

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { mkdir } from 'node:fs/promises'
 import { judgeProtection, sealedText, unsealedValue } from '../../shared/secrets.ts'
+import { stableJson } from '../../shared/hub/codec.ts'
 import {
   GBOT_VERSION,
   isGrokBotAccountId,
@@ -48,6 +49,50 @@ const reference = (id: string): string => `plugins.grok-bot.${id}`
 /** Never resolves a command through the desktop app's current/default login. */
 export class GrokBotPlugin {
   private options: Options
+  /** Main-only vault adapter; no CLI runs and a disabled plugin stays disabled. */
+  async exportForSync(): Promise<{ id: string; label: string; credential: { gatewayUrl: string; token: string; headers: Record<string, string> } }[]> {
+    return this.file.transaction(async signal => {
+      this.protected()
+      const state = await this.load(signal)
+      return state.accounts.flatMap(entry => {
+        const session = this.session(entry)
+        if (session.allowLocal) return []
+        return [{ id: entry.account.id, label: entry.account.label, credential: { gatewayUrl: session.gatewayUrl, token: session.token, headers: session.headers } }]
+      })
+    })
+  }
+
+  async importFromSync(id: string, value: { label: string; credential: { gatewayUrl: string; token: string; headers: Record<string, string> } } | null, allowed: () => boolean): Promise<void> {
+    if (!isGrokBotAccountId(id)) throw new Error('The synced Grok Bot account ID is invalid.')
+    this.protected()
+    await this.file.transaction(async signal => {
+      const state = await this.load(signal)
+      if (!allowed()) throw new Error('Account sync was turned off.')
+      const old = state.accounts.find(entry => entry.account.id === id)
+      if (!value) {
+        if (!old) return
+        this.stop(); this.processes.resume()
+        state.accounts = state.accounts.filter(entry => entry !== old)
+        if (state.defaultAccount === id) state.defaultAccount = state.accounts[0]?.account.id ?? null
+      } else {
+        const name = label(value.label)
+        const session = validateGrokBotSession(value.credential, false)
+        if (!old && state.accounts.length >= 32) throw new Error('This device has too many Grok Bot accounts.')
+        const changedCredential = !old || stableJson(this.session(old)) !== stableJson(session)
+        if (old && old.account.label === name && !changedCredential) return
+        if (changedCredential && old) { this.stop(); this.processes.resume() }
+        const account: GrokBotAccount = { id, label: name, gatewayHost: new URL(session.gatewayUrl).host, source: 'manual', sourceSlot: '', status: changedCredential ? 'saved' : old!.account.status, checkedAt: changedCredential ? null : old!.account.checkedAt, updatedAt: Date.now() }
+        const sealed = changedCredential ? this.options.backend.encrypt(sealedText(reference(id), JSON.stringify(session))).toString('base64') : old!.sealed
+        state.accounts = [...state.accounts.filter(entry => entry.account.id !== id), { account, sealed }]
+        state.defaultAccount ??= id
+      }
+      signal.throwIfAborted()
+      if (!allowed()) throw new Error('Account sync was turned off.')
+      state.revision++
+      await this.file.write(state, signal)
+      this.options.changed(this.view(state))
+    })
+  }
   private file: PluginFile<State>
   private runtime: GrokBotRuntime
   private processes = new PluginProcesses()

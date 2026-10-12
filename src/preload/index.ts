@@ -293,6 +293,7 @@ const api: StokeApi = {
     syncNow: () => ipcRenderer.invoke(CH.hubSyncNow),
     setScope: (patch) => ipcRenderer.invoke(CH.hubSetScope, patch),
     setAccountKeys: (on) => ipcRenderer.invoke(CH.hubSetAccountKeys, on),
+    setAccountSync: (on) => ipcRenderer.invoke(CH.hubSetAccountSync, on),
     rename: (deviceId, name) => ipcRenderer.invoke(CH.hubRename, deviceId, name),
     revoke: (deviceId, how) => ipcRenderer.invoke(CH.hubRevoke, deviceId, how),
     dismissNotes: () => ipcRenderer.invoke(CH.hubDismissNotes),

@@ -1962,9 +1962,9 @@ console.log('\nan account in the launch plan (shared/accounts.ts)')
   check('and adds no argument', planOk(codex).args, [])
   const codexOr = plan('codex', or('gpt-6.1'), { account: codexWork })
   check(
-    'on OpenRouter too: the endpoint keeps its key, the home travels beside it',
-    [planOk(codexOr).env.CODEX_HOME, planOk(codexOr).env.STOKE_OPENROUTER_API_KEY],
-    ['/h/.stoke/accounts/codex-work', KEY]
+    'a selected Codex subscription account uses its login instead of the global OpenRouter route',
+    [planOk(codexOr).env.CODEX_HOME, planOk(codexOr).env.STOKE_OPENROUTER_API_KEY ?? null, planOk(codexOr).args.some(a => a.startsWith('model_provider='))],
+    ['/h/.stoke/accounts/codex-work', null, false]
   )
   const grok = plan('grok', undefined, { account: grokTeam })
   check('a Grok key account sets XAI_API_KEY', planOk(grok).env, { XAI_API_KEY: 'xai-TEAM-secret' })

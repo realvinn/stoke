@@ -962,8 +962,9 @@ export interface StokeApi {
     approveConfirm(pair: string): Promise<HubResult>
     refuse(pair: string): Promise<HubResult>
     syncNow(): Promise<HubResult>
-    setScope(patch: { settings?: boolean; hosts?: boolean; keys?: boolean }): Promise<HubResult>
+    setScope(patch: { settings?: boolean; hosts?: boolean; keys?: boolean; accounts?: boolean }): Promise<HubResult>
     setAccountKeys(on: boolean): Promise<HubResult>
+    setAccountSync(on: boolean): Promise<HubResult>
     rename(deviceId: string, name: string): Promise<HubResult>
     revoke(deviceId: string, how: { kit: string } | { newKit: true }): Promise<HubResult<{ kit?: string; group?: number }>>
     dismissNotes(): Promise<HubResult>

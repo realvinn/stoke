@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { execFile, spawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
 import { join } from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
-import { accountEnv, DEFAULT_ACCOUNT_ID, type AgentAccount } from '../shared/accounts.ts'
+import { accountEnv, accountLoginOptions, DEFAULT_ACCOUNT_ID, type AgentAccount } from '../shared/accounts.ts'
 import { accountIdentityKey, nativeAccountIdentity, type AccountIdentity, type AccountIdentityTarget } from '../shared/accountIdentity.ts'
 import type { Settings } from '../shared/types.ts'
 import { spawnSpec } from './cli.ts'
@@ -10,6 +10,7 @@ import { ACCOUNT_PROVIDER_LABELS } from '../shared/accountProviders.ts'
 import { applyClaudeAccountEnv } from '../shared/claudeAccountEnv.ts'
 
 export interface AccountIdentityPlan {
+  nativeArgs?: string[]
   target: AccountIdentityTarget
   label: string
   env: Record<string, string | undefined>
@@ -34,7 +35,7 @@ export function planAccountIdentity(target: AccountIdentityTarget, settings: Ide
     plan.fallback = { state: account.apiKey ? 'ready' : 'unavailable', method: account.apiProfile ? ACCOUNT_PROVIDER_LABELS[account.apiProfile.provider] : 'API key', detail: account.apiKey ? 'This account uses its configured API key. The key owner’s email is not available.' : 'This account has no readable API key configured.' }
     return plan
   }
-  const mode = target.cli === 'claude' ? account ? 'default' : settings.providers.claudeAuth : settings.agents.endpoints[target.cli]?.mode ?? 'default'
+  const mode = account ? 'default' : target.cli === 'claude' ? settings.providers.claudeAuth : settings.agents.endpoints[target.cli]?.mode ?? 'default'
   if (mode !== 'default') {
     plan.fallback = { state: 'ready', method: mode === 'anthropic' ? 'Anthropic API key' : mode === 'openrouter' ? 'OpenRouter' : 'Custom provider', detail: 'This account uses the selected provider configuration. A native agent login would describe a different authentication source.' }
     return plan
@@ -44,6 +45,7 @@ export function planAccountIdentity(target: AccountIdentityTarget, settings: Ide
     return plan
   }
   if (target.cli === 'claude' || target.cli === 'codex') plan.native = target.cli
+  if (account?.credentialStore === 'file') plan.nativeArgs = accountLoginOptions(account)
   return plan
 }
 
@@ -54,7 +56,7 @@ const OUTPUT_LIMIT = 128 * 1024
 export type AccountIdentitySpawn = (file: string, args: string[], options: SpawnOptions) => ChildProcess
 export async function probeAccountIdentity(plan: AccountIdentityPlan, executable: string, env: Record<string, string>, timeout = ACCOUNT_IDENTITY_TIMEOUT_MS, spawnProcess: AccountIdentitySpawn = spawn, signal?: AbortSignal): Promise<unknown> {
   if (!plan.native || signal?.aborted) return null
-  const args = plan.native === 'claude' ? ['auth', 'status', '--json'] : ['app-server', '--listen', 'stdio://']
+  const args = plan.native === 'claude' ? ['auth', 'status', '--json'] : [...(plan.nativeArgs ?? []), 'app-server', '--listen', 'stdio://']
   if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(executable) && /[&|<>^%!\r\n]/.test([executable, ...args].join(' '))) return null
   const spec = spawnSpec(executable, args)
   return new Promise(resolve => {

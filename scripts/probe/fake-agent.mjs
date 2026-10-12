@@ -51,6 +51,9 @@ import readline from 'node:readline'
 
 const id = process.argv[2] || 'unknown'
 const argv = process.argv.slice(3)
+// Codex global overrides precede its login/app-server subcommand.
+const commandArgs = [...argv]
+if (id === 'codex') while (commandArgs[0] === '-c' && commandArgs.length > 1) commandArgs.splice(0, 2)
 const dir = process.env.STOKE_PROBE_DIR || join(process.cwd(), '.stoke-probe')
 mkdirSync(dir, { recursive: true })
 const logFile = join(dir, `${id}-${process.pid}.jsonl`)
@@ -78,7 +81,7 @@ const authOverrides = () => Object.keys(process.env).filter(name => /^(ANTHROPIC
 /* ------------------------------------------------------------- one-shots */
 
 // Public identity fixtures only: never enter the interactive agent contract.
-if ((id === 'claude' && argv[0] === 'auth' && argv[1] === 'login') || (id === 'codex' && argv[0] === 'login')) {
+if ((id === 'claude' && argv[0] === 'auth' && argv[1] === 'login') || (id === 'codex' && commandArgs[0] === 'login')) {
   process.stdout.write('Signing in with the owned probe account\n')
   while (existsSync(join(dir, 'login-wait'))) await new Promise(resolve => setTimeout(resolve, 50))
   const failed = existsSync(join(dir, 'login-fail'))
@@ -94,7 +97,7 @@ if (id === 'claude' && argv[0] === 'auth' && argv[1] === 'status') {
   process.stdout.write(JSON.stringify(existsSync(join(dir, 'identity-unavailable')) ? {} : { loggedIn: true, email: `${account}@example.test`, orgName: 'Probe organization', subscriptionType: 'team' }) + '\n')
   process.exit(0)
 }
-if (id === 'codex' && argv[0] === 'app-server') {
+if (id === 'codex' && commandArgs[0] === 'app-server') {
   record('account-identity', { argv, home: process.env.CODEX_HOME || '' })
   const hanging = existsSync(join(dir, 'identity-hang'))
   if (hanging) {
@@ -107,7 +110,15 @@ if (id === 'codex' && argv[0] === 'app-server') {
     const request = JSON.parse(line)
     record('account-request', { method: request.method, params: request.params })
     if (request.method === 'initialize') process.stdout.write(JSON.stringify({ id: request.id, result: { userAgent: 'stoke-probe' } }) + '\n')
-    else if (request.method === 'account/read' && !hanging) process.stdout.write(JSON.stringify({ id: request.id, result: { account: { type: 'chatgpt', email: 'codex@example.test', planType: 'pro' } } }) + '\n')
+    else if (request.method === 'account/read' && !hanging) {
+      let email = 'codex@example.test'
+      try {
+        const cache = JSON.parse(readFileSync(join(process.env.CODEX_HOME || join(homedir(), '.codex'), 'auth.json'), 'utf8'))
+        const claimed = JSON.parse(Buffer.from(cache.tokens.id_token.split('.')[1], 'base64url').toString()).email
+        if (typeof claimed === 'string' && claimed.endsWith('@example.test')) email = claimed
+      } catch { /* no synthetic cache: use the existing public identity fixture */ }
+      process.stdout.write(JSON.stringify({ id: request.id, result: { account: { type: 'chatgpt', email, planType: 'pro' } } }) + '\n')
+    }
   })
   await new Promise(resolve => lines.on('close', () => { if (!hanging) resolve() }))
   process.exit(0)

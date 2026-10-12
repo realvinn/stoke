@@ -52,7 +52,7 @@ import {
 } from './codingClis.ts'
 import { hydrateAgentColors, type AgentColors } from './agentColors.ts'
 import { agentAccessOption, hydrateAgentAccess, type AgentAccessMode } from './agentAccess.ts'
-import { accountEnv, accountProblem, hydrateDefaultAccounts, type AgentAccount } from './accounts.ts'
+import { accountEnv, accountLoginOptions, accountProblem, hydrateDefaultAccounts, type AgentAccount } from './accounts.ts'
 import { isModelId } from './modelId.ts'
 import { ACCOUNT_PROVIDER_LABELS } from './accountProviders.ts'
 export { isModelId, MODEL_ID_MAX } from './modelId.ts'
@@ -591,6 +591,8 @@ export function agentLaunchPlan(input: LaunchPlanInput): LaunchPlanResult {
   // A named API account owns the whole route, including its model and key.
   const ep: AgentEndpoint = named && id === 'codex'
     ? { mode: 'custom', baseUrl: named.baseUrl, apiKey: input.account!.apiKey, model: named.model || (input.endpoint?.mode === 'default' ? input.endpoint.model : '') }
+    : input.account?.kind === 'login'
+      ? { ...DEFAULT_ENDPOINT, model: input.endpoint?.mode === 'default' ? input.endpoint.model : '' }
     : input.endpoint ?? DEFAULT_ENDPOINT
   if (named && input.account) {
     const trouble = accountProblem(input.account)
@@ -624,7 +626,7 @@ export function agentLaunchPlan(input: LaunchPlanInput): LaunchPlanResult {
 
   const access = agentAccessOption(id, input.access ?? 'default')
   if (!access) return { ok: false, message: `${cli.label} does not support the requested access mode in Stoke.` }
-  const args: string[] = [...access.args]
+  const args: string[] = [...access.args, ...accountLoginOptions(input.account)]
   const env: Record<string, string> = {}
   const customKey = ep.apiKey || NO_KEY
 

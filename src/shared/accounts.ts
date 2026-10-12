@@ -7,8 +7,9 @@
  *   login  A HOME for the agent: a folder the agent keeps its sign-in in,
  *          chosen per launch by the agent's own "config home" environment
  *          variable (`ACCOUNT_HOME_ENV`). Stoke makes the folder, the agent's
- *          own login command signs it in, and nothing of the credential ever
- *          passes through Stoke.
+ *          own login command signs it in. Optional vault sync can carry a
+ *          compatible Codex file cache through main; other native credentials
+ *          remain owned by the agent on each device.
  *   key    An API key the agent reads from its environment
  *          (`ACCOUNT_KEY_ENV`), sealed at rest in secrets.json like every other
  *          key (shared/secrets.ts `accounts.*.apiKey`).
@@ -57,6 +58,8 @@ export interface AgentAccount {
   apiKey: string
   /** Named Claude/Codex API route; kept with this account rather than global provider defaults. */
   apiProfile?: AccountApiProfile
+  /** Imported portable Codex login; its own file cache is selected at launch. */
+  credentialStore?: 'file'
   /** One of `ACCOUNT_SWATCHES` by id; absent is the next free one (`accountSeed`). */
   swatch?: string
 }
@@ -159,6 +162,10 @@ export const ACCOUNT_LOGIN_ARGS: Readonly<Partial<Record<CodingCliId, readonly s
 
 export function loginArgsFor(cli: CodingCliId): string[] {
   return [...(ACCOUNT_LOGIN_ARGS[cli] ?? [])]
+}
+
+export function accountLoginOptions(account: AgentAccount | null | undefined): string[] {
+  return account?.cli === 'codex' && account.kind === 'login' && account.credentialStore === 'file' ? ['-c', 'cli_auth_credentials_store="file"'] : []
 }
 
 /** Which kinds of account an agent can hold at all. */
@@ -324,6 +331,7 @@ export function hydrateAccount(id: string, raw: unknown): AgentAccount | null {
     home: kind === 'login' ? (raw.home as string) : '',
     apiKey: kind === 'key' && typeof raw.apiKey === 'string' ? raw.apiKey.trim() : '',
     ...(profile ? { apiProfile: profile } : {}),
+    ...(cli === 'codex' && kind === 'login' && raw.credentialStore === 'file' ? { credentialStore: 'file' as const } : {}),
     ...(isSwatchId(raw.swatch) ? { swatch: raw.swatch } : {})
   }
 }

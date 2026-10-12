@@ -36,7 +36,7 @@ export interface HubSettings {
   /** What the chain calls this device. '' = the OS host name. */
   deviceLabel: string
   /** This device's own switches (T2 also needs the account's `acct/pref/sync-keys`). */
-  sync: { settings: boolean; hosts: boolean; keys: boolean }
+  sync: { settings: boolean; hosts: boolean; keys: boolean; accounts: boolean }
   /**
    * "Let my other devices see and open my sessions" — this machine's own tick,
    * default OFF. Off, its presence status lists no session and every relay
@@ -76,7 +76,7 @@ export const HUB_SETTINGS_DEFAULTS: HubSettings = {
   token: '',
   deviceId: '',
   deviceLabel: '',
-  sync: { settings: true, hosts: true, keys: true },
+  sync: { settings: true, hosts: true, keys: true, accounts: true },
   shareSessions: false,
   grants: {},
   shareChats: false,
@@ -117,7 +117,8 @@ export function hydrateHubSettings(raw: unknown): HubSettings {
     sync: {
       settings: bool(sync.settings, HUB_SETTINGS_DEFAULTS.sync.settings),
       hosts: bool(sync.hosts, HUB_SETTINGS_DEFAULTS.sync.hosts),
-      keys: bool(sync.keys, HUB_SETTINGS_DEFAULTS.sync.keys)
+      keys: bool(sync.keys, HUB_SETTINGS_DEFAULTS.sync.keys),
+      accounts: bool(sync.accounts, HUB_SETTINGS_DEFAULTS.sync.accounts)
     },
     shareSessions: bool(r.shareSessions, HUB_SETTINGS_DEFAULTS.shareSessions),
     grants,
@@ -134,6 +135,7 @@ export function t1ValuesFrom(s: Settings): Record<string, unknown> {
   const portable = portableSettings(s)
   const out: Record<string, unknown> = {}
   for (const k of T1_KEYS) out[k] = portable[k]
+  if (isRecord(out.agents)) { out.agents = { ...out.agents }; delete (out.agents as Record<string, unknown>).defaultAccount }
   return out
 }
 
@@ -493,7 +495,7 @@ export function applySyncedSettings(current: Settings, incoming: SyncedIncoming,
       next.defaults = d
       continue
     }
-    next[key] = cloneJson(value)
+    next[key] = key === 'agents' && isRecord(value) ? { ...cloneJson(value), defaultAccount: cloneJson(current.agents.defaultAccount) } : cloneJson(value)
   }
 
   if (incoming.hosts) {

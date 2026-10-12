@@ -267,6 +267,7 @@ import {
   accountSlug,
   cleanAccountLabel,
   loginArgsFor,
+  accountLoginOptions,
   nextSwatch,
   DEFAULT_ACCOUNT_ID,
   isAccountId,
@@ -1827,7 +1828,7 @@ async function startAccountLogin(requested: LaunchOptions): Promise<StartResult>
     const trouble = accountProblem(account)
     if (trouble) throw new Error(trouble)
     await repairAccountHome(account, defaultTrees(process.env, homedir()))
-    const plan: LaunchPlan = { args: loginArgsFor(account.cli), env: accountEnv(account), model: '' }
+    const plan: LaunchPlan = { args: [...accountLoginOptions(account), ...loginArgsFor(account.cli)], env: accountEnv(account), model: '' }
     const result = await ptys.start(
       {
         cwd: homedir(),
@@ -2619,7 +2620,7 @@ function grokBotFor(): Promise<import('./plugins/grokBot.ts').GrokBotPlugin> {
   return grokBotLoading ??= Promise.all([import('./plugins/grokBot.ts'), import('./plugins/grokBotSession.ts'), import('./secrets.ts')]).then(([{ GrokBotPlugin }, { GrokBotSessionReader }, { safeStorageBackend }]) => {
     grokBotPlugin = new GrokBotPlugin({ root: join(app.getPath('userData'), 'plugins'), executable: process.execPath, runner: join(__dirname, 'cliRunner.js'), platform: process.platform, environment: process.env,
       backend: safeStorageBackend(safeStorage, process.platform), reader: new GrokBotSessionReader({ home: homedir(), platform: process.platform, environment: process.env }),
-      enabled: async () => (await pluginPackagesFor()).enabled('grok-bot'), changed: view => send(CH.grokBotChanged, view)
+      enabled: async () => (await pluginPackagesFor()).enabled('grok-bot'), changed: view => { send(CH.grokBotChanged, view); hubClient?.accountsChanged() }
     }); return grokBotPlugin
   })
 }
@@ -4736,7 +4737,7 @@ function registerIpc(): void {
      */
     const guarded: Partial<Settings> = patch.remote ? { ...patch, remote: { ...patch.remote, push: prev.remote.push } } : patch
     const next = setSettings(
-      guarded.accounts ? { ...guarded, accounts: accountsFromRenderer(prev.accounts, guarded.accounts) } : guarded
+      from === 'renderer' && guarded.accounts ? { ...guarded, accounts: accountsFromRenderer(prev.accounts, guarded.accounts) } : guarded
     )
     if (prev.quickTerminal && !next.quickTerminal) { quickTerminal?.disable(); quickTerminalWindow?.hide() }
     // A renamed or re-ordered profile list, a switch, or a bookmark list moved.
@@ -4974,8 +4975,11 @@ function registerIpc(): void {
   const hubService = (): Promise<import('./hub/service.ts').HubService> => {
     if (hubClient) return Promise.resolve(hubClient)
     hubStarting ??= (async () => {
-      const [{ HubService }, { safeStorageBackend }] = await Promise.all([import('./hub/service.ts'), import('./secrets.ts')])
+      const [{ HubService }, { safeStorageBackend }, { AccountSync }] = await Promise.all([import('./hub/service.ts'), import('./secrets.ts'), import('./hub/accountSync.ts')])
       const { hostname } = await import('node:os')
+      const syncedAccounts = new AccountSync({ userData: app.getPath('userData'), root: accountsRoot(homedir()), trees: defaultTrees(process.env, homedir()), platform: process.platform, label: hostname().replace(/\.local$/, ''), backend: safeStorageBackend(safeStorage, process.platform), getSettings,
+        commit: patch => commitSettings(patch, 'hub'), active: (cli, accountId) => ptys?.list().some(s => s.cli === cli && s.accountId === accountId && !s.exited) ?? false,
+        grok: grokBotFor, changed: () => { accountIdentities.invalidate(); hubClient?.accountsChanged() } })
       const svc = new HubService({
         userData: app.getPath('userData'),
         backend: safeStorageBackend(safeStorage, process.platform),
@@ -4986,6 +4990,7 @@ function registerIpc(): void {
         commit: (patch) => commitSettings(patch, 'hub'),
         hydrate: hydrateSettings,
         onSettingsChanged,
+        accounts: { snapshot: (allowed, namespace) => serialAccounts(() => syncedAccounts.snapshot(() => !appQuitting && allowed(), namespace)), apply: (id, value, allowed, namespace) => serialAccounts(() => syncedAccounts.apply(id, value, () => !appQuitting && allowed(), namespace)) },
         emit: (view) => send(CH.hubChanged, view),
         saveKit: async (name, text) => {
           /*
@@ -5075,9 +5080,13 @@ function registerIpc(): void {
   ipcMain.handle(CH.hubSyncNow, async () => (await hubService()).syncNow())
   ipcMain.handle(CH.hubSetScope, async (_e, patch: Record<string, unknown> | null) => {
     const pick = (k: string): boolean | undefined => (typeof patch?.[k] === 'boolean' ? (patch[k] as boolean) : undefined)
-    return (await hubService()).setScope({ settings: pick('settings'), hosts: pick('hosts'), keys: pick('keys') })
+    return (await hubService()).setScope({ settings: pick('settings'), hosts: pick('hosts'), keys: pick('keys'), accounts: pick('accounts') })
   })
   ipcMain.handle(CH.hubSetAccountKeys, async (_e, on: unknown) => (await hubService()).setAccountKeys(on === true))
+  ipcMain.handle(CH.hubSetAccountSync, async (event, on: unknown) => {
+    if (!appFrame(event)) throw new Error('Open account sync in Stoke.')
+    return (await hubService()).setAccountSync(on === true)
+  })
   ipcMain.handle(CH.hubRename, async (_e, id: unknown, name: unknown) => (await hubService()).renameDevice(str(id), str(name)))
   ipcMain.handle(CH.hubRevoke, async (_e, id: unknown, how: Record<string, unknown> | null) =>
     (await hubService()).revokeDevice(str(id), how?.newKit === true ? { newKit: true } : { kit: str(how?.kit) })

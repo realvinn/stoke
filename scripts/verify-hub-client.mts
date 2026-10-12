@@ -25,6 +25,11 @@ import type { Settings } from '../src/shared/types.ts'
 import { hydrateSettings } from '../src/main/settingsSchema.ts'
 import { HubFiles } from '../src/main/hub/files.ts'
 import { HubService } from '../src/main/hub/service.ts'
+import { AccountSync } from '../src/main/hub/accountSync.ts'
+import { makeAccountHome, accountsRoot, defaultTrees } from '../src/main/accounts.ts'
+import { GrokBotPlugin } from '../src/main/plugins/grokBot.ts'
+import { GrokBotSessionReader } from '../src/main/plugins/grokBotSession.ts'
+import { accountLoginOptions } from '../src/shared/accounts.ts'
 import type { RemoteMachineDeps } from '../src/main/hub/remote.ts'
 import { CHATS_REDACTION_BLOCK, type HubRemoteView } from '../src/shared/hub/remote.ts'
 import { installReceivedKey, listKeyPairs, planInstall, privateKeyHasPassphrase, readKeyForShare, sshFingerprint } from '../src/main/hub/sshKeys.ts'
@@ -618,6 +623,10 @@ interface Box {
   intercept: Intercept | null
   /** `METHOD /v1/...` of every request this device made. */
   seen: string[]
+  accounts: AccountSync
+  bots: GrokBotPlugin
+  busyAccounts: Set<string>
+  itemBodies: string[]
 }
 
 const json = (body: unknown, status = 200): Response => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
@@ -635,7 +644,10 @@ function device(name: string, initial: Partial<Settings>, remote?: RemoteMachine
     for (const l of listeners) l(s)
     return s
   }
-  const box = { name, settings: () => s, set: (p: Partial<Settings>) => void commit(p), userData, ssh, intercept: null, seen: [] } as unknown as Box
+  const box = { name, settings: () => s, set: (p: Partial<Settings>) => void commit(p), userData, ssh, intercept: null, seen: [], busyAccounts: new Set<string>(), itemBodies: [] } as unknown as Box
+  box.bots = new GrokBotPlugin({ root: join(userData, 'plugins'), executable: process.execPath, runner: '', platform: 'darwin', environment: {}, backend: fakeBackend(name), reader: new GrokBotSessionReader({ home: ssh.home, platform: 'darwin', environment: {} }), enabled: async () => true, changed: () => box.svc?.accountsChanged() })
+  box.accounts = new AccountSync({ userData, root: accountsRoot(ssh.home), trees: defaultTrees({}, ssh.home), platform: process.platform, label: name, backend: fakeBackend(name), getSettings: () => s, commit,
+    active: (_cli, id) => box.busyAccounts.has(id), grok: async () => box.bots, changed: () => box.svc?.accountsChanged() })
   box.svc = new HubService({
     userData,
     backend: fakeBackend(name),
@@ -654,11 +666,13 @@ function device(name: string, initial: Partial<Settings>, remote?: RemoteMachine
     exec: fakeSshG(),
     presence: null,
     remote,
+    accounts: box.accounts,
     pairPollMs: 40,
     waitPollMs: 40,
     fetch: (async (input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(String(input))
       box.seen.push(`${init?.method ?? 'GET'} ${v1(url)}${url.search}`)
+      if (v1(url) === '/v1/items' && init?.body) box.itemBodies.push(String(init.body))
       const hit = box.intercept ? await box.intercept(url, init ?? {}) : null
       return hit ?? fetch(input, init)
     }) as typeof fetch
@@ -838,6 +852,61 @@ try {
   check('B’s own NUC adopted A’s sync id (same alias and command), its VPS kept and given its own', [bHosts.find((h) => h.alias === 'nuc')?.syncId === aNuc, bHosts.length, /^h/.test(bHosts.find((h) => h.alias === 'vps')?.syncId ?? '')], [true, 2, true])
   await A.svc.syncNow()
   check('A gets B’s VPS', (A.settings().hosts as { alias: string }[]).map((h) => h.alias).sort(), ['nuc', 'vps'])
+
+  /* ------------------------------------------ real account adapters through the encrypted production hub */
+  const cache = (email: string, rev: number): string => JSON.stringify({ auth_mode: 'chatgpt', tokens: { id_token: `e30.${Buffer.from(JSON.stringify({ email, sub: email })).toString('base64url')}.fixture`, access_token: ['owned', email, 'access', rev].join('-'), refresh_token: ['owned', email, 'refresh', rev].join('-'), account_id: `fixture-${email}` }, last_refresh: new Date(Date.UTC(2026, 9, 12, 1, rev)).toISOString() })
+  const ah = defaultTrees({}, A.ssh.home), bh = defaultTrees({}, B.ssh.home)
+  mkdirSync(ah.codex, { recursive: true }); mkdirSync(bh.codex, { recursive: true })
+  writeFileSync(join(ah.codex, 'auth.json'), cache('personal@example.test', 1))
+  const bDefault = cache('mac-existing@example.test', 1)
+  writeFileSync(join(bh.codex, 'auth.json'), bDefault)
+  writeFileSync(join(bh.codex, 'config.toml'), 'cli_auth_credentials_store = "keyring"\n')
+  const aWork = await makeAccountHome({ root: accountsRoot(A.ssh.home), id: 'codex-work', cli: 'codex', trees: ah })
+  const bWork = await makeAccountHome({ root: accountsRoot(B.ssh.home), id: 'codex-local-work', cli: 'codex', trees: bh })
+  writeFileSync(join(aWork.home, 'auth.json'), cache('work@example.test', 1))
+  writeFileSync(join(bWork.home, 'config.toml'), 'cli_auth_credentials_store = "file"\n')
+  writeFileSync(join(bWork.home, 'auth.json'), cache('different-work@example.test', 1))
+  const apiCanary = ['owned', 'account', 'api', Math.random().toString(36)].join('-')
+  A.set({ accounts: { 'codex-work': { id: 'codex-work', cli: 'codex', label: 'Work', kind: 'login', home: aWork.home, apiKey: '' }, 'codex-api': { id: 'codex-api', cli: 'codex', label: 'Work API', kind: 'key', home: '', apiKey: apiCanary, apiProfile: { provider: 'openai', baseUrl: 'https://api.openai.com/v1', model: '' } } } })
+  B.set({ accounts: { 'codex-local-work': { id: 'codex-local-work', cli: 'codex', label: 'Work', kind: 'login', home: bWork.home, apiKey: '' } }, agents: { ...B.settings().agents, defaultAccount: { codex: 'codex-local-work' } } })
+  const botCanaries: string[] = []
+  for (let slot = 1; slot <= 5; slot++) {
+    const token = ['owned', 'grok', slot, Math.random().toString(36)].join('-'); botCanaries.push(token)
+    await A.bots.change({ kind: 'manual', label: `Bot ${slot}`, gatewayUrl: 'https://gateway.cursor.sh', token, headers: { 'x-fixture-slot': String(slot) } })
+  }
+  await A.svc.syncNow(); await B.svc.syncNow()
+  check('named account credentials are off until the account-wide opt-in', [A.svc.view().accountSync, Object.keys(B.settings().accounts).length], [null, 1])
+  await B.svc.setScope({ accounts: false })
+  check('the account-wide credential sync switch can be enabled', (await A.svc.setAccountSync(true)).ok, true)
+  await B.svc.syncNow()
+  check('an opted-out device imports no accounts even when the vault enables them', [B.svc.view().accountSync, B.svc.view().scope.accounts, Object.keys(B.settings().accounts).length], [true, false, 1])
+  check('re-enabling this device replays account items it previously skipped', (await B.svc.setScope({ accounts: true })).ok, true)
+  const receivedWork = Object.values(B.settings().accounts).find(a => a.id !== 'codex-local-work' && a.kind === 'login' && a.label === 'Work')!
+  const receivedPersonal = Object.values(B.settings().accounts).find(a => a.kind === 'login' && a.label.startsWith('Codex ·'))!
+  check('both desktop Codex sign-ins arrive in distinct local profiles', [!!receivedWork, !!receivedPersonal, !!receivedWork && readFileSync(join(receivedWork.home, 'auth.json'), 'utf8') === stableJson(JSON.parse(cache('work@example.test', 1)))], [true, true, true])
+  check('the Mac retains its existing Default cache and active account', [readFileSync(join(bh.codex, 'auth.json'), 'utf8'), B.settings().agents.defaultAccount.codex], [bDefault, 'codex-local-work'])
+  check('a same-named local login remains separate from the incoming Work account', [readFileSync(join(bWork.home, 'auth.json'), 'utf8'), Object.values(B.settings().accounts).filter(a => a.label === 'Work').length], [cache('different-work@example.test', 1), 2])
+  check('imported Codex profiles explicitly read their file cache despite local keyring defaults', accountLoginOptions(receivedWork), ['-c', 'cli_auth_credentials_store="file"'])
+  check('named API accounts sync through their own credential tier', Object.values(B.settings().accounts).find(a => a.label === 'Work API')?.apiKey, apiCanary)
+  check('all five Grok Bot credential tuples are re-sealed and retained independently', (await B.bots.exportForSync()).map(a => [a.label, a.credential.headers['x-fixture-slot'], a.credential.token]).sort(), botCanaries.map((token, i) => [`Bot ${i + 1}`, String(i + 1), token]).sort())
+  const needles = [apiCanary, ...botCanaries, JSON.parse(cache('work@example.test', 1)).tokens.refresh_token]
+  ok('production item uploads contain ciphertext, never account keys or login tokens', [...A.itemBodies, ...B.itemBodies].every(body => needles.every(secret => !body.includes(secret))))
+  ok('account caches on both devices contain no plaintext credential', [A, B].every(box => needles.every(secret => !readdirSync(box.userData).filter(n => /^hub-accounts-.*\.json$/.test(n)).map(n => readFileSync(join(box.userData, n), 'utf8')).join('').includes(secret))))
+  B.busyAccounts.add(receivedWork.id)
+  writeFileSync(join(aWork.home, 'auth.json'), cache('work@example.test', 2))
+  await A.svc.syncNow(); await B.svc.syncNow()
+  check('a busy Codex profile keeps the cache its session is using', JSON.parse(readFileSync(join(receivedWork.home, 'auth.json'), 'utf8')).tokens.access_token, JSON.parse(cache('work@example.test', 1)).tokens.access_token)
+  B.busyAccounts.delete(receivedWork.id)
+  await B.svc.syncNow()
+  check('the received refresh applies after that profile becomes idle', JSON.parse(readFileSync(join(receivedWork.home, 'auth.json'), 'utf8')).tokens.access_token, JSON.parse(cache('work@example.test', 2)).tokens.access_token)
+  const accountTotal = B.svc.view().counts.accounts
+  await A.svc.syncNow(); await B.svc.syncNow(); await A.svc.syncNow()
+  check('repeated passes reuse account identities without creating duplicate profiles', B.svc.view().counts.accounts, accountTotal)
+  const keep = { ...A.settings().accounts }; delete keep['codex-work']; A.set({ accounts: keep })
+  await A.svc.syncNow(); await B.svc.syncNow()
+  check('removing a synced profile removes its selectable counterpart without deleting login files', [!!B.settings().accounts[receivedWork.id], existsSync(join(receivedWork.home, 'auth.json'))], [false, true])
+  await A.svc.setAccountSync(false); await B.svc.syncNow()
+  check('turning off account sync keeps previously received accounts', [B.svc.view().accountSync, !!B.settings().accounts[receivedPersonal.id]], [false, true])
 
   /* ------------------------------------------ a hub that plays the approver */
   const F = device('fake-approver', {} as Partial<Settings>)
@@ -1134,7 +1203,7 @@ try {
   check('removing a device needs the Kit (a wrong one is refused)', (await A.svc.revokeDevice(bId, { kit: 'RK1-0000-0000-0000-0000-0000-0000-000' })).ok, false)
   const revoked = await A.svc.revokeDevice(bId, { kit: cKit })
   check('A removes B with the Kit: a new epoch', [revoked.ok, A.svc.view().epoch], [true, epochBefore + 1])
-  check('and lists what B could have read, to rotate by hand', [A.svc.view().revokeReport?.keys, A.svc.view().revokeReport?.sshKeys, A.svc.view().revokeReport?.commands], [['Anthropic API key'], ['nuc_ed25519'], []])
+  check('and lists what B could have read, including account credentials, to rotate by hand', [A.svc.view().revokeReport?.keys, A.svc.view().revokeReport?.sshKeys, A.svc.view().revokeReport?.commands], [['Anthropic API key', 'Saved agent account'], ['nuc_ed25519'], []])
   A.set({ providers: { ...A.settings().providers, openrouterApiKey: CANARY_KEY_2 } })
   await A.svc.syncNow()
   const bSync = await B.svc.syncNow()

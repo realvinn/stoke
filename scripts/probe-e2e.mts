@@ -96,6 +96,8 @@ import { createCertificate, startTlsServer } from './probe/tls-server.mjs'
 import { createSshFileFixture, removeSshFileFixture } from './probe/ssh-files.mjs'
 import { terminalLinkPoint } from './probe/terminal-link.mjs'
 import { nativeCrashScript } from './probe/native-crash.mjs'
+import { accountSyncFixture } from './probe/account-sync.mts'
+import type { HubView } from '../src/shared/hub/client.ts'
 import type { BrowserState } from '../src/shared/types.ts'
 import type { QuickTerminalResult, QuickTerminalState } from '../src/shared/quickTerminal.ts'
 
@@ -1333,6 +1335,83 @@ await step('selected Claude logins own their authentication despite inherited an
   }
 })
 
+await step('encrypted accounts arrive through native IPC and select the right Codex login', async () => {
+  const before = await ev<any>('window.stoke.settings.get()')
+  const fixture = await accountSyncFixture(join(root, 'account-sync'))
+  const received: string[] = [], opened: string[] = [], grokIds: string[] = []
+  try {
+    await ev(`window.stoke.hub.setScope({ settings: false, hosts: false, keys: false, accounts: true })`)
+    await ev(`window.stoke.hub.setUrl(${JSON.stringify(fixture.url)})`)
+    const signed = await ev<{ ok: boolean }>(`window.stoke.hub.signIn(${JSON.stringify({ email: fixture.email, password: fixture.password, label: 'Native recipient' })})`)
+    if (!signed.ok) throw new Error('the owned recipient could not sign in')
+    await ev('window.stoke.hub.joinStart()')
+    await fixture.svc.syncNow()
+    const pair = await waitFor('the owned native pairing request', () => fixture.svc.view().pairs[0])
+    await fixture.svc.approveStart(pair.pair)
+    const joined = await waitFor('pairing codes on both owned devices', () => ev<HubView>('window.stoke.hub.view()').then(v => v.join?.code && fixture.svc.view().pairs.find(p => p.pair === pair.pair)?.code ? v : null))
+    check('the native recipient sees the same approval code as the source', joined.join!.code === fixture.svc.view().pairs.find(p => p.pair === pair.pair)?.code)
+    await fixture.svc.approveConfirm(pair.pair)
+    await waitFor('native device approved', () => ev<HubView>('window.stoke.hub.view()').then(v => v.join?.state === 'approved'))
+    await ev('window.stoke.hub.joinConfirm(true)')
+    await waitFor('native vault active', () => ev<HubView>('window.stoke.hub.view()').then(v => v.phase === 'active'))
+    await activate(tabs.codex!.ptyId)
+    await ev(`document.querySelector('[data-testid="active-account"]').click(), true`)
+    await waitFor('the native sync navigation', () => ev<boolean>('!!document.querySelector(".account-panel")'))
+    await ev(`[...document.querySelectorAll('.account-panel button')].find(b => b.textContent === 'Manage agent accounts').click(), true`)
+    await waitFor('Accounts settings navigation', () => ev<boolean>(`!!document.querySelector('[data-node="accounts"]')`))
+    await ev(`document.querySelector('[data-node="accounts"]').click(), true`)
+    await waitFor('the Stoke sync settings button', () => ev<boolean>('!!document.querySelector(".accounts-stoke button")'))
+    await ev('document.querySelector(".accounts-stoke button").click(), true')
+    await waitFor('the rendered credential sync switch', () => ev<boolean>(`!!document.querySelector('[data-hub="account-sync"]')`))
+    check('the native account sync control starts off', await ev<boolean>(`!document.querySelector('[data-hub="account-sync"]').checked`) === true)
+    await ev(`document.querySelector('[data-hub="account-sync"]').scrollIntoView({ block: 'center' }), document.querySelector('[data-hub="account-sync"]').click(), true`)
+    await waitFor('account-wide opt-in saved through the rendered switch', () => ev<HubView>('window.stoke.hub.view()').then(v => v.accountSync === true && v.busy === null))
+    await fixture.svc.syncNow(); await ev('window.stoke.hub.syncNow()')
+    const accounts = await waitFor('both Codex profiles received by the packaged app', () => ev<any>('window.stoke.settings.get().then(s => Object.values(s.accounts).filter(a => !'+JSON.stringify(Object.keys(before.accounts))+'.includes(a.id)))').then(rows => rows.filter(a => a.cli === 'codex' && a.kind === 'login').length === 2 ? rows : null))
+    received.push(...accounts.map(a => a.id))
+    const work = accounts.find(a => a.label === 'Synced Work')!
+    check('native imported profiles use local homes and the file credential store', accounts.every(a => a.home.includes(a.id) && !a.home.includes('source-home') && a.credentialStore === 'file'))
+    check('native sync retains the receiving device’s active account', await ev<boolean>('window.stoke.settings.get().then(s => JSON.stringify(s.agents.defaultAccount) === '+JSON.stringify(JSON.stringify(before.agents.defaultAccount))+')') === true)
+    await shot('04-account-sync-enabled')
+    check('Grok Bot stays disabled after credential imports', await ev<boolean>(`window.stoke.grokBot.read().then(() => false, () => true)`) === true)
+    await ev(`window.stoke.plugins.toggle('grok-bot', true)`)
+    const grok = await ev<{ accounts: { id: string; label: string }[] }>('window.stoke.grokBot.read()')
+    grokIds.push(...grok.accounts.filter(a => a.label.startsWith('Synced Grok ')).map(a => a.id))
+    check('five Grok Bot accounts arrive without enabling their plugin', grokIds.length === 5)
+    await ev(`window.stoke.plugins.toggle('grok-bot', false)`)
+    await ev(`document.querySelector('button[title="Close settings (Esc)"]').click(), true`)
+    const identity = await ev<any>(`window.stoke.accounts.identity({cli:'codex',accountId:${JSON.stringify(work.id)}},true)`)
+    check('the native identity probe names the imported subscription email', identity.email === 'synced-work@example.test', JSON.stringify(identity))
+    await ev(`window.stoke.settings.get().then(s => window.stoke.settings.set({ agents: { ...s.agents, defaultAccount: { ...s.agents.defaultAccount, codex: ${JSON.stringify(work.id)} }, endpoints: { ...s.agents.endpoints, codex: {mode:'custom',baseUrl:'https://wrong-api.example.test/v1',apiKey:'owned-global-key',model:'wrong-api-model'} } } }))`)
+    const taken = await ev<string[]>('[...window.stokeTerminals.keys()]'), project = join(root, 'synced-account-project')
+    mkdirSync(project, { recursive: true }); await stokeCli('--cli', 'codex', '--new', project)
+    const ptyId = await termShowing('STOKE-PROBE codex ready', 'the synced subscription session', 45_000, taken)
+    opened.push(ptyId)
+    const rec = await waitFor('the synced account launch record', async () => stubByPid(await pidIn(ptyId, 'codex')))
+    check('the native launch uses the selected imported home and login store', rec!.start.env.CODEX_HOME === work.home && rec!.start.argv.includes('cli_auth_credentials_store="file"'))
+    check('the native subscription launch excludes the global API endpoint', !rec!.start.argv.some(arg => arg.includes('wrong-api') || arg.startsWith('model_provider=')))
+    await activate(ptyId)
+    await waitFor('the synced account email in the title bar', () => ev<boolean>(`document.querySelector('[data-testid="active-account"]')?.textContent.includes('synced-work@example.test')`))
+    await shot('04-account-sync-codex-selected')
+  } finally {
+    await ev('window.stoke.hub.setAccountSync(false)').catch(() => {})
+    await ev('window.stoke.hub.signOut()').catch(() => {})
+    await ev(`document.querySelector('button[title="Close settings (Esc)"]')?.click(), true`).catch(() => {})
+    for (const id of opened) { await ev(`window.stoke.pty.kill(${JSON.stringify(id)})`).catch(() => {}); await activate(id).catch(() => {}); await ev(`document.querySelector('.tablist .tab[aria-selected="true"] .tab-close')?.click(), true`).catch(() => {}) }
+    for (const id of received) await ev(`window.stoke.accounts.remove(${JSON.stringify(id)})`).catch(() => {})
+    if (grokIds.length) {
+      await ev(`window.stoke.plugins.toggle('grok-bot', true)`).catch(() => {})
+      for (const id of grokIds) await ev(`window.stoke.grokBot.change({kind:'remove',id:${JSON.stringify(id)}})`).catch(() => {})
+      await ev(`window.stoke.plugins.toggle('grok-bot', false)`).catch(() => {})
+    }
+    await ev(`window.stoke.settings.set({agents:${JSON.stringify(before.agents)}})`)
+    await ev(`window.stoke.hub.setScope(${JSON.stringify(before.hub.sync)})`)
+    await ev(`window.stoke.hub.setUrl(${JSON.stringify(before.hub.url)})`).catch(() => {})
+    await fixture.stop()
+    await activate(tabs.claude!.ptyId)
+  }
+})
+
 /* -------------------------------------------------------------- browser */
 
 let profileTwo = ''
@@ -1355,6 +1434,8 @@ await step('dragging a live agent into a separate Stoke window keeps the process
     check('a detached Stoke window starts with its sidebar hidden', await ev<boolean>(`!document.querySelector('.sidebar')`) === true)
     check('the original window releases its transferred terminal', await primary.evaluate(`!window.stokeTerminals.has(${JSON.stringify(t.ptyId)})`) === true)
     check('the detached window has the same running agent process', stubRecords('codex').length === recordsBefore && !!stubRecords('codex').find(record => record.pid === t.pid && !record.events.some(event => event.kind === 'exit')))
+    // Flush any incidental input in the disposable stub before this exact-line contract.
+    await typeLine(t.ptyId, '')
     await typeLine(t.ptyId, 'detached-window-input')
     await waitFor('typing in the moved terminal to reach its original process', async () => (await bufferOf(t.ptyId)).includes('GOT detached-window-input'))
     await shot('04-detached-agent-window')
@@ -1693,6 +1774,7 @@ await step('browser load errors and explicit certificate reviews work in native 
 await step('a click on a hard-wrapped terminal URL opens its complete address', async () => {
   const t = tabs.codex!
   await activate(t.ptyId)
+  await typeLine(t.ptyId, '')
   const cols = await ev<number>(`window.stokeTerminals.get(${JSON.stringify(t.ptyId)}).cols`)
   await typeLine(t.ptyId, `hardlink ${site.base}/whoami?terminal=hard&padding= ${cols}`)
   const link = await waitFor('the stub\'s hard link output', () => stubRecords('codex').find(r => r.pid === t.pid)?.events.find(e => e.kind === 'hardlink') ?? null, 10_000)

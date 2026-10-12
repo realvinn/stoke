@@ -44,6 +44,8 @@ try {
   settings = hydrateSettings({ accounts: { 'codex-work': { id: 'codex-work', cli: 'codex', kind: 'key', label: 'Work', home: '', apiKey: '' } } })
   check('the chosen key account is validated by the actual account rules', (await service.check({ cwd: root, cli: 'codex', accountId: 'codex-work' })).items.find(item => item.id === 'account')?.state, 'blocked')
   check('a named account from another agent never falls back to Default', (await service.check({ cwd: root, cli: 'claude', accountId: 'codex-work' })).items.find(item => item.id === 'account')?.state, 'blocked')
+  settings = hydrateSettings({ accounts: { 'codex-work': { id: 'codex-work', cli: 'codex', kind: 'login', label: 'Work', home: root, apiKey: '' } }, agents: { endpoints: { codex: { mode: 'custom', baseUrl: '', model: '', apiKey: '' } } } })
+  check('a selected subscription account needs no global API endpoint key', (await service.check({ cwd: root, cli: 'codex', accountId: 'codex-work' })).items.find(item => item.id === 'provider')?.state, 'configured')
   settings = hydrateSettings({ accounts: { 'claude-work': { id: 'claude-work', cli: 'claude', kind: 'login', label: 'Work', home: join(root, 'missing-home'), apiKey: '' } } })
   check('a missing account home is not repaired or silently created', (await service.check({ cwd: root, cli: 'claude', accountId: 'claude-work' })).items.find(item => item.id === 'account')?.state, 'blocked')
   settings = hydrateSettings({ providers: { claudeAuth: 'anthropic', anthropicApiKey: 'fixture-provider-private-value' }, agents: { mcp: { perAgent: { claude: ['fixture', STOKE_BROWSER_SERVER] }, extra: {} } } })

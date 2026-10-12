@@ -1638,6 +1638,11 @@ src/main/         Electron main process
                     `hub-state.json` (chain, pin, anchor, records keyed by HMAC digests, cursor,
                     notes, prefs, held changes, sealed vault keys), 0600, sealed by the injected
                     SecretBackend; refuses a vault key under an unprotected key store
+  hub/accountSync.ts Main-only T5 account adapter: portable named profiles, API keys,
+                    Codex file-cache auth and Grok Bot session tuples. Sync is opt-in;
+                    recreates local homes, stages busy-profile refreshes and keeps
+                    OS-encrypted mappings per Stoke vault. verify:account-sync and
+                    verify:hub-client; usage guide: docs/account-sync.md
   hub/http.ts       one signed request, read under a 16 MiB cap through `readHubResponse` (a 200
                     web page is not the hub, gotcha 71)
   hub/sshKeys.ts    ~/.ssh key pairs by their .pub, one private key read on share, a received

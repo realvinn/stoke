@@ -14,7 +14,8 @@ export function AccountsSettings({ settings, agents, onManage, onSync }: {
   onManage: (cli: CodingCliId) => void
   onSync: () => void
 }): React.JSX.Element {
-  const hub = stokeAccountSummary(useStokeAccount())
+  const state = useStokeAccount()
+  const hub = stokeAccountSummary(state)
   return <div className="accounts-settings" data-testid="accounts-overview" data-setting="accounts.overview">
     <header className="accounts-heading">
       <h2>Accounts</h2>
@@ -26,7 +27,7 @@ export function AccountsSettings({ settings, agents, onManage, onSync }: {
         <div className="agent-account-body"><strong>Stoke account</strong><span className="field-hint">{hub.identity}</span></div>
       </div>
       <p className="field-hint">Connect your devices and choose what syncs.</p>
-      <button className="btn" onClick={onSync}>{hub.signedIn ? hub.status : 'Sign in to Stoke'}</button>
+      <button className="btn" onClick={onSync}>{hub.signedIn ? 'Manage account & sync' : 'Sign in to Stoke'}</button>
     </section>
     <section className="accounts-agent-list" data-setting="accounts.agents">
       <div className="accounts-heading"><h3>Coding agents</h3></div>
@@ -44,7 +45,7 @@ export function AccountsSettings({ settings, agents, onManage, onSync }: {
             <span aria-hidden="true">›</span>
         </button>
       })}
-      <p className="field-hint">Your existing CLI login is Default. Agent credentials stay on this computer.</p>
+      <p className="field-hint">Your existing CLI login is Default. {state?.accountSync === true && state.scope.accounts ? 'Account sync is on for this computer.' : 'Turn on account sync under Stoke to share saved accounts with your other devices.'}</p>
     </section>
   </div>
 }

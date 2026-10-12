@@ -134,6 +134,8 @@ import {
   type ItemKeys
 } from './crypto.ts'
 import { HubFiles, type HubDevice } from './files.ts'
+import type { AccountSync } from './accountSync.ts'
+import { syncedAccountProblem } from '../../shared/hub/accountSync.ts'
 import { hubRequest, HubRequestError } from './http.ts'
 import { HubRemote, type RelaySocket, type RemoteContext, type RemoteMachineDeps } from './remote.ts'
 import { defaultSshPaths, identityFilesFor, installReceivedKey, listKeyPairs, readKeyForShare, type SshPaths } from './sshKeys.ts'
@@ -186,6 +188,7 @@ export interface HubServiceDeps {
   remote?: RemoteMachineDeps
   /** Open a signed relay socket; default `ws`. */
   relaySocket?: (url: string, headers: Record<string, string>) => Promise<RelaySocket>
+  accounts?: Pick<AccountSync, 'snapshot' | 'apply'>
 }
 
 /** A Kit made and shown, waiting to be confirmed before the chain entry that uses it is posted. */
@@ -290,6 +293,7 @@ function messageOf(err: unknown): string {
 }
 
 export class HubService {
+  private accountValues = new Map<string, LocalValue>()
   private readonly deps: HubServiceDeps
   private readonly files: HubFiles
   private readonly now: () => number
@@ -650,8 +654,9 @@ export class HubService {
     v.lastSyncAt = this.state?.lastSyncAt ?? null
     v.error = this.revoked ? { message: this.revoked, at: this.now(), retryAt: null } : this.lastError
     const scope = this.scope()
-    v.scope = { ...scope, keysDevice: s.hub.sync.keys }
+    v.scope = { ...scope, keysDevice: s.hub.sync.keys, accountsDevice: s.hub.sync.accounts }
     v.accountKeys = this.state?.prefs.syncKeys?.on ?? null
+    v.accountSync = this.state?.prefs.syncAccounts?.on ?? null
     v.counts = this.state ? recordCounts(this.state.records) : v.counts
     v.epoch = this.verdict?.epoch ?? 0
     const me = this.dev?.id
@@ -1791,10 +1796,10 @@ export class HubService {
     const keys: string[] = []
     for (const [path, r] of Object.entries(st.records)) {
       const p = parseItemPath(path)
-      if (!r.deleted && p?.tier === 't2') keys.push(itemLabel(path))
+      if (!r.deleted && (p?.tier === 't2' || p?.tier === 't5')) keys.push(itemLabel(path))
     }
     const sshKeys = [...Object.values(st.shared).map((k) => k.name), ...Object.values(st.offered).map((k) => k.name)]
-    return { keys: keys.sort(), sshKeys: [...new Set(sshKeys)].sort() }
+    return { keys: [...new Set(keys)].sort(), sshKeys: [...new Set(sshKeys)].sort() }
   }
 
   /**
@@ -1955,7 +1960,7 @@ export class HubService {
 
   private scope(): SyncScope {
     const h = this.settings().hub.sync
-    return { settings: h.settings, hosts: h.hosts, keys: h.keys && this.state?.prefs.syncKeys?.on === true }
+    return { settings: h.settings, hosts: h.hosts, keys: h.keys && this.state?.prefs.syncKeys?.on === true, accounts: h.accounts && this.state?.prefs.syncAccounts?.on === true }
   }
 
   /** This device's switches (T1, T3, T2-on-this-device). */
@@ -1965,8 +1970,10 @@ export class HubService {
       const next = {
         settings: typeof patch.settings === 'boolean' ? patch.settings : s.settings,
         hosts: typeof patch.hosts === 'boolean' ? patch.hosts : s.hosts,
-        keys: typeof patch.keys === 'boolean' ? patch.keys : s.keys
+        keys: typeof patch.keys === 'boolean' ? patch.keys : s.keys,
+        accounts: typeof patch.accounts === 'boolean' ? patch.accounts : s.accounts
       }
+      if ((!s.accounts && next.accounts) || (!s.keys && next.keys)) { if (this.state) this.state.cursor = 0 }
       await this.commitHub({ sync: next })
       if (this.isActiveIn(this.verdict)) await this.pass()
       return { ok: true }
@@ -1982,6 +1989,23 @@ export class HubService {
       await this.pass()
       return { ok: true }
     })
+  }
+
+  setAccountSync(on: boolean): Promise<HubResult> {
+    return this.action(on ? 'Turning on account sync…' : 'Turning off account sync…', async () => {
+      if (!this.isActiveIn(this.verdict)) return { ok: false, message: 'Join the vault first.' }
+      if (!this.deps.accounts) return { ok: false, message: 'This build does not support account sync.' }
+      this.st().prefs.syncAccounts = { on: on === true }
+      if (on) this.st().cursor = 0
+      else this.accountValues.clear()
+      this.saveState()
+      await this.pass()
+      return this.lastError ? { ok: false, message: this.lastError.message } : { ok: true }
+    })
+  }
+
+  accountsChanged(): void {
+    if (!this.applying && this.scope().accounts && this.isActiveIn(this.verdict)) this.syncSoon(SYNC_DEBOUNCE_MS)
   }
 
   dismissNotes(): HubResult {
@@ -2130,14 +2154,25 @@ export class HubService {
 
   private currentLocal(): Map<string, LocalValue> {
     const st = this.st()
-    return localValues({ settings: this.deps.hydrate(this.settings()), scope: this.scope(), prefs: st.prefs, keyRefs: st.keyRefs })
+    const out = localValues({ settings: this.deps.hydrate(this.settings()), scope: this.scope(), prefs: st.prefs, keyRefs: st.keyRefs })
+    if (this.scope().accounts) for (const [path, value] of this.accountValues) out.set(path, value)
+    return out
+  }
+
+  private async refreshAccounts(): Promise<void> {
+    if (!this.deps.accounts || !this.scope().accounts || !this.isActiveIn(this.verdict)) { this.accountValues.clear(); return }
+    const account = this.account()
+    const allowed = () => this.account() === account && this.scope().accounts === true && this.isActiveIn(this.verdict)
+    const values = await this.deps.accounts.snapshot(allowed, account)
+    if (!allowed()) { this.accountValues.clear(); return }
+    this.accountValues = new Map([...values].map(([id, value]) => [`t5/account/${id}`, { deleted: false, value }]))
   }
 
   /** Note WHEN each local change was first seen: a conflict is decided by these times (spec §5.2). */
   private stampLocal(): void {
     const st = this.st()
     const local = this.currentLocal()
-    const tombstones = Object.entries(st.records).filter(([path, r]) => !r.deleted && !local.has(path) && /^t[23]\//.test(path))
+    const tombstones = Object.entries(st.records).filter(([path, r]) => !r.deleted && !local.has(path) && (/^t[23]\//.test(path) || (this.scope().accounts && /^t5\//.test(path))))
     const entries: [string, LocalValue][] = [...local, ...tombstones.map(([path]): [string, LocalValue] => [path, { deleted: true, value: null }])]
     for (const [path, lv] of entries) {
       const hash = valueDigest(this.digest, lv)
@@ -2268,7 +2303,10 @@ export class HubService {
       await this.refreshPairs().catch((err) => this.log('hub: could not list join requests', err))
       const st = this.state
       await this.carryForward(v, keys)
-      const { delta, next } = await this.pull(v)
+      if (this.deps.accounts && !st.accountSyncReady) { st.cursor = 0; st.accountSyncReady = true }
+      const { delta, next: initialNext } = await this.pull(v)
+      let next = initialNext
+      await this.refreshAccounts()
       let scope = this.scope()
       const plan = (): ReturnType<typeof planSync> => {
         const remote = new Map(delta)
@@ -2298,8 +2336,16 @@ export class HubService {
        * lets in — a device joining a vault that already syncs keys. Plan again
        * under the widened scope, or those keys wait a whole interval.
        */
-      if (this.scope().keys !== scope.keys) {
+      if (this.scope().keys !== scope.keys || this.scope().accounts !== scope.accounts) {
+        const widenedCredentials = (!scope.accounts && this.scope().accounts) || (!scope.keys && this.scope().keys)
         scope = this.scope()
+        if (widenedCredentials) {
+          st.cursor = 0
+          const replay = await this.pull(v)
+          for (const [path, value] of replay.delta) if (!delta.has(path) || delta.get(path)!.version <= value.version) delta.set(path, value)
+          next = Math.max(next, replay.next)
+        }
+        await this.refreshAccounts()
         const widened = plan()
         for (const r of widened.adopt) this.adopt(r)
         await this.apply(widened.apply, scope)
@@ -2380,6 +2426,7 @@ export class HubService {
     const st = this.st()
     const { incoming, prefs, keyRefs } = incomingFrom(items)
     if (prefs.syncKeys) st.prefs.syncKeys = prefs.syncKeys
+    if (prefs.syncAccounts) st.prefs.syncAccounts = prefs.syncAccounts
     if (prefs.deviceNames) st.prefs.deviceNames = prefs.deviceNames
     Object.assign(st.keyRefs, keyRefs)
     let held: string[] = []
@@ -2399,8 +2446,23 @@ export class HubService {
         this.applying = false
       }
     }
-    const after = localValues({ settings: this.deps.hydrate(this.settings()), scope, prefs: st.prefs, keyRefs: st.keyRefs })
+    if (this.deps.accounts && this.scope().accounts) {
+      const account = this.account()
+      const allowed = () => this.account() === account && this.scope().accounts === true && this.isActiveIn(this.verdict)
+      this.applying = true
+      try {
+        for (const item of items) {
+          const p = parseItemPath(item.path)
+          if (p?.tier !== 't5') continue
+          if (!item.deleted && syncedAccountProblem(item.value)) throw new Stop('A synced account has unsupported or invalid details. Nothing from that account was installed.')
+          await this.deps.accounts.apply(p.accountId, item.deleted ? null : item.value, allowed, account)
+        }
+        await this.refreshAccounts()
+      } finally { this.applying = false }
+    }
+    const after = this.currentLocal()
     for (const r of items) {
+      if (parseItemPath(r.path)?.tier === 't5' && !this.scope().accounts) continue
       if (!held.includes(r.path)) delete st.held[r.path]
       const lv = after.get(r.path) ?? { deleted: true, value: null }
       st.records[r.path] = {

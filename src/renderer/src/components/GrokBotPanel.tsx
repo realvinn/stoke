@@ -117,7 +117,12 @@ export function GrokBotPanel(): React.JSX.Element {
         <button className="plugin-link" onClick={() => void window.stoke.openExternal(GBOT_SOURCE)}>
           grok-bot-cli
         </button>
-        . Sessions are encrypted on this device. They are separate from Grok Build and xAI API accounts.
+        . Saved sessions are encrypted. Enable agent account sync in Stoke account settings to use
+        them on your other approved devices. They are separate from Grok Build and xAI API accounts.
+      </p>
+      <p className="plugin-muted">
+        Sign in with each Cursor or Grok account in the Grok Bot desktop app, then import its
+        session here. Cursor CLI and Grok Build use their own accounts in Settings → Accounts.
       </p>
       {!view?.cli.installed && (
         <button
@@ -184,7 +189,7 @@ export function GrokBotPanel(): React.JSX.Element {
           <input
             value={nickname}
             onChange={(event) => setNickname(event.target.value)}
-            placeholder="Personal, Work, Account 3…"
+            placeholder="Cursor 1, Cursor 2, Grok 1…"
             maxLength={100}
           />
         </label>

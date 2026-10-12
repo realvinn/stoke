@@ -216,8 +216,9 @@ function Overview({ view, now }: { view: HubView; now: number }): React.JSX.Elem
             keys exchanged between your devices with X25519). The hub stores what it cannot open. It does see your account
             email, each device&rsquo;s name and platform, how many items you sync and how big they are, and when they change.
             Your password only decides who may sign in: no key is made from it, so resetting it on the hub cannot open the
-            vault. Supported provider and MCP keys sync only when their credential tier is enabled. Named agent accounts,
-            including their API keys, and native Claude/Codex sign-ins stay on this computer. The phone access key and this
+            vault. Provider and MCP keys sync only when their credential tier is enabled. Account sync has its own switch:
+            it shares saved profiles, their API keys, portable Codex file sign-ins and Grok Bot sessions. Other native sign-ins
+            may need reconnecting on each device. The phone access key and this
             computer&rsquo;s folders also stay here.
           </>
         }
@@ -847,9 +848,10 @@ function Syncing({ view, now }: { view: HubView; now: number }): React.JSX.Eleme
     `${c.settings} setting${c.settings === 1 ? '' : 's'}`,
     `${c.keys} API key${c.keys === 1 ? '' : 's'}`,
     `${c.hosts} SSH host${c.hosts === 1 ? '' : 's'}`,
-    `${c.sshKeys} SSH key${c.sshKeys === 1 ? '' : 's'}`
+    `${c.sshKeys} SSH key${c.sshKeys === 1 ? '' : 's'}`,
+    `${c.accounts ?? 0} account${c.accounts === 1 ? '' : 's'}`
   ]
-  const scope = (patch: { settings?: boolean; hosts?: boolean; keys?: boolean }): void => run('scope', () => window.stoke.hub.setScope(patch))
+  const scope = (patch: { settings?: boolean; hosts?: boolean; keys?: boolean; accounts?: boolean }): void => run('scope', () => window.stoke.hub.setScope(patch))
   return (
     <div className="field" data-hub="syncing" data-setting="account.syncing">
       <span className="field-label">What syncs</span>
@@ -895,6 +897,14 @@ function Syncing({ view, now }: { view: HubView; now: number }): React.JSX.Eleme
           </span>
         </label>
       )}
+      <label className="check-row" data-setting="account.agent-sync">
+        <input type="checkbox" checked={view.accountSync === true} disabled={busy !== null} data-hub="account-sync" onChange={e => run('accounts', () => window.stoke.hub.setAccountSync(e.target.checked))} />
+        <span><span>Sync agent accounts across devices</span><span className="field-hint">Saved profiles, API keys, compatible Codex sign-ins and plugin accounts, encrypted for your approved devices. Update Stoke on both computers first. Off by default.</span></span>
+      </label>
+      {view.accountSync === true && <label className="check-row">
+        <input type="checkbox" checked={view.scope.accountsDevice !== false} disabled={busy !== null} onChange={e => scope({ accounts: e.target.checked })} />
+        <span><span>Accounts on this computer</span><span className="field-hint">Off pauses account uploads and imports here. Accounts already received stay. Busy Codex profiles apply credentials after their sessions finish.</span></span>
+      </label>}
       <div className="btn-row">
         <button
           className="btn"

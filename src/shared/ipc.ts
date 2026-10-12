@@ -355,6 +355,7 @@ export const CH = {
   hubSyncNow: 'hub:sync-now',
   hubSetScope: 'hub:set-scope',
   hubSetAccountKeys: 'hub:set-account-keys',
+  hubSetAccountSync: 'hub:set-account-sync',
   hubRename: 'hub:rename',
   hubRevoke: 'hub:revoke',
   hubDismissNotes: 'hub:dismiss-notes',

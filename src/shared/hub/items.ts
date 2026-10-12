@@ -4,7 +4,7 @@
  *
  * Item paths (spec §5.1) are the client's names for things — `t1/settings/
  * themeId`, `t2/secret/providers.anthropicApiKey`, `t3/host/<id>`,
- * `t4/ssh-key/<id>`. The hub never sees one: it stores an envelope under an
+ * `t4/ssh-key/<id>`, `t5/account/<id>`. The hub never sees one: it stores an envelope under an
  * opaque id (an HMAC of the path under a key derived from the vault key), and
  * the reader re-derives that id from the decrypted path (spec §4.7). This
  * module is the grammar of those paths, the envelope's shape, the AAD and
@@ -18,6 +18,7 @@ import { canonicalJson, isB64u, isId, isNonNegInt, isRecord, labelled } from './
 import { HUB_LABELS } from './labels.ts'
 import { PARTIAL_KEYS, PORTABLE_KEYS } from '../setupFile.ts'
 import { secretLabel, secretSpecFor } from '../secrets.ts'
+import { isSyncAccountId } from './accountSync.ts'
 
 /* ------------------------------------------------------------- paths */
 
@@ -41,7 +42,7 @@ export const T1_KEYS: readonly string[] = [
  *   a vault item every device reads over it (added by the desktop client,
  *   2026-10-01; the hub never parses paths, so this needs no server change).
  */
-export const ACCOUNT_PREFS = ['sync-keys', 'device-names'] as const
+export const ACCOUNT_PREFS = ['sync-keys', 'device-names', 'sync-accounts'] as const
 export type AccountPref = (typeof ACCOUNT_PREFS)[number]
 
 export type ItemPath =
@@ -49,6 +50,7 @@ export type ItemPath =
   | { tier: 't2'; kind: 'secret'; secretPath: string }
   | { tier: 't3'; kind: 'host'; hostId: string }
   | { tier: 't4'; kind: 'ssh-key'; keyId: string }
+  | { tier: 't5'; kind: 'account'; accountId: string }
   | { tier: 'acct'; kind: 'pref'; pref: AccountPref }
 
 export const MAX_PATH_CHARS = 200
@@ -75,6 +77,7 @@ export function parseItemPath(path: unknown): ItemPath | null {
   // A host's SYNC id (`h…`), never its settings id: those are per-machine counters (codec.ts ID_BYTES).
   if (tier === 't3' && kind === 'host') return isId('host', name) ? { tier, kind, hostId: name } : null
   if (tier === 't4' && kind === 'ssh-key') return isId('sshKey', name) ? { tier, kind, keyId: name } : null
+  if (tier === 't5' && kind === 'account') return isSyncAccountId(name) ? { tier, kind, accountId: name } : null
   if (tier === 'acct' && kind === 'pref') {
     return (ACCOUNT_PREFS as readonly string[]).includes(name) ? { tier, kind, pref: name as AccountPref } : null
   }
@@ -91,6 +94,8 @@ export function itemPath(p: ItemPath): string {
       return `t3/host/${p.hostId}`
     case 't4':
       return `t4/ssh-key/${p.keyId}`
+    case 't5':
+      return `t5/account/${p.accountId}`
     case 'acct':
       return `acct/pref/${p.pref}`
   }
@@ -109,8 +114,10 @@ export function itemLabel(path: string, names: { host?: (id: string) => string; 
       return `SSH host ${names.host?.(p.hostId) ?? p.hostId}`
     case 't4':
       return `SSH key ${names.sshKey?.(p.keyId) ?? p.keyId}`
+    case 't5':
+      return 'Saved agent account'
     case 'acct':
-      return p.pref === 'sync-keys' ? 'Sync API keys' : 'Device names'
+      return p.pref === 'sync-keys' ? 'Sync API keys' : p.pref === 'sync-accounts' ? 'Sync agent accounts' : 'Device names'
   }
 }
 
