@@ -930,12 +930,24 @@ await step('the active account follows the agent and fits the title bar', async 
     await ev(`[...document.querySelectorAll('.account-panel button')].find(button => button.textContent === 'Manage agent accounts').click(), true`)
     await waitFor('Default and Work identities in account settings', () => ev<boolean>(`document.querySelector('[data-testid="default-account-identity"]')?.textContent === 'claude@example.test' && document.querySelector('.agent-account-stored[data-account="${created}"]')?.textContent.includes('work@example.test')`))
     check('Settings shows each account’s own signed-in email', await ev<boolean>(`!!document.querySelector('[data-testid="agent-accounts"]') && !document.querySelector('.account-panel')`) === true)
-    check('the existing login is clearly Default; saved accounts and add forms start compact', await ev<boolean>(`document.querySelector('.account-manager-existing')?.textContent.includes('You don’t need to add it again') && !document.querySelector('.agent-account-stored form') && !document.querySelector('[data-testid="add-login-account"]').open && !document.querySelector('[data-testid="add-api-account"]').open`) === true)
+    check('the existing login is clearly Default; saved accounts and add forms start compact', await ev<boolean>(`document.querySelector('.account-manager-existing')?.textContent.includes('You don’t need to add it again') && !document.querySelector('.agent-account-stored form') && !document.querySelector('[data-testid="add-login-account"]').open && !document.querySelector('[data-testid="add-api-account"]').open && !!document.querySelector('[data-testid="add-account-start"]')`) === true)
     await ui!.send('Emulation.setDeviceMetricsOverride', { width: 940, height: 720, deviceScaleFactor: 1, mobile: false })
     await sleep(300)
     check('account summaries and actions fit the minimum desktop width', await ev<boolean>(`(() => { const pane = document.querySelector('[data-testid="agent-accounts"]'), r = pane.getBoundingClientRect(); return [...pane.querySelectorAll('.account-manager-existing, .account-manager-summary, button')].filter(el => el.offsetWidth).every(el => { const box = el.getBoundingClientRect(); return box.left >= r.left && box.right <= r.right + 1 }); })()`) === true)
     await waitFor('the Settings highlight to settle before its screenshot', () => ev<boolean>(`!document.querySelector('[data-testid="agent-accounts"]').hasAttribute('data-flash')`))
     await shot('04-account-settings')
+    await ev(`document.querySelector('[data-testid="add-account-start"]').click(), true`)
+    await waitFor('account connection methods', () => ev<boolean>(`!!document.querySelector('[data-testid="choose-login-account"]') && !!document.querySelector('[data-testid="choose-api-account"]')`))
+    check('Add account presents subscription and API access without showing saved-account controls', await ev<boolean>(`document.querySelector('.agent-account-list').hidden && !document.querySelector('[data-testid="add-login-account"]').open && !document.querySelector('[data-testid="add-api-account"]').open`) === true)
+    await shot('04-account-add-choice')
+    await ev(`document.querySelector('[data-testid="choose-api-account"]').click(), true`)
+    await waitFor('focused API form', () => ev<boolean>(`document.querySelector('[data-testid="add-api-account"]').open`))
+    await ev(`document.querySelector('[data-testid="add-api-account"] input[type="password"]').focus(), true`)
+    await ui!.send('Input.insertText', { text: 'owned-unsaved-key' })
+    await shot('04-account-add-api')
+    await ev(`[...document.querySelectorAll('.account-manager-heading button')].find(b => b.textContent === 'Cancel').click(), true`)
+    await waitFor('cancel restores the account list and keyboard focus', () => ev<boolean>(`!document.querySelector('.agent-account-list').hidden && document.activeElement === document.querySelector('[data-testid="add-account-start"]')`))
+    check('Cancel clears the unsaved API key and preserves the active account', await ev<boolean>(`document.querySelector('[data-testid="add-api-account"] input[type="password"]').value === '' && document.querySelector('.account-manager-existing input').checked`) === true)
     await ui!.send('Emulation.clearDeviceMetricsOverride')
   } finally {
     await ui!.send('Emulation.clearDeviceMetricsOverride').catch(() => {})
@@ -943,6 +955,13 @@ await step('the active account follows the agent and fits the title bar', async 
     if (created) await ev(`window.stoke.accounts.remove(${JSON.stringify(created)})`).catch(() => {})
   }
 })
+
+async function openAccountAdd(kind: 'login' | 'key'): Promise<void> {
+  await ev(`document.querySelector('[data-testid="add-account-start"]').click(), true`)
+  await waitFor('one add-account choice or form', () => ev<boolean>(`!!document.querySelector('[data-testid="choose-login-account"]') || document.querySelector('[data-testid="add-api-account"]')?.open === true`))
+  await ev(`document.querySelector('[data-testid="choose-${kind === 'login' ? 'login' : 'api'}-account"]')?.click(), true`)
+  await waitFor('the chosen account form', () => ev<boolean>(`document.querySelector('[data-testid="add-${kind === 'login' ? 'login' : 'api'}-account"]')?.open === true`))
+}
 
 await step('sidebar accounts, repository details and bottom-left terminal are discoverable', async () => {
   const savedWidth = await ev<number>('Number(document.querySelector(\'[aria-label="Resize sidebar"]\')?.getAttribute("aria-valuenow") || 260)')
@@ -1000,14 +1019,14 @@ await step('sidebar accounts, repository details and bottom-left terminal are di
     await shot('04-accounts-overview')
     await ev(`document.querySelector('.accounts-agent[data-cli="codex"]').click(), true`)
     await waitFor('dedicated Codex accounts submenu', () => ev<boolean>(`document.querySelector('[data-testid="agent-account-page"]')?.dataset.cli === 'codex' && !document.querySelector('#agent-page')`))
-    await ev(`document.querySelector('[data-testid="add-login-account"] summary').click(), true`)
+    await openAccountAdd('login')
     await waitFor('Codex subscription setup from the overview', () => ev<boolean>(`document.querySelector('[data-testid="add-login-account"]')?.open && !!document.querySelector('[aria-label="New ${cliFor('codex').label} account name"]')`))
     check('Add sign-in opens the correct scoped subscription form', true)
     await closeSettings()
     await overview()
     await ev(`document.querySelector('.accounts-agent[data-cli="claude"]').click(), true`)
     await waitFor('dedicated Claude accounts submenu', () => ev<boolean>(`document.querySelector('[data-testid="agent-account-page"]')?.dataset.cli === 'claude' && !document.querySelector('#agent-page')`))
-    await ev(`document.querySelector('[data-testid="add-api-account"] summary').click(), true`)
+    await openAccountAdd('key')
     await waitFor('Claude API setup from the overview', () => ev<boolean>(`document.querySelector('[data-testid="add-api-account"]')?.open && !!document.querySelector('[aria-label="New Claude Code API account name"]')`))
     check('Add API account opens the correct scoped API form', true)
     await closeSettings()
@@ -1046,7 +1065,7 @@ await step('completed sign-ins close with the verified email; failed and unknown
   try {
     for (const cli of ['claude', 'codex'] as const) {
       await openAccounts(cli)
-      await ev(`document.querySelector('[data-testid="add-login-account"] > summary').click(), true`)
+      await openAccountAdd('login')
       await waitFor('the add sign-in form to open', () => ev<boolean>(`document.querySelector('[data-testid="add-login-account"]').open`))
       const before = await ev<string[]>('[...window.stokeTerminals.keys()]')
       const accountId = `${cli}-login-probe`
@@ -1079,7 +1098,7 @@ await step('completed sign-ins close with the verified email; failed and unknown
       const marker = join(agentsDir, outcome === 'failed' ? 'login-fail' : 'identity-unavailable')
       writeFileSync(marker, 'owned CI fixture')
       writeFileSync(join(agentsDir, 'login-wait'), 'owned CI fixture')
-      await ev(`[...document.querySelectorAll('.agent-account-stored[data-account="${cli}-login-probe"] button')].find(button => button.textContent.trim() === 'Sign in').click(), true`)
+      await ev(`[...document.querySelectorAll('.agent-account-stored[data-account="${cli}-login-probe"] button')].find(button => ['Sign in', 'Reconnect'].includes(button.textContent.trim())).click(), true`)
       const ptyId = await termShowing('Signing in with the owned probe account', 'the unsuccessful sign-in tab', 20_000, before)
       signInPtys.push(ptyId)
       rmSync(join(agentsDir, 'login-wait'), { force: true })
@@ -1206,7 +1225,7 @@ await step('named API profiles save in Settings and launch with their own creden
     await ev(`document.querySelector('.accounts-agent[data-cli="opencode"]').click(), true`)
     await waitFor('focused OpenCode accounts page', () => ev<boolean>(`document.querySelector('[data-testid=agent-account-page]')?.dataset.cli === 'opencode'`))
     check('OpenCode accounts omit unrelated installation and tool settings', await ev<boolean>(`!document.querySelector('#agent-page') && !document.querySelector('[data-setting="agent.endpoint"]')`) === true)
-    await ev(`document.querySelector('[data-testid="add-api-account"] summary').click(), true`)
+    await openAccountAdd('key')
     await waitFor('saved API key source picker', () => ev<boolean>(`!!document.querySelector('[aria-label="OpenCode API key source"]')`))
     const sourceId = created.find(id => id.startsWith('claude-'))!
     const source = await ev<{ apiKey: string; apiProfile: { model: string } }>(`window.stoke.settings.get().then(settings => settings.accounts[${JSON.stringify(sourceId)}])`)
@@ -1274,7 +1293,7 @@ await step('selected Claude logins own their authentication despite inherited an
       await waitFor('the named login row', () => ev<boolean>(`!!document.querySelector('.agent-account-stored[data-account="${account.id}"]')`))
       await ev(`document.querySelector('.agent-account-stored[data-account="${account.id}"] input[type="radio"]').click(), true`)
       await waitFor('the named login to be selected', () => ev<boolean>(`window.stoke.settings.get().then(s => s.agents.defaultAccount.claude === ${JSON.stringify(account.id)})`))
-      await ev(`[...document.querySelectorAll('.agent-account-stored[data-account="${account.id}"] button')].find(button => button.textContent.trim() === 'Sign in').click(), true`)
+      await ev(`[...document.querySelectorAll('.agent-account-stored[data-account="${account.id}"] button')].find(button => ['Sign in', 'Reconnect'].includes(button.textContent.trim())).click(), true`)
       await waitFor('the named login completion to report its own email', () => ev<boolean>(`[...document.querySelectorAll('.toast-title')].some(node => node.textContent === 'Successfully signed in to Claude Code as profile${number}@example.test')`))
       const login = await waitFor('the named sign-in process record', async () => oneShots().find(event => event.kind === 'account-login' && event.home === account.home))
       check(`Profile ${number}: auth login receives its own home and no inherited credential selectors`, Array.isArray(login.authOverrides) && login.authOverrides.length === 0)

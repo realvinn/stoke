@@ -5642,6 +5642,12 @@ summary.agent-picker-section:hover {
 }
 
 .account-manager-heading { justify-content: space-between; }
+.agent-accounts [hidden] { display: none !important; }
+.account-manager-add-flow,
+.account-manager-choices { display: grid; gap: var(--space-12); }
+.account-manager-add-flow > .account-manager-add > summary { display: none; }
+.account-manager-add-flow .account-manager-form { border-top: none; }
+.account-manager-choices .accounts-agent { border: 1px solid var(--border-subtle); background: var(--bg-sunken); }
 
 .account-manager-existing,
 .agent-account-stored,
@@ -5663,7 +5669,7 @@ summary.agent-picker-section:hover {
 .account-manager-summary > .btn-row { margin-left: auto; }
 
 .account-manager-selected {
-  color: var(--text-muted);
+  color: var(--accent-ink);
   font-size: var(--fs-xs);
   white-space: nowrap;
 }

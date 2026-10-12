@@ -121,6 +121,7 @@ export interface RemoteContext {
 /** A relay socket, as much of `ws`'s WebSocket as this uses. */
 export interface RelaySocket {
   readonly readyState: number
+  readonly bufferedAmount?: number
   send(data: string | Uint8Array): void
   close(code?: number, reason?: string): void
   on(event: 'open', fn: () => void): unknown
@@ -764,7 +765,7 @@ export class HubRemote {
         me: { id: ctx.me.id, signPriv: ctx.me.signPriv },
         peer: t.device,
         peerKey: (id) => this.d.context()?.active.find((a) => a.id === id && a.id !== ctx.me.id)?.sign ?? null,
-        io: { send: (data) => socket.send(data), close: (code, reason) => socket.close(code, reason) },
+        io: { send: (data) => socket.send(data), bufferedAmount: () => socket.bufferedAmount ?? 0, close: (code, reason) => socket.close(code, reason) },
         events: {
           onOpen: () => {
             if (!current()) return
@@ -973,7 +974,7 @@ export class HubRemote {
       me: { id: ctx.me.id, signPriv: ctx.me.signPriv },
       peer: guest,
       peerKey: (id) => this.d.context()?.active.find((a) => a.id === id && a.id !== ctx.me.id)?.sign ?? null,
-      io: { send: (data) => socket.send(data), close: (code, reason) => socket.close(code, reason) },
+      io: { send: (data) => socket.send(data), bufferedAmount: () => socket.bufferedAmount ?? 0, close: (code, reason) => socket.close(code, reason) },
       events: {
         onOpen: () => {
           h.guestKey = channel.peerSignKey
@@ -1830,7 +1831,7 @@ export class HubRemote {
         me: { id: ctx.me.id, signPriv: ctx.me.signPriv },
         peer: p.device,
         peerKey: (id) => this.d.context()?.active.find((a) => a.id === id && a.id !== ctx.me.id)?.sign ?? null,
-        io: { send: (data) => socket.send(data), close: (code, reason) => socket.close(code, reason) },
+        io: { send: (data) => socket.send(data), bufferedAmount: () => socket.bufferedAmount ?? 0, close: (code, reason) => socket.close(code, reason) },
         events: {
           onOpen: () => {
             if (!current()) return

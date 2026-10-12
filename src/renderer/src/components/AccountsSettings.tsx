@@ -18,7 +18,7 @@ export function AccountsSettings({ settings, agents, onManage, onSync }: {
   return <div className="accounts-settings" data-testid="accounts-overview" data-setting="accounts.overview">
     <header className="accounts-heading">
       <h2>Accounts</h2>
-      <p className="field-hint">Choose an agent to manage its sign-ins and API keys.</p>
+      <p className="field-hint">Pick an agent, then choose or add an account.</p>
     </header>
     <section className="accounts-stoke" data-setting="accounts.stoke">
       <div className="accounts-stoke-identity">
@@ -38,9 +38,9 @@ export function AccountsSettings({ settings, agents, onManage, onSync }: {
             <span className="agent-tab-dot" {...agentMark(cli.id)} aria-hidden="true" />
             <span className="agent-account-body">
               <strong>{cli.label}</strong>
-              <span className="field-hint" data-account={selected?.id ?? DEFAULT_ACCOUNT_ID}>New sessions: {selected?.label ?? 'Default · Existing setup'}</span>
+              <span className="field-hint" data-account={selected?.id ?? DEFAULT_ACCOUNT_ID}>Active: {selected?.label ?? 'Default · Existing setup'}</span>
             </span>
-            <span className="field-hint accounts-count">{accounts.length ? `${accounts.length + 1} accounts` : 'Default'}</span>
+            <span className="field-hint accounts-count">{accounts.length ? `${accounts.length} saved` : ''}</span>
             <span aria-hidden="true">›</span>
         </button>
       })}
@@ -49,9 +49,11 @@ export function AccountsSettings({ settings, agents, onManage, onSync }: {
   </div>
 }
 
-export function AgentAccountsPage({ settings, agent, onPatch, onSignIn, onGo }: {
+export function AgentAccountsPage({ settings, agent, section, sectionRevision, onPatch, onSignIn, onGo }: {
   settings: Settings
   agent: CodingCliId
+  section?: string
+  sectionRevision?: number
   onPatch: (patch: Partial<Settings>) => void
   onSignIn: (accountId: string) => void
   onGo: (location: SettingsLocation) => void
@@ -64,9 +66,8 @@ export function AgentAccountsPage({ settings, agent, onPatch, onSignIn, onGo }: 
     <header className="accounts-heading">
       <button className="btn accounts-back" data-variant="ghost" onClick={() => onGo({ page: 'accounts' })}>‹ All accounts</button>
       <h2>{cli.label}</h2>
-      <p className="field-hint">Select the account new sessions start with, or add another.</p>
     </header>
-    <AgentAccounts key={agent} cli={cli} accounts={accountsOf(agent, settings.accounts)} defaultId={settings.agents.defaultAccount[agent]}
+    <AgentAccounts key={agent} cli={cli} section={section} sectionRevision={sectionRevision} accounts={accountsOf(agent, settings.accounts)} defaultId={settings.agents.defaultAccount[agent]}
       onDefault={id => {
         const current = settingsRef.current
         const defaultAccount = { ...current.agents.defaultAccount }

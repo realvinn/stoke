@@ -41,7 +41,8 @@ import type { FolderBase } from '../../shared/remotePhone.ts'
 import { addRemoteProject, browseRemoteFolder, resolveFolderBases } from './folders.ts'
 import type { PushOutcome } from './push.ts'
 import { isTailnetAddress, tailnetAddress } from './link.ts'
-import type { PhoneSocket } from './socket.ts'
+import { sendPhoneFrame, type PhoneSocket } from './socket.ts'
+import { TerminalOutputBatch } from './outputBatch.ts'
 import { answerChatsRoute, type SharedChats } from '../hub/chatShare.ts'
 import {
   answerBytes,
@@ -548,6 +549,7 @@ export class RemoteServer {
   private offExit: (() => void) | null = null
   /** ptyId -> sockets attached to it. */
   private attached = new Map<string, Set<PhoneSocket>>()
+  private output = new TerminalOutputBatch((ptyId, data) => this.broadcast(ptyId, { type: 'data', ptyId, data }))
   /**
    * The desktop's own size for a pty a phone has resized, so it can be put
    * back when the last phone leaves. A phone that fits the terminal to its
@@ -742,10 +744,11 @@ export class RemoteServer {
     const ptys = this.deps.ptys()
     if (!ptys || this.offData) return
     this.offData = ptys.subscribe((ptyId, data) => {
-      this.broadcast(ptyId, { type: 'data', ptyId, data })
+      if (this.attached.get(ptyId)?.size) this.output.push(ptyId, data)
       this.notifySessionsChanged()
     })
     this.offExit = ptys.subscribeExit((ptyId, code) => {
+      this.output.flush(ptyId)
       this.broadcast(ptyId, { type: 'exit', ptyId, code })
       /*
        * Phone contract point 5: the socket closes with a NORMAL code
@@ -859,6 +862,7 @@ export class RemoteServer {
     // Turned off is not failed: a busy-port error must not outlive the server
     // the user switched off (the popover and panel both show it).
     this.error = null
+    this.output.clear()
     this.offData?.()
     this.offExit?.()
     this.offData = null
@@ -892,7 +896,7 @@ export class RemoteServer {
     if (!set) return
     const text = JSON.stringify(message)
     for (const ws of set) {
-      if (ws.readyState === 1) ws.send(text)
+      sendPhoneFrame(ws, text)
     }
   }
 
@@ -918,7 +922,7 @@ export class RemoteServer {
     // them, on an idle machine) sends nothing.
     if (text === this.lastEventsPayload) return
     this.lastEventsPayload = text
-    for (const ws of this.eventsClients) if (ws.readyState === 1) ws.send(text)
+    for (const ws of this.eventsClients) sendPhoneFrame(ws, text)
   }
 
   /**
@@ -991,7 +995,7 @@ export class RemoteServer {
     if (sig === this.themeSig) return
     this.themeSig = sig
     const text = JSON.stringify({ type: 'theme' })
-    for (const ws of this.eventsClients) if (ws.readyState === 1) ws.send(text)
+    for (const ws of this.eventsClients) sendPhoneFrame(ws, text)
   }
 
   private themeSignature(): string {
@@ -1028,8 +1032,9 @@ export class RemoteServer {
         desktopRows: desktop.rows
       })
       for (const ws of behind) {
+        this.output.flush(ptyId)
         this.toldSize.set(ws, sig)
-        ws.send(text)
+        sendPhoneFrame(ws, text)
       }
     }
   }
@@ -1043,9 +1048,10 @@ export class RemoteServer {
     if (prev && prev.status === next.status && prev.waitingFor === next.waitingFor && prev.promptId === next.promptId) {
       return
     }
+    this.output.flush(ptyId)
     this.lastPtyStatus.set(ptyId, next)
     const text = JSON.stringify({ type: 'status', ...next })
-    for (const ws of set) if (ws.readyState === 1) ws.send(text)
+    for (const ws of set) sendPhoneFrame(ws, text)
   }
 
   /**
@@ -2207,6 +2213,9 @@ export class RemoteServer {
 
     this.attachKeepalive(ws)
 
+    // A flush can close the last stalled viewer and remove this map entry.
+    // Look up the set afterwards, before a newcomer takes its snapshot.
+    this.output.flush(ptyId)
     let set = this.attached.get(ptyId)
     if (!set) {
       set = new Set()
@@ -2297,6 +2306,7 @@ export class RemoteServer {
           const now = manager.list().find((s) => s.ptyId === ptyId)
           if (now) this.desktopSize.set(ptyId, { cols: now.cols, rows: now.rows })
         }
+        this.output.flush(ptyId)
         manager.resize(ptyId, msg.cols, msg.rows)
         if (this.relayHooks) {
           // The grid the pty took (resize clamps), told to the desktop and every other viewer now.

@@ -11,6 +11,8 @@ import { PhoneFiles, PhoneFileError } from '../src/main/remote/files.ts'
 import { phoneFileNameProblem, phoneRelativePath, phoneFileSize } from '../src/shared/remoteFiles.ts'
 import { MAX_FILE_BYTES } from '../src/shared/imageUpload.ts'
 import { BUILT_IN_THEMES } from '../src/shared/themes.ts'
+import WebSocket from 'ws'
+import { VirtualSocket, REMOTE_MAX_BUFFERED } from '../src/main/remote/socket.ts'
 
 type Check = (name: string, got: unknown, want: unknown) => void
 export async function phoneFilesChecks(check: Check): Promise<void> {
@@ -85,7 +87,13 @@ export async function phoneFilesChecks(check: Check): Promise<void> {
       } }] })
     const { RemoteServer, SshFiles } = createRequire(import.meta.url)(bundle)
     const sessions = [{ ptyId: 'local', sessionId: 'local-session', cwd: root, cli: 'codex', exited: false, enroll: false, accountLogin: false }, { ptyId: 'ssh', sessionId: 'ssh-session', cwd: outside, cli: 'claude', exited: false, enroll: false, accountLogin: false }]
-    const ptys = { list: () => sessions, launchFacts: (id: string) => ({ hostId: id === 'ssh' ? 'ssh-host' : null }), subscribe: () => () => {}, subscribeExit: () => () => {} }
+    let onData = (_id: string, _data: string): void => {}
+    let onExit = (_id: string, _code: number): void => {}
+    let history = ''
+    const ptys = { list: () => sessions, launchFacts: (id: string) => ({ hostId: id === 'ssh' ? 'ssh-host' : null }),
+      historyFor: () => history, lastInputAt: () => null,
+      subscribe: (fn: typeof onData) => { onData = fn; return () => { onData = () => {} } },
+      subscribeExit: (fn: typeof onExit) => { onExit = fn; return () => { onExit = () => {} } } }
     const sshRoot = join(work, 'ssh-spool'); await mkdir(sshRoot)
     const wireBytes = join(work, 'ssh-wire.bin'); await writeFile(wireBytes, body)
     const started = join(work, 'ssh-started')
@@ -98,7 +106,7 @@ else if(req.operation==='list'){header({path:req.path,entries:[{name:'remote.bin
 else{header({size:${body.length}});createReadStream(${JSON.stringify(wireBytes)}).pipe(process.stdout);}`)
     const configuredHost = { ...host, noUploads: true, downloadFolder: '' }
     const sshReader = new SshFiles({ tempRoot: sshRoot, start: () => spawn(process.execPath, [wireScript]) })
-    server = new RemoteServer({ ptys: () => ptys, theme: () => ({ theme: BUILT_IN_THEMES[0], fontFamily: 'monospace' }), hosts: () => [configuredHost], sshFiles: sshReader })
+    server = new RemoteServer({ ptys: () => ptys, registryStates: () => [], theme: () => ({ theme: BUILT_IN_THEMES[0], fontFamily: 'monospace' }), hosts: () => [configuredHost], sshFiles: sshReader })
     // Reserve and release an ephemeral port; start's real listener owns it thereafter.
     const probe = createServer()
     await new Promise<void>((resolve) => probe.listen(0, '127.0.0.1', resolve))
@@ -107,6 +115,56 @@ else{header({size:${body.length}});createReadStream(${JSON.stringify(wireBytes)}
     const status = await server!.start({ port, token: 'phone-file-fixture', hostname: '', bindLan: false, bindTailscale: false, requireAccessHeader: false })
     check('the production remote HTTP server starts without a GUI', [status.running, status.error], [true, null])
     const base = `http://127.0.0.1:${port}`
+    // Production phone WebSocket and relay handlers, including their real output subscription.
+    const wire: { type: string; data?: string }[] = []
+    const viewer = new WebSocket(`ws://127.0.0.1:${port}/ws?ptyId=local`, { headers: { authorization: 'Bearer phone-file-fixture' } })
+    viewer.on('message', raw => wire.push(JSON.parse(String(raw))))
+    const until = async (ready: () => boolean) => {
+      const deadline = Date.now() + 3000
+      while (!ready() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 5))
+      if (!ready()) throw new Error('remote streaming fixture timed out')
+    }
+    try {
+      await until(() => wire.some(frame => frame.type === 'attached'))
+      const chunks = Array.from({ length: 128 }, (_, n) => `\x1b[32m${n} café 日本語 👨‍👩‍👧\x1b[0m\r\n`)
+      const began = performance.now()
+      for (const chunk of chunks) { history += chunk; onData('local', chunk) }
+      await until(() => wire.filter(frame => frame.type === 'data').map(frame => frame.data).join('') === chunks.join(''))
+      const frames = wire.filter(frame => frame.type === 'data')
+      check('128 ANSI/Unicode chunks survive the real phone stream in exact order', frames.map(frame => frame.data).join(''), chunks.join(''))
+      check('a terminal burst reduces WebSocket frames by at least 90%', frames.length <= 12, true)
+      check('batching delivers the burst within 250ms on the local fixture', performance.now() - began < 250, true)
+      const relayFrames: { type: string; history?: string; data?: string }[] = []
+      history += 'pending before attach'
+      onData('local', 'pending before attach')
+      const relayViewer = new VirtualSocket(text => relayFrames.push(JSON.parse(text)), () => {})
+      server!.relaySocket('/ws?ptyId=local', relayViewer)
+      await new Promise(resolve => setTimeout(resolve, 30))
+      check('a new relay viewer gets pending output once through its snapshot', [relayFrames[0]?.history, relayFrames.filter(f => f.type === 'data').length], [history, 0])
+      const slowFrames: string[] = []
+      const slow = new VirtualSocket(text => slowFrames.push(text), () => {})
+      server!.relaySocket('/ws?ptyId=local', slow)
+      Object.defineProperty(slow, 'bufferedAmount', { get: () => REMOTE_MAX_BUFFERED })
+      onData('local', 'healthy viewer continues')
+      await until(() => relayFrames.some(f => f.data === 'healthy viewer continues'))
+      check('a stalled viewer is closed without blocking other viewers', [slow.readyState, slowFrames.length, relayViewer.readyState], [3, 1, 1])
+      const old = new VirtualSocket(() => {}, () => {})
+      server!.relaySocket('/ws?ptyId=ssh', old)
+      Object.defineProperty(old, 'bufferedAmount', { get: () => REMOTE_MAX_BUFFERED })
+      onData('ssh', 'old viewer stalls')
+      const replacement: { type: string; data?: string }[] = []
+      const fresh = new VirtualSocket(text => replacement.push(JSON.parse(text)), () => {})
+      server!.relaySocket('/ws?ptyId=ssh', fresh)
+      onData('ssh', 'replacement still streams')
+      await until(() => replacement.some(frame => frame.data === 'replacement still streams'))
+      check('replacing the last stalled viewer retains the new subscription', [old.readyState, fresh.readyState], [3, 1])
+      fresh.drop()
+      onData('local', 'last bytes before exit')
+      onExit('local', 0)
+      await until(() => wire.some(frame => frame.type === 'exit'))
+      check('exit flushes pending bytes before its final frame', wire.slice(-2).map(f => [f.type, f.data ?? null]), [['data', 'last bytes before exit'], ['exit', null]])
+      relayViewer.drop(); slow.drop()
+    } finally { viewer.close(); await until(() => viewer.readyState === WebSocket.CLOSED) }
     const headers = { authorization: 'Bearer phone-file-fixture', 'content-type': 'application/octet-stream' }
     const upload = (id: string, name: string, size: number, bytes: Uint8Array, extra: Record<string, string> = {}) => fetch(`${base}/api/files/upload?${new URLSearchParams({ ptyId: id, name, size: String(size) })}`, { method: 'POST', headers: { ...headers, ...extra }, body: bytes })
     check('an unpaired HTTP upload is rejected before creating a file', (await upload('local', 'denied.txt', 1, new Uint8Array([1]), { authorization: 'Bearer wrong-key' })).status, 401)

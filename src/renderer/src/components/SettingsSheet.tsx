@@ -296,7 +296,7 @@ export function SettingsSheet({
       if (up.length) onExpand(up, true)
       // The same page keeps its object, so going where you already are moves nothing.
       setLoc((cur) => (sameLocation(cur, next) ? cur : next))
-      if (row) setJump({ row, focus, seq: seqRef.current++ })
+      setJump(row ? { row, focus, seq: seqRef.current++ } : null)
     },
     [onExpand]
   )
@@ -1296,7 +1296,7 @@ export function SettingsSheet({
 
             {loc.page === 'accounts' && <AccountsSettings settings={settings} agents={accountAgents} onSync={() => go({ page: 'account' })} onManage={agent => go({ page: 'agent-accounts', agent })} />}
 
-            {loc.page === 'agent-accounts' && <AgentAccountsPage settings={settings} agent={loc.agent ?? 'claude'} onPatch={onPatch} onSignIn={agents.onSignIn} onGo={go} />}
+            {loc.page === 'agent-accounts' && <AgentAccountsPage settings={settings} agent={loc.agent ?? 'claude'} section={jump?.row.id} sectionRevision={jump?.seq} onPatch={onPatch} onSignIn={agents.onSignIn} onGo={go} />}
 
             {loc.page === 'agent' && (
               <AgentSettingsPage key={loc.agent ?? 'claude'} {...agentProps} agent={loc.agent ?? 'claude'} />

@@ -17,6 +17,7 @@ import { EventEmitter } from 'node:events'
 /** The part of `ws`'s WebSocket the phone server's socket handlers use. */
 export interface PhoneSocket {
   readonly readyState: number
+  readonly bufferedAmount?: number
   send(text: string): void
   close(code?: number, reason?: string): void
   ping(): void
@@ -28,6 +29,18 @@ export interface PhoneSocket {
 
 const OPEN = 1
 const CLOSED = 3
+
+/** A stalled viewer reconnects to a fresh snapshot without growing desktop memory. */
+export const REMOTE_MAX_BUFFERED = 4 * 1024 * 1024
+export function sendPhoneFrame(ws: PhoneSocket, text: string): boolean {
+  if (ws.readyState !== OPEN) return false
+  if ((ws.bufferedAmount ?? 0) + Buffer.byteLength(text) > REMOTE_MAX_BUFFERED) {
+    ws.terminate()
+    return false
+  }
+  ws.send(text)
+  return true
+}
 
 /**
  * A relayed socket. `out` carries what the server sends to the far end;

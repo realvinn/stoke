@@ -196,6 +196,7 @@ function pair(o: {
   hostKeyOf?: (id: string) => string | null
   guestKeyOf?: (id: string) => string | null
   tamper?: (dir: 'g2h' | 'h2g', w: Wire, n: number) => Wire[]
+  bufferedAmount?: () => number
 } = {}): Pair {
   const relay = o.relay ?? idFromBytes('relay', randomU8(15))
   const gDev = o.guestAs ?? B
@@ -203,6 +204,7 @@ function pair(o: {
   const counts = { g2h: 0, h2g: 0 }
   const io = (dir: 'g2h' | 'h2g'): ChannelIO => ({
     send: (data) => (dir === 'g2h' ? p.g2h : p.h2g).push({ data, binary: typeof data !== 'string' }),
+    bufferedAmount: o.bufferedAmount,
     close: () => {}
   })
   p.guest = new RelayChannel({
@@ -280,6 +282,15 @@ console.log('\nthe channel: key agreement and framing')
 
 console.log('\nthe channel: order, replay, and tampering all close it')
 {
+  let queued = 0
+  const stalled = pair({ bufferedAmount: () => queued })
+  stalled.guest.send({ t: 'ping' }); stalled.flush()
+  check('a drained desktop transport delivers encrypted frames', stalled.hFrames.map(f => f.t), ['ping'])
+  queued = 4 * 1024 * 1024
+  check('a stalled desktop transport refuses more encrypted output', stalled.guest.send({ t: 'ping' }), false)
+  check('no excess bytes are queued on the desktop', stalled.g2h.length, 0)
+  ok('the stalled channel closes so the viewer can reconnect', !!stalled.gClosed && /not keeping up/.test(stalled.gClosed), stalled.gClosed ?? '')
+
   const drop = pair({ tamper: (d, w, n) => (d === 'g2h' && n === 2 ? [] : [w]) })
   drop.guest.send({ t: 'ping' })
   drop.guest.send({ t: 'pong' })

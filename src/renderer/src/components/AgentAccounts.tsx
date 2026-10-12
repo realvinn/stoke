@@ -23,6 +23,8 @@ import { ipcErrorMessage } from '../lib/format'
  */
 export function AgentAccounts({
   cli,
+  section,
+  sectionRevision,
   accounts,
   defaultId,
   onDefault,
@@ -31,6 +33,8 @@ export function AgentAccounts({
   savedApiAccounts = []
 }: {
   cli: CodingCli
+  section?: string
+  sectionRevision?: number
   accounts: AgentAccount[]
   /** The stored default account for this agent, or absent for its own sign-in. */
   defaultId: string | undefined
@@ -54,7 +58,24 @@ export function AgentAccounts({
   const [identities, setIdentities] = useState<Record<string, AccountIdentity | null>>({})
   const [identityRevision, setIdentityRevision] = useState(0)
   const [mcp, setMcp] = useState<Record<string, AccountMcpSummary>>({})
-  const apiAddRef = useRef<HTMLDetailsElement>(null)
+  const [adding, setAdding] = useState<'choose' | AccountKind | null>(null)
+  const addButton = useRef<HTMLButtonElement>(null)
+  const addPane = useRef<HTMLDivElement>(null)
+  const wasAdding = useRef(false)
+  useEffect(() => {
+    if (section === 'agent-accounts.login') setAdding('login')
+    else if (section === 'agent-accounts.api' || section === 'agent-accounts.anthropic') setAdding('key')
+  }, [section, sectionRevision])
+  useEffect(() => {
+    if (adding) addPane.current?.querySelector<HTMLElement>('button, input, select')?.focus()
+    else if (wasAdding.current) addButton.current?.focus()
+    wasAdding.current = !!adding
+  }, [adding])
+  const cancelAdd = (): void => {
+    if (busyRef.current) return
+    setAdding(null); setName(''); setApiName(''); setKey(''); setKeySource('')
+    setApiProfile(defaultAccountApiProfile(cli.id)); setMessage(null)
+  }
   const homes = accounts.map((a) => `${a.id}:${a.home}:${a.apiProfile?.provider ?? ''}:${!!a.apiKey}`).join('|')
   useEffect(() => { setApiProfile(defaultAccountApiProfile(cli.id)) }, [cli.id])
   useEffect(() => {
@@ -135,9 +156,10 @@ export function AgentAccounts({
       }
       if (kind === 'key') {
         setApiName(''); setKey(''); setKeySource('')
-        if (apiAddRef.current) apiAddRef.current.open = false
-        setMessage(res.created ? `${res.account.label} added. Choose it for new sessions here or in the launcher.` : `${res.account.label} is already here.`)
+        onDefault(res.account.id)
+        setMessage(res.created ? `${res.account.label} added. New ${cli.label} sessions will use it.` : `${res.account.label} selected.`)
       } else setName('')
+      setAdding(null)
       if (!res.created) setMessage(`${res.account.label} is already here.`)
       // A login account is signed in at once, in a tab: that is what it is for.
       if (kind === 'login') onSignIn(res.account.id)
@@ -153,11 +175,11 @@ export function AgentAccounts({
   return (
     <div className="field agent-accounts" data-testid="agent-accounts" data-setting="agent-accounts.list">
       <div className="account-manager-heading">
-        <span className="field-label">Accounts</span>
-        <button className="btn" data-variant="ghost" onClick={() => setIdentityRevision(v => v + 1)}>Refresh</button>
+        <span className="field-label">{adding ? 'Add account' : 'Your accounts'}</span>
+        {adding ? <button className="btn" data-variant="ghost" disabled={busy} onClick={cancelAdd}>Cancel</button> : <button className="btn" ref={addButton} data-testid="add-account-start" onClick={() => { setMessage(null); setAdding(kinds.length === 1 ? kinds[0] : 'choose') }}>+ Add account</button>}
       </div>
-      <span className="field-hint">Choose which account new sessions use. Running sessions keep their current account.</span>
-      <div className="agent-account-list" role="radiogroup" aria-label={`Account new ${cli.label} sessions start on`}>
+      {!adding && <span className="field-hint">The active account is used for new sessions. Running sessions keep their account.</span>}
+      <div className="agent-account-list" hidden={!!adding} role="radiogroup" aria-label={`Account new ${cli.label} sessions start on`}>
         <label className="account-manager-existing">
           <input type="radio" name={`account-${cli.id}`} checked={current === DEFAULT_ACCOUNT_ID} onChange={() => onDefault(DEFAULT_ACCOUNT_ID)} aria-label={`Use the existing ${cli.label} setup for new sessions`} />
           <span className="agent-account-body">
@@ -165,7 +187,7 @@ export function AgentAccounts({
             <span className="account-manager-identity" data-testid="default-account-identity" title={identity(DEFAULT_ACCOUNT_ID)?.detail}>{accountIdentityText(identity(DEFAULT_ACCOUNT_ID))}</span>
             <span className="field-hint">Uses your existing {cli.label} login or API configuration. You don’t need to add it again.</span>
           </span>
-          {current === DEFAULT_ACCOUNT_ID && <span className="account-manager-selected">New sessions</span>}
+          {current === DEFAULT_ACCOUNT_ID && <span className="account-manager-selected">Active</span>}
         </label>
         {(['login', 'key'] as const).map(kind => {
           const saved = accounts.filter(account => account.kind === kind)
@@ -186,23 +208,32 @@ export function AgentAccounts({
           </section>
         })}
       </div>
-      {kinds.includes('login') && <details className="account-manager-add" data-testid="add-login-account">
+      <div className="account-manager-add-flow" ref={addPane} hidden={!adding}>
+      {adding === 'choose' && <div className="account-manager-choices">
+        {kinds.includes('login') && <button className="accounts-agent" data-testid="choose-login-account" onClick={() => setAdding('login')}>
+          <span className="agent-account-body"><strong>Sign in</strong><span className="field-hint">{cli.id === 'claude' ? 'Claude subscription' : cli.id === 'codex' ? 'ChatGPT subscription' : `${cli.label} account`} · opens the official login</span></span><span aria-hidden="true">›</span>
+        </button>}
+        {kinds.includes('key') && <button className="accounts-agent" data-testid="choose-api-account" onClick={() => setAdding('key')}>
+          <span className="agent-account-body"><strong>API key</strong><span className="field-hint">Connect a provider · billed separately</span></span><span aria-hidden="true">›</span>
+        </button>}
+      </div>}
+      {kinds.includes('login') && <details className="account-manager-add" open={adding === 'login'} hidden={adding !== 'login'} data-testid="add-login-account">
         <summary>Add another sign-in <span className="field-hint">{cli.id === 'claude' ? 'Use a Claude subscription' : cli.id === 'codex' ? 'Use a ChatGPT subscription' : `Use another ${cli.label} login`}</span></summary>
         <div className="account-manager-form" data-setting="agent-accounts.login">
           <span className="field-hint">Sign in to another {cli.label} account in a new tab. Keep a nickname to tell your accounts apart.</span>
-          <label className="account-manager-field">Account nickname
+          <label className="account-manager-field">Nickname <span className="field-hint">Optional</span>
             <input className="input" value={name} placeholder={`e.g. Work (blank: ${cli.label} ${nextNumber})`}
               aria-label={`New ${cli.label} account name`} maxLength={ACCOUNT_LABEL_MAX} spellCheck={false}
               onChange={e => setName(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') void add('login') }} />
           </label>
           <button className="btn" data-testid="add-account" disabled={busy} aria-busy={busy} onClick={() => void add('login')}>
             {busy && <Spinner />}
-            Add and sign in
+            Continue to sign in
           </button>
         </div>
       </details>}
       {kinds.includes('key') && (
-        <details className="account-manager-add" ref={apiAddRef} data-testid="add-api-account">
+        <details className="account-manager-add" open={adding === 'key'} hidden={adding !== 'key'} data-testid="add-api-account">
           <summary>Add an API account <span className="field-hint">Use an API key</span></summary>
           <div className="account-manager-form" data-setting="agent-accounts.api">
             <span className="field-hint">API access is billed by the provider, separately from subscription sign-ins.</span>
@@ -220,7 +251,7 @@ export function AgentAccounts({
               </select>
               <span className="field-hint">Reuses the saved key when you add this account. Future edits are separate.</span>
             </label>}
-            <label className="account-manager-field">Account nickname
+            <label className="account-manager-field">Nickname <span className="field-hint">Optional</span>
               <input
                 className="input"
                 value={apiName}
@@ -250,12 +281,13 @@ export function AgentAccounts({
           </div>
         </details>
       )}
+      </div>
       {message && (
         <span className="field-hint" role="status" data-tone={messageError ? 'warning' : undefined}>
           {message}
         </span>
       )}
-      <span className="field-hint">These agent accounts are saved on this computer. Stoke account &amp; sync is managed separately.</span>
+      {!adding && <div className="account-manager-heading"><span className="field-hint">Saved on this computer.</span><button className="btn" data-variant="ghost" onClick={() => setIdentityRevision(v => v + 1)}>Refresh sign-ins</button></div>}
     </div>
   )
 }
@@ -360,9 +392,9 @@ function AccountRow({
           <strong className="agent-account-name">{account.label}</strong>
           <span className="field-hint" title={identity?.detail}>{account.kind === 'login' ? accountIdentityText(identity) : account.apiProfile ? `${ACCOUNT_PROVIDER_LABELS[account.apiProfile.provider]} · ${account.apiProfile.model || 'Selected model'}` : 'API key account'}</span>
         </div>
-        {checked && <span className="account-manager-selected">New sessions</span>}
+        {checked && <span className="account-manager-selected">Active</span>}
         <div className="btn-row">
-          {account.kind === 'login' && <button className="btn" onClick={onSignIn}>Sign in</button>}
+          {account.kind === 'login' && <button className="btn" onClick={onSignIn}>{identity?.state === 'ready' ? 'Reconnect' : 'Sign in'}</button>}
           <button className="btn" data-variant="ghost" aria-expanded={editing} onClick={() => { onKeepIt(); setEditing(v => !v) }}>{editing ? 'Cancel edit' : 'Edit'}</button>
         </div>
       </div>

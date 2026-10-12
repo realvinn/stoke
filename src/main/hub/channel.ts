@@ -39,6 +39,8 @@ import { RelayCipher, relayAccept, relayAnswer, relayEphemeral, relayFinish, rel
 export interface ChannelIO {
   /** Put one frame on the relay socket: text during the handshake, bytes after. */
   send(data: string | Uint8Array): void
+  /** Queued encrypted transport bytes, when the transport exposes them. */
+  bufferedAmount?(): number
   /** Close the relay socket. */
   close(code: number, reason: string): void
 }
@@ -180,6 +182,7 @@ export class RelayChannel {
       for (const text of relayFrameParts(JSON.stringify(frame))) {
         const sealed = this.sendCipher.seal(utf8(text))
         if (sealed.length > RELAY_MAX_FRAME_BYTES) throw new Error('a relay frame part came out larger than the hub carries')
+        if ((this.o.io.bufferedAmount?.() ?? 0) + sealed.length > 4 * 1024 * 1024) throw new Error('the remote connection is not keeping up; reconnect to refresh the screen')
         this.o.io.send(sealed)
         this.sent++
       }
