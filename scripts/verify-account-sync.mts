@@ -21,12 +21,12 @@ let checks = 0
 const check = (label: string, fn: () => void) => { fn(); checks++; console.log('  PASS '+label) }
 const root = await mkdtemp(join(tmpdir(), 'stoke-account-sync-'))
 const cache = (email: string, rev: number) => stableJson({auth_mode:'chatgpt',tokens:{id_token:`e30.${Buffer.from(JSON.stringify({email,sub:email})).toString('base64url')}.owned`,access_token:['owned','access',email,rev].join('-'),refresh_token:['owned','refresh',email,rev].join('-'),account_id:'fixture-'+email},last_refresh:new Date(Date.UTC(2026,9,12,1,rev)).toISOString()})
-function backend(): SecretBackend {
+function backend(selected: string | null = null): SecretBackend {
   const key = randomBytes(32)
-  return {isEncryptionAvailable:()=>true,selectedBackend:()=>null,encrypt: value=>{const iv=randomBytes(12), cipher=createCipheriv('aes-256-gcm',key,iv);return Buffer.concat([iv,cipher.update(value),cipher.final(),cipher.getAuthTag()])},decrypt: value=>{const cipher=createDecipheriv('aes-256-gcm',key,value.subarray(0,12));cipher.setAuthTag(value.subarray(-16));return Buffer.concat([cipher.update(value.subarray(12,-16)),cipher.final()]).toString()}}
+  return {isEncryptionAvailable:()=>true,selectedBackend:()=>selected,encrypt: value=>{const iv=randomBytes(12), cipher=createCipheriv('aes-256-gcm',key,iv);return Buffer.concat([iv,cipher.update(value),cipher.final(),cipher.getAuthTag()])},decrypt: value=>{const cipher=createDecipheriv('aes-256-gcm',key,value.subarray(0,12));cipher.setAuthTag(value.subarray(-16));return Buffer.concat([cipher.update(value.subarray(12,-16)),cipher.final()]).toString()}}
 }
-async function device(label: string, platform: string) {
-  const home=join(root,label), ud=join(home,'stoke'), keyStore=backend(), trees=defaultTrees({},home)
+async function device(label: string, platform: string, linuxStore = 'gnome_libsecret') {
+  const home=join(root,label), ud=join(home,'stoke'), keyStore=backend(platform === 'linux' ? linuxStore : null), trees=defaultTrees({},home)
   await mkdir(ud,{recursive:true});await mkdir(trees.codex,{recursive:true});await mkdir(trees.claude,{recursive:true})
   let settings=hydrateSettings({}), enabled=true
   const busy=new Set<string>(), publicViews: string[]=[]
@@ -49,6 +49,12 @@ try {
   check('account item grammar and scope are separate from API key sync',()=>{const p=parseItemPath('t5/account/'+id);assert.ok(p);assert.equal(itemPath(p),'t5/account/'+id);assert.equal(inScope('t5/account/'+id,{settings:true,hosts:true,keys:true}),false);assert.equal(inScope('t5/account/'+id,{settings:false,hosts:false,keys:false,accounts:true}),true)})
   check('paths, wrong-agent logins and unsafe Grok gateways are rejected',()=>{assert.ok(syncedAccountProblem({...payload,home:'C:\\credentials'}));assert.ok(syncedAccountProblem({...payload,cli:'claude'}));assert.ok(syncedAccountProblem({v:1,kind:'grok-bot',label:'Bot',credential:{gatewayUrl:'https://credentials.example.test',token:'owned-token',headers:{}}}))})
   check('a malformed or incomplete native cache cannot be published',()=>{assert.ok(codexAuthProblem('{'));assert.ok(codexAuthProblem('{"tokens":{}}'))})
+  const linux=await device('Linux','linux'), plainLinux=await device('Plain Linux','linux','basic_text')
+  await linux.adapter.apply(id,payload,()=>true)
+  check('Linux Secret Service can receive and locally protect portable account credentials',()=>assert.equal(Object.values(linux.get().accounts)[0]?.credentialStore,'file'))
+  await assert.rejects(plainLinux.adapter.snapshot(()=>true),/OS key store/)
+  await assert.rejects(plainLinux.adapter.apply(id,payload,()=>true),/OS key store/)
+  check('Linux basic_text cannot upload or import account credentials',()=>assert.equal(Object.keys(plainLinux.get().accounts).length,0))
   const collision='codex-vault-'+id.slice(3,27)
   const collisionHome=await makeAccountHome({root:accountsRoot(mac.home),id:collision,cli:'codex',trees:mac.trees,platform:process.platform})
   await writeFile(join(collisionHome.home,'auth.json'),cache('bystander@example.test',1))

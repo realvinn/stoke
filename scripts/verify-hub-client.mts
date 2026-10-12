@@ -646,7 +646,8 @@ function device(name: string, initial: Partial<Settings>, remote?: RemoteMachine
   }
   const box = { name, settings: () => s, set: (p: Partial<Settings>) => void commit(p), userData, ssh, intercept: null, seen: [], busyAccounts: new Set<string>(), itemBodies: [] } as unknown as Box
   box.bots = new GrokBotPlugin({ root: join(userData, 'plugins'), executable: process.execPath, runner: '', platform: 'darwin', environment: {}, backend: fakeBackend(name), reader: new GrokBotSessionReader({ home: ssh.home, platform: 'darwin', environment: {} }), enabled: async () => true, changed: () => box.svc?.accountsChanged() })
-  box.accounts = new AccountSync({ userData, root: accountsRoot(ssh.home), trees: defaultTrees({}, ssh.home), platform: process.platform, label: name, backend: fakeBackend(name), getSettings: () => s, commit,
+  // The injected backend simulates Keychain, as do this fixture's HubFiles and plugin.
+  box.accounts = new AccountSync({ userData, root: accountsRoot(ssh.home), trees: defaultTrees({}, ssh.home), platform: 'darwin', label: name, backend: fakeBackend(name), getSettings: () => s, commit,
     active: (_cli, id) => box.busyAccounts.has(id), grok: async () => box.bots, changed: () => box.svc?.accountsChanged() })
   box.svc = new HubService({
     userData,

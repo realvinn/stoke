@@ -1344,7 +1344,14 @@ await step('encrypted accounts arrive through native IPC and select the right Co
     await ev(`window.stoke.hub.setUrl(${JSON.stringify(fixture.url)})`)
     const signed = await ev<{ ok: boolean }>(`window.stoke.hub.signIn(${JSON.stringify({ email: fixture.email, password: fixture.password, label: 'Native recipient' })})`)
     if (!signed.ok) throw new Error('the owned recipient could not sign in')
-    await ev('window.stoke.hub.joinStart()')
+    const joining = await ev<{ ok: boolean; message?: string }>('window.stoke.hub.joinStart()')
+    const recipient = await ev<HubView>('window.stoke.hub.view()')
+    if (!recipient.keyStore.protected) {
+      check('the native unprotected key store refuses vault access and credential sync', !joining.ok && !!joining.message?.includes('cannot join the vault'))
+      check('a refused native vault import leaves all local accounts intact', await ev<boolean>('window.stoke.settings.get().then(s => JSON.stringify(s.accounts) === '+JSON.stringify(JSON.stringify(before.accounts))+')') === true)
+      return
+    }
+    if (!joining.ok) throw new Error(joining.message ?? 'The owned device could not ask to join.')
     await fixture.svc.syncNow()
     const pair = await waitFor('the owned native pairing request', () => fixture.svc.view().pairs[0])
     await fixture.svc.approveStart(pair.pair)
