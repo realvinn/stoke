@@ -297,6 +297,8 @@ function stokeEnv(): NodeJS.ProcessEnv {
   env.STOKE_PROBE_SITE = site.base
   if (isWin) {
     env.USERPROFILE = home
+    env.APPDATA = join(home, 'AppData', 'Roaming')
+    env.LOCALAPPDATA = join(home, 'AppData', 'Local')
     const key = Object.keys(env).find((k) => k.toUpperCase() === 'PATH') ?? 'Path'
     env[key] = `${stubBin};${env[key] ?? ''}`
   } else {
@@ -843,6 +845,25 @@ await step('native plugin lifecycle and Grok Bot account isolation', async () =>
     await ev(`window.stoke.plugins.toggle('grok-bot', true)`)
     await ev(`[...document.querySelectorAll('.plugin-row')].find(row => row.textContent.includes('Grok Bot')).querySelector('button').click(), true`)
     await waitFor('enabled Grok Bot panel', () => ev<boolean>(`!!document.querySelector('[aria-label="Grok Bot"]')`))
+    // Only listing metadata is exercised here: no OS secret lookup and no real
+    // login file. Decryption/import use owned v1/v2/v3 fixtures in verify:plugins.
+    const desktopRoot = isMac ? join(home, 'Library', 'Application Support', 'Grok Bot')
+      : isWin ? join(home, 'AppData', 'Roaming', 'Grok Bot') : join(home, '.config', 'Grok Bot')
+    mkdirSync(desktopRoot, { recursive: true })
+    const descriptor = join(desktopRoot, 'gateway-descriptor.json')
+    const sourceFixture = JSON.stringify({ version: 3, entries: {
+      'owned-cursor': { savedAtMs: Date.now(), encrypted: Buffer.from('v10owned-encrypted-cursor-slot').toString('base64') },
+      'owned-grok': { savedAtMs: Date.now(), encrypted: Buffer.from('v10owned-encrypted-grok-slot').toString('base64') }
+    } })
+    writeFileSync(descriptor, sourceFixture)
+    await ev(`[...document.querySelectorAll('[aria-label="Grok Bot"] button')].find(button => button.textContent === 'Read desktop sessions').click(), true`)
+    await waitFor('v3 desktop sources in the rendered picker', () => ev<boolean>(`[...document.querySelectorAll('[aria-label="Grok Bot"] select option')].some(option => option.value === 'owned-grok')`))
+    const sources = await ev<{ id: string; label: string }[]>('window.stoke.grokBot.sources()')
+    check('native sources IPC and Read desktop sessions accept format v3', sources.length === 2 && sources[0].id === 'owned-cursor' && sources[1].id === 'owned-grok')
+    await ev(`(() => { const picker = [...document.querySelectorAll('[aria-label="Grok Bot"] select')].find(select => [...select.options].some(option => option.value === 'owned-grok')); picker.value = 'owned-grok'; picker.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`)
+    check('the saved-session picker preserves an explicitly chosen v3 slot', await waitFor('second desktop slot selected', () => ev<boolean>(`[...document.querySelectorAll('[aria-label="Grok Bot"] select')].some(select => select.value === 'owned-grok')`)) === true)
+    check('native source listing leaves the desktop file byte-for-byte unchanged', readFileSync(descriptor, 'utf8') === sourceFixture)
+    await shot('04-grok-bot-desktop-v3')
     if (opt['gbot-cli']) {
       const runtime = join(ud, 'plugins', 'runtime', 'grok-bot', '0.12.4'); mkdirSync(runtime, { recursive: true })
       for (const filename of ['gbot.mjs', 'gbot-flight.mjs']) copyFileSync(join(resolve(opt['gbot-cli']), filename), join(runtime, filename))
@@ -867,7 +888,7 @@ await step('native plugin lifecycle and Grok Bot account isolation', async () =>
       await ev(`document.querySelectorAll('.plugin-account-list .plugin-account')[4].click(), true`)
       check('selecting a native account changes the visible active nickname', await waitFor('fifth account selection', () => ev<boolean>(`[...document.querySelectorAll('[aria-label="Grok Bot"] .plugin-controls')].some(node => node.textContent.includes('Active: Grok account 5'))`)) === true)
       await ev(`[...document.querySelectorAll('[aria-label="Grok Bot"] button')].find(button => button.textContent.includes('List bots and groups')).click(), true`)
-      await waitFor('selected-account native bot roster', () => ev<boolean>(`document.querySelector('[aria-label="Grok Bot"] .plugin-output')?.textContent.includes('Owned native bot') && document.querySelector('[aria-label="Grok Bot"] select')?.options.length >= 3`))
+      await waitFor('selected-account native bot roster', () => ev<boolean>(`document.querySelector('[aria-label="Grok Bot"] .plugin-output')?.textContent.includes('Owned native bot') && [...document.querySelectorAll('[aria-label="Grok Bot"] select')].some(select => select.options.length >= 3)`))
       check('the visible list action routes through the selected fifth account', requests.slice(-2).every(request => request.token === 'Bearer owned-native-token-5'))
       await ev(`(() => { const field = document.querySelector('[aria-label="Grok Bot"] textarea'); Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(field, 'owned native message'); field.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`)
       await waitFor('native send action enabled', () => ev<boolean>(`[...document.querySelectorAll('[aria-label="Grok Bot"] button')].some(button => button.textContent === 'Send message' && !button.disabled)`))

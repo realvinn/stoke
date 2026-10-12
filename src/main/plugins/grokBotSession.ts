@@ -18,6 +18,8 @@ export interface GrokBotSession {
 }
 const record = (raw: unknown): raw is Record<string, unknown> =>
   !!raw && typeof raw === 'object' && !Array.isArray(raw)
+// Grok Bot desktop 0.70.2 stores v3 connection snapshots for seven days.
+const DESKTOP_SESSION_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
 
 export function validateGrokBotSession(raw: unknown, allowLocal = false): GrokBotSession {
   if (
@@ -68,27 +70,38 @@ async function boundedJson(path: string, signal: AbortSignal): Promise<unknown> 
   }
 }
 
-function slots(raw: unknown): { id: string; encrypted: string; label: string }[] {
-  if (!record(raw) || ![undefined, 1, 2].includes(raw.version as number | undefined))
-    throw new Error('This desktop session format is not supported by the plugin yet.')
-  const entries = raw.version === 2 && record(raw.entries) ? Object.entries(raw.entries) : [['current', raw]]
+function slots(raw: unknown): { id: string; encrypted: string; label: string; savedAtMs?: number }[] {
+  if (!record(raw)) throw new Error('The desktop session descriptor is unreadable.')
+  if (![undefined, 1, 2, 3].includes(raw.version as number | undefined)) {
+    const version = Number.isSafeInteger(raw.version) ? ` (version ${raw.version})` : ''
+    throw new Error(`This desktop session format${version} is not supported. Update Stoke and try again.`)
+  }
+  const multi = raw.version === 2 || raw.version === 3
+  if (multi && !record(raw.entries))
+    throw new Error('The desktop session descriptor has no valid saved sessions.')
+  const entries = multi ? Object.entries(raw.entries as Record<string, unknown>) : [['current', raw]]
   if (!entries.length || entries.length > 32)
     throw new Error('Choose a desktop profile with saved Grok Bot sessions.')
   return entries.map(([id, entry], index) => {
     if (
       typeof id !== 'string' ||
+      !id ||
       id.length > 160 ||
+      /[\u0000-\u001f\u007f]/.test(id) ||
       !record(entry) ||
       typeof entry.encrypted !== 'string' ||
       !/^[a-z0-9+/]+={0,2}$/i.test(entry.encrypted) ||
       entry.encrypted.length > 128 * 1024
     )
       throw new Error('The desktop session descriptor has an unsupported entry.')
+    if (raw.version === 3 && (!Number.isSafeInteger(entry.savedAtMs) || (entry.savedAtMs as number) < 0))
+      throw new Error('The desktop session descriptor has an invalid saved-session date.')
     const supplied =
       typeof entry.label === 'string' ? entry.label : typeof entry.email === 'string' ? entry.email : ''
     return {
       id,
       encrypted: entry.encrypted,
+      ...(raw.version === 3 ? { savedAtMs: entry.savedAtMs as number } : {}),
       label:
         supplied && supplied.length <= 160 && !/[\u0000-\u001f]/.test(supplied)
           ? supplied
@@ -179,6 +192,10 @@ export class GrokBotSessionReader {
         ? entries[0]
         : undefined
     if (!selected) throw new Error('Choose which saved desktop session to import.')
+    if (selected.savedAtMs !== undefined && Date.now() - selected.savedAtMs > DESKTOP_SESSION_MAX_AGE_MS)
+      throw new Error(
+        'This saved desktop session has expired. Open Grok Bot with the account you want, load a bot to refresh its session, then read desktop sessions and import again.'
+      )
     const encrypted = Buffer.from(selected.encrypted, 'base64')
     let clear: string
     try {

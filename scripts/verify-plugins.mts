@@ -336,67 +336,138 @@ try {
             ? join(home, '.config', 'Grok Bot')
             : join(home, 'AppData', 'Roaming', 'Grok Bot')
     await mkdir(folder, { recursive: true })
-    const clear = JSON.stringify({
-      baseUrl: 'https://owned.cursor.sh',
-      token: `desktop-${platform}`,
-      headers: { 'x-anyrun-network-token': 'route' }
-    })
-    let encrypted: Buffer
+    const key = platform === 'win32'
+      ? randomBytes(32)
+      : pbkdf2Sync(
+          platform === 'linux' ? 'peanuts' : 'owned-password',
+          'saltysalt',
+          platform === 'linux' ? 1 : 1003,
+          16,
+          'sha1'
+        )
+    const seal = (slot: string, prefix = 'v10'): string => {
+      const clear = JSON.stringify({
+        baseUrl: 'https://owned.cursor.sh',
+        token: `desktop-${platform}-${slot}`,
+        headers: { 'x-anyrun-network-token': `route-${slot}` },
+        // v3 keeps ancillary desktop routing data alongside the gateway tuple.
+        vncProxy: { primaryUrl: 'https://owned.cursor.sh', forkBaseUrl: 'https://owned.cursor.sh', networkToken: 'owned-vnc-route' }
+      })
+      const nonce = platform === 'win32' ? randomBytes(12) : Buffer.alloc(16, ' ')
+      const sessionKey = platform === 'linux' && prefix === 'v11'
+        ? pbkdf2Sync('owned-password', 'saltysalt', 1, 16, 'sha1') : key
+      const cipher = createCipheriv(platform === 'win32' ? 'aes-256-gcm' : 'aes-128-cbc', sessionKey, nonce)
+      return Buffer.concat([
+        Buffer.from(prefix),
+        ...(platform === 'win32' ? [nonce] : []),
+        cipher.update(clear), cipher.final(),
+        ...(platform === 'win32' ? [(cipher as import('node:crypto').CipherGCM).getAuthTag()] : [])
+      ]).toString('base64')
+    }
     if (platform === 'win32') {
-      const key = randomBytes(32),
-        nonce = randomBytes(12),
-        cipher = createCipheriv('aes-256-gcm', key, nonce)
-      encrypted = Buffer.concat([
-        Buffer.from('v10'),
-        nonce,
-        cipher.update(clear),
-        cipher.final(),
-        cipher.getAuthTag()
-      ])
       await writeFile(
         join(folder, 'Local State'),
         JSON.stringify({
           os_crypt: { encrypted_key: Buffer.concat([Buffer.from('DPAPI'), key]).toString('base64') }
         })
       )
-    } else {
-      const cipher = createCipheriv(
-        'aes-128-cbc',
-        pbkdf2Sync(
-          platform === 'linux' ? 'peanuts' : 'owned-password',
-          'saltysalt',
-          platform === 'linux' ? 1 : 1003,
-          16,
-          'sha1'
-        ),
-        Buffer.alloc(16, ' ')
-      )
-      encrypted = Buffer.concat([Buffer.from('v10'), cipher.update(clear), cipher.final()])
     }
-    await writeFile(
-      join(folder, 'gateway-descriptor.json'),
-      JSON.stringify({
-        version: 2,
-        entries: {
-          first: { encrypted: encrypted.toString('base64') },
-          second: { encrypted: encrypted.toString('base64') }
-        }
-      })
-    )
+    const path = join(folder, 'gateway-descriptor.json')
+    let keyReads = 0
     const reader = new GrokBotSessionReader({
       home,
       platform,
       environment: {},
-      password: async () => 'owned-password',
-      unprotect: async (blob) => blob
+      password: async () => { keyReads++; return 'owned-password' },
+      unprotect: async (blob) => { keyReads++; return blob }
     })
     const signal = AbortSignal.timeout(5000)
-    await assert.rejects(reader.load(undefined, signal))
-    const session = await reader.load('second', signal)
-    check(`${platform} imports an explicitly selected encrypted slot without changing desktop files`, () => {
-      assert.equal(session.slot, 'second')
-      assert.equal(session.session.token, `desktop-${platform}`)
+    const localState = platform === 'win32' ? await readFile(join(folder, 'Local State')) : null
+    for (const version of [undefined, 1, 2, 3]) {
+      const multi = version === 2 || version === 3
+      const slot = multi ? 'second' : 'current'
+      const before = JSON.stringify(multi ? { version, entries: {
+        first: { savedAtMs: Date.now(), encrypted: seal('first') },
+        second: { savedAtMs: Date.now(), encrypted: seal('second') }
+      } } : { version, encrypted: seal(slot) })
+      await writeFile(path, before)
+      keyReads = 0
+      const sources = await reader.sources(signal)
+      check(`${platform} v${version ?? 'legacy'} lists only source metadata without opening credentials`, () => {
+        assert.deepEqual(sources, multi ? [
+          { id: 'first', label: 'Saved desktop session 1' },
+          { id: 'second', label: 'Saved desktop session 2' }
+        ] : [{ id: 'current', label: 'Current desktop login' }])
+        assert.equal(keyReads, 0)
+      })
+      if (multi) await assert.rejects(reader.load(undefined, signal), /Choose which saved desktop session/)
+      await assert.rejects(reader.load('missing', signal), /Choose which saved desktop session/)
+      const session = await reader.load(multi ? slot : undefined, signal)
+      check(`${platform} v${version ?? 'legacy'} imports the selected gateway tuple`, () => {
+        assert.equal(session.slot, slot)
+        assert.equal(session.session.token, `desktop-${platform}-${slot}`)
+        assert.deepEqual(session.session.headers, { 'x-anyrun-network-token': `route-${slot}` })
+        assert.equal(session.session.gatewayUrl, 'https://owned.cursor.sh')
+        assert.equal('vncProxy' in session.session, false)
+      })
+      const after = await readFile(path, 'utf8')
+      check(`${platform} v${version ?? 'legacy'} leaves desktop descriptor and protection key unchanged`, () => assert.equal(after, before))
+      if (localState) assert.deepEqual(await readFile(join(folder, 'Local State')), localState)
+    }
+    if (platform === 'linux') {
+      keyReads = 0
+      await writeFile(path, JSON.stringify({ version: 3, entries: { keyring: { savedAtMs: Date.now(), encrypted: seal('keyring', 'v11') } } }))
+      await reader.sources(signal)
+      assert.equal(keyReads, 0)
+      const keyring = await reader.load('keyring', signal)
+      check('Linux v3 also supports v11 Secret Service protection', () => {
+        assert.equal(keyReads, 1)
+        assert.equal(keyring.session.token, 'desktop-linux-keyring')
+      })
+    }
+    keyReads = 0
+    await writeFile(path, JSON.stringify({ version: 3, entries: {
+      expired: { savedAtMs: Date.now() - 8 * 24 * 60 * 60 * 1000, encrypted: seal('expired') },
+      fresh: { savedAtMs: Date.now(), encrypted: seal('fresh') }
+    } }))
+    await assert.rejects(reader.load('expired', signal), /expired.*Open Grok Bot.*refresh/)
+    assert.equal(keyReads, 0)
+    const fresh = await reader.load('fresh', signal)
+    check(`${platform} rejects expired v3 snapshots before decryption and still imports a fresh slot`, () => assert.equal(fresh.session.token, `desktop-${platform}-fresh`))
+    const imported = new GrokBotPlugin({
+      root: join(root, `v3-import-${platform}`), executable: process.execPath,
+      runner: fileURLToPath(new URL('../src/main/plugins/cliRunner.ts', import.meta.url)),
+      platform, environment: {}, backend: { ...backend, selectedBackend: () => platform === 'linux' ? 'gnome_libsecret' : null },
+      reader, enabled: async () => true, changed: () => {}
     })
+    try {
+      await imported.change({ kind: 'import', label: 'Owned v3 account', sourceSlot: 'fresh' })
+      const view = await imported.read()
+      assert.equal(view.accounts[0].sourceSlot, 'fresh')
+      assert.equal(view.accounts[0].source, 'desktop')
+      const persisted = await readFile(join(root, `v3-import-${platform}`, 'grok-bot-accounts.json'), 'utf8')
+      assert.ok(!persisted.includes(`desktop-${platform}-fresh`))
+      // A later desktop account switch must not change the imported snapshot.
+      await writeFile(path, JSON.stringify({ version: 3, entries: { other: { savedAtMs: Date.now(), encrypted: seal('other') } } }))
+      const saved = await imported.exportForSync()
+      check(`${platform} v3 import stays sealed and keeps its selected identity after a desktop account switch`, () => {
+        assert.equal(saved.length, 1)
+        assert.equal(saved[0].credential.token, `desktop-${platform}-fresh`)
+        assert.deepEqual(saved[0].credential.headers, { 'x-anyrun-network-token': 'route-fresh' })
+      })
+    } finally { imported.stop() }
+    for (const raw of [
+      { version: 4 }, { version: 'secret-looking-unsupported-value' },
+      { version: 2, entries: [] }, { version: 3, entries: null },
+      { version: 3, entries: {} },
+      ...[undefined, 'today', -1, 1.5, Number.MAX_SAFE_INTEGER + 1].map(savedAtMs => ({ version: 3, entries: { first: { savedAtMs, encrypted: seal('first') } } })),
+      { version: 3, entries: { '': { savedAtMs: Date.now(), encrypted: seal('first') } } },
+      { version: 3, entries: { first: { savedAtMs: Date.now(), encrypted: 'invalid-base64!' } } }
+    ]) {
+      await writeFile(path, JSON.stringify(raw))
+      await assert.rejects(reader.sources(signal), error => error instanceof Error && !error.message.includes('secret-looking-unsupported-value'))
+    }
+    check(`${platform} rejects future formats and malformed v3 entries without exposing file values`, () => assert.ok(true))
   }
   for (const path of [
     '/marketplace',
