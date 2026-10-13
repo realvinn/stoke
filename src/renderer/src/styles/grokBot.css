@@ -1,4 +1,4 @@
-.grok-workspace { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; color: var(--text); background: var(--bg); }
+.grok-workspace { display: flex; flex-direction: row; flex: 1; min-height: 0; min-width: 0; color: var(--text); background: var(--bg); container-type: inline-size; }
 .grok-header { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; padding: 18px 24px; border-bottom: 1px solid var(--border); }
 .grok-header h2 { font-size: 16px; margin: 0; }
 .grok-header p { margin: 3px 0 0; font-size: 12px; color: var(--text-muted); }
@@ -36,3 +36,65 @@
 .grok-composer small { margin-right: auto; color: var(--text-muted); }
 .grok-notice { padding: 0 24px; font-size: 13px; }
 @media (max-width: 700px) { .grok-header, .grok-history, .grok-composer { padding-left: 14px; padding-right: 14px; } .grok-header { gap: 10px; } .grok-header .btn-row { margin-left: 0; } }
+
+.grok-rail { flex: 0 0 200px; min-width: 0; display: flex; flex-direction: column; gap: 12px; padding: 14px 12px; border-right: 1px solid var(--border); background: var(--bg-elevated); overflow: auto; }
+.grok-rail-title, .grok-rail-actions, .grok-heading { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.grok-rail-title { justify-content: space-between; font-size: 14px; }
+.grok-account, .grok-tools form > label { display: grid; gap: 6px; font-size: 12px; font-weight: 600; }
+.grok-account select, .grok-search, .grok-tools input:not([type="checkbox"]), .grok-tools textarea, .grok-tools select { width: 100%; min-width: 0; font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-md); padding: 8px 10px; }
+.grok-search { font-size: 12px; }
+.grok-account select { font-weight: 400; }
+.grok-rail-actions { justify-content: space-between; }
+.grok-rail .btn { font-size: 11px; }
+.grok-bot-list { flex: 1; min-height: 80px; }
+.grok-bot-list h3 { display: flex; justify-content: space-between; text-transform: uppercase; letter-spacing: .06em; font-size: 10px; color: var(--text-muted); margin: 12px 8px 6px; }
+.grok-bot-row { display: flex; align-items: center; gap: 9px; width: 100%; text-align: left; border: 1px solid transparent; border-radius: var(--r-md); background: transparent; padding: 9px 8px; color: var(--text); font-size: 12px; }
+.grok-bot-row:hover { background: var(--bg); }
+.grok-bot-row[aria-current] { border-color: var(--border-strong); background: var(--bg); box-shadow: inset 2px 0 var(--accent-ink); }
+.grok-bot-row > span:not(.grok-bot-avatar) { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.grok-bot-row small { font-size: 10px; color: var(--text-muted); }
+.grok-bot-row span small { display: block; margin-top: 2px; }
+.grok-bot-avatar { flex: 0 0 26px; width: 26px; height: 26px; display: grid; place-items: center; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm); font-size: 11px; color: var(--accent-ink); }
+.grok-check { display: flex; align-items: center; gap: 7px; font-size: 11px; color: var(--text-muted); }
+.grok-cli-version { text-align: center; color: var(--text-muted); font-family: var(--mono); font-size: 10px; }
+.grok-chat { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; }
+.grok-chat .grok-header { padding: 14px 18px; gap: 10px; justify-content: space-between; }
+.grok-heading > div { min-width: 0; }
+.grok-heading h2 { overflow-wrap: anywhere; }
+.grok-header > .btn { font-size: 11px; }
+.grok-toolbar { display: flex; gap: 4px; flex-wrap: wrap; padding: 8px 14px; border-bottom: 1px solid var(--border); }
+.grok-toolbar .btn { font-size: 11px; padding: 5px 8px; }
+.grok-chat-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 8px 18px; color: var(--text-muted); font-size: 11px; }
+.grok-chat-controls label { display: flex; align-items: center; gap: 5px; }
+.grok-chat-controls select { color: var(--text); background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--r-sm); font: inherit; }
+.grok-chat-controls .btn { margin-left: auto; font-size: 11px; }
+.grok-chat .grok-history { padding: 6px 20px 20px; }
+.grok-user-text { white-space: pre-wrap; }
+.grok-message { border: 0; }
+.grok-message[data-role="user"] { margin-left: 10%; }
+.grok-message[data-role="activity"] { color: var(--text-muted); border-left: 2px solid var(--border); padding: 8px 12px; }
+.grok-message-heading { margin-bottom: 8px; }
+.grok-chat .grok-composer { padding: 12px 18px; }
+.grok-composer textarea { min-height: 72px; }
+.grok-composer p { margin: 0; font-size: 12px; }
+.grok-composer .btn-row { flex-wrap: wrap; }
+.grok-empty { max-width: 400px; margin: 36px auto; text-align: center; color: var(--text-muted); line-height: 1.6; }
+.grok-empty h3 { color: var(--text); font-size: 16px; }
+.grok-tools { flex: 1; min-height: 0; overflow: auto; padding: 20px; font-size: 13px; line-height: 1.6; }
+.grok-tools-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 20px; }
+.grok-tools h3 { margin: 0; font-size: 16px; }
+.grok-tools-heading p { margin: 4px 0 0; color: var(--text-muted); font-size: 12px; }
+.grok-tools form { display: grid; gap: 14px; max-width: 660px; margin-bottom: 24px; }
+.grok-tools form .btn { justify-self: start; }
+.grok-tools textarea { min-height: 110px; resize: vertical; font-weight: 400; }
+.grok-tools .grok-check { display: flex; font-weight: 400; }
+.grok-member-picker { display: grid; gap: 8px; border: 1px solid var(--border); border-radius: var(--r-md); padding: 12px; }
+.grok-member-picker label { display: flex; gap: 8px; align-items: center; }
+.grok-tool-list { list-style: none; padding: 0; margin: 16px 0; }
+.grok-tool-list li { border-bottom: 1px solid var(--border); padding: 16px 0; }
+.grok-tool-list small { display: block; color: var(--text-muted); }
+.grok-tool-list pre { white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--mono); font-size: 12px; background: var(--bg-elevated); border-radius: var(--r-md); padding: 12px; }
+.grok-danger { border-top: 1px solid var(--border); padding-top: 16px; }
+.grok-tool-notice { color: var(--accent-ink); }
+.grok-workspace :is(input, select, textarea, button):focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 2px; }
+@container (max-width: 600px) { .grok-rail { flex-basis: 164px; padding: 12px 8px; } .grok-chat .grok-header, .grok-chat .grok-composer { padding: 12px; } .grok-chat .grok-history, .grok-tools { padding: 12px; } .grok-composer small { font-size: 10px; } }

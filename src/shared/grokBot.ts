@@ -26,6 +26,8 @@ export interface GrokBotTabBinding {
   targetId: string
   targetLabel: string
   draft: string
+  /** Per-account/bot drafts, kept in memory and carried with a detached tab. */
+  drafts?: Record<string, { draft: string; delivery?: 'accepted' | 'unknown' | 'rejected'; sendError?: string }>
   sending?: boolean
   delivery?: 'accepted' | 'unknown' | 'rejected'
   sendError?: string
@@ -44,15 +46,27 @@ export type GrokBotAccountCommand =
   | { kind: 'remove' | 'default'; id: string }
 export interface GrokBotOperation {
   accountId: string
-  kind: 'list' | 'thread' | 'send' | 'create' | 'delete'
+  kind: 'list' | 'thread' | 'send' | 'create' | 'delete' | 'get' | 'update' | 'members-set' | 'skills' | 'skill-add' | 'skill-remove' | 'approvals' | 'approval-respond' | 'desktop'
   target?: string
+  targetKind?: 'bot' | 'group'
   message?: string
   name?: string
+  description?: string
+  title?: string
+  notify?: boolean
+  hidden?: boolean
+  members?: string[]
+  markdown?: string
+  entryId?: string
+  requestId?: string
+  decision?: 'accept' | 'decline'
+  limit?: number
 }
 export interface GrokBotResult {
   ok: boolean
   data: unknown
   message?: string
+  code?: 'busy'
   delivery?: 'accepted' | 'unknown' | 'rejected'
 }
 export const GBOT_VERSION = '0.12.4'

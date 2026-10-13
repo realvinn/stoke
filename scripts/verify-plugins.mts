@@ -1,6 +1,6 @@
 /** Owned files, key store and gateway only. Never reads a user's login or sends to real bots. */
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, readFile, writeFile, rm, chmod } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, writeFile, rm, chmod, readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
@@ -13,7 +13,7 @@ import {
   pluginInstallLink
 } from '../src/shared/pluginPackages.ts'
 import { PluginPackages } from '../src/main/plugins/packageManager.ts'
-import { PluginProcesses, pluginEnvironment } from '../src/main/plugins/processes.ts'
+import { PluginBusyError, PluginProcesses, pluginEnvironment } from '../src/main/plugins/processes.ts'
 import { GrokBotRuntime } from '../src/main/plugins/grokBotRuntime.ts'
 import { GrokBotSessionReader } from '../src/main/plugins/grokBotSession.ts'
 import { GrokBotPlugin } from '../src/main/plugins/grokBot.ts'
@@ -58,6 +58,9 @@ const packages = new PluginPackages({
 })
 let grok: GrokBotPlugin | null = null
 const requests: { authorization: string; route: string; method: string; body: Record<string, unknown> }[] = []
+const featureAgents = [{ id: 'bot-owned', name: 'Owned fixture bot', isGroup: false, memberIds: [] as string[], description: '' }, { id: 'group-owned', name: 'Owned fixture group', isGroup: true, memberIds: ['bot-owned'], description: '' }]
+let featureSkills = [{ id: 'skill-owned', name: 'Owned skill', description: 'Owned library', source: 'workflow' }]
+let featureApprovalPending = true
 const server = createServer(async (request, response) => {
   let text = ''
   for await (const chunk of request) text += chunk
@@ -75,10 +78,7 @@ const server = createServer(async (request, response) => {
   if (method === 'listAgents')
     response.end(
       JSON.stringify({
-        agents: [
-          { id: 'bot-owned', name: 'Owned fixture bot' },
-          { id: 'group-owned', name: 'Owned fixture group', isGroup: true }
-        ]
+        agents: featureAgents
       })
     )
   else if (method === 'sendPrompt')
@@ -92,7 +92,25 @@ const server = createServer(async (request, response) => {
       )
     )
   else if (method === 'getAgentTranscriptTail')
-    response.end(JSON.stringify({ entries: [{ id: 'owned-message', text: 'Owned fixture transcript' }] }))
+    response.end(JSON.stringify({ entries: [{ id: 'owned-message', text: 'Owned fixture transcript' }, ...(featureApprovalPending ? [{ id: 'approval-entry', kind: 'send-message', message: { type: 'auto-review-approval', approval: { requestId: 'approval-request', status: 'pending', command: 'echo owned approval', summary: 'Owned test action' } } }] : [])] }))
+  else if (['createAgent', 'createGroup'].includes(method)) {
+    const agent = { id: 'created-' + featureAgents.length, name: String(body.name), description: String(body.description || ''), isGroup: method === 'createGroup', memberIds: (body.memberAgentIds || []) as string[] }
+    featureAgents.push(agent); response.end(JSON.stringify({ agent }))
+  } else if (method === 'updateAgent') {
+    Object.assign(featureAgents.find(agent => agent.id === body.id)!, body.profile); response.end('{}')
+  } else if (method === 'setAgentNotifyOnUpdates' || method === 'setAgentHiddenFromSidebar') {
+    Object.assign(featureAgents.find(agent => agent.id === body.id)!, method === 'setAgentNotifyOnUpdates' ? { notifyOnUpdatesEnabled: body.isEnabled } : { isHiddenFromSidebar: body.isHidden }); response.end('{}')
+  } else if (method === 'setGroupMembers') {
+    const agent = featureAgents.find(agent => agent.id === body.id)!
+    agent.memberIds = body.memberAgentIds as string[]; response.end(JSON.stringify({ agent }))
+  } else if (method === 'deleteAgent') {
+    featureAgents.splice(featureAgents.findIndex(agent => agent.id === body.id), 1); response.end('{}')
+  } else if (method === 'getAgentWorkflows') response.end(JSON.stringify({ workflows: featureSkills }))
+  else if (method === 'importAgentWorkflowText') {
+    const skill = { id: 'imported-owned', name: 'Imported skill', description: 'Owned text', source: 'workflow' }
+    featureSkills.push(skill); response.end(JSON.stringify({ workflows: featureSkills, result: { imported: [skill] } }))
+  } else if (method === 'deleteAgentWorkflow') { featureSkills = featureSkills.filter(skill => skill.id !== body.workflowId); response.end('{}') }
+  else if (method === 'resolveAutoReviewApproval') { featureApprovalPending = false; response.end('{}') }
   else {
     response.statusCode = 404
     response.end('{}')
@@ -189,6 +207,13 @@ try {
   await new Promise((resolve) => setTimeout(resolve, 50))
   await assert.rejects(readFile(join(root, 'late')))
   check('disabling cancels pending preparation before it can spawn', () => assert.ok(true))
+  const capacity = new PluginProcesses()
+  const pendingJobs = Array.from({ length: 4 }, () => capacity.run(() => new Promise(() => {})))
+  const pendingDone = Promise.allSettled(pendingJobs)
+  await assert.rejects(capacity.run(async () => { throw new Error('The fifth operation must never prepare') }), PluginBusyError)
+  capacity.stop()
+  await pendingDone
+  check('capacity refusal is typed so only a read can choose to wait before trying again', () => assert.ok(true))
   await packages.remove(SAMPLE_PLUGIN.id)
   check('removal hides an extension and revokes execution', () => assert.ok(true))
   await assert.rejects(packages.run(SAMPLE_PLUGIN.id, 'read', root))
@@ -240,7 +265,7 @@ try {
     GrokBotRuntime.prototype.installed = async () => true
   }
   try {
-    let enabled = true, failStatus = false
+    let enabled = true, failStatus = false, desktopOpens = 0
     grok = new GrokBotPlugin({
       root: join(root, 'gbot'),
       executable: process.execPath,
@@ -256,6 +281,7 @@ try {
       backend,
       reader: new GrokBotSessionReader({ home: root, platform: 'darwin', environment: {} }),
       enabled: async () => enabled,
+      openDesktop: async () => { desktopOpens++ },
       changed: () => { if (failStatus) throw new Error('Owned status update failed') }
     })
     for (let index = 1; index <= 5; index++)
@@ -268,6 +294,11 @@ try {
         allowLocal: true
       })
     let view = await grok.read()
+    const beforeDesktop = requests.length
+    const desktop = await grok.operate({ accountId: view.accounts[4].id, kind: 'desktop' })
+    check('desktop handoff is explicit, does not run a gateway command and names the intended account', () => {
+      assert.equal(desktop.ok, true); assert.equal(desktopOpens, 1); assert.equal(requests.length, beforeDesktop); assert.match(desktop.message!, /Account 5/)
+    })
     check('five accounts retain distinct names and identities', () => {
       assert.equal(view.accounts.length, 5)
       assert.equal(new Set(view.accounts.map((account) => account.id)).size, 5)
@@ -337,6 +368,41 @@ try {
         assert.equal(requests.filter(request => request.method === 'sendPrompt').length, before + 1)
       })
     } finally { failStatus = false }
+    if (realArchive) {
+      const accountId = view.accounts[4].id
+      const run = async (operation: Omit<import('../src/shared/grokBot.ts').GrokBotOperation, 'accountId'>) => {
+        const before = requests.length, result = await grok!.operate({ accountId, ...operation })
+        assert.equal(result.ok, true, result.message)
+        assert.ok(requests.slice(before).every(request => request.authorization === 'Bearer owned-token-5' && request.route === 'owned-route-5'))
+        return result.data as Record<string, unknown>
+      }
+      const bot = await run({ kind: 'create', name: 'CLI-created bot', description: 'Owned description' })
+      check('reviewed CLI creates a named bot through the selected account', () => assert.equal(bot.name, 'CLI-created bot'))
+      const updated = await run({ kind: 'update', target: String(bot.id), name: 'Renamed bot', title: 'Owned title', description: 'Updated description', notify: true, hidden: true })
+      check('reviewed CLI updates profiles, visibility and notification settings', () => { assert.equal(updated.name, 'Renamed bot'); assert.equal(updated.hiddenFromSidebar, true); assert.equal(updated.notifyOnAgentUpdates, true) })
+      const group = await run({ kind: 'create', targetKind: 'group', name: 'CLI-created group', members: ['bot-owned', String(bot.id)] })
+      await run({ kind: 'members-set', target: String(group.id), members: ['bot-owned'] })
+      const members = await run({ kind: 'get', targetKind: 'group', target: String(group.id) })
+      check('reviewed CLI creates groups and replaces their members using bot IDs', () => assert.deepEqual(members.members, ['bot-owned']))
+      await run({ kind: 'thread', target: 'bot-owned', limit: 200 })
+      check('expanded history asks the gateway for the requested bounded limit', () => assert.equal(requests.findLast(request => request.method === 'getAgentTranscriptTail')?.body.limit, 200))
+      await run({ kind: 'skills' })
+      const skill = await run({ kind: 'skill-add', markdown: '---\nname: owned\ndescription: owned\n---\n\nOwned instructions.' })
+      check('shared skill import sends only the supplied Markdown through a temporary owned file', () => { assert.equal(skill.id, 'imported-owned'); assert.match(String(requests.findLast(request => request.method === 'importAgentWorkflowText')?.body.markdown), /Owned instructions/); })
+      assert.deepEqual((await readdir(join(root, 'gbot', 'data', 'grok-bot'))).filter(file => file.startsWith('skill-')), [])
+      await run({ kind: 'skill-remove', target: 'imported-owned' })
+      check('reviewed CLI removes library skills by ID', () => assert.ok(!featureSkills.some(skill => skill.id === 'imported-owned')))
+      const approvals = await run({ kind: 'approvals', target: 'bot-owned' })
+      check('approval listing does not resolve a request', () => { assert.equal((approvals.approvals as unknown[]).length, 1); assert.equal(requests.filter(request => request.method === 'resolveAutoReviewApproval').length, 0) })
+      await run({ kind: 'approval-respond', target: 'bot-owned', entryId: 'approval-entry', requestId: 'approval-request', decision: 'accept' })
+      check('explicit approval rechecks the pending card and resolves it once', () => assert.equal(requests.findLast(request => request.method === 'resolveAutoReviewApproval')?.body.resolution, 'approved'))
+      const beforeStale = requests.filter(request => request.method === 'resolveAutoReviewApproval').length
+      const stale = await grok!.operate({ accountId, kind: 'approval-respond', target: 'bot-owned', entryId: 'approval-entry', requestId: 'approval-request', decision: 'accept' })
+      check('a stale approval is refused without a second resolution', () => { assert.equal(stale.ok, false); assert.equal(requests.filter(request => request.method === 'resolveAutoReviewApproval').length, beforeStale) })
+      await run({ kind: 'delete', targetKind: 'group', target: String(group.id) })
+      await run({ kind: 'delete', target: String(bot.id) })
+      check('reviewed CLI deletes only the selected bot and group', () => assert.deepEqual(featureAgents.map(agent => agent.id), ['bot-owned', 'group-owned']))
+    }
     const persisted = await readFile(join(root, 'gbot', 'grok-bot-accounts.json'), 'utf8')
     check('credentials are sealed at rest and absent from public views', () => {
       for (let index = 1; index <= 5; index++) {

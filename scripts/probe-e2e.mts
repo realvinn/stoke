@@ -7,6 +7,7 @@ import { createServer as createHttpServer } from 'node:http'
  *   node scripts/probe-e2e.mts --dev --work <dir>          the unpackaged build in out/, for a rehearsal
  *       [--port 9339]   the CDP port
  *       [--ssh]         also the SSH checks — CI only (see below)
+ *       [--grok-only --gbot-cli <reviewed runtime>]  boot/session setup and Grok checks only
  *
  * NOT a verify suite and never in `check`: it launches the app, and every check
  * acts on the machine (the same header rule as windows-e2e.mts). ci.yml's
@@ -113,6 +114,7 @@ const { values: opt } = parseArgs({
     port: { type: 'string', default: '9339' },
     ssh: { type: 'boolean', default: false },
     'gbot-cli': { type: 'string' },
+    'grok-only': { type: 'boolean', default: false },
     'ssh-key-alias': { type: 'string', default: 'stoke-key' },
     'ssh-pw-alias': { type: 'string', default: 'stoke-pw' }
   }
@@ -152,6 +154,7 @@ function section(title: string): void {
 
 /** Run a group of checks; anything it throws is one FAIL named after the group, never a crash. */
 async function step(name: string, body: () => Promise<void>): Promise<boolean> {
+  if (opt['grok-only'] && name !== 'boot' && !name.startsWith('a Claude session from') && name !== 'native plugin lifecycle and Grok Bot account isolation') return true
   section(name)
   const before = results.filter((r) => !r.ok).length
   try {
@@ -879,7 +882,10 @@ await step('native plugin lifecycle and Grok Bot account isolation', async () =>
     if (opt['gbot-cli']) {
       const runtime = join(ud, 'plugins', 'runtime', 'grok-bot', '0.12.4'); mkdirSync(runtime, { recursive: true })
       for (const filename of ['gbot.mjs', 'gbot-flight.mjs']) copyFileSync(join(resolve(opt['gbot-cli']), filename), join(runtime, filename))
-      const requests: { token: string; route: string; method: string; prompt?: string }[] = []
+      const requests: { token: string; route: string; method: string; prompt?: string; body: Record<string, unknown> }[] = []
+      const agents = [{ id: 'owned-bot', name: 'Owned native bot', description: 'Native fixture', isGroup: false, memberIds: [] as string[] }, { id: 'owned-group', name: 'Owned group', description: 'Group fixture', isGroup: true, memberIds: ['owned-bot'] }]
+      let skills = [{ id: 'owned-skill', name: 'Native skill', description: 'Owned library skill', source: 'workflow' }]
+      const pending = new Set(['owned-approval', 'truncated-approval'])
       const transcript = { entries: [
         { id: 'owned-user', kind: 'user-message', prompt: 'Please format the response\n界', atMs: 1234567890000 },
         { id: 'owned-reply', kind: 'send-message', message: { type: 'text', content: '## Owned formatted reply\n\n**Readable** response.\n\n- First step\n- Second step\n\n```js\nconsole.log("owned");\n```\n\n| Item | Status |\n| --- | --- |\n| Plan | Ready |\n\n<script>globalThis.__grokInjected=true</script>\n\n[Unsafe](javascript:alert(1))\n\n![Remote image](https://example.invalid/owned.png)' } }
@@ -889,11 +895,26 @@ await step('native plugin lifecycle and Grok Bot account isolation', async () =>
         for await (const chunk of request) text += chunk
         const body = JSON.parse(text || '{}')
         const method = request.url?.split('/').at(-1) ?? ''
-        requests.push({ token: String(request.headers.authorization), route: String(request.headers['x-owned-route']), method, prompt: body.prompt })
+        requests.push({ token: String(request.headers.authorization), route: String(request.headers['x-owned-route']), method, prompt: body.prompt, body })
         response.setHeader('content-type', 'application/json')
         const receipt = body.prompt?.includes('unknown receipt') ? {}
           : body.prompt?.includes('legacy receipt') ? { messageId: 'owned-message' } : { accepted: true }
-        response.end(JSON.stringify(method === 'listAgents' ? { agents: [{ id: 'owned-bot', name: 'Owned native bot' }, { id: 'owned-group', name: 'Owned group', isGroup: true }] } : method === 'sendPrompt' ? receipt : transcript))
+        let result: unknown = {}
+        if (method === 'listAgents') result = { agents }
+        else if (method === 'sendPrompt') result = receipt
+        else if (method === 'getAgentTranscriptTail') result = { entries: [...transcript.entries, ...[...pending].map(id => ({ id, kind: 'send-message', message: { type: 'auto-review-approval', approval: { requestId: id + '-request', status: 'pending', summary: 'Owned approval test', command: id === 'truncated-approval' ? 'echo ' + 'a'.repeat(2100) : 'echo owned-action' } } }))] }
+        else if (method === 'updateAgent') Object.assign(agents.find(agent => agent.id === body.id)!, body.profile)
+        else if (method === 'setAgentNotifyOnUpdates') Object.assign(agents.find(agent => agent.id === body.id)!, { notifyOnUpdatesEnabled: body.isEnabled })
+        else if (method === 'setAgentHiddenFromSidebar') Object.assign(agents.find(agent => agent.id === body.id)!, { isHiddenFromSidebar: body.isHidden })
+        else if (method === 'createAgent' || method === 'createGroup') {
+          const agent = { id: 'owned-created-' + agents.length, name: body.name, description: body.description || '', isGroup: method === 'createGroup', memberIds: body.memberAgentIds || [] }; agents.push(agent); result = { agent }
+        } else if (method === 'deleteAgent') agents.splice(agents.findIndex(agent => agent.id === body.id), 1)
+        else if (method === 'setGroupMembers') { const agent = agents.find(agent => agent.id === body.id)!; agent.memberIds = body.memberAgentIds; result = { agent } }
+        else if (method === 'getAgentWorkflows') result = { workflows: skills }
+        else if (method === 'importAgentWorkflowText') { const skill = { id: 'owned-imported', name: 'Imported native skill', description: 'Native import', source: 'workflow' }; skills.push(skill); result = { workflows: skills, result: { imported: [skill] } } }
+        else if (method === 'deleteAgentWorkflow') skills = skills.filter(skill => skill.id !== body.workflowId)
+        else if (method === 'resolveAutoReviewApproval') pending.delete(body.entryId)
+        response.end(JSON.stringify(result))
       })
       await new Promise<void>(resolve => server!.listen(0, '127.0.0.1', resolve))
       const gateway = `http://127.0.0.1:${(server.address() as { port: number }).port}`
@@ -944,29 +965,44 @@ await step('native plugin lifecycle and Grok Bot account isolation', async () =>
       await shot('04-grok-bot-launcher-choice')
       await ev(`[...document.querySelectorAll('[role="menuitem"]')].find(item => item.textContent.includes('Grok Bot')).click(), true`)
       await waitFor('native bot account picker', () => ev<boolean>(`document.querySelector('[aria-label="Grok Bot conversation"] select')?.options.length === 6`))
+      await waitFor('initial account list finished', () => ev<boolean>(`!document.querySelector('[aria-label="Grok Bot conversation"] select').disabled`))
       await ev(`(() => { const picker = document.querySelector('[aria-label="Grok Bot conversation"] select'); picker.value = ${JSON.stringify(view.accounts[4].id)}; picker.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`)
       await waitFor('fifth bot account chosen in launcher flow', () => ev<boolean>(`document.querySelector('[aria-label="Grok Bot conversation"] select').value === ${JSON.stringify(view.accounts[4].id)}`))
-      await ev(`[...document.querySelectorAll('[aria-label="Grok Bot conversation"] button')].find(button => button.textContent === 'List bots and groups').click(), true`)
-      await waitFor('a cloud bot choice', () => ev<boolean>(`[...document.querySelectorAll('[aria-label="Grok Bot conversation"] select option')].some(option => option.value === 'owned-bot')`))
+      await waitFor('left bot list for the chosen account', () => ev<boolean>(`[...document.querySelectorAll('.grok-bot-row')].some(button => button.textContent.includes('Owned native bot') && !button.disabled)`))
       check('launcher bot listing stays on the chosen fifth account', requests.slice(-2).every(request => request.token === 'Bearer owned-native-token-5'))
-      await ev(`[...document.querySelectorAll('[aria-label="Grok Bot conversation"] button')].find(button => button.textContent === 'Open conversation').click(), true`)
+      await ev(`[...document.querySelectorAll('.grok-bot-row')].find(button => button.textContent.includes('Owned native bot')).click(), true`)
       await waitFor('a formatted cloud conversation in its own tab', () => ev<boolean>(`document.querySelector('[aria-label="Grok Bot conversation"] h2')?.textContent === 'Owned native bot' && document.querySelector('[aria-label="Grok Bot conversation"] .grok-message-text h2')?.textContent === 'Owned formatted reply'`))
       check('bot tabs identify the selected account and omit terminal context, model and local-folder controls', await ev<boolean>(`document.querySelector('.tab[aria-selected="true"]').textContent.includes('Grok account 5') && document.querySelector('.tab[aria-selected="true"]').textContent.includes('Grok Bot') && !document.querySelector('.tab[aria-selected="true"] .context-ring') && !document.querySelector('.statusbar [data-model-source]') && !document.querySelector('.topbar [data-kind="folder"]')`))
       const botTab = await ev<string>(`document.querySelector('.tab[aria-selected="true"]').dataset.tabId`)
       const draft = 'Owned draft stays with account 5'
       await ev(`(() => { const field = document.querySelector('[aria-label="Grok Bot conversation"] textarea'); Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(field, ${JSON.stringify(draft)}); field.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`)
+      const clickReady = async (selector: string, text: string) => {
+        await waitFor(`Grok control ${text} ready`, () => ev<boolean>(`[...document.querySelectorAll(${JSON.stringify(selector)})].some(button => button.textContent === ${JSON.stringify(text)} && !button.disabled)`))
+        await ev(`[...document.querySelectorAll(${JSON.stringify(selector)})].find(button => button.textContent === ${JSON.stringify(text)}).click(), true`)
+      }
+      await clickReady('.grok-bot-row', '◈Owned group')
+      await waitFor('group conversation', () => ev<boolean>(`document.querySelector('.grok-header h2')?.textContent === 'Owned group'`))
+      await clickReady('.grok-bot-row', 'OOwned native botDraft')
+      check('left bot switching restores the selected bot draft', await waitFor('draft restored from the left list', () => ev<boolean>(`document.querySelector('.grok-composer textarea')?.value === ${JSON.stringify(draft)}`)))
       await ev(`[...document.querySelectorAll('[aria-label="Grok Bot conversation"] button')].find(button => button.textContent === 'New bot conversation').click(), true`)
       await waitFor('another bot account picker', () => ev<boolean>(`!!document.querySelector('[aria-label="Grok Bot conversation"] .grok-chooser')`))
       await ev(`document.querySelector('.tab[data-tab-id="${botTab}"]').click(), true`)
       await waitFor('the original bot draft restored on tab switch', () => ev<boolean>(`document.querySelector('[aria-label="Grok Bot conversation"] textarea')?.value === ${JSON.stringify(draft)}`))
       check('switching tabs preserves the account-bound bot composer', await ev<boolean>(`document.querySelector('[aria-label="Grok Bot conversation"] header p').textContent.includes('Grok account 5')`))
+      check('left bot list returns after switching between account-bound tabs', await waitFor('the restored tab roster', () => ev<boolean>(`document.querySelectorAll('.grok-bot-row').length === 2`)))
       await waitFor('formatted messages after switching back to the conversation', () => ev<boolean>(`document.querySelector('[aria-label="Grok Bot conversation"] .grok-message-text h2')?.textContent === 'Owned formatted reply'`))
       await ui!.send('Emulation.setDeviceMetricsOverride', { width: 940, height: 720, deviceScaleFactor: 1, mobile: false })
       await sleep(200); await shot('04-grok-bot-conversation'); await ui!.send('Emulation.clearDeviceMetricsOverride')
       const primary = ui!
       let botWindow: CdpClient | null = null
       try {
-        await ev(`document.querySelector('.tab[aria-selected="true"]').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, button: 2, clientX: 500, clientY: 20 })), true`)
+        // ClearDeviceMetricsOverride resizes the strip; wait for its real tab
+        // bounds and right-click there instead of using a stale guessed point.
+        await sleep(250)
+        const tabPoint = await ev<{ x: number; y: number }>(`(() => { const r = document.querySelector('.tab[aria-selected="true"]').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`)
+        await ui!.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...tabPoint })
+        await ui!.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...tabPoint, button: 'right', clickCount: 1 })
+        await ui!.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...tabPoint, button: 'right', clickCount: 1 })
         await waitFor('the bot tab context menu', () => ev<boolean>(`[...document.querySelectorAll('[role="menuitem"]')].some(item => item.textContent.includes('Move to new window'))`))
         await ev(`[...document.querySelectorAll('[role="menuitem"]')].find(item => item.textContent.includes('Move to new window')).click(), true`)
         botWindow = await waitFor('the detached bot renderer', () => connectPage(port, client => client.evaluate('window.stoke?.window.detached === true'), { what: 'the detached bot renderer' }), 25000)
@@ -974,6 +1010,7 @@ await step('native plugin lifecycle and Grok Bot account isolation', async () =>
         ui = botWindow
         await waitFor('the bot draft in its new window', () => ev<boolean>(`document.querySelector('[aria-label="Grok Bot conversation"] textarea')?.value === ${JSON.stringify(draft)}`))
         check('moving a bot tab preserves its account, target and unsent draft with the sidebar off', await ev<boolean>(`!document.querySelector('.sidebar') && document.querySelector('[aria-label="Grok Bot conversation"] header p').textContent.includes('Grok account 5') && document.querySelector('[aria-label="Grok Bot conversation"] h2').textContent === 'Owned native bot'`))
+        check('the detached bot window loads its left bot list', await waitFor('detached bot roster', () => ev<boolean>(`document.querySelectorAll('.grok-bot-row').length === 2`)))
         await waitFor('formatted replies in the separate window', () => ev<boolean>(`document.querySelector('[aria-label="Grok Bot conversation"] .grok-message-text h2')?.textContent === 'Owned formatted reply'`))
         await shot('04-grok-bot-detached-conversation')
         await ev('window.stoke.window.close(), true')
@@ -989,6 +1026,40 @@ await step('native plugin lifecycle and Grok Bot account isolation', async () =>
       await ev(`document.querySelector('[aria-label="Grok Bot conversation"] form button[type="submit"], [aria-label="Grok Bot conversation"] form button[data-variant="primary"]').click(), true`)
       await waitFor('cloud chat send confirmation', () => ev<boolean>(`document.querySelector('[aria-label="Grok Bot conversation"] form [role="status"]')?.textContent === 'Message sent.'`))
       check('cloud conversation sends the exact draft once with its selected account', requests.filter(request => request.method === 'sendPrompt').length === beforeChatSend + 1 && requests.findLast(request => request.method === 'sendPrompt')?.token === 'Bearer owned-native-token-5' && requests.findLast(request => request.method === 'sendPrompt')?.prompt === draft)
+      const enter = async (selector: string, value: string) => {
+        await ev(`(() => { const field = document.querySelector(${JSON.stringify(selector)}); Object.getOwnPropertyDescriptor(field.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype, 'value').set.call(field, ${JSON.stringify(value)}); field.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`)
+      }
+      await clickReady('.grok-toolbar button', 'Bot settings')
+      await waitFor('owned bot profile', () => ev<boolean>(`document.querySelector('.grok-tools form input')?.value === 'Owned native bot'`))
+      await enter('.grok-tools form input', 'Renamed native bot')
+      await clickReady('.grok-tools form button', 'Save profile')
+      await waitFor('renamed bot in header and rail', () => ev<boolean>(`document.querySelector('.grok-header h2')?.textContent === 'Renamed native bot' && [...document.querySelectorAll('.grok-bot-row')].some(button => button.textContent.includes('Renamed native bot'))`))
+      check('profile save updates the selected bot and refreshes its visible name', requests.findLast(request => request.method === 'updateAgent')?.body.profile?.name === 'Renamed native bot')
+      await clickReady('.grok-toolbar button', 'Skills')
+      await waitFor('shared native library', () => ev<boolean>(`document.querySelector('.grok-tool-list')?.textContent.includes('Native skill')`))
+      await enter('.grok-tools textarea', '---\nname: owned\ndescription: owned\n---\n\nOwned native instructions.')
+      await clickReady('.grok-tools form button', 'Add shared skill')
+      await waitFor('imported skill visible', () => ev<boolean>(`document.querySelector('.grok-tool-list')?.textContent.includes('Imported native skill')`))
+      check('skill import sends the edited Markdown using account 5', requests.findLast(request => request.method === 'importAgentWorkflowText')?.token === 'Bearer owned-native-token-5' && String(requests.findLast(request => request.method === 'importAgentWorkflowText')?.body.markdown).includes('Owned native instructions'))
+      await clickReady('.grok-toolbar button', 'Approvals')
+      await waitFor('pending native cards', () => ev<boolean>(`document.querySelectorAll('.grok-tool-list li').length === 2 && document.querySelector('.grok-tools')?.dataset.tool === 'approvals'`))
+      check('reading approvals never accepts one and truncated cards cannot be accepted', requests.filter(request => request.method === 'resolveAutoReviewApproval').length === 0 && await ev<boolean>(`[...document.querySelectorAll('.grok-tool-list li')].find(card => card.textContent.includes('Details are truncated')).querySelectorAll('button')[1].disabled`))
+      await clickReady('.grok-tool-list button', 'Allow once')
+      await waitFor('one native approval resolved', () => pending.size === 1)
+      check('a user approval sends exactly one account-bound decision', requests.filter(request => request.method === 'resolveAutoReviewApproval').length === 1 && requests.findLast(request => request.method === 'resolveAutoReviewApproval')?.body.resolution === 'approved' && requests.findLast(request => request.method === 'resolveAutoReviewApproval')?.token === 'Bearer owned-native-token-5')
+      await waitFor('remaining truncated native card', () => ev<boolean>(`document.querySelectorAll('.grok-tool-list li').length === 1`))
+      await shot('04-grok-bot-approvals')
+      await clickReady('.grok-tool-list button', 'Deny')
+      await waitFor('denial completed', () => pending.size === 0)
+      check('truncated cards can still be explicitly denied', requests.findLast(request => request.method === 'resolveAutoReviewApproval')?.body.resolution === 'denied')
+      await clickReady('.grok-toolbar button', 'Computer')
+      check('computer handoff explains native control and the account check without opening a real desktop', await waitFor('native computer handoff instructions', () => ev<boolean>(`document.querySelector('[data-tool="computer"]')?.textContent.includes('Take over') && document.querySelector('[data-tool="computer"]')?.textContent.includes('Grok account 5') && [...document.querySelectorAll('[data-tool="computer"] button')].some(button => button.textContent === 'Open Grok Bot desktop')`)))
+      await clickReady('.grok-rail-actions button', '+ New')
+      await enter('.grok-tools form input', 'New native bot')
+      await clickReady('.grok-tools form button', 'Create bot')
+      await waitFor('created bot in left list', () => ev<boolean>(`[...document.querySelectorAll('.grok-bot-row')].some(button => button.textContent.includes('New native bot'))`))
+      check('create bot runs through the selected account and updates the left list', requests.findLast(request => request.method === 'createAgent')?.token === 'Bearer owned-native-token-5')
+      await clickReady('.grok-tools-heading button', 'Back to chat')
     }
     await ev(`window.stoke.plugins.toggle('grok-bot', false)`)
     check('disabling Grok Bot removes its account rows, conversation tabs and all controls', await waitFor('Grok controls unmounted', () => ev<boolean>(`!document.querySelector('[aria-label="Grok Bot"]') && !document.querySelector('.plugin-account-list') && !document.querySelector('[aria-label="Grok Bot conversation"]') && !document.querySelector('.tab [data-kind="grok-bot"]')`)) === true)
@@ -1993,7 +2064,13 @@ await step('quick terminal switches installed shells, opens wrapped links and re
     check('the newly selected shell accepts commands through xterm', true)
     await shot('05-quick-terminal-shell-picker')
     const original = await pickShell(ui!, 'window.stoke.quickTerminal', 'default')
-    check('switching back retains the original shell and its wrapped link', original.id === id && (await ev<{ data: string }>('window.stoke.quickTerminal.read()')).data.includes('&end=quick-tail'))
+    // Replay is an ANSI screen, whose layout can split literal text after a
+    // resize. Assert the complete link in the restored terminal's cells.
+    const restoredLink = await waitFor('the complete quick-shell link after switching back', () => ev<{ x: number; y: number } | null>(`(() => {
+      const t = window.stokeQuickTerminals.get(${JSON.stringify(id)}), screen = t?.element?.querySelector('.xterm-screen');
+      return screen ? (${terminalLinkPoint.toString()})(t, ${JSON.stringify(target)}, screen.getBoundingClientRect()) : null;
+    })()`))
+    check('switching back retains the original shell and its wrapped link', original.id === id && !!restoredLink)
     await ev(`document.querySelector('[aria-label="Terminal options"]').click(), true`)
     // ContextMenu is deliberately hidden for its first frame, then positioned.
     // A native click must wait for that effect and the pop animation to finish.

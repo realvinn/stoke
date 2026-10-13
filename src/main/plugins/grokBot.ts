@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
-import { mkdir } from 'node:fs/promises'
+import { mkdir, mkdtemp, writeFile, rm } from 'node:fs/promises'
+import { grokBotCommand } from '../../shared/grokBotCommands.ts'
 import { judgeProtection, sealedText, unsealedValue } from '../../shared/secrets.ts'
 import { stableJson } from '../../shared/hub/codec.ts'
 import {
@@ -14,7 +15,7 @@ import {
 } from '../../shared/grokBot.ts'
 import type { SecretBackend } from '../secrets.ts'
 import { PluginFile } from './files.ts'
-import { PluginProcesses, pluginEnvironment } from './processes.ts'
+import { PluginBusyError, PluginProcesses, pluginEnvironment } from './processes.ts'
 import { GrokBotRuntime } from './grokBotRuntime.ts'
 import { GrokBotSessionReader, validateGrokBotSession, type GrokBotSession } from './grokBotSession.ts'
 interface SavedAccount {
@@ -37,6 +38,7 @@ interface Options {
   reader: GrokBotSessionReader
   enabled: () => Promise<boolean>
   changed: (view: GrokBotView) => void
+  openDesktop?: () => Promise<void>
 }
 const record = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === 'object' && !Array.isArray(value)
@@ -289,28 +291,20 @@ export class GrokBotPlugin {
     await this.guard(epoch)
     if (
       !record(raw) ||
-      !isGrokBotAccountId(raw.accountId) ||
-      !['list', 'thread', 'send', 'create', 'delete'].includes(raw.kind)
+      !isGrokBotAccountId(raw.accountId)
     )
       throw new Error('Choose an account and Grok Bot action.')
-    if (
-      ['thread', 'send', 'delete'].includes(raw.kind) &&
-      (typeof raw.target !== 'string' ||
-        !raw.target ||
-        raw.target.length > 256 ||
-        /^-/.test(raw.target) ||
-        /[\u0000-\u001f]/.test(raw.target))
-    )
-      throw new Error('Choose a bot or group ID.')
-    if (
-      raw.kind === 'send' &&
-      (typeof raw.message !== 'string' || !raw.message.trim() || raw.message.length > 32 * 1024)
-    )
-      throw new Error('Enter a message up to 32 KB.')
+    const plan = grokBotCommand(raw)
     const entry = await this.file.transaction(async (signal) =>
       (await this.load(signal)).accounts.find((entry) => entry.account.id === raw.accountId)
     )
     if (!entry) throw new Error('This account was removed.')
+    if (raw.kind === 'desktop') {
+      await this.guard(epoch)
+      if (!this.options.openDesktop) throw new Error('Install the Grok Bot desktop app to view or control its computer.')
+      await this.options.openDesktop()
+      return { ok: true, data: null, message: `Opened Grok Bot. Verify that its signed-in account matches ${entry.account.label}, then open Computer and choose Take over.` }
+    }
     const session = this.session(entry)
     await this.guard(epoch)
     this.processes.resume()
@@ -323,7 +317,7 @@ export class GrokBotPlugin {
         }
       return value
     }
-    const invoke = async (argv: string[]): Promise<unknown> => {
+    const invoke = async (argv: string[], gateway = true): Promise<unknown> => {
       const result = await this.processes.run(async (signal) => {
         await this.guard(epoch)
         const path = await this.runtime.ready()
@@ -342,10 +336,11 @@ export class GrokBotPlugin {
         signal.throwIfAborted()
         await this.guard(epoch)
         const separator = argv.indexOf('--')
+        const flags = [...(gateway ? ['--gateway'] : []), '--json']
         const cliArgs =
           separator < 0
-            ? [...argv, '--gateway', '--json']
-            : [...argv.slice(0, separator), '--gateway', '--json', ...argv.slice(separator)]
+            ? [...argv, ...flags]
+            : [...argv.slice(0, separator), ...flags, ...argv.slice(separator)]
         return {
           executable: this.options.executable,
           args: ['--require', this.options.runner, path],
@@ -365,16 +360,24 @@ export class GrokBotPlugin {
       }
     }
     let sendReceipt: GrokBotResult | undefined
+    let skillFolder: string | undefined
     try {
       let data: unknown
       if (raw.kind === 'list') {
         const [bots, groups] = await Promise.all([invoke(['bots', 'list']), invoke(['groups', 'list'])])
         data = { bots, groups }
-      } else if (raw.kind === 'thread') data = await invoke(['thread', '--no-history', '--', raw.target!])
-      else if (raw.kind === 'send')
-        data = await invoke(['send', '--no-history', '--', raw.target!, raw.message!])
-      else if (raw.kind === 'create') data = await invoke(['bots', 'create', `--name=${label(raw.name)}`])
-      else data = await invoke(['bots', 'delete', '--', raw.target!])
+      } else {
+        if (plan.markdown !== undefined) {
+          const parent = join(this.options.root, 'data', 'grok-bot')
+          await mkdir(parent, { recursive: true, mode: 0o700 })
+          skillFolder = await mkdtemp(join(parent, 'skill-'))
+          const path = join(skillFolder, 'SKILL.md')
+          await writeFile(path, plan.markdown, { mode: 0o600 })
+          await this.guard(epoch)
+          plan.argv.push('--', path)
+        }
+        data = await invoke(plan.argv, plan.gateway)
+      }
       if (raw.kind === 'send') {
         const delivery = sendDelivery(data)
         sendReceipt = {
@@ -404,8 +407,11 @@ export class GrokBotPlugin {
         ok: false,
         data: null,
         message: redact(error instanceof Error ? error.message : 'Grok Bot could not complete this action.'),
+        ...(error instanceof PluginBusyError ? { code: 'busy' as const } : {}),
         ...(raw.kind === 'send' ? { delivery: 'unknown' as const } : {})
       }
+    } finally {
+      if (skillFolder) await rm(skillFolder, { recursive: true, force: true }).catch(() => {})
     }
   }
   private status(snapshot: SavedAccount, status: GrokBotAccount['status'], epoch: number): Promise<void> {

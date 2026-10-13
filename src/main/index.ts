@@ -2620,6 +2620,7 @@ function grokBotFor(): Promise<import('./plugins/grokBot.ts').GrokBotPlugin> {
   return grokBotLoading ??= Promise.all([import('./plugins/grokBot.ts'), import('./plugins/grokBotSession.ts'), import('./secrets.ts')]).then(([{ GrokBotPlugin }, { GrokBotSessionReader }, { safeStorageBackend }]) => {
     grokBotPlugin = new GrokBotPlugin({ root: join(app.getPath('userData'), 'plugins'), executable: process.execPath, runner: join(__dirname, 'cliRunner.js'), platform: process.platform, environment: process.env,
       backend: safeStorageBackend(safeStorage, process.platform), reader: new GrokBotSessionReader({ home: homedir(), platform: process.platform, environment: process.env }),
+      openDesktop: () => shell.openExternal('grokbot://'),
       enabled: async () => (await pluginPackagesFor()).enabled('grok-bot'), changed: view => { send(CH.grokBotChanged, view); hubClient?.accountsChanged() }
     }); return grokBotPlugin
   })

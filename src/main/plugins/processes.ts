@@ -29,6 +29,9 @@ function stopChild(child: ChildProcessWithoutNullStreams | null): void {
     }
   }
 }
+export class PluginBusyError extends Error {
+  constructor() { super('This plugin already has four operations running.') }
+}
 /** Each plugin owns its jobs; disabling it revokes both pending work and live children. */
 export class PluginProcesses {
   private jobs = new Map<
@@ -52,7 +55,7 @@ export class PluginProcesses {
     prepare: (signal: AbortSignal) => Promise<PluginProcessSpec>
   ): Promise<{ code: number; stdout: string; stderr: string }> {
     if (this.stopped) throw new Error('Enable this plugin first.')
-    if (this.jobs.size >= 4) throw new Error('This plugin already has four operations running.')
+    if (this.jobs.size >= 4) throw new PluginBusyError()
     const id = randomUUID(),
       epoch = this.epoch
     const job = { controller: new AbortController(), child: null as ChildProcessWithoutNullStreams | null }

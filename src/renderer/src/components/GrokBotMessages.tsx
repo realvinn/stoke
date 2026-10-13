@@ -31,7 +31,7 @@ export function GrokBotMessages({ messages, name = 'Grok Bot', onOpenUrl = url =
         {message.atMs !== null && <time dateTime={new Date(message.atMs).toISOString()}>{new Date(message.atMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>}
         <button className="btn" data-variant="ghost" onClick={() => window.stoke.clipboard.writeText(message.text)} aria-label="Copy message">Copy</button>
       </div>
-      <div className="grok-message-text"><MessageText text={message.text} onOpenUrl={onOpenUrl} /></div>
+      <div className="grok-message-text">{message.role === 'user' ? <p className="grok-user-text">{message.text}</p> : <MessageText text={message.text} onOpenUrl={onOpenUrl} />}</div>
     </li>)}
   </ol>
 }

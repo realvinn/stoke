@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
-import { grokBotMessages, grokBotThreads } from '../src/shared/grokBotConversation.ts'
+import { grokBotMessages, grokBotThreads, grokBotSwitch, grokBotApprovals, grokBotSkills } from '../src/shared/grokBotConversation.ts'
+import { grokBotCommand } from '../src/shared/grokBotCommands.ts'
 import { canMoveTab, type Tab } from '../src/shared/tabWindows.ts'
 import { toStored } from '../src/renderer/src/lib/restore.ts'
 import { folderChip, shortcutVerdict } from '../src/shared/topBar.ts'
@@ -63,5 +64,40 @@ check('conversation drafts are never serialized as terminal sessions or screens'
 check('window handoff can carry idle conversation drafts, while an in-flight send stays with its owner', () => {
   assert.equal(canMoveTab(tab), true)
   assert.equal(canMoveTab({ ...tab, grokBot: { ...tab.grokBot!, sending: true } }), false)
+})
+check('switching bots and accounts keeps drafts isolated and clears old receipts', () => {
+  const first = { ...tab.grokBot!, delivery: 'accepted' as const }
+  const second = { ...first, ...grokBotSwitch(first, { id: 'account-2', label: 'Second' }, { id: 'bot-3', name: 'Same ID in second account', kind: 'Bot' }) }
+  assert.equal(second.draft, '')
+  assert.equal(second.delivery, undefined)
+  assert.equal(second.drafts!['owned-bot-account:bot-3'].draft, 'owned draft')
+  second.draft = 'second account draft'
+  const back = grokBotSwitch(second, { id: 'owned-bot-account', label: 'First' }, { id: 'bot-3', name: 'First bot', kind: 'Bot' })
+  assert.equal(back.draft, 'owned draft')
+  assert.equal(back.drafts!['account-2:bot-3'].draft, 'second account draft')
+  const uncertain = { ...first, delivery: 'unknown' as const, sendError: 'Check the thread before resending.' }
+  const switched = { ...uncertain, ...grokBotSwitch(uncertain, { id: 'account-2', label: 'Second' }) }
+  const restored = grokBotSwitch(switched, { id: uncertain.accountId, label: 'First' }, { id: uncertain.targetId, name: 'First bot', kind: 'Bot' })
+  assert.equal(restored.delivery, 'unknown')
+  assert.equal(restored.sendError, uncertain.sendError)
+})
+check('group, skill and approval commands reject unsupported or unsafe options before launch', () => {
+  const accountId = 'owned'
+  for (const operation of [
+    { kind: 'delete', target: '--all' }, { kind: 'members-set', target: 'group', members: [] },
+    { kind: 'create', targetKind: 'group', name: 'Group', members: Array.from({ length: 7 }, (_, i) => String(i)) },
+    { kind: 'update', target: 'bot', notify: 'on' }, { kind: 'approval-respond', target: 'bot', entryId: 'e', requestId: 'r', decision: 'always-allow' },
+    { kind: 'thread', target: 'bot', limit: 201 }, { kind: 'skill-add', markdown: 'a'.repeat(100001) }, { kind: 'exec', message: 'arbitrary shell' }
+  ]) assert.throws(() => grokBotCommand({ accountId, ...operation } as never))
+  const command = grokBotCommand({ accountId, kind: 'send', target: 'bot', message: '--gateway https://evil.invalid $(touch owned)' })
+  assert.equal(command.argv.at(-1), '--gateway https://evil.invalid $(touch owned)')
+  assert.equal(command.argv.at(-3), '--')
+})
+check('approval calls use the reviewed CLI route and grant only an explicit one-time decision', () => {
+  assert.deepEqual(grokBotCommand({ accountId: 'owned', kind: 'approval-respond', target: 'bot', entryId: 'entry', requestId: 'request', decision: 'accept' }), {
+    gateway: false, argv: ['approvals', 'respond', '--target=bot', '--entry-id=entry', '--request-id=request', '--decision=accept']
+  })
+  assert.deepEqual(grokBotApprovals({ approvals: [{ entryId: 'entry', requestId: 'request', type: 'auto-review-approval', command: 'owned command', truncated: true, secret: 'owned-hidden' }, { entryId: 'unsupported', requestId: 'other', type: 'secret-request' }] }), [{ entryId: 'entry', requestId: 'request', type: 'auto-review-approval', details: 'command: owned command', truncated: true }])
+  assert.deepEqual(grokBotSkills([{ id: 'skill', name: 'Research', description: 'Plan', source: 'workflow', token: 'owned-hidden' }]), [{ id: 'skill', name: 'Research', description: 'Plan', source: 'workflow' }])
 })
 console.log(`${passed} Grok Bot conversation checks passed`)
