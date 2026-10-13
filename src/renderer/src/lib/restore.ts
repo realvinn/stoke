@@ -17,7 +17,7 @@ function restoredId(i: number): string {
 export function restorableTabs(tabs: Tab[]): (Tab & { kind: 'session' | 'new' })[] {
   return tabs.filter(
     (t): t is Tab & { kind: 'session' | 'new' } =>
-      t.kind !== 'remote' && !t.installing?.length && !t.enrollHostId && !t.accountLogin && !t.private
+      (t.kind === 'session' || t.kind === 'new') && !t.installing?.length && !t.enrollHostId && !t.accountLogin && !t.private
   )
 }
 

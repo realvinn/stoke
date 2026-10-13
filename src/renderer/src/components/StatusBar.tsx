@@ -306,6 +306,17 @@ export function StatusBar({
     )
   }
 
+  if (tab?.kind === 'grok-bot') return (
+    <footer className="statusbar">
+      {tools}
+      <span className="status-item">Grok Bot</span>
+      {tab.grokBot?.accountLabel && <span className="status-item">{tab.grokBot.accountLabel}</span>}
+      <span className="status-spacer" />
+      {selfRestartPill}
+      {updatePill}
+    </footer>
+  )
+
   if (!tab || tab.kind === 'new') {
     return (
       <footer className="statusbar">

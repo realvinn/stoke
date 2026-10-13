@@ -195,6 +195,9 @@ import type { SessionActivity, Tab } from './types'
  */
 type CampfireModule = typeof import('./components/Campfire')
 
+const GrokBotWorkspace = lazy(() => import('./components/GrokBotWorkspace')
+  .then(module => ({ default: module.GrokBotWorkspace }))
+  .catch(() => ({ default: () => <p role="alert">The Grok Bot view could not load. Restart Stoke to try again.</p> })))
 const Campfire = lazy(() =>
   import('./components/Campfire')
     .then((m) => ({ default: m.Campfire }))
@@ -277,7 +280,8 @@ const EMPTY_BROWSER: BrowserState = {
 const NO_REVEAL: RevealInfo = { inset: 0, onEntry: false }
 
 export function App(): React.JSX.Element {
-  usePluginAppearance()
+  const plugins = usePluginAppearance()
+  const grokBotEnabled = plugins ? plugins.entries.some(entry => entry.manifest.id === 'grok-bot' && entry.installed && entry.enabled) : null
   const platform = window.stoke.platform
   const isMac = platform === 'darwin'
 
@@ -3463,6 +3467,25 @@ export function App(): React.JSX.Element {
     [dropRestoredScreen, dropSessionState, syncPending, cancelReconnect]
   )
 
+  const openGrokBot = useCallback(() => {
+    if (!grokBotEnabled) return
+    const tab: Tab = {
+      ...newTab(), kind: 'grok-bot', cliId: 'grok', title: 'Grok Bot',
+      grokBot: { accountId: '', accountLabel: '', targetId: '', targetLabel: '', draft: '' }
+    }
+    const current = tabsRef.current.find(item => item.id === activeTabIdRef.current)
+    const next = current?.kind === 'new' ? tabsRef.current.map(item => item.id === current.id ? tab : item) : [...tabsRef.current, tab]
+    tabsRef.current = next
+    setTabs(next)
+    activeTabIdRef.current = tab.id
+    setActiveTabId(tab.id)
+  }, [grokBotEnabled])
+
+  useEffect(() => {
+    if (grokBotEnabled !== false) return
+    for (const tab of tabsRef.current.filter(tab => tab.kind === 'grok-bot')) closeTab(tab.id)
+  }, [grokBotEnabled, closeTab])
+
   /**
    * The one guarded door to `closeTab` — Cmd+W, every tab's × button, and the
    * paused/exited-tab "Close tab" buttons all call this, never `closeTab`
@@ -6490,6 +6513,7 @@ export function App(): React.JSX.Element {
               }
               onLookAgain={() => refreshAgents(true)}
               otherClis={otherClis}
+              onStartGrokBot={grokBotEnabled ? openGrokBot : undefined}
               onMakeDefaultAgent={makeDefaultAgent}
               agentAccess={settings?.agents.access[primaryCli] ?? 'default'}
               onAgentAccess={(mode) => {
@@ -6553,6 +6577,18 @@ export function App(): React.JSX.Element {
                 ) : null
               }
             />
+          )}
+          {grokBotEnabled && activeTab?.kind === 'grok-bot' && activeTab.grokBot && (
+            <Suspense fallback={<p role="status">Opening Grok Bot…</p>}>
+              <GrokBotWorkspace key={activeTab.id} binding={activeTab.grokBot}
+                onChange={patch => setTabs(list => list.map(tab => tab.id === activeTab.id && tab.kind === 'grok-bot' && tab.grokBot ? {
+                  ...tab, grokBot: { ...tab.grokBot, ...patch }, title: patch.targetLabel || tab.title
+                } : tab))}
+                onManage={() => openSettings('plugins')}
+                onNewChat={openGrokBot}
+                onOpenUrl={openUrl}
+              />
+            </Suspense>
           )}
           {/*
             Who is attached from another machine, as a floating button in the

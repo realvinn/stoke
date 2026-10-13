@@ -880,6 +880,10 @@ await step('native plugin lifecycle and Grok Bot account isolation', async () =>
       const runtime = join(ud, 'plugins', 'runtime', 'grok-bot', '0.12.4'); mkdirSync(runtime, { recursive: true })
       for (const filename of ['gbot.mjs', 'gbot-flight.mjs']) copyFileSync(join(resolve(opt['gbot-cli']), filename), join(runtime, filename))
       const requests: { token: string; route: string; method: string; prompt?: string }[] = []
+      const transcript = { entries: [
+        { id: 'owned-user', kind: 'user-message', prompt: 'Please format the response\n界', atMs: 1234567890000 },
+        { id: 'owned-reply', kind: 'send-message', message: { type: 'text', content: '## Owned formatted reply\n\n**Readable** response.\n\n- First step\n- Second step\n\n```js\nconsole.log("owned");\n```\n\n| Item | Status |\n| --- | --- |\n| Plan | Ready |\n\n<script>globalThis.__grokInjected=true</script>\n\n[Unsafe](javascript:alert(1))\n\n![Remote image](https://example.invalid/owned.png)' } }
+      ] }
       server = createHttpServer(async (request, response) => {
         let text = ''
         for await (const chunk of request) text += chunk
@@ -889,7 +893,7 @@ await step('native plugin lifecycle and Grok Bot account isolation', async () =>
         response.setHeader('content-type', 'application/json')
         const receipt = body.prompt?.includes('unknown receipt') ? {}
           : body.prompt?.includes('legacy receipt') ? { messageId: 'owned-message' } : { accepted: true }
-        response.end(JSON.stringify(method === 'listAgents' ? { agents: [{ id: 'owned-bot', name: 'Owned native bot' }, { id: 'owned-group', name: 'Owned group', isGroup: true }] } : method === 'sendPrompt' ? receipt : { entries: [] }))
+        response.end(JSON.stringify(method === 'listAgents' ? { agents: [{ id: 'owned-bot', name: 'Owned native bot' }, { id: 'owned-group', name: 'Owned group', isGroup: true }] } : method === 'sendPrompt' ? receipt : transcript))
       })
       await new Promise<void>(resolve => server!.listen(0, '127.0.0.1', resolve))
       const gateway = `http://127.0.0.1:${(server.address() as { port: number }).port}`
@@ -904,8 +908,11 @@ await step('native plugin lifecycle and Grok Bot account isolation', async () =>
       await ev(`document.querySelectorAll('.plugin-account-list .plugin-account')[4].click(), true`)
       check('selecting a native account changes the visible active nickname', await waitFor('fifth account selection', () => ev<boolean>(`[...document.querySelectorAll('[aria-label="Grok Bot"] .plugin-controls')].some(node => node.textContent.includes('Active: Grok account 5'))`)) === true)
       await ev(`[...document.querySelectorAll('[aria-label="Grok Bot"] button')].find(button => button.textContent.includes('List bots and groups')).click(), true`)
-      await waitFor('selected-account native bot roster', () => ev<boolean>(`document.querySelector('[aria-label="Grok Bot"] .plugin-output')?.textContent.includes('Owned native bot') && [...document.querySelectorAll('[aria-label="Grok Bot"] select')].some(select => select.options.length >= 3)`))
+      await waitFor('selected-account native bot roster', () => ev<boolean>(`[...document.querySelectorAll('[aria-label="Grok Bot"] select option')].some(option => option.textContent.includes('Owned native bot')) && [...document.querySelectorAll('[aria-label="Grok Bot"] select')].some(select => select.options.length >= 3)`))
       check('the visible list action routes through the selected fifth account', requests.slice(-2).every(request => request.token === 'Bearer owned-native-token-5'))
+      await ev(`[...document.querySelectorAll('[aria-label="Grok Bot"] button')].find(button => button.textContent === 'Read thread').click(), true`)
+      await waitFor('formatted plugin replies', () => ev<boolean>(`document.querySelector('[aria-label="Grok Bot"] .grok-message-text h2')?.textContent === 'Owned formatted reply'`))
+      check('plugin replies render Markdown headings, lists, tables and code while blocking executable HTML and remote images', await ev<boolean>(`!!document.querySelector('[aria-label="Grok Bot"] .grok-message-text strong') && !!document.querySelector('[aria-label="Grok Bot"] .grok-message-text li') && !!document.querySelector('[aria-label="Grok Bot"] .grok-message-text table') && !!document.querySelector('[aria-label="Grok Bot"] .grok-message-text pre code') && !document.querySelector('[aria-label="Grok Bot"] .grok-message-text script, [aria-label="Grok Bot"] .grok-message-text img, [aria-label="Grok Bot"] .grok-message-text a[href^="javascript:"]') && !window.__grokInjected`))
       const send = async (message: string) => {
         await ev(`(() => { const field = document.querySelector('[aria-label="Grok Bot"] textarea'); Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(field, ${JSON.stringify(message)}); field.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`)
         await waitFor('native send action enabled', () => ev<boolean>(`[...document.querySelectorAll('[aria-label="Grok Bot"] button')].some(button => button.textContent === 'Send message' && !button.disabled)`))
@@ -930,9 +937,66 @@ await step('native plugin lifecycle and Grok Bot account isolation', async () =>
         await ev<boolean>(`document.querySelector('[aria-label="Grok Bot"] textarea').value === 'owned unknown receipt' && ![...document.querySelectorAll('[aria-label="Grok Bot"] [role="status"]')].some(node => node.textContent === 'Message sent.')`))
       const sealed = readFileSync(join(ud, 'plugins', 'grok-bot-accounts.json'), 'utf8')
       check('native saved accounts expose no gateway token in the file', !sealed.includes('owned-native-token-'))
+      await ev(`document.querySelector('button[title="Close settings (Esc)"]').click(), document.querySelector('button[title^="New session"]').click(), true`)
+      await waitFor('the launcher for a plugin agent', () => ev<boolean>(`!!document.querySelector('.split-caret')`))
+      await ev(`document.querySelector('.split-caret').click(), true`)
+      await waitFor('Grok Bot alongside coding agents', () => ev<boolean>(`[...document.querySelectorAll('[role="menuitem"]')].some(item => item.textContent.includes('Grok Bot'))`))
+      await shot('04-grok-bot-launcher-choice')
+      await ev(`[...document.querySelectorAll('[role="menuitem"]')].find(item => item.textContent.includes('Grok Bot')).click(), true`)
+      await waitFor('native bot account picker', () => ev<boolean>(`document.querySelector('[aria-label="Grok Bot conversation"] select')?.options.length === 6`))
+      await ev(`(() => { const picker = document.querySelector('[aria-label="Grok Bot conversation"] select'); picker.value = ${JSON.stringify(view.accounts[4].id)}; picker.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`)
+      await waitFor('fifth bot account chosen in launcher flow', () => ev<boolean>(`document.querySelector('[aria-label="Grok Bot conversation"] select').value === ${JSON.stringify(view.accounts[4].id)}`))
+      await ev(`[...document.querySelectorAll('[aria-label="Grok Bot conversation"] button')].find(button => button.textContent === 'List bots and groups').click(), true`)
+      await waitFor('a cloud bot choice', () => ev<boolean>(`[...document.querySelectorAll('[aria-label="Grok Bot conversation"] select option')].some(option => option.value === 'owned-bot')`))
+      check('launcher bot listing stays on the chosen fifth account', requests.slice(-2).every(request => request.token === 'Bearer owned-native-token-5'))
+      await ev(`[...document.querySelectorAll('[aria-label="Grok Bot conversation"] button')].find(button => button.textContent === 'Open conversation').click(), true`)
+      await waitFor('a formatted cloud conversation in its own tab', () => ev<boolean>(`document.querySelector('[aria-label="Grok Bot conversation"] h2')?.textContent === 'Owned native bot' && document.querySelector('[aria-label="Grok Bot conversation"] .grok-message-text h2')?.textContent === 'Owned formatted reply'`))
+      check('bot tabs identify the selected account and omit terminal context, model and local-folder controls', await ev<boolean>(`document.querySelector('.tab[aria-selected="true"]').textContent.includes('Grok account 5') && document.querySelector('.tab[aria-selected="true"]').textContent.includes('Grok Bot') && !document.querySelector('.tab[aria-selected="true"] .context-ring') && !document.querySelector('.statusbar [data-model-source]') && !document.querySelector('.topbar [data-kind="folder"]')`))
+      const botTab = await ev<string>(`document.querySelector('.tab[aria-selected="true"]').dataset.tabId`)
+      const draft = 'Owned draft stays with account 5'
+      await ev(`(() => { const field = document.querySelector('[aria-label="Grok Bot conversation"] textarea'); Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(field, ${JSON.stringify(draft)}); field.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`)
+      await ev(`[...document.querySelectorAll('[aria-label="Grok Bot conversation"] button')].find(button => button.textContent === 'New bot conversation').click(), true`)
+      await waitFor('another bot account picker', () => ev<boolean>(`!!document.querySelector('[aria-label="Grok Bot conversation"] .grok-chooser')`))
+      await ev(`document.querySelector('.tab[data-tab-id="${botTab}"]').click(), true`)
+      await waitFor('the original bot draft restored on tab switch', () => ev<boolean>(`document.querySelector('[aria-label="Grok Bot conversation"] textarea')?.value === ${JSON.stringify(draft)}`))
+      check('switching tabs preserves the account-bound bot composer', await ev<boolean>(`document.querySelector('[aria-label="Grok Bot conversation"] header p').textContent.includes('Grok account 5')`))
+      await waitFor('formatted messages after switching back to the conversation', () => ev<boolean>(`document.querySelector('[aria-label="Grok Bot conversation"] .grok-message-text h2')?.textContent === 'Owned formatted reply'`))
+      await ui!.send('Emulation.setDeviceMetricsOverride', { width: 940, height: 720, deviceScaleFactor: 1, mobile: false })
+      await sleep(200); await shot('04-grok-bot-conversation'); await ui!.send('Emulation.clearDeviceMetricsOverride')
+      const primary = ui!
+      let botWindow: CdpClient | null = null
+      try {
+        await ev(`document.querySelector('.tab[aria-selected="true"]').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, button: 2, clientX: 500, clientY: 20 })), true`)
+        await waitFor('the bot tab context menu', () => ev<boolean>(`[...document.querySelectorAll('[role="menuitem"]')].some(item => item.textContent.includes('Move to new window'))`))
+        await ev(`[...document.querySelectorAll('[role="menuitem"]')].find(item => item.textContent.includes('Move to new window')).click(), true`)
+        botWindow = await waitFor('the detached bot renderer', () => connectPage(port, client => client.evaluate('window.stoke?.window.detached === true'), { what: 'the detached bot renderer' }), 25000)
+        await botWindow.send('Emulation.setFocusEmulationEnabled', { enabled: true })
+        ui = botWindow
+        await waitFor('the bot draft in its new window', () => ev<boolean>(`document.querySelector('[aria-label="Grok Bot conversation"] textarea')?.value === ${JSON.stringify(draft)}`))
+        check('moving a bot tab preserves its account, target and unsent draft with the sidebar off', await ev<boolean>(`!document.querySelector('.sidebar') && document.querySelector('[aria-label="Grok Bot conversation"] header p').textContent.includes('Grok account 5') && document.querySelector('[aria-label="Grok Bot conversation"] h2').textContent === 'Owned native bot'`))
+        await waitFor('formatted replies in the separate window', () => ev<boolean>(`document.querySelector('[aria-label="Grok Bot conversation"] .grok-message-text h2')?.textContent === 'Owned formatted reply'`))
+        await shot('04-grok-bot-detached-conversation')
+        await ev('window.stoke.window.close(), true')
+        ui = primary
+        await waitFor('the bot draft returned to the primary window', () => ev<boolean>(`document.querySelector('[aria-label="Grok Bot conversation"] textarea')?.value === ${JSON.stringify(draft)}`))
+      } finally {
+        if (ui === botWindow) await botWindow?.evaluate('window.stoke.window.close(), true').catch(() => {})
+        ui = primary
+        botWindow?.close()
+      }
+      const beforeChatSend = requests.filter(request => request.method === 'sendPrompt').length
+      await waitFor('cloud composer ready to send', () => ev<boolean>(`!!document.querySelector('[aria-label="Grok Bot conversation"] form button[data-variant="primary"]:not(:disabled)')`))
+      await ev(`document.querySelector('[aria-label="Grok Bot conversation"] form button[type="submit"], [aria-label="Grok Bot conversation"] form button[data-variant="primary"]').click(), true`)
+      await waitFor('cloud chat send confirmation', () => ev<boolean>(`document.querySelector('[aria-label="Grok Bot conversation"] form [role="status"]')?.textContent === 'Message sent.'`))
+      check('cloud conversation sends the exact draft once with its selected account', requests.filter(request => request.method === 'sendPrompt').length === beforeChatSend + 1 && requests.findLast(request => request.method === 'sendPrompt')?.token === 'Bearer owned-native-token-5' && requests.findLast(request => request.method === 'sendPrompt')?.prompt === draft)
     }
     await ev(`window.stoke.plugins.toggle('grok-bot', false)`)
-    check('disabling Grok Bot removes its account rows and all controls', await waitFor('Grok controls unmounted', () => ev<boolean>(`!document.querySelector('[aria-label="Grok Bot"]') && !document.querySelector('.plugin-account-list')`)) === true)
+    check('disabling Grok Bot removes its account rows, conversation tabs and all controls', await waitFor('Grok controls unmounted', () => ev<boolean>(`!document.querySelector('[aria-label="Grok Bot"]') && !document.querySelector('.plugin-account-list') && !document.querySelector('[aria-label="Grok Bot conversation"]') && !document.querySelector('.tab [data-kind="grok-bot"]')`)) === true)
+    await ev(`document.querySelector('button[title="Close settings (Esc)"]')?.click(), document.querySelector('button[title^="New session"]').click(), true`)
+    await waitFor('launcher after disabling the plugin', () => ev<boolean>(`!!document.querySelector('.split-caret')`))
+    await ev(`document.querySelector('.split-caret').click(), true`)
+    check('disabled Grok Bot is absent from the launcher agent choices', await waitFor('the native agent menu', () => ev<boolean>(`!!document.querySelector('[role="menuitem"]')`)) && await ev<boolean>(`![...document.querySelectorAll('[role="menuitem"]')].some(item => item.textContent.includes('Grok Bot'))`))
+    await ev(`document.querySelector('.split-caret').click(), document.querySelector('.tab[aria-selected="true"] .tab-close').click(), true`)
     check('disabled Grok Bot cannot run through preload IPC', await ev<boolean>(`window.stoke.grokBot.read().then(() => false, () => true)`) === true)
   } finally {
     await ui!.send('Emulation.clearDeviceMetricsOverride').catch(() => {})

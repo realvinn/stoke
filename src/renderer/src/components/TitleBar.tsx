@@ -221,7 +221,7 @@ export function TitleBar({
   const startRename = (tab: Tab): void => {
     // A New tab has no conversation to name; renaming it would be renaming the
     // launcher. Session tabs only, the menu item disabled to match.
-    if (tab.kind !== 'session') return
+    if (tab.kind !== 'session' && tab.kind !== 'grok-bot') return
     setMenu(null)
     setDraft(titleOf(tab))
     setEditingId(tab.id)
@@ -335,7 +335,7 @@ export function TitleBar({
             const act = tab.kind === 'session' ? activity[tab.id] : undefined
             const dot = act?.dot ?? null
             const label = labelFor?.(tab) ?? { text: tab.title, agentTag: null, agent: null, account: null }
-            const agentName = label.agent ? cliFor(label.agent).label : null
+            const agentName = tab.kind === 'grok-bot' ? 'Grok Bot' : label.agent ? cliFor(label.agent).label : null
             const account = label.account ?? null
             return (
               <div
@@ -503,7 +503,7 @@ export function TitleBar({
                   colour key, shared/accounts.ts).
                 */}
                 {account && (
-                  <span className="tab-account" {...agentMark(account.key)} title={`On the account ${account.text}`}>
+                  <span className="tab-account" {...agentMark(tab.kind === 'grok-bot' ? 'grok' : account.key)} title={`On the account ${account.text}`}>
                     {account.text}
                   </span>
                 )}
@@ -605,7 +605,7 @@ export function TitleBar({
         </button>
         <PhonePopover onOpenSettings={onOpenPhoneSettings} settingsOpen={settingsOpen} />
         <AccountChip target={usageTarget} label={usageTarget && activeTab ? labelFor?.(activeTab).account?.text : undefined} settingsOpen={settingsOpen} onAgentSettings={onOpenAgentSettings} onSyncSettings={onOpenSyncSettings} onAccounts={onOpenAccounts} />
-        {activeTab?.kind !== 'remote' && !activeTab?.hostId && <UsageChip target={usageTarget} accountLabel={activeTab ? labelFor?.(activeTab).account?.text : undefined} />}
+        {activeTab?.kind !== 'remote' && activeTab?.kind !== 'grok-bot' && !activeTab?.hostId && <UsageChip target={usageTarget} accountLabel={activeTab ? labelFor?.(activeTab).account?.text : undefined} />}
 
         <button
           className="icon-btn"
@@ -719,7 +719,7 @@ function buildTabMenu(
       label: 'Rename',
       hint: 'Double-click',
       // A New tab has no conversation to name (matches `startRename`).
-      disabled: tab.kind !== 'session',
+      disabled: tab.kind !== 'session' && tab.kind !== 'grok-bot',
       onSelect: () => on.onRename(tab)
     },
     // After Rename and before the tag toggle, so the Close group stays together.

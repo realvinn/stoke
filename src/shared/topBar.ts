@@ -307,7 +307,7 @@ export function shortcutFromDraft(id: string, d: ShortcutDraft): TopBarShortcut 
 
 /** The tab in front, as far as a shortcut is concerned. */
 export interface ShortcutTarget {
-  kind: 'session' | 'new' | 'remote'
+  kind: 'session' | 'new' | 'remote' | 'grok-bot'
   status: 'running' | 'exited' | 'paused'
   cliId: string
   /** An install, key-enrollment or sign-in tab: a terminal, but not a session to type a prompt into. */
@@ -330,6 +330,7 @@ export type ShortcutVerdict = { ok: true } | { ok: false; reason: string }
  */
 export function shortcutVerdict(item: Pick<TopBarShortcut, 'on'>, tab: ShortcutTarget | null): ShortcutVerdict {
   if (!tab || tab.kind === 'new') return { ok: false, reason: 'Start a session first: there is nothing to type into here.' }
+  if (tab.kind === 'grok-bot') return { ok: false, reason: 'Use the message composer on a Grok Bot conversation.' }
   if (tab.kind === 'remote') return { ok: false, reason: 'Not into another machine’s session.' }
   if (tab.utility) return { ok: false, reason: 'Not into an install, key or sign-in tab.' }
   if (tab.status !== 'running') return { ok: false, reason: 'This session is not running.' }
@@ -355,10 +356,10 @@ export function shortcutVerdict(item: Pick<TopBarShortcut, 'on'>, tab: ShortcutT
  * names the alias, as the tab menu does (Settings stores a label as typed).
  */
 export function folderChip(
-  tab: { kind: 'session' | 'new' | 'remote'; cwd: string; hostId: string | null; private?: boolean } | null,
+  tab: { kind: 'session' | 'new' | 'remote' | 'grok-bot'; cwd: string; hostId: string | null; private?: boolean } | null,
   opts: { style: FolderStyle; hostLabel: string | null; deviceLabel: string | null }
 ): { text: string; compact: string; title: string; open: string | null; where: 'local' | 'host' | 'device' | 'private' } | null {
-  if (!tab || tab.kind === 'new') return null
+  if (!tab || tab.kind === 'new' || tab.kind === 'grok-bot') return null
   if (tab.kind === 'remote') {
     const name = opts.deviceLabel?.trim() || 'another machine'
     return { text: name, compact: name, title: `A session on ${name}`, open: null, where: 'device' }

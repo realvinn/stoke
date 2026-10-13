@@ -19,6 +19,17 @@ export interface GrokBotSource {
   id: string
   label: string
 }
+/** In-memory tab binding and draft; credentials remain in the plugin's vault. */
+export interface GrokBotTabBinding {
+  accountId: string
+  accountLabel: string
+  targetId: string
+  targetLabel: string
+  draft: string
+  sending?: boolean
+  delivery?: 'accepted' | 'unknown' | 'rejected'
+  sendError?: string
+}
 export type GrokBotAccountCommand =
   | { kind: 'import'; label: string; sourceSlot?: string; replace?: string }
   | {

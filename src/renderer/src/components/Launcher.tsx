@@ -110,6 +110,8 @@ interface Props {
   /** The other agents on offer: installed, chosen, and not the primary. */
   otherClis: CodingCli[]
   onStartCli: (id: CodingCliId) => void
+  /** Plugin agent: opens a cloud conversation with its own account picker. */
+  onStartGrokBot?: () => void
   /** Make this agent the one Start starts, from the caret menu. */
   onMakeDefaultAgent: (id: CodingCliId) => void
   agentAccess?: AgentAccessMode
@@ -309,7 +311,7 @@ export function Launcher(props: Props): React.JSX.Element {
         return
       case 'agents':
         e.preventDefault()
-        if (otherClis.length || props.onAddAgents) setPop('agents')
+        if (otherClis.length || props.onAddAgents || props.onStartGrokBot) setPop('agents')
         return
       case 'switcher':
         e.preventDefault()
@@ -360,7 +362,7 @@ export function Launcher(props: Props): React.JSX.Element {
     }
   }
 
-  const agentMenu = otherClis.length > 0 || !!props.onAddAgents
+  const agentMenu = otherClis.length > 0 || !!props.onAddAgents || !!props.onStartGrokBot
   /*
    * A chip pick applies to this launch and closes the popover, with focus on
    * Start: a one-off model is chip, pick, Enter. Left open, Enter pressed the
@@ -519,7 +521,7 @@ export function Launcher(props: Props): React.JSX.Element {
                   aria-haspopup="menu"
                   aria-expanded={pop === 'agents'}
                   onClick={() => setPop(pop === 'agents' ? null : 'agents')}
-                  disabled={!target || missing}
+                  disabled={(!target || missing) && !props.onStartGrokBot}
                   title="Start another agent here (Alt+Enter)"
                 >
                   <IconChevron className="caret-down" />
@@ -537,10 +539,12 @@ export function Launcher(props: Props): React.JSX.Element {
                         key: c.id,
                         label: c.label,
                         side: c.vendor,
+                        disabled: !target || missing,
                         // Its colour, as its tab and pane will wear it.
                         agent: c.id,
                         onPick: () => props.onStartCli(c.id)
                       })),
+                      ...(props.onStartGrokBot ? [{ key: 'grok-bot', label: 'Grok Bot', side: 'Bot accounts', onPick: props.onStartGrokBot }] : []),
                       // What Start starts, changed from where it is used; the
                       // same setting as Settings › Agents › Default agent.
                       ...otherClis.map((c, i) => ({

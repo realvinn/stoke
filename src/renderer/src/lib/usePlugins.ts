@@ -23,7 +23,7 @@ export function usePlugins(): { view: PluginsView | null; error: string } {
   }, [])
   return { view, error }
 }
-export function usePluginAppearance(): void {
+export function usePluginAppearance(): PluginsView | null {
   const { view } = usePlugins()
   useEffect(() => {
     const style = document.createElement('style')
@@ -38,4 +38,5 @@ export function usePluginAppearance(): void {
     document.head.append(style)
     return () => style.remove()
   }, [view])
+  return view
 }

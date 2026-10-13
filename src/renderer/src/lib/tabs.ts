@@ -466,6 +466,7 @@ export type RestartPlan =
 
 export function restartPlan(
   tab: {
+    kind?: string
     cwd: string
     hostId?: string | null
     cliId?: CodingCliId
@@ -478,6 +479,7 @@ export function restartPlan(
   },
   hostIds: string[]
 ): RestartPlan {
+  if (tab.kind === 'grok-bot') return { kind: 'impossible', reason: 'Grok Bot conversations use their own message composer.' }
   /*
    * First of all: a private chat's folder was deleted with it, so a "local"
    * plan would start Claude in a folder that is not there — or, were it ever
@@ -631,7 +633,7 @@ export function reconnectDecision(input: {
  */
 export function closeAsksDetach(
   tab: {
-    kind: 'session' | 'new' | 'remote'
+    kind: 'session' | 'new' | 'remote' | 'grok-bot'
     status: 'running' | 'exited' | 'paused'
     exitCode: number | null
     hostId: string | null
@@ -738,7 +740,7 @@ export function versionNumber(raw: string | null): string | null {
 
 export function relaunchPlan(input: {
   tab: {
-    kind: 'session' | 'new' | 'remote'
+    kind: 'session' | 'new' | 'remote' | 'grok-bot'
     status: 'running' | 'exited' | 'paused'
     sessionId: string
     hostId: string | null
@@ -1161,6 +1163,7 @@ export function tabLabel(
     title: string
     customTitle?: string
     cliId: CodingCliId
+    grokBot?: { accountId: string; accountLabel: string }
     installing?: readonly string[]
     accountId?: string
     accountLogin?: string
@@ -1183,6 +1186,12 @@ export function tabLabel(
   // to blank it falls through to what the label was before (`tabLabel` gets the
   // trimmed value, so whitespace-only never counts as a name).
   const custom = tab.customTitle?.trim()
+  if (tab.kind === 'grok-bot') return {
+    text: custom || tab.title,
+    agentTag: opts.show ? 'Grok Bot' : null,
+    agent: 'grok',
+    account: tab.grokBot?.accountId ? { key: tab.grokBot.accountId, text: tab.grokBot.accountLabel } : null
+  }
   if (tab.kind === 'new') {
     return { text: custom || (newTarget ? `New · ${newTarget}` : tab.title), agentTag: null, agent: null, account: null }
   }
@@ -1315,6 +1324,7 @@ export function revealLabel(platform: string): string {
  * the other cannot count.
  */
 export function profileCwd(tab: FolderTab): string | null {
+  if (tab.kind === 'grok-bot') return null
   if (tab.hostId || tab.enrollHostId || tab.private) return null
   return tab.cwd
 }

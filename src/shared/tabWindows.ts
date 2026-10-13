@@ -23,16 +23,21 @@ export type SessionActivity = HookActivity
  * A New Project tab has no PTY yet; every session tab does. A `remote` tab is
  * another of the owner's machines' session, streamed through the hub relay
  * (src/main/hub/remote.ts): no pty here, no transcript here, never restored.
+ * A `grok-bot` tab is a cloud conversation with its own account and draft;
+ * it has no local process, folder or terminal restore record.
  */
-export type TabKind = 'session' | 'new' | 'remote'
+export type TabKind = 'session' | 'new' | 'remote' | 'grok-bot'
 
 /** A live terminal tab. Distinct from Claude's own session record. */
 export interface Tab {
   agentAccess?: import('./agentAccess.ts').AgentAccessMode
   id: string
   kind: TabKind
+  /** Cloud bot conversation, independent of coding CLI/PTYS and local folders. */
+  grokBot?: import('./grokBot.ts').GrokBotTabBinding
   /**
-   * Which coding CLI this tab is running.
+   * Which coding CLI a terminal tab is running. Grok Bot tabs use `grok` only
+   * for their visual identity; the `kind` guard keeps them out of CLI launches.
    *
    * Read by everything that draws beside the terminal — the context slot, the
    * plan chip, the version item, the relaunch pill — through `capsFor`, so that
@@ -181,7 +186,7 @@ export interface TabWindowPacket {
 export interface TabWindowTransfer { id: string; packet: TabWindowPacket }
 
 export function canMoveTab(tab: Tab): boolean {
-  return tab.kind !== 'remote' && !tab.installing?.length && !tab.enrollHostId && !tab.accountLogin && !tab.reconnect
+  return tab.kind !== 'remote' && !tab.grokBot?.sending && !tab.installing?.length && !tab.enrollHostId && !tab.accountLogin && !tab.reconnect
 }
 
 /** Release well beyond the title strip; an ordinary reorder or click never tears off. */

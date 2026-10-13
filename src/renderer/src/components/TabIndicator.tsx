@@ -65,6 +65,14 @@ export function TabIndicator({
   permissionMode,
   watched
 }: Props): React.JSX.Element {
+  if (kind === 'grok-bot') return (
+    <span className="tab-indicator" data-kind="grok-bot">
+      <svg className="ring" viewBox="0 0 16 16" aria-hidden="true">
+        <path className="ring-track" d="M3 3.5h10v7H7l-3 2v-2H3z" />
+      </svg>
+      <span className="sr-only">Grok Bot conversation</span>
+    </span>
+  )
   if (kind === 'new') {
     /*
      * A New Project tab has no session, so there is nothing to measure. The

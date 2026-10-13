@@ -1,7 +1,11 @@
-import { useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import type { GrokBotView, GrokBotSource, GrokBotAccountCommand, GrokBotOperation } from '@shared/grokBot'
 import { GBOT_SOURCE } from '@shared/grokBot'
 import { ipcErrorMessage } from '../lib/format'
+import { grokBotMessages, grokBotThreads, type GrokBotMessage } from '@shared/grokBotConversation'
+const GrokBotMessages = lazy(() => import('./GrokBotMessages')
+  .then(module => ({ default: module.GrokBotMessages }))
+  .catch(() => ({ default: ({ messages }: { messages: GrokBotMessage[] }) => <div>{messages.map(message => <pre key={message.id}>{message.text}</pre>)}</div> })))
 export function GrokBotPanel(): React.JSX.Element {
   const [view, setView] = useState<GrokBotView | null>(null)
   const [selected, setSelected] = useState('')
@@ -12,6 +16,7 @@ export function GrokBotPanel(): React.JSX.Element {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [output, setOutput] = useState('')
+  const [messages, setMessages] = useState<GrokBotMessage[]>([])
   const [roster, setRoster] = useState<{ id: string; name: string; kind: string }[]>([])
   const [target, setTarget] = useState('')
   const [message, setMessage] = useState('')
@@ -49,6 +54,7 @@ export function GrokBotPanel(): React.JSX.Element {
   useEffect(() => {
     generation.current++
     setOutput('')
+    setMessages([])
     setRoster([])
     setTarget('')
     setMessage('')
@@ -82,6 +88,14 @@ export function GrokBotPanel(): React.JSX.Element {
       }
     })
   const account = view?.accounts.find((account) => account.id === selected)
+  const chooseTarget = (value: string): void => {
+    generation.current++
+    setTarget(value)
+    setMessages([])
+    setOutput('')
+    setNotice('')
+    setError('')
+  }
   const run = (kind: GrokBotOperation['kind']): void => {
     const request = { accountId: selected, kind, target, message, name: nickname }
     const current = generation.current
@@ -93,19 +107,16 @@ export function GrokBotPanel(): React.JSX.Element {
           `${result.message ?? 'Action failed.'}${result.delivery === 'unknown' ? ' Read the thread before resending; delivery is unknown.' : ''}`
         )
       else {
-        setOutput(kind === 'send' ? '' : JSON.stringify(result.data, null, 2))
+        setOutput(['send', 'list', 'thread'].includes(kind) ? '' : JSON.stringify(result.data, null, 2))
+        if (kind === 'thread') {
+          const rows = grokBotMessages(result.data)
+          setMessages(rows)
+          if (!rows.length) setNotice('No readable messages in the recent conversation.')
+        }
         if (kind === 'list' && result.data && typeof result.data === 'object') {
-          const data = result.data as Record<string, unknown>
-          const rows: { id: string; name: string; kind: string }[] = []
-          for (const category of ['bots', 'groups'])
-            if (Array.isArray(data[category]))
-              for (const row of data[category])
-                if (row && typeof row.id === 'string')
-                  rows.push({
-                    id: row.id,
-                    name: typeof row.name === 'string' ? row.name : row.id,
-                    kind: category === 'bots' ? 'Bot' : 'Group'
-                  })
+          const rows = grokBotThreads(result.data)
+          setMessages([])
+          setNotice(`${rows.length} bots and groups loaded.`)
           setRoster(rows)
           setTarget(rows[0]?.id ?? '')
         }
@@ -156,6 +167,7 @@ export function GrokBotPanel(): React.JSX.Element {
                 generation.current++
                 setSelected(item.id)
                 setOutput('')
+                setMessages([])
                 setRoster([])
                 setTarget('')
                 setMessage('')
@@ -323,7 +335,7 @@ export function GrokBotPanel(): React.JSX.Element {
             <label>
               Bot or group
               {roster.length > 0 && (
-                <select value={target} onChange={(event) => setTarget(event.target.value)}>
+                <select value={target} disabled={busy} onChange={(event) => chooseTarget(event.target.value)}>
                   <option value="">Choose a thread</option>
                   {roster.map((row) => (
                     <option key={row.id} value={row.id}>
@@ -332,7 +344,7 @@ export function GrokBotPanel(): React.JSX.Element {
                   ))}
                 </select>
               )}
-              <input value={target} onChange={(event) => setTarget(event.target.value)} />
+              <input value={target} disabled={busy} onChange={(event) => chooseTarget(event.target.value)} />
             </label>
             <button disabled={busy || !target} onClick={() => run('thread')}>
               Read thread
@@ -363,6 +375,7 @@ export function GrokBotPanel(): React.JSX.Element {
           {output}
         </pre>
       )}
+      {messages.length > 0 && <Suspense fallback={<p role="status">Formatting messages…</p>}><GrokBotMessages messages={messages} name={roster.find(row => row.id === target)?.name} /></Suspense>}
     </section>
   )
 }
