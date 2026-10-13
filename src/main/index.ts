@@ -3285,6 +3285,7 @@ function createWindow(): void {
     if (!privateChats?.isPrivatePty(ptyId)) return
     void privateChats.finish(ptyId).catch((err) => console.error('[stoke] private chat cleanup', err))
   })
+  timers.push(setInterval(() => ptys?.checkCodexResume(getSettings().agents.codexResume), 1000))
   /*
    * Claude Code's own session registry, read once a second for every live
    * local Claude pty — and not at all while there is none. Two facts nothing
@@ -3461,7 +3462,7 @@ function createWindow(): void {
    * user-paced, so recomputing unconditionally is cheaper than working out
    * whether this particular write mattered.
    */
-  const offSettings = onSettingsChanged(() => { sendWatchStates(); updateNativeReveal() })
+  const offSettings = onSettingsChanged(() => { sendWatchStates(); updateNativeReveal(); ptys?.checkCodexResume(getSettings().agents.codexResume) })
   win.webContents.on('did-finish-load', () => sendWatchStates())
   /*
    * A reload is a new renderer that has not asked for the launch queue yet, so

@@ -170,6 +170,7 @@ export const DEFAULT_SETTINGS: Settings = {
   // Agent tags on (what the strip always drew) with no renamed labels, and every
   // agent in its seed colour (agentColors.ts).
   agents: {
+    codexResume: { ...DEFAULT_AGENTS.codexResume },
     chosen: null,
     endpoints: {},
     defaultCli: DEFAULT_AGENTS.defaultCli,

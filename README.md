@@ -12,6 +12,7 @@ been run on linux — treat it as experimental.
 
 - all your projects in a sidebar, and old chats you can pick back up
 - several sessions open at once, as tabs
+- an optional [Codex usage-reset watcher](docs/codex-resume.md), with a custom resume message and follow-up timer
 - a browser built in that claude can read and click
 - how full the context window is, on every tab
 - how much of your 5-hour and weekly limit is gone, and whether you're burning
@@ -47,13 +48,13 @@ To install a published beta, select its exact version. The plain command selects
 the latest stable release. On macOS, Linux or Git Bash:
 
 ```bash
-curl -fsSL https://stoke.vinn.dev/install.sh | STOKE_VERSION=1.0.0-beta.6 sh
+curl -fsSL https://stoke.vinn.dev/install.sh | STOKE_VERSION=1.0.0-beta.10 sh
 ```
 
 In Windows PowerShell:
 
 ```powershell
-$env:STOKE_VERSION='1.0.0-beta.6'; irm https://stoke.vinn.dev/install.ps1 | iex
+$env:STOKE_VERSION='1.0.0-beta.10'; irm https://stoke.vinn.dev/install.ps1 | iex
 Remove-Item Env:STOKE_VERSION
 ```
 

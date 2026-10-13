@@ -105,6 +105,31 @@ export class ScreenMirror {
     return this.serializer.serialize({ scrollback: MIRROR_SCROLLBACK }) + this.unparsed.join('') + this.modes.preamble({ screen: false })
   }
 
+  /** Current viewport only; queued output is unknown until xterm has parsed it. */
+  inspectComposer(): { text: string; ready: boolean } | null {
+    if (this.disposed || this.failed || this.unparsed.length) return null
+    const buffer = this.term.buffer.active
+    const lines: string[] = []
+    let text = ''
+    for (let row = 0; row < this.term.rows; row++) {
+      const line = buffer.getLine(buffer.baseY + row)
+      const wraps = buffer.getLine(buffer.baseY + row + 1)?.isWrapped === true
+      lines.push(line?.translateToString(true) ?? '')
+      text += (line?.translateToString(!wraps) ?? '') + (wraps ? '' : '\n')
+    }
+    const cursorLine = lines[buffer.cursorY] ?? ''
+    // Codex's empty composer cursor sits immediately after › and its space.
+    // Text to its right may be a grey suggestion; text to the left is user input.
+    const cursorRow = buffer.getLine(buffer.baseY + buffer.cursorY)
+    let draft = false
+    for (let col = buffer.cursorX; col < this.term.cols; col++) {
+      const cell = cursorRow?.getCell(col)
+      if (cell?.getChars().trim() && !cell.isDim()) { draft = true; break }
+    }
+    const ready = !draft && /^\s*›\s*$/.test(cursorLine.slice(0, buffer.cursorX)) && buffer.cursorX <= 3
+    return { text, ready }
+  }
+
   dispose(): void {
     if (this.disposed) return
     this.disposed = true

@@ -1596,6 +1596,8 @@ src/main/         Electron main process
                     the real parsers). A plan holds a key or a token path and never leaves main
   codexContext.ts   per-launch native Codex rollout/model/context watcher; account/cwd/start matching,
                     exact resume ids, incremental reads and unknown readings for ambiguous launches
+  codexResume.ts    local usage-reset watcher; configurable checks and five-hour follow-up, cancels
+                   on user input, and submits only a confirmed limit screen after its reset time
   codexUsage.ts     the newest `<CODEX_HOME>/sessions/…/rollout-*.jsonl` that states limits,
                     by mtime, tail only (gotcha 103), under a deadline
   usageVendors.ts   the OpenRouter key, Kimi Code and Cline readers: one read-only GET each,
@@ -2504,6 +2506,7 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     reading merged with only its own payloads), the panel's groups
   codexContext.ts   Codex rollout token/model fold; last-response usage, never the cumulative total
   windowShortcuts.ts native window-cycle chord matcher and wrapping order
+  codexResume.ts    watcher defaults/hydration and strict terminal limit-error/reset-date parsing
   codexUsage.ts     Codex's rate limits from a rollout's `token_count` lines: seconds to ms
                     once, the plan's bucket first, a window reset since the turn dropped
   openRouterUsage.ts  `GET /api/v1/key` (documented): key limit, spend, the free-model day

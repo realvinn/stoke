@@ -26,6 +26,7 @@ import type { EffortLevel, PermissionMode, Settings } from '@shared/types'
 import { CLAUDE_SHARED_PLUGIN, SHARED_SKILLS_DIR, skillReport, type SkillDirScan } from '@shared/skills'
 import { AGENT_SEEDS, agentSeed } from '@shared/agentColors'
 import { agentAccessOptions, type AgentAccessMode } from '@shared/agentAccess'
+import { hydrateCodexResume, type CodexResumeSettings } from '@shared/codexResume'
 import {
   mcpTicksFor,
   STOKE_BROWSER_SERVER,
@@ -547,8 +548,47 @@ export function AgentSettingsPage(props: AgentPagesProps & { agent: CodingCliId 
         }
         claude={isClaudeCode(current.id) ? <ClaudeParts onGo={onGo} /> : null}
       />
+      {agent === 'codex' && <CodexResumeControls value={agents.codexResume} onChange={codexResume => patchAgents({ ...agentsRef.current, codexResume })} />}
     </div>
   )
+}
+
+function CodexResumeControls({ value, onChange }: { value: CodexResumeSettings; onChange: (next: CodexResumeSettings) => void }): React.JSX.Element {
+  const [message, setMessage] = useState(value.message)
+  const draft = useRef(message)
+  const current = useRef({ value, onChange })
+  current.current = { value, onChange }
+  const saveMessage = (): void => {
+    const next = hydrateCodexResume({ ...current.current.value, message: draft.current })
+    if (next.message !== current.current.value.message) current.current.onChange(next)
+    draft.current = next.message
+    setMessage(next.message)
+  }
+  useEffect(() => () => {
+    const next = hydrateCodexResume({ ...current.current.value, message: draft.current })
+    if (next.message !== current.current.value.message) current.current.onChange(next)
+  }, [])
+  return <div className="agent-brief" data-setting="agent.codex-resume">
+    <label className="toggle">
+      <input type="checkbox" checked={value.enabled} onChange={e => onChange({ ...value, enabled: e.target.checked })} />
+      <span>Resume after a usage reset</span>
+    </label>
+    <FieldHint more="Checks local Codex tabs while Stoke is open. A usage-limit error with a readable reset time can resume once that time passes. The next check stops monitoring if Codex is running or has finished without a limit. Typing while waiting cancels that tab’s watcher. Turn this off and on to rearm stopped tabs. Private, remote, sign-in and installer tabs are excluded. Unknown reset times never trigger a message.">
+      Wait for Codex’s reset time, send your message, then check again later.
+    </FieldHint>
+    <div className="field" data-setting="agent.codex-resume-check">
+      <label className="field-label" htmlFor="codex-resume-check">Check every (minutes)</label>
+      <input className="input" id="codex-resume-check" type="number" min="1" max="1440" value={value.checkMinutes} onChange={e => onChange(hydrateCodexResume({ ...value, checkMinutes: e.target.valueAsNumber }))} />
+    </div>
+    <div className="field" data-setting="agent.codex-resume-recheck">
+      <label className="field-label" htmlFor="codex-resume-recheck">Check after resuming (hours)</label>
+      <input className="input" id="codex-resume-recheck" type="number" min="0.0166667" max="168" step="any" value={value.recheckHours} onChange={e => onChange(hydrateCodexResume({ ...value, recheckHours: e.target.valueAsNumber }))} />
+    </div>
+    <div className="field" data-setting="agent.codex-resume-message">
+      <label className="field-label" htmlFor="codex-resume-message">Resume message</label>
+      <input className="input" id="codex-resume-message" maxLength={2000} value={message} onChange={e => { draft.current = e.target.value; setMessage(e.target.value) }} onBlur={saveMessage} />
+    </div>
+  </div>
 }
 
 function AgentAccess({ id, value, onChange }: {

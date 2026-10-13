@@ -55,6 +55,8 @@ import {
 } from '../shared/remotePhone.ts'
 import { ReplayModes } from '../shared/replayModes.ts'
 import { ScreenMirror } from './screenMirror.ts'
+import { CodexResumeWatcher } from './codexResume.ts'
+import { codexLimitReset, type CodexResumeSettings } from '../shared/codexResume.ts'
 
 /**
  * How long after `submit()` writes the last chunk of text before it writes the
@@ -255,6 +257,8 @@ interface Session {
    * answered it already.
    */
   lastInputAt: number | null
+  /** Synchronous cancellation token for user input racing an automatic queued submit. */
+  inputRevision: number
 }
 
 /** Summary of a live session, used by the remote UI's session list. */
@@ -385,6 +389,7 @@ export async function buildPtyEnv(): Promise<Record<string, string>> {
 }
 
 export class PtyManager {
+  private codexResume = new CodexResumeWatcher()
   private sessions = new Map<string, Session>()
   private stopping = false
   private readonly onData: (ptyId: string, data: string) => void
@@ -816,7 +821,8 @@ export class PtyManager {
         enterDelayMs: SUBMIT_ENTER_DELAY_MS,
         afterEnterMs: SUBMIT_AFTER_ENTER_MS
       }),
-      lastInputAt: null
+      lastInputAt: null,
+      inputRevision: 0
     }
     this.sessions.set(ptyId, session)
     // Off the spawn path: nothing waits on it, and the fallback that reads it
@@ -926,6 +932,7 @@ export class PtyManager {
   write(ptyId: string, data: string): void {
     const s = this.sessions.get(ptyId)
     if (!s || s.exited) return
+    if (data && !isTerminalReport(data)) { s.inputRevision++; this.codexResume.cancel(ptyId) }
     try {
       s.proc.write(data)
       if (data && !isTerminalReport(data)) {
@@ -992,6 +999,13 @@ export class PtyManager {
    */
   submit(ptyId: string, text: string, opts: { enter?: boolean } = {}): boolean {
     const s = this.sessions.get(ptyId)
+    if (s) s.inputRevision++
+    this.codexResume.cancel(ptyId)
+    return this.submitMessage(ptyId, text, opts)
+  }
+
+  private submitMessage(ptyId: string, text: string, opts: { enter?: boolean } = {}, guard?: () => boolean): boolean {
+    const s = this.sessions.get(ptyId)
     if (!s || s.exited) return false
     const frames = submitFrames(text, {
       bracketedPaste: s.bracketedPaste,
@@ -1007,6 +1021,7 @@ export class PtyManager {
     void s.submits.push(frames, (data) => {
       const cur = this.sessions.get(ptyId)
       if (!cur || cur.exited) return false
+      if (guard && !guard()) return false
       try {
         cur.proc.write(data)
         cur.lastInputAt = Date.now()
@@ -1046,6 +1061,7 @@ export class PtyManager {
   }
 
   kill(ptyId: string): void {
+    this.codexResume.forget(ptyId)
     const s = this.sessions.get(ptyId)
     if (!s) return
     try {
@@ -1235,6 +1251,30 @@ export class PtyManager {
   }
 
   /* ------------------------------------------------------ remote clients */
+
+  checkCodexResume(settings: CodexResumeSettings, now = Date.now()): void {
+    this.codexResume.configure(settings)
+    if (!this.codexResume.enabled) return
+    const ids = [...this.sessions.values()].filter(s => s.cli === 'codex' && s.ordinary && !s.private && !s.hostId && !s.exited).map(s => s.ptyId)
+    this.codexResume.tick(ids, id => {
+      const s = this.sessions.get(id)
+      const screen = s?.mirror.inspectComposer()
+      return s && screen ? { ...screen, lastInputAt: s.lastInputAt, lastOutputAt: s.lastActivityAt } : null
+    }, (id, message, expected) => {
+      const s = this.sessions.get(id)
+      if (!s) return false
+      const revision = s.inputRevision
+      let first = true
+      return this.submitMessage(id, message, {}, () => {
+        if (!this.codexResume.enabled || s.inputRevision !== revision) return false
+        if (!first) return true
+        first = false
+        const screen = s.mirror.inspectComposer()
+        const limit = screen?.ready ? codexLimitReset(screen.text, Date.now()) : null
+        return !!limit && limit.signature === expected.signature && expected.resetAt !== null && expected.resetAt + 1000 <= Date.now()
+      })
+    }, now)
+  }
 
   private subscribers = new Set<(ptyId: string, data: string) => void>()
   private exitSubscribers = new Set<(ptyId: string, code: number) => void>()

@@ -2226,8 +2226,11 @@ await step('quick terminal switches installed shells, opens wrapped links and re
     })
     check('the quick-shell fixture crosses a hard row boundary', point.hardBoundary === true)
     await ev('(window.__stokeQuickLinkOff = window.stoke.browser.onState(state => { window.__stokeQuickLinkState = state }), true)')
+    // A repaint can invalidate xterm's hover while the pointer stays in the
+    // same buffer cell. Enter afresh, then wait for the provider's exact URL.
+    await ui!.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 1, y: 1 })
     await ui!.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y })
-    await sleep(150)
+    await waitFor('the complete quick-shell link to become active', () => ev<boolean>(`window.stokeQuickTerminals.get(${JSON.stringify(id)})?._core?.linkifier?._currentLink?.link.text === ${JSON.stringify(target)}`))
     await ui!.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: point.x, y: point.y, button: 'left', clickCount: 1 })
     await ui!.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: point.x, y: point.y, button: 'left', clickCount: 1 })
     const opened = await waitFor('the quick-shell URL in Stoke', () => ev<BrowserState | null>(`window.__stokeQuickLinkState?.url === ${JSON.stringify(target)} && !window.__stokeQuickLinkState.loading ? window.__stokeQuickLinkState : null`))

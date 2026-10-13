@@ -326,6 +326,7 @@ function keysOnlyInEnv(name: string, r: ReturnType<typeof plan>): void {
 
 console.log('\nwhat is stored')
 check('nothing stored is never asked', hydrateAgents(undefined), {
+  codexResume: { enabled: false, checkMinutes: 5, recheckHours: 5, message: 'Continue' },
   chosen: null,
   endpoints: {},
   defaultCli: 'claude',

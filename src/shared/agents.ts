@@ -52,6 +52,7 @@ import {
 } from './codingClis.ts'
 import { hydrateAgentColors, type AgentColors } from './agentColors.ts'
 import { agentAccessOption, hydrateAgentAccess, type AgentAccessMode } from './agentAccess.ts'
+import { DEFAULT_CODEX_RESUME, hydrateCodexResume, type CodexResumeSettings } from './codexResume.ts'
 import { accountEnv, accountLoginOptions, accountProblem, hydrateDefaultAccounts, type AgentAccount } from './accounts.ts'
 import { isModelId } from './modelId.ts'
 import { ACCOUNT_PROVIDER_LABELS } from './accountProviders.ts'
@@ -106,6 +107,7 @@ export interface AgentEndpoint {
 }
 
 export interface AgentSettings {
+  codexResume: CodexResumeSettings
   /**
    * The agents the user said they use. `null` until the picker has been
    * answered once, which is what shows it — on a fresh install AND on the first
@@ -220,6 +222,7 @@ export function upgradeEndpoint(ep: AgentEndpoint, from: number): AgentEndpoint 
 }
 
 export const DEFAULT_AGENTS: AgentSettings = {
+  codexResume: { ...DEFAULT_CODEX_RESUME },
   chosen: null,
   endpoints: {},
   defaultCli: DEFAULT_CLI,
@@ -321,6 +324,7 @@ export function hydrateAgents(raw: unknown): AgentSettings {
     }
   }
   const r = raw as {
+    codexResume?: unknown
     chosen?: unknown
     endpoints?: unknown
     defaultCli?: unknown
@@ -353,6 +357,7 @@ export function hydrateAgents(raw: unknown): AgentSettings {
   // Code, the same answer `cliIdOf` gives a restored tab (codingClis.ts).
   return {
     chosen,
+    codexResume: hydrateCodexResume(r.codexResume),
     endpoints,
     defaultCli: cliIdOf(r.defaultCli),
     // Only an explicit false turns it off: every file written before the
