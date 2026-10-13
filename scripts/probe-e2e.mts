@@ -2179,7 +2179,10 @@ await step('a click on a hard-wrapped terminal URL opens its complete address', 
 await step('quick terminal switches installed shells, opens wrapped links and retains processes through a pop-out', async () => {
   const fixture = join(root, 'quick-link.mjs')
   const base = `${site.base}/whoami?terminal=quick&padding=`
-  writeFileSync(fixture, `const cols = Number(process.argv[2]); const url = ${JSON.stringify(base)} + 'x'.repeat(cols * 2) + '&end=quick-tail'; process.stdout.write('\\r\\n\\x1b[?7l'); for (let at = 0; at < url.length; at += cols) process.stdout.write(url.slice(at, at + cols) + '\\r\\n'); process.stdout.write('\\x1b[?7h');`)
+  // The panel can finish fitting between the renderer's measurement and the
+  // shell starting this child. Emit hard rows at the actual PTY width; the
+  // requested cols still determines the URL, so its expected value is stable.
+  writeFileSync(fixture, `const cols = Number(process.argv[2]); const width = process.stdout.columns || cols; const url = ${JSON.stringify(base)} + 'x'.repeat(cols * 2) + '&end=quick-tail'; process.stdout.write('\\r\\n\\x1b[?7l'); for (let at = 0; at < url.length; at += width) process.stdout.write(url.slice(at, at + width) + '\\r\\n'); process.stdout.write('\\x1b[?7h');`)
   let id = ''
   let popup: CdpClient | null = null
   try {
@@ -2224,7 +2227,8 @@ await step('quick terminal switches installed shells, opens wrapped links and re
       previousPoint = signature
       return stable ? next : null
     })
-    check('the quick-shell fixture crosses a hard row boundary', point.hardBoundary === true)
+    check('the quick-shell fixture crosses a hard row boundary', point.hardBoundary === true, JSON.stringify({ point, requestedCols: cols }))
+    await shot('05-quick-terminal-before-link')
     await ev('(window.__stokeQuickLinkOff = window.stoke.browser.onState(state => { window.__stokeQuickLinkState = state }), true)')
     // A repaint can invalidate xterm's hover while the pointer stays in the
     // same buffer cell. Enter afresh, then wait for the provider's exact URL.
