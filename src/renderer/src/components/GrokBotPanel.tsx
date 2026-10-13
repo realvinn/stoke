@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { GrokBotView, GrokBotSource, GrokBotAccountCommand, GrokBotOperation } from '@shared/grokBot'
 import { GBOT_SOURCE } from '@shared/grokBot'
+import { ipcErrorMessage } from '../lib/format'
 export function GrokBotPanel(): React.JSX.Element {
   const [view, setView] = useState<GrokBotView | null>(null)
   const [selected, setSelected] = useState('')
@@ -9,6 +10,7 @@ export function GrokBotPanel(): React.JSX.Element {
   const [slot, setSlot] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
   const [output, setOutput] = useState('')
   const [roster, setRoster] = useState<{ id: string; name: string; kind: string }[]>([])
   const [target, setTarget] = useState('')
@@ -36,7 +38,7 @@ export function GrokBotPanel(): React.JSX.Element {
       .read()
       .then(accept)
       .catch((error) => {
-        if (live.current) setError(String(error))
+        if (live.current) setError(ipcErrorMessage(error))
       })
     return () => {
       live.current = false
@@ -51,6 +53,7 @@ export function GrokBotPanel(): React.JSX.Element {
     setTarget('')
     setMessage('')
     setError('')
+    setNotice('')
   }, [selected])
   const act = async (operation: () => Promise<unknown>): Promise<void> => {
     if (claimed.current) return
@@ -58,10 +61,11 @@ export function GrokBotPanel(): React.JSX.Element {
     const current = generation.current
     setBusy(true)
     setError('')
+    setNotice('')
     try {
       await operation()
     } catch (error) {
-      if (live.current && current === generation.current) setError(String(error))
+      if (live.current && current === generation.current) setError(ipcErrorMessage(error))
     } finally {
       claimed.current = false
       if (live.current) setBusy(false)
@@ -89,7 +93,7 @@ export function GrokBotPanel(): React.JSX.Element {
           `${result.message ?? 'Action failed.'}${result.delivery === 'unknown' ? ' Read the thread before resending; delivery is unknown.' : ''}`
         )
       else {
-        setOutput(JSON.stringify(result.data, null, 2))
+        setOutput(kind === 'send' ? '' : JSON.stringify(result.data, null, 2))
         if (kind === 'list' && result.data && typeof result.data === 'object') {
           const data = result.data as Record<string, unknown>
           const rows: { id: string; name: string; kind: string }[] = []
@@ -105,7 +109,10 @@ export function GrokBotPanel(): React.JSX.Element {
           setRoster(rows)
           setTarget(rows[0]?.id ?? '')
         }
-        if (kind === 'send') setMessage('')
+        if (kind === 'send') {
+          setMessage('')
+          setNotice('Message sent.')
+        }
       }
     })
   }
@@ -121,8 +128,9 @@ export function GrokBotPanel(): React.JSX.Element {
         them on your other approved devices. They are separate from Grok Build and xAI API accounts.
       </p>
       <p className="plugin-muted">
-        Sign in with each Cursor or Grok account in the Grok Bot desktop app, then import its
-        session here. Cursor CLI and Grok Build use their own accounts in Settings → Accounts.
+        Sign in with each Cursor or Grok account in the Grok Bot desktop app, open its Computer
+        view and wait for it to connect, then read desktop sessions and import here. Cursor CLI
+        and Grok Build use their own accounts in Settings → Accounts.
       </p>
       {!view?.cli.installed && (
         <button
@@ -153,6 +161,7 @@ export function GrokBotPanel(): React.JSX.Element {
                 setMessage('')
                 setNickname('')
                 setError('')
+                setNotice('')
               }}
             >
               <strong>{item.label}</strong>
@@ -207,6 +216,8 @@ export function GrokBotPanel(): React.JSX.Element {
           disabled={busy}
           onClick={() =>
             void act(async () => {
+              setSources([])
+              setSlot('')
               const next = await window.stoke.grokBot.sources()
               if (live.current) {
                 setSources(next)
@@ -341,6 +352,7 @@ export function GrokBotPanel(): React.JSX.Element {
         </div>
       )}
       {busy && <p role="status">Working…</p>}
+      {notice && <p role="status">{notice}</p>}
       {error && (
         <p role="alert" className="plugin-error">
           {error}

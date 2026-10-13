@@ -1,6 +1,6 @@
 /** Owned files, key store and gateway only. Never reads a user's login or sends to real bots. */
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, writeFile, rm, chmod } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
@@ -83,7 +83,13 @@ const server = createServer(async (request, response) => {
     )
   else if (method === 'sendPrompt')
     response.end(
-      JSON.stringify(String(body.prompt).includes('unknown-receipt') ? {} : { messageId: 'owned-message' })
+      JSON.stringify(
+        String(body.prompt).includes('unknown-receipt') ? {}
+          : String(body.prompt).includes('boolean-receipt') ? { accepted: true }
+            : String(body.prompt).includes('false-receipt') ? { accepted: false }
+              : String(body.prompt).includes('string-receipt') ? { accepted: 'true' }
+                : { messageId: 'owned-message' }
+      )
     )
   else if (method === 'getAgentTranscriptTail')
     response.end(JSON.stringify({ entries: [{ id: 'owned-message', text: 'Owned fixture transcript' }] }))
@@ -210,7 +216,7 @@ try {
   const fixtureCli = join(root, 'fixture-cli.mjs')
   await writeFile(
     fixtureCli,
-    "const args=process.argv.slice(2); const base=process.env.GROK_BOT_GATEWAY_URL; const headers={authorization:'Bearer '+process.env.GROK_BOT_GATEWAY_TOKEN,...JSON.parse(process.env.GROK_BOT_GATEWAY_HEADERS),'content-type':'application/json'}; const command=args[0]==='send'?'sendPrompt':'listAgents'; const body=command==='sendPrompt'?{prompt:args.at(-1)}:{}; const response=await fetch(base+'/api/'+command,{method:'POST',headers,body:JSON.stringify(body)}); const data=await response.json(); if(!response.ok){console.error(response.status+' '+data.error); process.exitCode=1}else console.log(JSON.stringify(command==='sendPrompt'?{delivery:data.messageId?'accepted':'unknown'}:data.agents));"
+    "const args=process.argv.slice(2); const base=process.env.GROK_BOT_GATEWAY_URL; const headers={authorization:'Bearer '+process.env.GROK_BOT_GATEWAY_TOKEN,...JSON.parse(process.env.GROK_BOT_GATEWAY_HEADERS),'content-type':'application/json'}; const command=args[0]==='send'?'sendPrompt':'listAgents'; const body=command==='sendPrompt'?{prompt:args.at(-1)}:{}; const response=await fetch(base+'/api/'+command,{method:'POST',headers,body:JSON.stringify(body)}); const data=await response.json(); if(!response.ok){console.error(response.status+' '+data.error); process.exitCode=1}else console.log(JSON.stringify(command==='sendPrompt'?{delivery:data.messageId?'accepted':'unknown',result:data,exitCode:0}:data.agents));"
   )
   // Injectable runtime method only on this owned instance; production is hash-pinned.
   const runtimeReady = GrokBotRuntime.prototype.ready,
@@ -234,7 +240,7 @@ try {
     GrokBotRuntime.prototype.installed = async () => true
   }
   try {
-    let enabled = true
+    let enabled = true, failStatus = false
     grok = new GrokBotPlugin({
       root: join(root, 'gbot'),
       executable: process.execPath,
@@ -250,7 +256,7 @@ try {
       backend,
       reader: new GrokBotSessionReader({ home: root, platform: 'darwin', environment: {} }),
       enabled: async () => enabled,
-      changed: () => {}
+      changed: () => { if (failStatus) throw new Error('Owned status update failed') }
     })
     for (let index = 1; index <= 5; index++)
       await grok.change({
@@ -303,6 +309,34 @@ try {
       assert.equal(unknown.ok, false)
       assert.equal(unknown.delivery, 'unknown')
     })
+    const beforeBoolean = requests.filter(request => request.method === 'sendPrompt').length
+    const accepted = await grok.operate({ accountId: view.accounts[4].id, kind: 'send', target: 'bot-owned', message: 'boolean-receipt' })
+    check('current gateway accepted=true receipt succeeds without a messageId and sends exactly once', () => {
+      assert.equal(accepted.ok, true, accepted.message)
+      assert.equal(accepted.delivery, 'accepted')
+      assert.equal((accepted.data as { delivery: string }).delivery, 'accepted')
+      assert.equal(requests.filter(request => request.method === 'sendPrompt').length, beforeBoolean + 1)
+      assert.equal(requests.at(-1)?.authorization, 'Bearer owned-token-5')
+    })
+    for (const message of ['false-receipt', 'string-receipt']) {
+      const before = requests.filter(request => request.method === 'sendPrompt').length
+      const receipt = await grok.operate({ accountId: view.accounts[0].id, kind: 'send', target: 'bot-owned', message })
+      check(`${message} is not a confirmed receipt and never triggers an automatic retry`, () => {
+        assert.equal(receipt.ok, false)
+        assert.equal(receipt.delivery, 'unknown')
+        assert.equal(requests.filter(request => request.method === 'sendPrompt').length, before + 1)
+      })
+    }
+    failStatus = true
+    try {
+      const before = requests.filter(request => request.method === 'sendPrompt').length
+      const receipt = await grok.operate({ accountId: view.accounts[4].id, kind: 'send', target: 'bot-owned', message: 'boolean-receipt with failed account status save' })
+      check('account-status failure after server acceptance preserves success without resending', () => {
+        assert.equal(receipt.ok, true, receipt.message)
+        assert.equal(receipt.delivery, 'accepted')
+        assert.equal(requests.filter(request => request.method === 'sendPrompt').length, before + 1)
+      })
+    } finally { failStatus = false }
     const persisted = await readFile(join(root, 'gbot', 'grok-bot-accounts.json'), 'utf8')
     check('credentials are sealed at rest and absent from public views', () => {
       for (let index = 1; index <= 5; index++) {
@@ -383,6 +417,37 @@ try {
     })
     const signal = AbortSignal.timeout(5000)
     const localState = platform === 'win32' ? await readFile(join(folder, 'Local State')) : null
+    await assert.rejects(reader.sources(signal), /No Grok Bot gateway session.*Computer view/)
+    check(`${platform} missing session names the Computer connection step`, () => assert.equal(keyReads, 0))
+    const marker = JSON.stringify({ version: 1, signedIn: true, pid: 123, appVersion: '0.70.2' })
+    await writeFile(join(folder, 'desktop-status.json'), marker)
+    await assert.rejects(reader.sources(signal), /reports a signed-in account.*Computer view/)
+    await assert.rejects(reader.load(undefined, signal), /reports a signed-in account.*Computer view/)
+    await assert.rejects(readFile(path))
+    check(`${platform} signed-in marker explains missing gateway without reading credentials or creating a file`, () => assert.equal(keyReads, 0))
+    const privateValue = ['owned', 'private', 'descriptor'].join('-')
+    await writeFile(path, `{"encrypted":"${privateValue}",broken`)
+    await assert.rejects(reader.sources(signal), error => error instanceof Error && /invalid JSON/.test(error.message) && !error.message.includes(privateValue))
+    check(`${platform} invalid JSON is distinct from a missing login and does not echo its contents`, () => assert.equal(keyReads, 0))
+    await writeFile(path, Buffer.alloc(4 * 1024 * 1024 + 1, ' '))
+    await assert.rejects(reader.sources(signal), /too large to import/)
+    check(`${platform} oversized file keeps its useful diagnostic`, () => assert.equal(keyReads, 0))
+    if (process.platform !== 'win32' && process.getuid?.() !== 0) {
+      await writeFile(path, '{}')
+      await chmod(path, 0o000)
+      try {
+        await assert.rejects(reader.sources(signal), /does not have permission.*same OS user/)
+        check(`${platform} unreadable owned file reports permissions instead of sign-in`, () => assert.equal(keyReads, 0))
+      } finally { await chmod(path, 0o600) }
+    }
+    await rm(path)
+    await writeFile(join(folder, 'desktop-status.json'), '{invalid-status')
+    await assert.rejects(reader.sources(signal), /No Grok Bot gateway session.*Computer view/)
+    const aborted = new AbortController()
+    aborted.abort(new Error('owned cancellation'))
+    await assert.rejects(reader.sources(aborted.signal), /owned cancellation/)
+    check(`${platform} malformed status marker does not mask missing-session guidance and cancellation stays cancellation`, () => assert.equal(keyReads, 0))
+    await writeFile(join(folder, 'desktop-status.json'), marker)
     for (const version of [undefined, 1, 2, 3]) {
       const multi = version === 2 || version === 3
       const slot = multi ? 'second' : 'current'
@@ -434,6 +499,13 @@ try {
     assert.equal(keyReads, 0)
     const fresh = await reader.load('fresh', signal)
     check(`${platform} rejects expired v3 snapshots before decryption and still imports a fresh slot`, () => assert.equal(fresh.session.token, `desktop-${platform}-fresh`))
+    if (localState) {
+      await rm(join(folder, 'Local State'))
+      try {
+        await assert.rejects(reader.load('fresh', signal), /Windows encryption-key file is missing/)
+        check('missing Windows protection key is distinct from a missing gateway session', () => assert.ok(true))
+      } finally { await writeFile(join(folder, 'Local State'), localState) }
+    }
     const imported = new GrokBotPlugin({
       root: join(root, `v3-import-${platform}`), executable: process.execPath,
       runner: fileURLToPath(new URL('../src/main/plugins/cliRunner.ts', import.meta.url)),

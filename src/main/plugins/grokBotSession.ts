@@ -51,20 +51,44 @@ export function validateGrokBotSession(raw: unknown, allowLocal = false): GrokBo
   return { gatewayUrl, token: raw.token.trim(), headers, allowLocal }
 }
 
-async function boundedJson(path: string, signal: AbortSignal): Promise<unknown> {
+class DesktopFileError extends Error {
+  reason: 'missing' | 'unreadable'
+  constructor(reason: 'missing' | 'unreadable', message: string) {
+    super(message)
+    this.reason = reason
+  }
+}
+const MISSING_SESSION =
+  'No Grok Bot gateway session is saved on this computer. Sign in to Grok Bot and connect its Computer view. If it is already connected, fully quit Grok Bot with Quit (Cmd+Q on Mac), reopen it and reconnect, then click Read desktop sessions again.'
+
+async function boundedJson(
+  path: string,
+  signal: AbortSignal,
+  purpose: 'session' | 'key' | 'status' = 'session'
+): Promise<unknown> {
   let file: Awaited<ReturnType<typeof open>> | null = null
+  const name = purpose === 'key' ? 'Windows encryption-key file' : purpose === 'status' ? 'desktop status file' : 'desktop session file'
   try {
+    signal.throwIfAborted()
     file = await open(path, 'r')
     signal.throwIfAborted()
     const info = await file.stat()
     signal.throwIfAborted()
-    if (!info.isFile() || info.size > 4 * 1024 * 1024)
-      throw new Error('The Grok Bot desktop session file is too large.')
+    if (!info.isFile()) throw new DesktopFileError('unreadable', `The Grok Bot ${name} is not a regular file.`)
+    if (info.size > (purpose === 'status' ? 8192 : 4 * 1024 * 1024))
+      throw new DesktopFileError('unreadable', `The Grok Bot ${name} is too large to import.`)
     return JSON.parse(await file.readFile({ encoding: 'utf8', signal }))
-  } catch {
-    throw new Error(
-      'The Grok Bot desktop session could not be read. Open Grok Bot and sign in, then import again.'
-    )
+  } catch (error) {
+    signal.throwIfAborted()
+    if (error instanceof DesktopFileError) throw error
+    const code = record(error) ? error.code : undefined
+    if (code === 'ENOENT' || code === 'ENOTDIR')
+      throw new DesktopFileError('missing', purpose === 'session' ? MISSING_SESSION : `The Grok Bot ${name} is missing. Open the desktop app on this computer and reconnect its Computer view.`)
+    if (code === 'EACCES' || code === 'EPERM')
+      throw new DesktopFileError('unreadable', `Stoke does not have permission to read the Grok Bot ${name}. Run both apps as the same OS user and check access to the Grok Bot data folder.`)
+    if (error instanceof SyntaxError)
+      throw new DesktopFileError('unreadable', `The Grok Bot ${name} contains invalid JSON. Open the desktop app's Computer view to refresh its saved session, then try again.`)
+    throw new DesktopFileError('unreadable', `The Grok Bot ${name} could not be read. Check access to its data folder, then try again.`)
   } finally {
     await file?.close()
   }
@@ -133,8 +157,25 @@ export class GrokBotSessionReader {
         ? join(env.XDG_CONFIG_HOME || join(home, '.config'), 'Grok Bot')
         : join(home, 'Library', 'Application Support', 'Grok Bot')
   }
+  private async descriptor(signal: AbortSignal): Promise<unknown> {
+    try {
+      return await boundedJson(join(this.root(), 'gateway-descriptor.json'), signal)
+    } catch (error) {
+      if (!(error instanceof DesktopFileError) || error.reason !== 'missing') throw error
+      let status: unknown
+      try {
+        // The public marker contains status only, never account credentials.
+        status = await boundedJson(join(this.root(), 'desktop-status.json'), signal, 'status')
+      } catch {
+        signal.throwIfAborted()
+      }
+      if (record(status) && status.version === 1 && status.signedIn === true)
+        throw new DesktopFileError('missing', 'Grok Bot reports a signed-in account, but no gateway session is saved. Connect its Computer view. If it is already connected, fully quit Grok Bot with Quit (Cmd+Q on Mac), reopen it and reconnect, then click Read desktop sessions again.')
+      throw error
+    }
+  }
   async sources(signal: AbortSignal): Promise<GrokBotSource[]> {
-    return slots(await boundedJson(join(this.root(), 'gateway-descriptor.json'), signal)).map(
+    return slots(await this.descriptor(signal)).map(
       ({ id, label }) => ({ id, label })
     )
   }
@@ -185,7 +226,7 @@ export class GrokBotSessionReader {
     sourceSlot: string | undefined,
     signal: AbortSignal
   ): Promise<{ session: GrokBotSession; slot: string }> {
-    const entries = slots(await boundedJson(join(this.root(), 'gateway-descriptor.json'), signal))
+    const entries = slots(await this.descriptor(signal))
     const selected = sourceSlot
       ? entries.find((entry) => entry.id === sourceSlot)
       : entries.length === 1
@@ -200,7 +241,7 @@ export class GrokBotSessionReader {
     let clear: string
     try {
       if (this.options.platform === 'win32') {
-        const state = await boundedJson(join(this.root(), 'Local State'), signal)
+        const state = await boundedJson(join(this.root(), 'Local State'), signal, 'key')
         const os = record(state) && record(state.os_crypt) ? state.os_crypt : null
         const wrapped = Buffer.from(typeof os?.encrypted_key === 'string' ? os.encrypted_key : '', 'base64')
         if (
@@ -256,7 +297,9 @@ export class GrokBotSessionReader {
         const decipher = createDecipheriv('aes-128-cbc', key, Buffer.alloc(16, ' '))
         clear = Buffer.concat([decipher.update(encrypted.subarray(3)), decipher.final()]).toString('utf8')
       }
-    } catch {
+    } catch (error) {
+      signal.throwIfAborted()
+      if (error instanceof DesktopFileError) throw error
       throw new Error(
         'The desktop session could not be decrypted. Sign in to Grok Bot on this computer, then import again.'
       )

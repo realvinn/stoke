@@ -860,6 +860,18 @@ await step('native plugin lifecycle and Grok Bot account isolation', async () =>
     await waitFor('v3 desktop sources in the rendered picker', () => ev<boolean>(`[...document.querySelectorAll('[aria-label="Grok Bot"] select option')].some(option => option.value === 'owned-grok')`))
     const sources = await ev<{ id: string; label: string }[]>('window.stoke.grokBot.sources()')
     check('native sources IPC and Read desktop sessions accept format v3', sources.length === 2 && sources[0].id === 'owned-cursor' && sources[1].id === 'owned-grok')
+    const statusPath = join(desktopRoot, 'desktop-status.json')
+    writeFileSync(statusPath, JSON.stringify({ version: 1, pid: 123, appVersion: '0.70.2', signedIn: true }))
+    rmSync(descriptor)
+    await ev(`[...document.querySelectorAll('[aria-label="Grok Bot"] button')].find(button => button.textContent === 'Read desktop sessions').click(), true`)
+    await waitFor('signed-in missing gateway guidance', () => ev<boolean>(`document.querySelector('[aria-label="Grok Bot"] [role="alert"]')?.textContent.includes('reports a signed-in account')`))
+    check('missing desktop gateway gives Computer-view instructions without an IPC wrapper', await ev<boolean>(`(() => { const text = document.querySelector('[aria-label="Grok Bot"] [role="alert"]').textContent; return text.includes('Computer view') && !text.includes('Error invoking remote method') && !text.includes('plugins:grok-bot:sources'); })()`))
+    check('failed session refresh removes stale picker and import controls', await ev<boolean>(`![...document.querySelectorAll('[aria-label="Grok Bot"] select option')].some(option => option.value === 'owned-grok') && ![...document.querySelectorAll('[aria-label="Grok Bot"] button')].some(button => button.textContent === 'Import as new account')`))
+    await shot('04-grok-bot-missing-gateway')
+    writeFileSync(descriptor, sourceFixture)
+    await ev(`[...document.querySelectorAll('[aria-label="Grok Bot"] button')].find(button => button.textContent === 'Read desktop sessions').click(), true`)
+    await waitFor('desktop-session picker after connection refresh', () => ev<boolean>(`[...document.querySelectorAll('[aria-label="Grok Bot"] select option')].some(option => option.value === 'owned-grok') && !document.querySelector('[aria-label="Grok Bot"] [role="alert"]')`))
+    check('retrying after a saved gateway appears restores the picker and clears the error', true)
     await ev(`(() => { const picker = [...document.querySelectorAll('[aria-label="Grok Bot"] select')].find(select => [...select.options].some(option => option.value === 'owned-grok')); picker.value = 'owned-grok'; picker.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`)
     check('the saved-session picker preserves an explicitly chosen v3 slot', await waitFor('second desktop slot selected', () => ev<boolean>(`[...document.querySelectorAll('[aria-label="Grok Bot"] select')].some(select => select.value === 'owned-grok')`)) === true)
     check('native source listing leaves the desktop file byte-for-byte unchanged', readFileSync(descriptor, 'utf8') === sourceFixture)
@@ -867,13 +879,17 @@ await step('native plugin lifecycle and Grok Bot account isolation', async () =>
     if (opt['gbot-cli']) {
       const runtime = join(ud, 'plugins', 'runtime', 'grok-bot', '0.12.4'); mkdirSync(runtime, { recursive: true })
       for (const filename of ['gbot.mjs', 'gbot-flight.mjs']) copyFileSync(join(resolve(opt['gbot-cli']), filename), join(runtime, filename))
-      const requests: { token: string; route: string; method: string }[] = []
+      const requests: { token: string; route: string; method: string; prompt?: string }[] = []
       server = createHttpServer(async (request, response) => {
-        for await (const _chunk of request) { /* drain only owned request bodies */ }
+        let text = ''
+        for await (const chunk of request) text += chunk
+        const body = JSON.parse(text || '{}')
         const method = request.url?.split('/').at(-1) ?? ''
-        requests.push({ token: String(request.headers.authorization), route: String(request.headers['x-owned-route']), method })
+        requests.push({ token: String(request.headers.authorization), route: String(request.headers['x-owned-route']), method, prompt: body.prompt })
         response.setHeader('content-type', 'application/json')
-        response.end(JSON.stringify(method === 'listAgents' ? { agents: [{ id: 'owned-bot', name: 'Owned native bot' }, { id: 'owned-group', name: 'Owned group', isGroup: true }] } : method === 'sendPrompt' ? { messageId: 'owned-message' } : { entries: [] }))
+        const receipt = body.prompt?.includes('unknown receipt') ? {}
+          : body.prompt?.includes('legacy receipt') ? { messageId: 'owned-message' } : { accepted: true }
+        response.end(JSON.stringify(method === 'listAgents' ? { agents: [{ id: 'owned-bot', name: 'Owned native bot' }, { id: 'owned-group', name: 'Owned group', isGroup: true }] } : method === 'sendPrompt' ? receipt : { entries: [] }))
       })
       await new Promise<void>(resolve => server!.listen(0, '127.0.0.1', resolve))
       const gateway = `http://127.0.0.1:${(server.address() as { port: number }).port}`
@@ -890,13 +906,28 @@ await step('native plugin lifecycle and Grok Bot account isolation', async () =>
       await ev(`[...document.querySelectorAll('[aria-label="Grok Bot"] button')].find(button => button.textContent.includes('List bots and groups')).click(), true`)
       await waitFor('selected-account native bot roster', () => ev<boolean>(`document.querySelector('[aria-label="Grok Bot"] .plugin-output')?.textContent.includes('Owned native bot') && [...document.querySelectorAll('[aria-label="Grok Bot"] select')].some(select => select.options.length >= 3)`))
       check('the visible list action routes through the selected fifth account', requests.slice(-2).every(request => request.token === 'Bearer owned-native-token-5'))
-      await ev(`(() => { const field = document.querySelector('[aria-label="Grok Bot"] textarea'); Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(field, 'owned native message'); field.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`)
-      await waitFor('native send action enabled', () => ev<boolean>(`[...document.querySelectorAll('[aria-label="Grok Bot"] button')].some(button => button.textContent === 'Send message' && !button.disabled)`))
-      await ev(`[...document.querySelectorAll('[aria-label="Grok Bot"] button')].find(button => button.textContent === 'Send message').click(), true`)
-      await waitFor('native send receipt', () => ev<boolean>(`document.querySelector('[aria-label="Grok Bot"] .plugin-output')?.textContent.includes('accepted')`))
-      check('the native send action uses account 5 and the owned local gateway', requests.at(-1)?.method === 'sendPrompt' && requests.at(-1)?.token === 'Bearer owned-native-token-5')
+      const send = async (message: string) => {
+        await ev(`(() => { const field = document.querySelector('[aria-label="Grok Bot"] textarea'); Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(field, ${JSON.stringify(message)}); field.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`)
+        await waitFor('native send action enabled', () => ev<boolean>(`[...document.querySelectorAll('[aria-label="Grok Bot"] button')].some(button => button.textContent === 'Send message' && !button.disabled)`))
+        await ev(`[...document.querySelectorAll('[aria-label="Grok Bot"] button')].find(button => button.textContent === 'Send message').click(), true`)
+      }
+      for (const message of ['owned current receipt', 'owned legacy receipt']) {
+        const before = requests.filter(request => request.method === 'sendPrompt').length
+        await send(message)
+        await waitFor('visible native send confirmation', () => ev<boolean>(`[...document.querySelectorAll('[aria-label="Grok Bot"] [role="status"]')].some(node => node.textContent === 'Message sent.')`))
+        check(`${message}: shows success, clears the composer and sends exactly once using account 5`,
+          requests.filter(request => request.method === 'sendPrompt').length === before + 1 &&
+          requests.at(-1)?.token === 'Bearer owned-native-token-5' && requests.at(-1)?.prompt === message &&
+          await ev<boolean>(`document.querySelector('[aria-label="Grok Bot"] textarea').value === '' && !document.querySelector('[aria-label="Grok Bot"] [role="alert"]')`))
+      }
       await ui!.send('Emulation.setDeviceMetricsOverride', { width: 940, height: 720, deviceScaleFactor: 1, mobile: false })
       await sleep(200); await shot('04-grok-bot-five-accounts'); await ui!.send('Emulation.clearDeviceMetricsOverride')
+      const beforeUnknown = requests.filter(request => request.method === 'sendPrompt').length
+      await send('owned unknown receipt')
+      await waitFor('unknown delivery remains visible', () => ev<boolean>(`document.querySelector('[aria-label="Grok Bot"] [role="alert"]')?.textContent.includes('delivery is unknown')`))
+      check('missing native receipt preserves the message without reporting success or retrying',
+        requests.filter(request => request.method === 'sendPrompt').length === beforeUnknown + 1 &&
+        await ev<boolean>(`document.querySelector('[aria-label="Grok Bot"] textarea').value === 'owned unknown receipt' && ![...document.querySelectorAll('[aria-label="Grok Bot"] [role="status"]')].some(node => node.textContent === 'Message sent.')`))
       const sealed = readFileSync(join(ud, 'plugins', 'grok-bot-accounts.json'), 'utf8')
       check('native saved accounts expose no gateway token in the file', !sealed.includes('owned-native-token-'))
     }

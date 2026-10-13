@@ -46,6 +46,15 @@ function label(value: unknown): string {
   return value.trim()
 }
 const reference = (id: string): string => `plugins.grok-bot.${id}`
+function sendDelivery(data: unknown): 'accepted' | 'unknown' {
+  if (!record(data) || (data.exitCode !== undefined && data.exitCode !== 0)) return 'unknown'
+  if (data.delivery === 'accepted') return 'accepted'
+  // Current gateways acknowledge with { accepted: true }, without messageId.
+  // The pinned CLI keeps that acknowledgement in result but calls it unknown.
+  return data.delivery === 'unknown' && record(data.result) && data.result.accepted === true
+    ? 'accepted'
+    : 'unknown'
+}
 /** Never resolves a command through the desktop app's current/default login. */
 export class GrokBotPlugin {
   private options: Options
@@ -355,6 +364,7 @@ export class GrokBotPlugin {
         throw new Error('Grok Bot did not return a complete JSON result.')
       }
     }
+    let sendReceipt: GrokBotResult | undefined
     try {
       let data: unknown
       if (raw.kind === 'list') {
@@ -365,21 +375,24 @@ export class GrokBotPlugin {
         data = await invoke(['send', '--no-history', '--', raw.target!, raw.message!])
       else if (raw.kind === 'create') data = await invoke(['bots', 'create', `--name=${label(raw.name)}`])
       else data = await invoke(['bots', 'delete', '--', raw.target!])
-      await this.guard(epoch)
-      await this.status(entry, 'connected', epoch)
       if (raw.kind === 'send') {
-        const delivery = record(data) && data.delivery === 'accepted' ? 'accepted' : 'unknown'
-        return {
+        const delivery = sendDelivery(data)
+        sendReceipt = {
           ok: delivery === 'accepted',
-          data,
+          data: record(data) ? { ...data, delivery } : data,
           delivery,
           ...(delivery === 'unknown'
             ? { message: 'Grok Bot did not confirm delivery. Read the thread before resending.' }
             : {})
         }
       }
-      return { ok: true, data }
+      await this.guard(epoch)
+      await this.status(entry, 'connected', epoch)
+      return sendReceipt ?? { ok: true, data }
     } catch (error) {
+      // Saving account status is secondary to the server's confirmed receipt.
+      // A disk error or disable after acceptance must not suggest resending.
+      if (sendReceipt?.delivery === 'accepted') return sendReceipt
       if (
         epoch === this.epoch &&
         /(?:401|403|session cannot be opened|authentication|unauthori[sz]ed)/i.test(
