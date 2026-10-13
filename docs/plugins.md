@@ -6,6 +6,12 @@ The public directory is https://stoke.vinn.dev/marketplace, with a developer gui
 
 Local command plugins run with the user's permissions. The declarations `local-code`, `project-context`, and `appearance` describe intent, not an OS sandbox. Scripts receive API version, plugin ID, data directory and optional chosen project through stdin. Stoke strips agent credentials and Node startup injection from the child environment. Output is bounded, commands have a 60-second deadline, and scripts must keep their children in the foreground. Native panels escape text; extensions cannot inject executable HTML or arbitrary CSS. Appearance overrides disappear when disabled. Removing a package preserves its saved data.
 
+## Choose Notion tables
+
+In current source after beta.9, enable Work in Settings → Plugins, open its Notion connection, and enter the integration token. **Load tables** lists the data sources shared with that connection. Search by name and use **Load more tables** for additional pages. Choose a **Task table** and **Daily work table**, inspect their properties, review the suggested mappings, and save the connection. Missing databases must be shared with the connection in Notion. Discovery and inspection read metadata; they neither publish rows nor store the draft token. Saving keeps the token encrypted through the existing system key store.
+
+The Work panel uses the direct Notion API for this picker and its reviewed publishing flow. It does not reuse an agent's MCP OAuth session. Agent Notion MCP connections remain available independently. This follows Notion's [search API](https://developers.notion.com/reference/post-search), which lists accessible data sources and supports pagination. The manual ID fields remain under a disclosure for existing configurations.
+
 ## Grok Bot accounts
 
 Grok Bot is distinct from Grok Build's `grok` coding CLI. The native plugin uses the unofficial https://github.com/ScriptedAlchemy/grok-bot-cli, pinned to npm version 0.12.4 and reviewed source 43499fa27f36807f6ac93b56365b3cae5200bc1e. The installer verifies the npm archive SHA-512 and both runtime modules' SHA-256, extracts only reviewed runtime files plus the MIT license, and never runs npm hooks or gbot-install.

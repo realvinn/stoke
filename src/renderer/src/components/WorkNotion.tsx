@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { DAILY_STATES, TASK_STATES } from '@shared/workPlugin'
 import type { WorkView } from '@shared/workPlugin'
-import type { NotionDailyMap, NotionSource, NotionTaskMap, WorkNotionPublishRequest, WorkNotionResult, WorkNotionView } from '@shared/workNotion'
+import type { NotionDailyMap, NotionSource, NotionTableChoice, NotionTaskMap, WorkNotionPublishRequest, WorkNotionResult, WorkNotionView } from '@shared/workNotion'
 
 const fold = (value: string): string => value.toLowerCase().replace(/[^a-z0-9]/g, '')
 const blankTask = (source = ''): NotionTaskMap => ({ source, title: '', body: '', status: '', identity: '', evidence: '', project: '', states: { Idea: '', Approved: '', Working: '', Completed: '' } })
@@ -64,6 +64,11 @@ export function WorkNotion({ work, selection, day }: Props): React.JSX.Element {
   const [taskMap, setTaskMap] = useState(blankTask)
   const [dailyMap, setDailyMap] = useState(blankDaily)
   const [schemas, setSchemas] = useState<{ task: NotionSource; daily: NotionSource } | null>(null)
+  const [tables, setTables] = useState<NotionTableChoice[]>([])
+  const [tableQuery, setTableQuery] = useState('')
+  const [listedQuery, setListedQuery] = useState<string | null>(null)
+  const [nextCursor, setNextCursor] = useState<string | null>(null)
+  const knownTables = useRef(new Map<string, NotionTableChoice>())
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [review, setReview] = useState<Review | null>(null)
@@ -91,7 +96,10 @@ export function WorkNotion({ work, selection, day }: Props): React.JSX.Element {
     try {
       const result = await fn()
       if (!mounted.current) return
-      if (result.ok) { receive(result.view); setToken(''); setReview(null) }
+      if (result.ok) {
+        receive(result.view); setToken(''); setReview(null)
+        if (!result.view.tokenPresent) { knownTables.current.clear(); setTables([]); setListedQuery(null); setNextCursor(null) }
+      }
       else { if (result.view) receive(result.view); setError(result.message) }
     } catch { if (mounted.current) setError('Notion could not answer. Check the saved operation before retrying.') }
     finally { claim.current = false; if (mounted.current) setBusy(false) }
@@ -111,6 +119,26 @@ export function WorkNotion({ work, selection, day }: Props): React.JSX.Element {
     finally { claim.current = false; if (mounted.current) setBusy(false) }
   }
   const changeInput = (fn: () => void): void => { draftVersion.current++; setSchemas(null); setError(''); fn() }
+  const loadTables = async (more = false): Promise<void> => {
+    if (claim.current || notion?.running) return
+    claim.current = true; setBusy(true); setError('')
+    const version = draftVersion.current
+    try {
+      const query = more ? listedQuery ?? '' : tableQuery.trim()
+      const result = await window.stoke.work.notionTables(query, more ? nextCursor : null, token || undefined)
+      if (!mounted.current || version !== draftVersion.current) return
+      if (!result.ok) { setError(result.message); return }
+      for (const table of result.tables) knownTables.current.set(table.id, table)
+      setTables(old => [...new Map([...(more ? old : []), ...result.tables].map(table => [table.id, table])).values()])
+      setListedQuery(query); setNextCursor(result.nextCursor)
+    } catch { if (mounted.current) setError('Notion could not load the tables. Check the token and table sharing.') }
+    finally { claim.current = false; if (mounted.current) setBusy(false) }
+  }
+  const tableOptions = (id: string, label: string): React.JSX.Element => <>
+    <option value="">Choose a shared table</option>
+    {id && !tables.some(t => t.id === id) && <option value={id}>{knownTables.current.get(id)?.name || label || 'Saved table'} · {id.slice(0, 8)}</option>}
+    {tables.map(table => <option key={table.id} value={table.id}>{table.name} · {table.id.slice(0, 8)}</option>)}
+  </>
   const prepare = (mode: 'publish' | 'refresh' = 'publish'): void => {
     if (!selection || !notion?.config) return
     const config = notion.config
@@ -144,11 +172,21 @@ export function WorkNotion({ work, selection, day }: Props): React.JSX.Element {
     <details data-setting="worklog.connection">
       <summary><span>Notion connection</span> · {notion?.config && notion.tokenPresent ? 'Configured' : 'Set up'}</summary>
       <form className="work-editor" onSubmit={(e) => { e.preventDefault(); if (schemas) void run(() => window.stoke.work.notionConfigure({ task: taskMap, daily: dailyMap }, token || undefined)) }}>
-        <p className="work-note">Share both databases with your internal Notion connection. Each table needs its own text property for Stoke ID and completion evidence. Daily work needs a date and a relation to the task table.</p>
-        <label>Integration token<input className="input" type="password" autoComplete="off" spellCheck={false} maxLength={8192} value={token} disabled={locked} placeholder={notion?.tokenPresent ? 'Token saved · enter a replacement' : 'Paste the connection token'} onChange={(e) => changeInput(() => setToken(e.target.value))} /></label>
+        <p className="work-note">Connect with a Notion API token, load your shared tables, then choose one for tasks and one for daily work. Share missing databases with the connection in Notion.</p>
+        <label>Integration token<input className="input" type="password" autoComplete="off" spellCheck={false} maxLength={8192} value={token} disabled={locked} placeholder={notion?.tokenPresent ? 'Token saved · enter a replacement' : 'Paste the connection token'} onChange={(e) => changeInput(() => { setToken(e.target.value); knownTables.current.clear(); setTables([]); setListedQuery(null); setNextCursor(null) })} /></label>
         <p className="work-note">The token is sealed by your system key store and used only for this connection.</p>
-        <label>Task data source ID<input className="input mono" maxLength={100} value={taskSource} disabled={locked} onChange={(e) => changeInput(() => setTaskSource(e.target.value))} /></label>
-        <label>Daily data source ID<input className="input mono" maxLength={100} value={dailySource} disabled={locked} onChange={(e) => changeInput(() => setDailySource(e.target.value))} /></label>
+        <label>Find a table<input className="input" aria-label="Notion table search" maxLength={240} value={tableQuery} disabled={locked} placeholder="All shared tables, or search by name" onChange={e => setTableQuery(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); void loadTables() } }} /></label>
+        <div className="work-actions"><button className="btn" type="button" data-testid="notion-load-tables" disabled={locked || !token && !notion?.tokenPresent} onClick={() => void loadTables()}>{busy ? 'Loading…' : tableQuery.trim() ? 'Search tables' : listedQuery !== null ? 'Refresh tables' : 'Load tables'}</button>
+          {nextCursor && <button className="btn" type="button" disabled={locked || listedQuery !== tableQuery.trim()} onClick={() => void loadTables(true)}>Load more tables</button>}
+        </div>
+        {listedQuery !== null && <p className="work-note" role="status">{tables.length ? `${tables.length} shared table${tables.length === 1 ? '' : 's'}${nextCursor ? ' loaded · more available' : ''}.` : 'No shared tables found. Share your databases with the connection, then refresh.'}</p>}
+        <label>Task table<select className="input" aria-label="Notion task table" value={taskSource} disabled={locked} onChange={e => changeInput(() => setTaskSource(e.target.value))}>{tableOptions(taskSource, notion?.config?.taskLabel ?? '')}</select></label>
+        <label>Daily work table<select className="input" aria-label="Notion daily table" value={dailySource} disabled={locked} onChange={e => changeInput(() => setDailySource(e.target.value))}>{tableOptions(dailySource, notion?.config?.dailyLabel ?? '')}</select></label>
+        <details><summary>Enter data source IDs manually</summary>
+          <label>Task data source ID<input className="input mono" maxLength={100} value={taskSource} disabled={locked} onChange={(e) => changeInput(() => setTaskSource(e.target.value))} /></label>
+          <label>Daily data source ID<input className="input mono" maxLength={100} value={dailySource} disabled={locked} onChange={(e) => changeInput(() => setDailySource(e.target.value))} /></label>
+        </details>
+        <p className="work-note">Each table needs text properties for Stoke ID and completion evidence. Daily work also needs a date and a relation to the task table.</p>
         <div className="work-actions"><button className="btn" type="button" disabled={locked || !taskSource || !dailySource || !token && !notion?.tokenPresent} onClick={() => void inspect()}>{busy ? 'Checking…' : 'Inspect table properties'}</button></div>
         {schemas && <>
           <Mapping map={taskMap} source={schemas.task} daily={false} disabled={locked} onChange={setTaskMap} />

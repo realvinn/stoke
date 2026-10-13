@@ -61,6 +61,16 @@ export class NotionWork {
     if (!actual) throw new Error('Add a Notion integration token first.')
     return new NotionClient(actual, { fetch: this.deps.fetch })
   }
+  tables(query: string = '', cursor: string | null = null, token?: string): Promise<import('../../shared/workNotion.ts').NotionTableList> {
+    return this.claim(async signal => {
+      if (!(await this.deps.work.read()).enabled) throw new Error('Enable Work before connecting Notion.')
+      const client = await this.client(token)
+      const result = await client.tables(query, cursor, signal)
+      signal.throwIfAborted()
+      if (!(await this.deps.work.read()).enabled) throw new Error('Work was disabled while loading the tables.')
+      return result
+    })
+  }
   inspect(taskSource: string, dailySource: string, token?: string): Promise<{ task: NotionSource; daily: NotionSource }> {
     return this.claim(async (signal) => {
       if (!(await this.deps.work.read()).enabled) throw new Error('Enable Work before connecting Notion.')

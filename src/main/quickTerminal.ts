@@ -55,7 +55,7 @@ class QuickTerminalSession {
   refreshSettings(): void { this.changed() }
   async open(mode: QuickTerminalSurface, cwd?: string): Promise<QuickTerminalState> {
     if (this.disposed) throw new Error('The Stoke window is closing.')
-    if (!this.options.enabled()) throw new Error('Enable Quick terminal in Appearance settings first.')
+    if (!this.options.enabled()) throw new Error('The quick terminal is unavailable.')
     if (this.preparing || this.state.phase === 'stopping') throw new Error('Wait for the current shell operation to finish.')
     if (this.state.id) return this.move(mode)
     return this.start(mode, cwd)
@@ -179,7 +179,7 @@ export class QuickTerminal {
   refreshSettings(): void { this.changed() }
   private claim(): { cancelled: boolean } {
     if (this.disposed) throw new Error('The Stoke window is closing.')
-    if (!this.options.enabled()) throw new Error('Enable Quick terminal in Appearance settings first.')
+    if (!this.options.enabled()) throw new Error('The quick terminal is unavailable.')
     if (this.operation) throw new Error('Wait for the current shell operation to finish.')
     const mine = { cancelled: false }; this.operation = mine; return mine
   }

@@ -725,5 +725,9 @@ check('enabling Work restores its contribution', settingsEntries({ agents: ['cla
  * `process.exitCode` is set once, so an assertion below it could print FAIL and
  * still exit 0 (CLAUDE.md gotchas 50 and 62).
  */
+check('disabled Grok Bot has no account directory search entry', settingsEntries({ agents: ['claude'], enabledPlugins: [] }).some(entry => entry.row === 'accounts.grok-bot'), false)
+check('enabled Grok Bot contributes its account directory search entry', settingsEntries({ agents: ['claude'], enabledPlugins: ['grok-bot'] }).some(entry => entry.row === 'accounts.grok-bot'), true)
+
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
+
 process.exitCode = failures ? 1 : 0

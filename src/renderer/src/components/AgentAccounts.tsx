@@ -67,7 +67,14 @@ export function AgentAccounts({
     else if (section === 'agent-accounts.api' || section === 'agent-accounts.anthropic') setAdding('key')
   }, [section, sectionRevision])
   useEffect(() => {
-    if (adding) addPane.current?.querySelector<HTMLElement>('button, input, select')?.focus()
+    if (adding) {
+      const pane = addPane.current
+      const target = adding === 'choose'
+        ? pane?.querySelector<HTMLElement>('[data-testid="choose-login-account"], [data-testid="choose-api-account"]')
+        // Both forms stay mounted; focus only the one that is open.
+        : pane?.querySelector<HTMLElement>('details[open]:not([hidden]) input:not([type="hidden"])') ?? pane?.querySelector<HTMLElement>('details[open]:not([hidden]) select')
+      target?.focus()
+    }
     else if (wasAdding.current) addButton.current?.focus()
     wasAdding.current = !!adding
   }, [adding])

@@ -822,9 +822,9 @@ await step('Codex reports its native model and current context', async () => {
 
 await step('native plugin lifecycle and Grok Bot account isolation', async () => {
   const openPlugins = async () => {
-    await ev(`document.querySelector('[data-testid="active-account"]').click(), true`)
+    await ev(`document.querySelector('[data-testid="stoke-account"]').click(), true`)
     await waitFor('owned account menu for plugin navigation', () => ev<boolean>('!!document.querySelector(".account-panel")'))
-    await ev(`[...document.querySelectorAll('.account-panel button')].find(button => button.textContent === 'Manage agent accounts').click(), true`)
+    await ev(`[...document.querySelectorAll('.account-panel button')].find(button => button.textContent === 'Manage accounts').click(), true`)
     await waitFor('settings navigation mounted', () => ev<boolean>(`!!document.querySelector('[data-node="plugins"]')`))
     await ev(`document.querySelector('[data-node="plugins"]').click(), true`)
     await waitFor('native plugin manager', () => ev<boolean>(`!!document.querySelector('[data-setting="plugins.manager"]')`))
@@ -997,6 +997,15 @@ await step('native plugin lifecycle and Grok Bot account isolation', async () =>
       const view = await ev<{ accounts: { id: string }[] }>('window.stoke.grokBot.read()')
       await waitFor('five native account rows', () => ev<boolean>(`document.querySelectorAll('.plugin-account-list .plugin-account').length === 5`))
       check('native manager supports five separately sealed account sessions', view.accounts.length === 5)
+      await ev(`document.querySelector('[data-testid="stoke-account"]').click(), true`)
+      await waitFor('shared account menu with Grok Bot enabled', () => ev<boolean>('!!document.querySelector(".account-panel")'))
+      await ev(`[...document.querySelectorAll('.account-panel button')].find(b => b.textContent === 'Manage accounts').click(), true`)
+      await waitFor('Grok Bot saved accounts in the shared directory', () => ev<boolean>(`document.querySelector('[data-setting="accounts.grok-bot"]')?.textContent.includes('5 saved')`))
+      check('enabled Grok Bot has one account directory row with its saved count', await ev<boolean>(`document.querySelectorAll('[data-setting="accounts.grok-bot"]').length === 1`) === true)
+      await shot('04-accounts-with-grok-bot')
+      await ev(`document.querySelector('[data-setting="accounts.grok-bot"]').click(), true`)
+      await waitFor('direct Grok Bot account manager from the directory', () => ev<boolean>(`document.querySelectorAll('.plugin-account-list .plugin-account').length === 5`))
+      check('the Grok Bot account row opens its own plugin directly', await ev<boolean>(`document.querySelector('.plugin-detail')?.textContent.includes('Grok Bot') && !!document.querySelector('[aria-label="Grok Bot"]')`) === true)
       for (let index = 0; index < 5; index++) {
         const result = await ev<{ ok: boolean; message?: string }>(`window.stoke.grokBot.operate(${JSON.stringify({ accountId: view.accounts[index].id, kind: 'list' })})`, 30000)
         check(`native pinned CLI selects Grok account ${index + 1}`, result.ok && requests.slice(-2).every(request => request.token === `Bearer owned-native-token-${index + 1}` && request.route === `route-${index + 1}`), result.message ?? '')
@@ -1144,6 +1153,11 @@ await step('native plugin lifecycle and Grok Bot account isolation', async () =>
     check('disabled Grok Bot is absent from the launcher agent choices', await waitFor('the native agent menu', () => ev<boolean>(`!!document.querySelector('[role="menuitem"]')`)) && await ev<boolean>(`![...document.querySelectorAll('[role="menuitem"]')].some(item => item.textContent.includes('Grok Bot'))`))
     await ev(`document.querySelector('.split-caret').click(), document.querySelector('.tab[aria-selected="true"] .tab-close').click(), true`)
     check('disabled Grok Bot cannot run through preload IPC', await ev<boolean>(`window.stoke.grokBot.read().then(() => false, () => true)`) === true)
+    await ev(`document.querySelector('[data-testid="stoke-account"]').click(), true`)
+    await waitFor('shared account menu with Grok Bot disabled', () => ev<boolean>('!!document.querySelector(".account-panel")'))
+    await ev(`[...document.querySelectorAll('.account-panel button')].find(b => b.textContent === 'Manage accounts').click(), true`)
+    await waitFor('shared account directory without plugin', () => ev<boolean>(`!!document.querySelector('[data-testid="accounts-overview"]')`))
+    check('disabled Grok Bot is hidden from the shared account directory', await ev<boolean>(`!document.querySelector('[data-setting="accounts.grok-bot"]')`) === true)
   } finally {
     await ui!.send('Emulation.clearDeviceMetricsOverride').catch(() => {})
     await ev(`window.stoke.plugins.toggle('grok-bot', false).catch(() => null)`).catch(() => {})
@@ -1164,34 +1178,96 @@ await step('three agents side by side', async () => {
   await shot('03-three-agents')
 })
 
-await step('the active account follows the agent and fits the title bar', async () => {
+await step('Work discovers shared Notion tables through its API connection', async () => {
+  const target = await waitFor('the owned Notion fixture main inspector', async () => (await listTargets(nativeInspectorPort)).find(t => t.type === 'node' && t.webSocketDebuggerUrl), 10_000)
+  const main = await CdpClient.open(target)
+  const wasEnabled = await ev<boolean>('window.stoke.work.read().then(view => view.enabled)')
+  const taskId = '11111111-1111-4111-8111-111111111111', dailyId = '22222222-2222-4222-8222-222222222222'
+  try {
+    await main.evaluate(`(() => {
+      globalThis.__stokeNotionOriginalFetch = globalThis.fetch;
+      globalThis.__stokeNotionCalls = [];
+      const task = ${JSON.stringify(taskId)}, daily = ${JSON.stringify(dailyId)};
+      const schema = id => ({ object: 'data_source', id, title: [{ plain_text: id === task ? 'Product tasks' : 'Daily plan' }], properties: {
+        Name: { id: 'title', type: 'title', title: {} }, Status: { id: 'status', type: 'status', status: { options: (id === task ? ['Idea', 'Approved', 'Working', 'Completed'] : ['To-Do', 'Working on', 'Completed']).map(name => ({ name })) } },
+        'Stoke ID': { id: 'identity', type: 'rich_text', rich_text: {} }, Evidence: { id: 'evidence', type: 'rich_text', rich_text: {} },
+        [id === task ? 'Brief' : 'Notes']: { id: 'body', type: 'rich_text', rich_text: {} },
+        ...(id === task ? { Project: { id: 'project', type: 'rich_text', rich_text: {} } } : { Day: { id: 'day', type: 'date', date: {} }, Task: { id: 'task', type: 'relation', relation: { data_source_id: task } } })
+      } });
+      globalThis.fetch = async (url, init) => {
+        if (!String(url).startsWith('https://api.notion.com/v1/')) return globalThis.__stokeNotionOriginalFetch(url, init);
+        globalThis.__stokeNotionCalls.push({ url: String(url), method: init.method });
+        const body = init.body ? JSON.parse(init.body) : {};
+        const value = String(url).endsWith('/search') ? { object: 'list', results: [schema(body.query || body.start_cursor ? daily : task)], has_more: !body.query && !body.start_cursor, next_cursor: !body.query && !body.start_cursor ? daily : null } : schema(String(url).split('/').at(-1));
+        return new Response(JSON.stringify(value), { headers: { 'content-type': 'application/json' } });
+      };
+      return true;
+    })()`)
+    await ev(`window.stoke.plugins.toggle('work', true)`)
+    await ev(`document.querySelector('[data-testid="stoke-account"]').click(), true`)
+    await waitFor('account menu for Work settings', () => ev<boolean>('!!document.querySelector(".account-panel")'))
+    await ev(`[...document.querySelectorAll('.account-panel button')].find(b => b.textContent === 'Manage accounts').click(), true`)
+    await waitFor('Work settings navigation', () => ev<boolean>(`!!document.querySelector('[data-node="worklog"]')`))
+    await ev(`document.querySelector('[data-node="worklog"]').click(), true`)
+    await waitFor('Notion connection setup', () => ev<boolean>(`!!document.querySelector('[data-setting="worklog.connection"]')`))
+    await ev(`document.querySelector('[data-setting="worklog.connection"] summary').click(), document.querySelector('.work-notion input[type="password"]').focus(), true`)
+    await ui!.send('Input.insertText', { text: 'owned-synthetic-notion-token' })
+    await ev(`document.querySelector('[data-testid="notion-load-tables"]').click(), true`)
+    await waitFor('first shared table without copying an ID', () => ev<boolean>(`document.querySelector('[aria-label="Notion task table"] option[value="${taskId}"]')?.textContent.includes('Product tasks')`))
+    await ev(`[...document.querySelectorAll('.work-notion button')].find(b => b.textContent === 'Load more tables').click(), true`)
+    await waitFor('second page of tables in both selectors', () => ev<boolean>(`['Notion task table', 'Notion daily table'].every(label => document.querySelector('[aria-label="'+label+'"] option[value="${dailyId}"]')?.textContent.includes('Daily plan'))`))
+    await ev(`(() => { for (const [label, value] of [['Notion task table', '${taskId}'], ['Notion daily table', '${dailyId}']]) { const select = document.querySelector('[aria-label="'+label+'"]'); select.value = value; select.dispatchEvent(new Event('change', { bubbles: true })); } return true; })()`)
+    await ev(`[...document.querySelectorAll('.work-notion button')].find(b => b.textContent === 'Inspect table properties').click(), true`)
+    await waitFor('selected table schemas and mappings', () => ev<boolean>(`document.querySelectorAll('.work-mapping').length === 2`))
+    check('the picker selects table IDs and suggests existing status and property mappings', await ev<boolean>(`[...document.querySelectorAll('.work-mapping select')].every(s => !!s.value) && document.querySelector('.work-mapping legend').textContent.includes('Product tasks')`) === true)
+    await ev(`document.querySelector('[aria-label="Notion table search"]').focus(), true`)
+    await ui!.send('Input.insertText', { text: 'Daily' })
+    await ui!.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 })
+    await ui!.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 })
+    await waitFor('keyboard table-name search', () => ev<boolean>(`document.querySelector('[aria-label="Notion task table"] option[value="${dailyId}"]')?.textContent.includes('Daily plan') && ![...document.querySelectorAll('.work-notion button')].some(b => b.textContent === 'Load more tables') && document.querySelector('.work-notion [role="status"]')?.textContent === '1 shared table.'`))
+    check('Enter searches table names and retains the selected task label without submitting the connection form', await ev<boolean>(`document.querySelectorAll('.work-mapping').length === 2 && document.querySelector('[aria-label="Notion task table"] option:checked').textContent.includes('Product tasks')`) === true)
+    check('discovery and inspection neither save the token nor write Notion rows', await ev<boolean>('window.stoke.work.notionRead().then(view => !view.tokenPresent && !view.config)') && await main.evaluate(`globalThis.__stokeNotionCalls.every(call => call.url.endsWith('/search') || call.method === 'GET')`) === true)
+    await ui!.send('Emulation.setDeviceMetricsOverride', { width: 940, height: 720, deviceScaleFactor: 1, mobile: false })
+    await ev(`document.querySelector('[data-setting="worklog.connection"]').scrollIntoView({ block: 'start' }), true`)
+    await sleep(200); await shot('04-notion-table-picker')
+  } finally {
+    await ui!.send('Emulation.clearDeviceMetricsOverride').catch(() => {})
+    await ev(`document.querySelector('button[title="Close settings (Esc)"]')?.click(), true`).catch(() => {})
+    await ev(`window.stoke.plugins.toggle('work', ${JSON.stringify(wasEnabled)})`).catch(() => {})
+    await main.evaluate(`(() => { if (globalThis.__stokeNotionOriginalFetch) globalThis.fetch = globalThis.__stokeNotionOriginalFetch; delete globalThis.__stokeNotionOriginalFetch; delete globalThis.__stokeNotionCalls; return true; })()`).catch(() => {})
+    main.close()
+  }
+})
+
+await step('the sidebar account menu follows the agent and leaves the title bar clear', async () => {
   let created = ''
   try {
     for (const id of AGENTS) {
       await activate(tabs[id]!.ptyId)
       const expected = id === 'opencode' ? 'Identity unavailable' : `${id}@example.test`
-      await waitFor(`${id}'s own account indicator`, () => ev<boolean>(`document.querySelector('[data-testid="active-account"] .account-chip-identity')?.textContent === ${JSON.stringify(expected)}`))
-      check(`${id}: the top bar names its own agent and account`, await ev<boolean>(`document.querySelector('[data-testid="active-account"]')?.textContent.includes(${JSON.stringify(id === 'claude' ? 'Claude Code' : id === 'codex' ? 'Codex' : 'OpenCode')}) && document.querySelector('[data-testid="active-account"]')?.getAttribute('data-account') === 'default'`) === true)
+      await waitFor(`${id}'s own account indicator`, () => ev<boolean>(`document.querySelector('[data-testid="stoke-account"] .account-chip-identity')?.textContent === ${JSON.stringify(expected)}`))
+      check(`${id}: the sidebar menu names its own agent and account`, await ev<boolean>(`document.querySelector('[data-testid="stoke-account"]')?.textContent.includes(${JSON.stringify(id === 'claude' ? 'Claude Code' : id === 'codex' ? 'Codex' : 'OpenCode')}) && document.querySelector('[data-testid="stoke-account"]')?.getAttribute('data-account') === 'default'`) === true)
     }
     await activate(tabs.claude!.ptyId)
     await ui!.send('Emulation.setDeviceMetricsOverride', { width: 940, height: 720, deviceScaleFactor: 1, mobile: false })
     await sleep(300)
+    check('Accounts has exactly one sidebar entry and no title-bar chip', await ev<boolean>(`document.querySelectorAll('[data-testid="stoke-account"]').length === 1 && !!document.querySelector('.sidebar-footer [data-testid="stoke-account"]') && !document.querySelector('.titlebar .account-chip')`) === true)
     check('every visible title-bar action fits at the minimum window width', await ev<boolean>(`[...document.querySelectorAll('.titlebar-actions button')].filter(button => button.offsetWidth).every(button => { const r = button.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth + 1 && r.top >= 0 && r.bottom <= innerHeight; })`) === true)
-    await ev(`document.querySelector('[data-testid="active-account"]').click(), true`)
+    await ev(`document.querySelector('[data-testid="stoke-account"]').click(), true`)
     await waitFor('the account popover', () => ev<boolean>(`document.querySelector('[data-testid="account-identity"]')?.textContent === 'claude@example.test'`))
     check('the account popover fits and receives keyboard focus', await ev<boolean>(`(() => { const panel = document.querySelector('.account-panel'), r = panel.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth + 1 && r.bottom <= innerHeight && document.activeElement === panel; })()`) === true)
     check('the popover includes Stoke’s own sync sign-in', await ev<boolean>(`document.querySelector('.account-panel-sync')?.textContent.includes('Stoke account')`) === true)
     await shot('04-account-details-narrow')
     await ui!.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
     await ui!.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
-    check('Escape closes account details and returns focus to its button', await ev<boolean>(`!document.querySelector('.account-panel') && document.activeElement === document.querySelector('[data-testid="active-account"]')`) === true)
+    check('Escape closes account details and returns focus to its button', await ev<boolean>(`!document.querySelector('.account-panel') && document.activeElement === document.querySelector('[data-testid="stoke-account"]')`) === true)
     await ui!.send('Emulation.clearDeviceMetricsOverride')
     const account = await ev<{ ok: boolean; account?: { id: string } }>(`window.stoke.accounts.create({ cli: 'claude', kind: 'login', name: 'work' })`)
     if (!account.ok || !account.account) throw new Error('the isolated Work account could not be created')
     created = account.account.id
-    await ev(`document.querySelector('[data-testid="active-account"]').click(), true`)
+    await ev(`document.querySelector('[data-testid="stoke-account"]').click(), true`)
     await waitFor('account details reopened', () => ev<boolean>('!!document.querySelector(".account-panel")'))
-    await ev(`[...document.querySelectorAll('.account-panel button')].find(button => button.textContent === 'Manage agent accounts').click(), true`)
+    await manageAgentAccountsFromMenu()
     await waitFor('Default and Work identities in account settings', () => ev<boolean>(`document.querySelector('[data-testid="default-account-identity"]')?.textContent === 'claude@example.test' && document.querySelector('.agent-account-stored[data-account="${created}"]')?.textContent.includes('work@example.test')`))
     check('Settings shows each account’s own signed-in email', await ev<boolean>(`!!document.querySelector('[data-testid="agent-accounts"]') && !document.querySelector('.account-panel')`) === true)
     check('the existing login is clearly Default; saved accounts and add forms start compact', await ev<boolean>(`document.querySelector('.account-manager-existing')?.textContent.includes('You don’t need to add it again') && !document.querySelector('.agent-account-stored form') && !document.querySelector('[data-testid="add-login-account"]').open && !document.querySelector('[data-testid="add-api-account"]').open && !!document.querySelector('[data-testid="add-account-start"]')`) === true)
@@ -1215,10 +1291,18 @@ await step('the active account follows the agent and fits the title bar', async 
     await ui!.send('Emulation.clearDeviceMetricsOverride')
   } finally {
     await ui!.send('Emulation.clearDeviceMetricsOverride').catch(() => {})
-    await ev(`document.querySelector('button[title="Close settings (Esc)"]')?.click(), document.querySelector('[data-testid="active-account"][aria-expanded="true"]')?.click(), true`).catch(() => {})
+    await ev(`document.querySelector('button[title="Close settings (Esc)"]')?.click(), document.querySelector('[data-testid="stoke-account"][aria-expanded="true"]')?.click(), true`).catch(() => {})
     if (created) await ev(`window.stoke.accounts.remove(${JSON.stringify(created)})`).catch(() => {})
   }
 })
+
+async function manageAgentAccountsFromMenu(cli?: string): Promise<void> {
+  const selected = cli ?? await ev<string>(`document.querySelector('[data-testid="stoke-account"]').dataset.cli`)
+  await ev(`[...document.querySelectorAll('.account-panel button')].find(button => button.textContent === 'Manage accounts').click(), true`)
+  await waitFor('the shared Accounts directory', () => ev<boolean>(`!!document.querySelector('[data-testid="accounts-overview"]')`))
+  await ev(`document.querySelector('.accounts-agent[data-cli="${selected}"]').click(), true`)
+  await waitFor('the scoped agent account page', () => ev<boolean>(`document.querySelector('[data-testid="agent-account-page"]')?.dataset.cli === '${selected}'`))
+}
 
 async function openAccountAdd(kind: 'login' | 'key'): Promise<void> {
   await ev(`document.querySelector('[data-testid="add-account-start"]').click(), true`)
@@ -1269,7 +1353,7 @@ await step('sidebar accounts, repository details and bottom-left terminal are di
     await ev(`document.querySelector('[data-testid="stoke-account"]').click(), true`)
     await waitFor('sidebar Stoke account details', () => ev<boolean>('!!document.querySelector(".account-panel")'))
     check('the sidebar popup opens above its account row, fits at 940px and receives focus', await ev<boolean>(`(() => { const panel = document.querySelector('.account-panel'), r = panel.getBoundingClientRect(), button = document.querySelector('[data-testid="stoke-account"]').getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth + 1 && r.top >= 0 && r.bottom <= button.top && document.activeElement === panel; })()`) === true)
-    check('Stoke sign-in is distinct from the active agent email', await ev<boolean>(`document.querySelector('.account-panel-sync')?.textContent.includes('Not signed in') && !document.querySelector('[data-testid="account-identity"]') && document.querySelector('[data-testid="active-account"]')?.textContent.includes('claude@example.test')`) === true)
+    check('Stoke sign-in is distinct from the active agent email', await ev<boolean>(`document.querySelector('.account-panel-sync')?.textContent.includes('Not signed in') && document.querySelector('[data-testid="account-identity"]')?.textContent === 'claude@example.test' && !document.querySelector('.account-panel-sync')?.textContent.includes('claude@example.test')`) === true)
     await waitFor('the account popup animation to finish', () => ev<boolean>(`getComputedStyle(document.querySelector('.account-panel')).opacity === '1'`))
     await shot('04-sidebar-account-git')
     await ui!.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
@@ -1281,6 +1365,19 @@ await step('sidebar accounts, repository details and bottom-left terminal are di
     await waitFor('overview highlight to settle', () => ev<boolean>(`!document.querySelector('[data-testid="accounts-overview"]').hasAttribute('data-flash')`))
     await waitFor('the settings animation to finish', () => ev<boolean>(`getComputedStyle(document.querySelector('.settings-modal')).opacity === '1'`))
     await shot('04-accounts-overview')
+    const originalHubUrl = await ev<string>('window.stoke.hub.view().then(view => view.url)')
+    await ev('document.querySelector(".accounts-stoke button").click(), true')
+    await waitFor('the Stoke sign-in submenu', () => ev<boolean>(`!!document.querySelector('[data-testid="stoke-account-page"]')`))
+    check('Stoke sign-in has one heading and keeps connection details closed', await ev<boolean>(`document.querySelector('[data-testid="stoke-account-page"] h2')?.textContent === 'Stoke account' && !document.querySelector('.account-connection-settings')?.open`) === true)
+    if (!originalHubUrl) {
+      await ev(`[...document.querySelectorAll('[data-testid="stoke-account-page"] button')].find(b => b.textContent === 'Continue to sign in').click(), true`)
+      await waitFor('the default hub sign-in form', () => ev<boolean>(`!!document.querySelector('[data-hub="sign-in"]')`))
+      check('a fresh Stoke account reaches sign-in without opening advanced connection settings', await ev<boolean>(`!document.querySelector('.account-connection-settings').open && !!document.querySelector('[data-hub="sign-in"] input[type="email"]')`) === true)
+      await ev(`window.stoke.hub.setUrl(${JSON.stringify(originalHubUrl)})`)
+    }
+    await shot('04-stoke-account-settings')
+    await ev(`[...document.querySelectorAll('.accounts-heading button')].find(b => b.textContent === '‹ All accounts').click(), true`)
+    await waitFor('the account directory after Stoke settings', () => ev<boolean>(`!!document.querySelector('[data-testid="accounts-overview"]')`))
     await ev(`document.querySelector('.accounts-agent[data-cli="codex"]').click(), true`)
     await waitFor('dedicated Codex accounts submenu', () => ev<boolean>(`document.querySelector('[data-testid="agent-account-page"]')?.dataset.cli === 'codex' && !document.querySelector('#agent-page')`))
     await openAccountAdd('login')
@@ -1295,12 +1392,12 @@ await step('sidebar accounts, repository details and bottom-left terminal are di
     check('Add API account opens the correct scoped API form', true)
     await closeSettings()
     const before = await ev<{ state: QuickTerminalState }>('window.stoke.quickTerminal.read()')
-    check('quick terminal remains disabled until the user enables it', before.state.enabled === false && !before.state.id)
+    check('quick terminal is available without starting a shell at boot', before.state.enabled === true && !before.state.id)
     await ev(`document.querySelector('[data-testid="footer-terminal"]').focus(), true`)
     await pressEnter()
-    await waitFor('terminal opt-in Settings from the footer', () => ev<boolean>(`!!document.querySelector('[data-setting="appearance.quick-terminal"]')`))
-    check('pressing Enter on the disabled terminal button opens setup without starting a shell', await ev<boolean>(`!document.querySelector('[data-setting="appearance.quick-terminal"] input').checked && window.stoke.quickTerminal.read().then(snapshot => !snapshot.state.id && !snapshot.state.enabled)`) === true)
-    await closeSettings()
+    await waitFor('terminal panel from the footer', () => ev<boolean>(`window.stoke.quickTerminal.read().then(snapshot => !!snapshot.state.id && snapshot.state.mode === 'panel')`))
+    check('Enter opens the local shell without a setup gate', await ev<boolean>(`!!document.querySelector('.quick-terminal-dock') && !document.querySelector('[data-setting="appearance.quick-terminal"]')`) === true)
+    await ev('window.stoke.quickTerminal.move("hidden")')
     await ev('document.querySelector(\'button[title="Toggle sidebar"]\').click(), true')
     check('Terminal stays at bottom left with the sidebar hidden', await ev<boolean>(`(() => { const r = document.querySelector('[data-testid="footer-terminal"]').getBoundingClientRect(); return !document.querySelector('.sidebar') && !!document.querySelector('[data-testid="footer-repository"]') && r.left <= 16 && r.bottom <= innerHeight && r.top > innerHeight - 50; })()`) === true)
     await ev('document.querySelector(\'button[title="Toggle sidebar"]\').click(), true')
@@ -1319,9 +1416,9 @@ await step('completed sign-ins close with the verified email; failed and unknown
   const signInPtys: string[] = []
   const openAccounts = async (cli: 'claude' | 'codex') => {
     await activate(tabs[cli]!.ptyId)
-    await ev(`document.querySelector('[data-testid="active-account"]').click(), true`)
+    await ev(`document.querySelector('[data-testid="stoke-account"]').click(), true`)
     await waitFor('account details for sign-in', () => ev<boolean>('!!document.querySelector(".account-panel")'))
-    await ev(`[...document.querySelectorAll('.account-panel button')].find(button => button.textContent === 'Manage agent accounts').click(), true`)
+    await manageAgentAccountsFromMenu()
     await waitFor('agent sign-in settings', () => ev<boolean>('!!document.querySelector(\'[data-testid="add-account"]\')'))
     await ev(`document.querySelectorAll('.toast-close').forEach(button => button.click()), true`)
     await waitFor('previous account notifications to dismiss', () => ev<boolean>('!document.querySelector(".toast")'))
@@ -1377,17 +1474,18 @@ await step('completed sign-ins close with the verified email; failed and unknown
     }
 
     await ev('document.querySelector(\'button[title^="New session"]\').click(), true')
-    await waitFor('Stoke account access on a New tab', () => ev<boolean>(`document.querySelector('[data-testid="active-account"] .account-chip-label')?.textContent === 'Accounts'`))
-    check('a New tab shows Stoke sign-in without borrowing a local agent account', await ev<boolean>(`!document.querySelector('[data-testid="active-account"]').hasAttribute('data-account')`) === true)
-    await ev(`document.querySelector('[data-testid="active-account"]').click(), true`)
+    await waitFor('Stoke account access on a New tab', () => ev<boolean>(`document.querySelector('[data-testid="stoke-account"] .account-chip-label')?.textContent === 'Accounts'`))
+    check('a New tab shows Stoke sign-in without borrowing a local agent account', await ev<boolean>(`!document.querySelector('[data-testid="stoke-account"]').hasAttribute('data-account')`) === true)
+    await ev(`document.querySelector('[data-testid="stoke-account"]').click(), true`)
     await waitFor('Stoke-only account details', () => ev<boolean>(`!!document.querySelector('.account-panel-sync') && !document.querySelector('[data-testid="account-identity"]')`))
     await shot('04-stoke-account-new-tab')
-    await ev(`[...document.querySelectorAll('.account-panel button')].find(button => button.textContent === 'Codex / OpenAI API').click(), true`)
+    await manageAgentAccountsFromMenu('codex')
+    await openAccountAdd('key')
     await waitFor('API setup directly from a New tab', () => ev<boolean>(`!!document.querySelector('[aria-label="New ${cliFor('codex').label} API account name"]')`))
     await ev(`document.querySelector('button[title="Close settings (Esc)"]').click(), document.querySelector('.tablist .tab[aria-selected="true"] .tab-close').click(), true`)
   } finally {
     for (const marker of ['login-wait', 'login-fail', 'identity-unavailable']) rmSync(join(agentsDir, marker), { force: true })
-    await ev(`document.querySelector('button[title="Close settings (Esc)"]')?.click(), document.querySelector('[data-testid="active-account"][aria-expanded="true"]')?.click(), true`).catch(() => {})
+    await ev(`document.querySelector('button[title="Close settings (Esc)"]')?.click(), document.querySelector('[data-testid="stoke-account"][aria-expanded="true"]')?.click(), true`).catch(() => {})
     for (const ptyId of signInPtys) {
       await ev(`document.querySelector('.tablist .tab[data-tab-id="${ptyId}"] .tab-close')?.click(), true`).catch(() => {})
     }
@@ -1403,14 +1501,15 @@ await step('named API profiles save in Settings and launch with their own creden
   try {
     for (const cli of ['claude', 'codex'] as const) {
       await activate(tabs[cli]!.ptyId)
-      await ev(`document.querySelector('[data-testid="active-account"]').click(), true`)
+      await ev(`document.querySelector('[data-testid="stoke-account"]').click(), true`)
       await waitFor('account details for API setup', () => ev<boolean>('!!document.querySelector(".account-panel")'))
-      await ev(`[...document.querySelectorAll('.account-panel button')].find(button => button.textContent === 'Add API account').click(), true`)
+      await manageAgentAccountsFromMenu(cli)
+      await openAccountAdd('key')
       await waitFor('API account fields', () => ev<boolean>('!!document.querySelector(\'[aria-label="New API account provider"]\')'))
       await waitFor('the API shortcut to reveal its Settings fields', () => ev<boolean>(`(() => { const r = document.querySelector('[data-setting="agent-accounts.api"]').getBoundingClientRect(); return r.top >= 0 && r.top < innerHeight; })()`))
       // The settings jump focuses its first control after the disclosure settles.
       // Starting to type before that focus transfer can put a key in the nickname.
-      await waitFor('the API shortcut to finish moving focus', () => ev<boolean>(`document.activeElement === document.querySelector('[aria-label="New ${cliFor(cli).label} API account name"]')`))
+      await waitFor('the API form to focus its account name', () => ev<boolean>(`document.activeElement === document.querySelector('[aria-label="New ${cliFor(cli).label} API account name"]')`))
       check(`${cli}: the API provider menu groups gateways under Custom`, await ev<boolean>(`(() => { const options = [...document.querySelector('[aria-label="New API account provider"]').options].map(option => option.value); return options.length === 2 && options.includes('${cli === 'claude' ? 'anthropic' : 'openai'}') && options.includes('custom') })()`) === true)
       if (cli === 'codex') {
         await ev(`(() => { const s = document.querySelector('[aria-label="New API account provider"]'); s.value = 'custom'; s.dispatchEvent(new Event('change', { bubbles: true })); return true })()`)
@@ -1475,7 +1574,7 @@ await step('named API profiles save in Settings and launch with their own creden
       check(`${cli}: only its selected API credential reaches the launch`, env[cli === 'claude' ? 'ANTHROPIC_API_KEY' : 'STOKE_ACCOUNT_API_KEY'] === `<set, ${key.length} chars>` && !JSON.stringify(rec!.start.argv).includes(key))
       const flag = cli === 'claude' ? '--model' : '-m'
       check(`${cli}: the API profile supplies the configured model`, rec!.start.argv[rec!.start.argv.indexOf(flag) + 1] === model)
-      check(`${cli}: the header names the selected API account`, await ev<boolean>(`document.querySelector('[data-testid="active-account"]')?.getAttribute('data-account') === ${JSON.stringify(accountId)} && document.querySelector('[data-testid="active-account"]')?.textContent.includes('API edited')`) === true)
+      check(`${cli}: the header names the selected API account`, await ev<boolean>(`document.querySelector('[data-testid="stoke-account"]')?.getAttribute('data-account') === ${JSON.stringify(accountId)} && document.querySelector('[data-testid="stoke-account"]')?.textContent.includes('API edited')`) === true)
       if (cli === 'claude') check('Anthropic API route clears inherited gateway auth', env.ANTHROPIC_BASE_URL === 'https://api.anthropic.com' && !env.ANTHROPIC_AUTH_TOKEN)
       else check('NanoGPT Codex route uses Responses without a saved OpenAI login', rec!.start.argv.includes('model_providers.stoke_account.requires_openai_auth=false') && rec!.start.argv.includes('model_providers.stoke_account.wire_api="responses"'))
       await waitFor('the API model/account to save for resume', () => ev<boolean>(`window.stoke.tabs.restore().then(s => s.tabs.some(t => t.accountId === ${JSON.stringify(accountId)} && t.model === ${JSON.stringify(model)}))`))
@@ -1515,11 +1614,11 @@ await step('named API profiles save in Settings and launch with their own creden
     const config = JSON.parse(env.OPENCODE_CONFIG_CONTENT)
     check('OpenCode uses the selected Anthropic key and Messages adapter', env.STOKE_ACCOUNT_API_KEY === `<set, ${source.apiKey.length} chars>` && config.provider.stoke_account.npm === '@ai-sdk/anthropic' && config.provider.stoke_account.options.apiKey === '{env:STOKE_ACCOUNT_API_KEY}' && config.provider.stoke_account.options.baseURL === 'https://api.anthropic.com/v1')
     check('OpenCode model and small model stay on the chosen account', record!.start.argv.includes(`stoke_account/${source.apiProfile.model}`) && config.model === config.small_model && config.enabled_providers.join(',') === 'stoke_account')
-    check('OpenCode header names the API account', await ev<boolean>(`document.querySelector('[data-testid="active-account"]')?.getAttribute('data-account') === '${accountId}'`) === true)
+    check('OpenCode header names the API account', await ev<boolean>(`document.querySelector('[data-testid="stoke-account"]')?.getAttribute('data-account') === '${accountId}'`) === true)
     await ev('(document.querySelector(".tablist .tab[aria-selected=\'true\'] .tab-close")?.click(), true)')
     await waitFor('OpenCode API fixture tab to close', () => ev<boolean>(`!window.stokeTerminals.has(${JSON.stringify(ptyId)})`))
   } finally {
-    await ev(`document.querySelector('button[title="Close settings (Esc)"]')?.click(), document.querySelector('[data-testid="active-account"][aria-expanded="true"]')?.click(), true`).catch(() => {})
+    await ev(`document.querySelector('button[title="Close settings (Esc)"]')?.click(), document.querySelector('[data-testid="stoke-account"][aria-expanded="true"]')?.click(), true`).catch(() => {})
     for (const ptyId of opened) await ev(`window.stoke.pty.kill(${JSON.stringify(ptyId)})`).catch(() => {})
     for (const id of created) await ev(`window.stoke.accounts.remove(${JSON.stringify(id)})`).catch(() => {})
     await ev(`window.stoke.settings.get().then(s => window.stoke.settings.set({ agents: { ...s.agents, defaultAccount: ${JSON.stringify(savedDefaults)} } }))`).catch(() => {})
@@ -1537,9 +1636,9 @@ await step('selected Claude logins own their authentication despite inherited an
   const names = Object.keys(poison)
   const oneShots = (): Array<Record<string, unknown>> => readdirSync(agentsDir).filter(name => /^claude-\d+\.jsonl$/.test(name)).flatMap(name => readFileSync(join(agentsDir, name), 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line)))
   const accountSettings = async (): Promise<void> => {
-    await ev(`document.querySelector('[data-testid="active-account"]').click(), true`)
+    await ev(`document.querySelector('[data-testid="stoke-account"]').click(), true`)
     await waitFor('the selected account popup', () => ev<boolean>('!!document.querySelector(".account-panel")'))
-    await ev(`[...document.querySelectorAll('.account-panel button')].find(button => button.textContent === 'Manage agent accounts').click(), true`)
+    await manageAgentAccountsFromMenu()
     await waitFor('Claude account settings', () => ev<boolean>('!!document.querySelector(\'[data-testid="agent-accounts"]\')'))
   }
   try {
@@ -1573,21 +1672,21 @@ await step('selected Claude logins own their authentication despite inherited an
       const rec = await waitFor('the selected login launch record', () => stubByPid(pid), 10_000)
       check(`Profile ${number}: the selected login launches in its own credential home`, rec!.start.env.CLAUDE_CONFIG_DIR === account.home)
       check(`Profile ${number}: API, gateway, OAuth and cloud-provider overrides cannot leak into the login`, names.every(name => !Object.keys(rec!.start.env).some(key => key.toUpperCase() === name)))
-      await waitFor('the header to identify the running login account', () => ev<boolean>(`document.querySelector('[data-testid="active-account"]')?.getAttribute('data-account') === ${JSON.stringify(account.id)} && document.querySelector('[data-testid="active-account"]')?.textContent.includes('profile${number}@example.test')`))
+      await waitFor('the header to identify the running login account', () => ev<boolean>(`document.querySelector('[data-testid="stoke-account"]')?.getAttribute('data-account') === ${JSON.stringify(account.id)} && document.querySelector('[data-testid="stoke-account"]')?.textContent.includes('profile${number}@example.test')`))
       check(`Profile ${number}: the active account matches its native signed-in email`, true)
       const identity = await waitFor('the native identity process record', async () => oneShots().find(event => event.kind === 'account-identity' && event.home === account.home))
       check(`Profile ${number}: auth status uses the same isolated credential environment`, Array.isArray(identity.authOverrides) && identity.authOverrides.length === 0)
       await shot(`04-claude-profile-${number}-selected`)
     }
     await activate(opened[0])
-    check('choosing Profile 2 for new sessions keeps the existing Profile 1 session on its own account', await ev<boolean>(`document.querySelector('[data-testid="active-account"]')?.getAttribute('data-account') === ${JSON.stringify(created[0])} && document.querySelector('[data-testid="active-account"]')?.textContent.includes('profile1@example.test')`) === true)
+    check('choosing Profile 2 for new sessions keeps the existing Profile 1 session on its own account', await ev<boolean>(`document.querySelector('[data-testid="stoke-account"]')?.getAttribute('data-account') === ${JSON.stringify(created[0])} && document.querySelector('[data-testid="stoke-account"]')?.textContent.includes('profile1@example.test')`) === true)
     for (const ptyId of opened) {
       await activate(ptyId)
       await ev(`document.querySelector('.tablist .tab[aria-selected="true"] .tab-close').click(), true`)
       await waitFor('the owned login fixture tab to close', () => ev<boolean>(`!window.stokeTerminals.has(${JSON.stringify(ptyId)})`))
     }
   } finally {
-    await ev(`document.querySelector('button[title="Close settings (Esc)"]')?.click(), document.querySelector('[data-testid="active-account"][aria-expanded="true"]')?.click(), true`).catch(() => {})
+    await ev(`document.querySelector('button[title="Close settings (Esc)"]')?.click(), document.querySelector('[data-testid="stoke-account"][aria-expanded="true"]')?.click(), true`).catch(() => {})
     for (const ptyId of opened) await ev(`window.stoke.pty.kill(${JSON.stringify(ptyId)})`).catch(() => {})
     for (const id of created) await ev(`window.stoke.accounts.remove(${JSON.stringify(id)})`).catch(() => {})
     await ev(`window.stoke.settings.get().then(s => window.stoke.settings.set({ providers: ${JSON.stringify(saved.providers)}, agents: { ...s.agents, defaultAccount: ${JSON.stringify(saved.defaults)} } }))`).catch(() => {})
@@ -1624,9 +1723,9 @@ await step('encrypted accounts arrive through native IPC and select the right Co
     await ev('window.stoke.hub.joinConfirm(true)')
     await waitFor('native vault active', () => ev<HubView>('window.stoke.hub.view()').then(v => v.phase === 'active'))
     await activate(tabs.codex!.ptyId)
-    await ev(`document.querySelector('[data-testid="active-account"]').click(), true`)
+    await ev(`document.querySelector('[data-testid="stoke-account"]').click(), true`)
     await waitFor('the native sync navigation', () => ev<boolean>('!!document.querySelector(".account-panel")'))
-    await ev(`[...document.querySelectorAll('.account-panel button')].find(b => b.textContent === 'Manage agent accounts').click(), true`)
+    await manageAgentAccountsFromMenu()
     await waitFor('Accounts settings navigation', () => ev<boolean>(`!!document.querySelector('[data-node="accounts"]')`))
     await ev(`document.querySelector('[data-node="accounts"]').click(), true`)
     await waitFor('the Stoke sync settings button', () => ev<boolean>('!!document.querySelector(".accounts-stoke button")'))
@@ -1660,7 +1759,7 @@ await step('encrypted accounts arrive through native IPC and select the right Co
     check('the native launch uses the selected imported home and login store', rec!.start.env.CODEX_HOME === work.home && rec!.start.argv.includes('cli_auth_credentials_store="file"'))
     check('the native subscription launch excludes the global API endpoint', !rec!.start.argv.some(arg => arg.includes('wrong-api') || arg.startsWith('model_provider=')))
     await activate(ptyId)
-    await waitFor('the synced account email in the title bar', () => ev<boolean>(`document.querySelector('[data-testid="active-account"]')?.textContent.includes('synced-work@example.test')`))
+    await waitFor('the synced account email in the title bar', () => ev<boolean>(`document.querySelector('[data-testid="stoke-account"]')?.textContent.includes('synced-work@example.test')`))
     await shot('04-account-sync-codex-selected')
   } finally {
     await ev('window.stoke.hub.setAccountSync(false)').catch(() => {})
@@ -1863,9 +1962,13 @@ await step('browser links retain popup navigation, POST data and profile isolati
       await ev(`(window.stoke.browser.newTab(${JSON.stringify(sourceUrl)}), true)`)
       const sourceTab = await waitFor('the links fixture tab', async () => (await state())?.tabs.find(t => t.url === sourceUrl && !t.loading) ?? null, 20_000)
       const source = await connectBrowserPage(port, (url: string) => url === sourceUrl)
+      await waitFor('the browser link fixture to become visible', () => source.evaluate('document.visibilityState === "visible"'))
+      await source.send('Emulation.setFocusEmulationEnabled', { enabled: true })
       try {
         for (const kind of profile === 'default' ? ['plain', 'background', 'delayed', 'post', 'multipart'] : ['plain']) {
           await ev(`(window.stoke.browser.selectTab(${JSON.stringify(sourceTab.id)}), true)`)
+          await waitFor('the selected source BrowserView to become visible', async () => (await state())?.activeId === sourceTab.id && await source.evaluate('document.visibilityState === "visible"'))
+          await source.send('Emulation.setFocusEmulationEnabled', { enabled: true })
           const rect = await source.evaluate(`(() => { const r = document.querySelector(${JSON.stringify(`#${kind}`)}).getBoundingClientRect(); return {x: r.x + r.width / 2, y: r.y + r.height / 2} })()`)
           // Native Chromium click on the fixture, with a user gesture. A
           // modified anchor click covers its guest-less OpenURLFromTab path.
@@ -1994,6 +2097,8 @@ await step('browser load errors and explicit certificate reviews work in native 
       return next?.url === sourceUrl && !next.loading && !next.loadError ? true : null
     })
     const source = await waitFor('the HTTPS form source', () => connectBrowserPage(port, (url: string) => url === sourceUrl))
+    await waitFor('the HTTPS source BrowserView to become visible', () => source.evaluate('document.visibilityState === "visible"'))
+    await source.send('Emulation.setFocusEmulationEnabled', { enabled: true })
     try {
       await waitFor('the actual loaded links document', () => source.evaluate('document.readyState === "complete" && !!document.querySelector("#plain")'))
       const before = (await state())?.activeId
@@ -2070,7 +2175,6 @@ await step('quick terminal switches installed shells, opens wrapped links and re
   const fixture = join(root, 'quick-link.mjs')
   const base = `${site.base}/whoami?terminal=quick&padding=`
   writeFileSync(fixture, `const cols = Number(process.argv[2]); const url = ${JSON.stringify(base)} + 'x'.repeat(cols * 2) + '&end=quick-tail'; process.stdout.write('\\r\\n\\x1b[?7l'); for (let at = 0; at < url.length; at += cols) process.stdout.write(url.slice(at, at + cols) + '\\r\\n'); process.stdout.write('\\x1b[?7h');`)
-  await ev('window.stoke.settings.set({ quickTerminal: true })')
   let id = ''
   let popup: CdpClient | null = null
   try {
@@ -2103,10 +2207,18 @@ await step('quick terminal switches installed shells, opens wrapped links and re
     await ui!.send('Input.insertText', { text: `${quote(process.execPath)} ${quote(fixture)} ${cols}` })
     await pressEnter()
     const target = base + 'x'.repeat(cols * 2) + '&end=quick-tail'
-    const point = await waitFor('the quick shell\'s complete URL', () => ev<{ x: number; y: number; hardBoundary: boolean } | null>(`(() => {
-      const t = window.stokeQuickTerminals.get(${JSON.stringify(id)}), screen = t.element.querySelector('.xterm-screen').getBoundingClientRect();
-      return (${terminalLinkPoint.toString()})(t, ${JSON.stringify(target)}, screen);
-    })()`))
+    let previousPoint = ''
+    const point = await waitFor('the quick shell URL and prompt to settle', async () => {
+      const next = await ev<{ x: number; y: number; hardBoundary: boolean; cursor: number[] } | null>(`(() => {
+        const t = window.stokeQuickTerminals.get(${JSON.stringify(id)}), screen = t.element.querySelector('.xterm-screen').getBoundingClientRect();
+        const point = (${terminalLinkPoint.toString()})(t, ${JSON.stringify(target)}, screen);
+        return point ? { ...point, cursor: [t.buffer.active.viewportY, t.buffer.active.baseY, t.buffer.active.cursorX, t.buffer.active.cursorY] } : null;
+      })()`)
+      const signature = JSON.stringify(next)
+      const stable = !!next && signature === previousPoint
+      previousPoint = signature
+      return stable ? next : null
+    })
     check('the quick-shell fixture crosses a hard row boundary', point.hardBoundary === true)
     await ev('(window.__stokeQuickLinkOff = window.stoke.browser.onState(state => { window.__stokeQuickLinkState = state }), true)')
     await ui!.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y })
@@ -2191,14 +2303,21 @@ await step('quick terminal switches installed shells, opens wrapped links and re
     popup?.close()
     if (id) {
       await ev('window.stoke.quickTerminal.move("panel")').catch(() => {})
-      await ev(`(window.stoke.quickTerminal.write(${JSON.stringify(id)}, 'exit\\r'), true)`).catch(() => {})
+      await ev(`(window.stoke.quickTerminal.write(${JSON.stringify(id)}, ${JSON.stringify('exit\r')}), true)`).catch(() => {})
       const exited = await waitFor('the disposable quick shell to exit', () => ev('window.stoke.quickTerminal.read().then(snapshot => snapshot.state.phase === "exited")'), 10_000).catch(() => false)
       check('the disposable quick shell exits normally after the handoff', exited === true)
     }
     await ev('(window.__stokeQuickLinkOff?.(), delete window.__stokeQuickLinkOff, delete window.__stokeQuickLinkState, true)').catch(() => {})
     await ev('window.stoke.quickTerminal.move("hidden")').catch(() => {})
-    await ev('window.stoke.settings.set({ quickTerminal: false })').catch(() => {})
-    check('turning off Quick terminal ends inactive shells too', await waitFor('all disposable quick shells to exit', () => ev('window.stoke.quickTerminal.read().then(snapshot => snapshot.state.sessions.every(session => session.phase === "exited"))'), 10_000).catch(() => false) === true)
+    const shells = await ev<{ state: QuickTerminalState }>('window.stoke.quickTerminal.read()')
+    await ev('window.stoke.quickTerminal.move("panel")').catch(() => {})
+    for (const session of shells.state.sessions.filter(session => session.phase !== 'exited')) {
+      await ev(`window.stoke.quickTerminal.selectShell(${JSON.stringify(session.shellId)})`).catch(() => {})
+      await ev('window.stoke.quickTerminal.end()').catch(() => {})
+      await waitFor('the selected disposable shell to exit', () => ev<boolean>(`window.stoke.quickTerminal.read().then(snapshot => snapshot.state.sessions.find(s => s.shellId === ${JSON.stringify(session.shellId)})?.phase === 'exited')`)).catch(() => {})
+    }
+    await ev('window.stoke.quickTerminal.move("hidden")').catch(() => {})
+    check('ending disposable shells cleans up inactive shells too', await waitFor('all disposable quick shells to exit', () => ev('window.stoke.quickTerminal.read().then(snapshot => snapshot.state.sessions.every(session => session.phase === "exited"))'), 10_000).catch(() => false) === true)
   }
 })
 
@@ -2255,7 +2374,7 @@ if (opt.ssh) {
     await typeLine(ptyId, 'echo STOKE-SSH-$((6*7))')
     const echoed = await waitFor('the remote echo', async () => ((await bufferOf(ptyId)).includes('STOKE-SSH-42') ? true : null), 30_000).catch(() => false)
     check('an echo makes the round trip to the remote shell', echoed === true, echoed ? '' : (await bufferOf(ptyId)).slice(-1200))
-    check('an SSH tab never shows the local project’s Git branch or account', await ev<boolean>(`!document.querySelector('[data-testid="footer-repository"]') && !document.querySelector('[data-testid="active-account"]')?.hasAttribute('data-account')`) === true)
+    check('an SSH tab never shows the local project’s Git branch or account', await ev<boolean>(`!document.querySelector('[data-testid="footer-repository"]') && !document.querySelector('[data-testid="stoke-account"]')?.hasAttribute('data-account')`) === true)
     await typeLine(ptyId, '[ -n "$TMUX" ] && echo IN-TMUX-$((1+1))')
     const inTmux = await waitFor('the tmux check', async () => ((await bufferOf(ptyId)).includes('IN-TMUX-2') ? true : null), 15_000).catch(() => false)
     check('the shell is inside the tab\'s managed tmux session (gotcha 126)', inTmux === true)
@@ -2374,8 +2493,7 @@ async function quitGracefully(label: string): Promise<{ code: number | null; sig
     // ends its shell, which cannot prove native cleanup on window close.
     const before = await ev<{ state: QuickTerminalState }>('window.stoke.quickTerminal.read()')
     check(`quick terminal did not auto-start before ${label}`, before.state.phase === 'idle' || before.state.phase === 'exited')
-    await ev('window.stoke.settings.set({ quickTerminal: true })')
-    const opened = await ev<QuickTerminalResult>(`window.stoke.quickTerminal.open('panel', ${JSON.stringify(proj)})`)
+      const opened = await ev<QuickTerminalResult>(`window.stoke.quickTerminal.open('panel', ${JSON.stringify(proj)})`)
     const quick = opened.ok && opened.state.phase === 'exited'
       ? await ev<QuickTerminalResult>('window.stoke.quickTerminal.restart()') : opened
     check(`a real quick shell is running before ${label}`, quick.ok && quick.state.phase === 'running' && !!quick.state.id)

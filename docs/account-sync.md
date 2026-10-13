@@ -2,6 +2,8 @@
 
 This feature requires Stoke **1.0.0-beta.8 or later on both computers**. Beta.7 does not include it.
 
+In current source, **Accounts** has one entry at the bottom of the sidebar. Its menu separates your Stoke sign-in from the account used by the current local agent session. **Manage accounts** opens the directory; choose an agent for its saved logins and API profiles, or **Devices & sync** for Stoke. Grok Bot appears there only while its plugin is enabled. When the sidebar is hidden, use Settings → Accounts. Account choices marked **New sessions** do not change an already running session. These UI changes are after beta.9.
+
 1. Sign in to the same Stoke account on both computers.
 2. Create the encrypted vault on one computer if you have not already. Approve the other device, comparing the six-digit code on both screens, or join using your Recovery Kit.
 3. Open Settings → Accounts → Stoke account → Manage account & sync.

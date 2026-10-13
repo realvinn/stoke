@@ -2406,7 +2406,7 @@ function sendQuickTerminal(channel: string, value: unknown): void {
 }
 function quickTerminalFor(): QuickTerminal {
   return quickTerminal ??= new QuickTerminal({
-    enabled: () => getSettings().quickTerminal,
+    enabled: () => true,
     onState: state => sendQuickTerminal(CH.quickTerminalState, state),
     onData: frame => sendQuickTerminal(CH.quickTerminalData, frame)
   })
@@ -2453,7 +2453,7 @@ async function presentQuickTerminal(mode: QuickTerminalMode): Promise<void> {
   try {
     if (devUrl) await popup.loadURL(new URL('quick-terminal.html', devUrl.endsWith('/') ? devUrl : `${devUrl}/`).href)
     else await popup.loadFile(join(__dirname, '../renderer/quick-terminal.html'))
-    if (!popup.isDestroyed() && getSettings().quickTerminal && quickTerminal?.view().mode === 'popout') { popup.show(); popup.focus() }
+    if (!popup.isDestroyed() && quickTerminal?.view().mode === 'popout') { popup.show(); popup.focus() }
   } catch { popup.destroy(); throw new Error('The terminal window could not open. Use the side panel instead.') }
 }
 
@@ -4740,7 +4740,6 @@ function registerIpc(): void {
     const next = setSettings(
       from === 'renderer' && guarded.accounts ? { ...guarded, accounts: accountsFromRenderer(prev.accounts, guarded.accounts) } : guarded
     )
-    if (prev.quickTerminal && !next.quickTerminal) { quickTerminal?.disable(); quickTerminalWindow?.hide() }
     // A renamed or re-ordered profile list, a switch, or a bookmark list moved.
     if (patch.browser) {
       for (const embedded of [browser, ...detachedBrowsers.values()]) embedded?.setProfiles(next.browser.profiles, next.browser.currentProfile, next.browser.homepage)
@@ -5351,6 +5350,11 @@ function registerIpc(): void {
     if (!appFrame(event)) return { ok: false, message: 'Open the Notion connection in Stoke.' }
     try { return { ok: true, ...await (await workNotionFor()).inspect(taskSource, dailySource, token) } }
     catch (err) { return { ok: false, message: err instanceof Error ? err.message : 'Notion could not inspect the tables.' } }
+  })
+  ipcMain.handle(CH.workNotionTables, async (event, query, cursor, token) => {
+    if (!appFrame(event)) return { ok: false, message: 'Open the Notion connection in Stoke.' }
+    try { return { ok: true, ...await (await workNotionFor()).tables(query, cursor, token) } }
+    catch (err) { return { ok: false, message: err instanceof Error ? err.message : 'Notion could not load the tables.' } }
   })
   const notionAction = async (event: Electron.IpcMainInvokeEvent, action: (service: import('./plugins/notionWork.ts').NotionWork) => Promise<import('../shared/workNotion.ts').WorkNotionView>) => {
     if (!appFrame(event)) return { ok: false, message: 'Open the Notion connection in Stoke.' }

@@ -522,6 +522,7 @@ export const CH = {
   workChanged: 'work:changed',
   workNotionRead: 'work:notion:read',
   workNotionInspect: 'work:notion:inspect',
+  workNotionTables: 'work:notion:tables',
   workNotionConfigure: 'work:notion:configure',
   workNotionDisconnect: 'work:notion:disconnect',
   workNotionPublish: 'work:notion:publish',

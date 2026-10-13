@@ -7784,25 +7784,44 @@ button.color-field-swatch[aria-expanded='true'] {
 }
 
 .account-chip {
-  display: grid;
-  gap: 0.1875rem;
-  max-width: 10rem;
-  padding: 0.1875rem var(--space-8);
-  border: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  min-height: 1.75rem;
+  padding: var(--space-4) var(--space-8);
+  border: 1px solid transparent;
   border-radius: var(--r-md);
   background: transparent;
-  color: var(--text-muted);
+  color: var(--text);
   font-size: var(--fs-xs);
   line-height: 1.1;
   text-align: left;
   cursor: pointer;
 }
 
+.account-chip-wrap[data-surface='sidebar'] .account-chip {
+  width: 100%;
+  min-height: 2.75rem;
+  padding: var(--space-8);
+}
+.account-chip-wrap[data-surface='sidebar'] .account-chip-avatar { width: 2rem; height: 2rem; }
+.account-chip-wrap[data-surface='sidebar'] .account-panel {
+  top: auto;
+  bottom: calc(100% + var(--space-8));
+  left: 0;
+  right: auto;
+  max-height: calc(100vh - 9rem);
+}
+.account-chip-wrap[data-surface='sidebar'] .account-chip > svg { margin-left: auto; flex-shrink: 0; }
+.account-chip-stoke { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); font-size: var(--fs-xs); }
+
 .account-chip-copy {
   display: grid;
   min-width: 0;
   gap: 0.1875rem;
 }
+.account-chip > svg { width: 0.625rem; height: 0.625rem; flex-shrink: 0; }
+.account-chip-avatar { display: grid; place-items: center; width: 1.25rem; height: 1.25rem; border-radius: var(--r-sm); background: var(--bg-elevated); color: var(--text-muted); font-size: var(--fs-xs); font-weight: 600; }
 
 .sidebar-footer {
   flex-shrink: 0;
@@ -7826,28 +7845,6 @@ button.color-field-swatch[aria-expanded='true'] {
   font-weight: 600;
 }
 
-.account-chip-wrap[data-surface='sidebar'] .account-chip {
-  display: flex;
-  align-items: center;
-  gap: var(--space-8);
-  width: 100%;
-  max-width: none;
-  min-width: 0;
-  padding: var(--space-8);
-  border-color: transparent;
-}
-.account-chip-wrap[data-surface='sidebar'] .account-chip-copy { flex: 1; }
-.account-chip-wrap[data-surface='sidebar'] .account-chip-label { color: var(--text); font-weight: 600; }
-.account-chip-wrap[data-surface='sidebar'] .account-chip-identity { color: var(--text-muted); }
-.account-chip-wrap[data-surface='sidebar'] .account-chip:hover,
-.account-chip-wrap[data-surface='sidebar'] .account-chip[aria-expanded='true'] { background: var(--bg-elevated); border-color: var(--border); }
-.account-chip-wrap[data-surface='sidebar'] .account-panel {
-  top: auto;
-  bottom: calc(100% + var(--space-8));
-  left: 0;
-  right: auto;
-  max-height: calc(100vh - 9rem);
-}
 
 .status-repository { display: flex; flex-shrink: 1; min-width: 8rem; max-width: 16rem; }
 .status-repository-button { display: flex; align-items: center; gap: var(--space-8); min-width: 0; width: 100%; }
@@ -7856,7 +7853,6 @@ button.color-field-swatch[aria-expanded='true'] {
 .status-git-changes { flex-shrink: 0; color: var(--text-muted); white-space: nowrap; }
 .statusbar > .pill[data-tone='accent'] { flex-shrink: 1; min-width: 3rem; max-width: 10rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .status-repository-button > svg { width: 0.875rem; height: 0.875rem; flex-shrink: 0; }
-.account-chip-wrap[data-surface='sidebar'] .account-chip > svg { width: 0.75rem; height: 0.75rem; flex-shrink: 0; }
 
 .status-terminal { display: flex; align-items: center; flex-shrink: 0; border-right: 1px solid var(--border-subtle); padding-right: var(--space-8); }
 .status-terminal-button { display: flex; align-items: center; gap: 0.375rem; }
@@ -7874,6 +7870,12 @@ button.color-field-swatch[aria-expanded='true'] {
 .accounts-stoke-identity .field-hint { overflow-wrap: anywhere; }
 .accounts-stoke > p { margin: 0; }
 .accounts-stoke > .btn { justify-self: start; }
+.accounts-stoke-meta { display: flex; flex-wrap: wrap; justify-content: space-between; gap: var(--space-8); }
+.account-plugin-mark { display: grid; place-items: center; width: 0.875rem; flex-shrink: 0; color: var(--text-muted); font-size: var(--fs-xs); font-weight: 600; }
+.account-connection-settings { border-top: 1px solid var(--border-subtle); padding-top: var(--space-12); }
+.account-connection-settings > summary { cursor: pointer; color: var(--text-muted); font-size: var(--fs-sm); }
+.account-connection-settings[open] > summary { margin-bottom: var(--space-12); }
+.account-connection-settings > summary:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 2px; }
 .accounts-agent-list { display: grid; gap: var(--space-12); }
 .accounts-agent { display: flex; align-items: center; gap: var(--space-12); width: 100%; text-align: left; padding: var(--space-12); border: none; border-bottom: 1px solid var(--border-subtle); border-radius: var(--r-md); background: transparent; cursor: pointer; }
 .accounts-agent:hover { background: var(--surface-hover); }
@@ -7912,6 +7914,9 @@ button.color-field-swatch[aria-expanded='true'] {
 .account-panel-email {
   overflow-wrap: anywhere;
 }
+.account-panel-heading { display: flex; align-items: center; gap: var(--space-8); min-width: 0; }
+.account-panel-heading > .agent-account-body { min-width: 0; }
+.account-panel-session-note { display: grid; justify-items: start; gap: var(--space-8); }
 
 .account-panel-actions {
   display: flex;

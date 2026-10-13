@@ -30,10 +30,10 @@ const frames: QuickTerminalFrame[] = []
 const service = new QuickTerminal({ enabled: () => enabled, onState: state => states.push(state), onData: frame => frames.push(frame), environment: async () => { preparations++; return quickTerminalEnv({ ...process.env, HOME: root, ZDOTDIR: root }, process.env.PATH || '/usr/bin:/bin') } })
 try {
   console.log('\nQuick terminal: defaults and the editable top bar')
-  check('new and older settings leave it disabled', [hydrateSettings({}).quickTerminal, hydrateSettings({ quickTerminal: 'true' }).quickTerminal], [false, false])
-  check('only an explicit true enables it', hydrateSettings({ quickTerminal: true }).quickTerminal, true)
-  check('enablement is machine-local', LOCAL_KEYS.includes('quickTerminal'), true)
-  check('portable settings do not enable another computer', 'quickTerminal' in portableSettings(hydrateSettings({ quickTerminal: true })), false)
+  check('new and older settings always offer the terminal', [hydrateSettings({}).quickTerminal, hydrateSettings({ quickTerminal: false }).quickTerminal, hydrateSettings({ quickTerminal: 'true' }).quickTerminal], [true, true, true])
+  check('legacy enabled settings remain available', hydrateSettings({ quickTerminal: true }).quickTerminal, true)
+  check('the legacy flag stays machine-local for compatibility', LOCAL_KEYS.includes('quickTerminal'), true)
+  check('portable settings omit the legacy terminal flag', 'quickTerminal' in portableSettings(hydrateSettings({ quickTerminal: true })), false)
   const bar = clampTopBar({ enabled: true, items: [{ id: 'one', kind: 'terminal', command: 'never execute this' }, { id: 'two', kind: 'terminal' }] })
   check('a single terminal item carries no executable text', bar.items, [{ id: 'one', kind: 'terminal' }])
   check('a second terminal is refused', addRefusal('terminal', bar.items) !== null, true)
@@ -60,7 +60,7 @@ try {
   const catalog = await service.shells()
   check('listing installed shells starts no quick shell and exposes no executable arguments', [catalog.length > 0, preparations, service.view().id, catalog.every(shell => !('args' in shell))], [true, 0, null, true])
 
-  console.log('\nQuick terminal: opt-in and a real native shell')
+  console.log('\nQuick terminal: lifecycle guards and a real native shell')
   check('reading does not prepare or start a process', [service.snapshot().state.phase, preparations], ['idle', 0])
   check('disabled open is refused before preparation', await refused(() => service.open('panel', root)), true)
   enabled = true; service.refreshSettings()

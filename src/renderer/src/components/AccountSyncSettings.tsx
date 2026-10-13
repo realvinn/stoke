@@ -97,6 +97,7 @@ function Status({ note }: { note: Note }): React.JSX.Element | null {
 }
 
 interface AccountSyncProps {
+  onBack?: () => void
   /** How a live remote link is drawn on THIS screen (`remoteBar`, a top-level setting, not the hub's). */
   remoteBar: RemoteBarMode
   onRemoteBar: (mode: RemoteBarMode) => void
@@ -111,7 +112,7 @@ interface AccountSyncProps {
   onOpenChatHistory?: (row?: 'redact') => void
 }
 
-export function AccountSyncSettings({ remoteBar, onRemoteBar, chatIndexOn, redactOn, onOpenChatHistory }: AccountSyncProps): React.JSX.Element {
+export function AccountSyncSettings({ onBack, remoteBar, onRemoteBar, chatIndexOn, redactOn, onOpenChatHistory }: AccountSyncProps): React.JSX.Element {
   const [view, setView] = useState<HubView>(emptyHubView())
   const [loaded, setLoaded] = useState(false)
   const [now, setNow] = useState(Date.now())
@@ -145,10 +146,15 @@ export function AccountSyncSettings({ remoteBar, onRemoteBar, chatIndexOn, redac
   }
 
   return (
-    <>
+    <div className="accounts-settings" data-testid="stoke-account-page">
+      <header className="accounts-heading">
+        {onBack && <button className="btn accounts-back" data-variant="ghost" onClick={onBack}>‹ All accounts</button>}
+        <h2>Stoke account</h2>
+      </header>
       <Overview view={view} now={now} />
-      {(view.phase === 'off' || view.phase === 'signed-out') && <HubAddress view={view} />}
+      {view.phase === 'off' && <StartSignIn />}
       {view.phase === 'signed-out' && <SignIn view={view} />}
+      {(view.phase === 'off' || view.phase === 'signed-out') && <details className="account-connection-settings"><summary>Connection settings</summary><HubAddress view={view} /></details>}
       {view.kitPending && <KitPanel />}
       {/* A device waiting for a vault can meet the alarm too (a list built around its keys), and then stops looking. */}
       {(view.phase === 'new-account' || view.phase === 'locked') && view.alarm && <Alarm view={view} />}
@@ -174,11 +180,16 @@ export function AccountSyncSettings({ remoteBar, onRemoteBar, chatIndexOn, redac
       {/* Drawn in every phase, so search always lands on it; outside the vault it says what is missing. */}
       {view.phase !== 'active' && <ShareChats view={view} chatIndexOn={chatIndexOn} redactOn={redactOn} onOpenChatHistory={onOpenChatHistory} />}
       {view.phase !== 'off' && (view.phase !== 'signed-out' || (view.device !== null && view.email !== '')) && <SignOut view={view} />}
-    </>
+    </div>
   )
 }
 
 /* ------------------------------------------------------------------ overview */
+
+function StartSignIn(): React.JSX.Element {
+  const { busy, note, run } = useRun()
+  return <div className="field"><button className="btn" data-variant="primary" disabled={!!busy} onClick={() => run('connect', () => window.stoke.hub.setUrl(DEFAULT_HUB_URL))}>{busy ? 'Connecting…' : 'Continue to sign in'}</button><Status note={note} /></div>
+}
 
 function Overview({ view, now }: { view: HubView; now: number }): React.JSX.Element {
   const pill: { tone?: string; text: string } =
@@ -204,7 +215,7 @@ function Overview({ view, now }: { view: HubView; now: number }): React.JSX.Elem
   return (
     <div className="field" data-hub="overview" data-setting="account.overview" data-phase={view.phase}>
       <span className="field-label">
-        Stoke Hub{' '}
+        Device sync{' '}
         <span className="pill" data-tone={pill.tone} data-hub="state">
           {pill.text}
         </span>

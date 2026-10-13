@@ -1167,6 +1167,7 @@ export interface StokeApi {
     change(command: WorkCommand): Promise<WorkResult>
     onChange(cb: (view: WorkView) => void): () => void
     notionRead(): Promise<WorkNotionView>
+    notionTables(query?: string, cursor?: string | null, token?: string): Promise<({ ok: true } & import('./workNotion').NotionTableList) | { ok: false; message: string }>
     notionInspect(taskSource: string, dailySource: string, token?: string): Promise<{ ok: true; task: NotionSource; daily: NotionSource } | { ok: false; message: string }>
     notionConfigure(mapping: { task: NotionTaskMap; daily: NotionDailyMap }, token?: string): Promise<WorkNotionResult>
     notionDisconnect(): Promise<WorkNotionResult>

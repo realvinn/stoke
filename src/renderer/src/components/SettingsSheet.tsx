@@ -259,6 +259,7 @@ export function SettingsSheet({
   const { view: plugins } = usePlugins()
   const themes: Theme[] = [...BUILT_IN_THEMES, ...settings.customThemes]
   const [loc, setLoc] = useState<SettingsLocation>(() => resolveSettingsTarget(initialSection))
+  const [pluginSelection, setPluginSelection] = useState('')
 
   /*
    * The agents the menu lists: Claude Code, then every installed one — plus
@@ -292,6 +293,7 @@ export function SettingsSheet({
    */
   const go = useCallback(
     (next: SettingsLocation, row?: SettingsRowTarget | null, focus = false): void => {
+      setPluginSelection('')
       const up = ancestorsOf(next)
       if (up.length) onExpand(up, true)
       // The same page keeps its object, so going where you already are moves nothing.
@@ -900,14 +902,6 @@ export function SettingsSheet({
                   </div>
                 </div>
 
-                <label className="check-row" data-setting="appearance.quick-terminal">
-                  <input type="checkbox" checked={settings.quickTerminal} onChange={event => onPatch({ quickTerminal: event.target.checked })} />
-                  <span><span className="field-label">Quick terminal</span><FieldHint>
-                    Off by default. Enable it here to use the bottom-left Terminal button, or add Terminal to the title bar. Open it in a side panel or separate window and choose an installed shell, including PowerShell on Windows.
-                    Switching shells or hiding keeps commands running. Turning this off ends all quick shells. Shells are never restored on startup.
-                  </FieldHint></span>
-                </label>
-
                 <div className="field" data-setting="appearance.interface-scale">
                   <span className="field-label">Interface scale</span>
                   {/*
@@ -1294,7 +1288,7 @@ export function SettingsSheet({
 
             {loc.page === 'agents' && <AgentManager {...agentProps} />}
 
-            {loc.page === 'accounts' && <AccountsSettings settings={settings} agents={accountAgents} onSync={() => go({ page: 'account' })} onManage={agent => go({ page: 'agent-accounts', agent })} />}
+            {loc.page === 'accounts' && <AccountsSettings settings={settings} agents={accountAgents} plugins={plugins} onSync={() => go({ page: 'account' })} onManage={agent => go({ page: 'agent-accounts', agent })} onPlugin={id => { go({ page: 'plugins' }); setPluginSelection(id) }} />}
 
             {loc.page === 'agent-accounts' && <AgentAccountsPage settings={settings} agent={loc.agent ?? 'claude'} section={jump?.row.id} sectionRevision={jump?.seq} onPatch={onPatch} onSignIn={agents.onSignIn} onGo={go} />}
 
@@ -1317,7 +1311,7 @@ export function SettingsSheet({
               <ProfilesSettings settings={settings} onPatch={onPatch} onCreated={onProfileCreated} />
             )}
 
-            {loc.page === 'plugins' && <PluginsSettings defaultProject={defaultCwd} />}
+            {loc.page === 'plugins' && <PluginsSettings defaultProject={defaultCwd} initialPlugin={pluginSelection} />}
 
             {loc.page === 'worklog' && (
               <>
@@ -1351,6 +1345,7 @@ export function SettingsSheet({
             {loc.page === 'voice' && <VoiceSettings settings={settings} onPatch={onPatch} />}
             {loc.page === 'account' && (
               <AccountSyncSettings
+                onBack={() => go({ page: 'accounts' })}
                 remoteBar={settings.remoteBar}
                 onRemoteBar={(remoteBar) => onPatch({ remoteBar })}
                 chatIndexOn={settings.chatIndex === 'on'}

@@ -1,6 +1,6 @@
 import { DAILY_STATES, TASK_STATES, validWorkDay } from '../../shared/workPlugin.ts'
 import { notionId } from '../../shared/workNotion.ts'
-import type { NotionDailyMap, NotionFields, NotionPage, NotionProperty, NotionSource, NotionTableMap, NotionTaskMap, WorkNotionConfig } from '../../shared/workNotion.ts'
+import type { NotionDailyMap, NotionFields, NotionPage, NotionProperty, NotionSource, NotionTableList, NotionTableMap, NotionTaskMap, WorkNotionConfig } from '../../shared/workNotion.ts'
 
 export const NOTION_VERSION = '2026-03-11'
 const ROOT = 'https://api.notion.com/v1'
@@ -98,6 +98,26 @@ export class NotionClient {
       if (err instanceof NotionError) throw err
       throw new NotionError(external?.aborted ? 'The Notion operation stopped. Check its saved result before retrying.' : 'Notion did not answer in time. Check the saved operation before retrying.', sent)
     } finally { clearTimeout(timer); external?.removeEventListener('abort', stop) }
+  }
+  async tables(query: string = '', cursor: string | null = null, signal?: AbortSignal): Promise<NotionTableList> {
+    if (typeof query !== 'string' || query.length > 240 || /[\u0000\r\n]/.test(query) || cursor !== null && !notionId(cursor)) throw new NotionError('Use a table name or a valid next-page cursor.', false)
+    const data = await this.request('POST', '/search', {
+      filter: { property: 'object', value: 'data_source' }, page_size: 100,
+      sort: { direction: 'descending', timestamp: 'last_edited_time' },
+      ...(query.trim() ? { query: query.trim() } : {}), ...(cursor ? { start_cursor: cursor } : {})
+    }, signal)
+    if (data.object !== 'list' || !Array.isArray(data.results) || data.results.length > 100 || typeof data.has_more !== 'boolean') throw new NotionError('Notion returned an unreadable table list.', false)
+    if (record(data.request_status) && data.request_status.type !== 'complete') throw new NotionError('Notion returned an incomplete table list. Search by table name and retry.', false)
+    const nextCursor = data.has_more ? notionId(data.next_cursor) : null
+    if (data.has_more && (!nextCursor || nextCursor === cursor)) throw new NotionError('Notion returned an invalid next-page cursor. Refresh the table list.', false)
+    const tables: NotionTableList['tables'] = []
+    for (const raw of data.results) {
+      if (!record(raw) || raw.object !== 'data_source' || !notionId(raw.id)) throw new NotionError('Notion returned an unreadable table.', false)
+      if (raw.archived === true || raw.in_trash === true || raw.is_archived === true) continue
+      const id = notionId(raw.id)!
+      if (!tables.some(t => t.id === id)) tables.push({ id, name: richText(raw.title ?? [], 1000) || 'Untitled table', databaseId: record(raw.parent) ? notionId(raw.parent.database_id) : null })
+    }
+    return { tables, nextCursor }
   }
   async source(id: string, signal?: AbortSignal): Promise<NotionSource> {
     const normalized = notionId(id)

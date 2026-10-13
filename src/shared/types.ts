@@ -1228,6 +1228,7 @@ export interface Settings {
   defaultCwd: string | null
   scratch: import('./scratch').ScratchSettings
   /** Opt-in local command shell. Enabling never starts or restores a process. */
+  /** Legacy persisted flag, always hydrated true; quick terminal is built in. */
   quickTerminal: boolean
   /** Open a session in the default folder as soon as the app starts. */
   startOnLaunch: boolean

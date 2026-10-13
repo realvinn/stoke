@@ -12,6 +12,15 @@ export interface NotionSource {
   name: string
   properties: NotionProperty[]
 }
+export interface NotionTableChoice {
+  id: string
+  name: string
+  databaseId: string | null
+}
+export interface NotionTableList {
+  tables: NotionTableChoice[]
+  nextCursor: string | null
+}
 export interface NotionTableMap {
   source: string
   title: string

@@ -84,7 +84,6 @@ interface Props {
   /** The tab's activity dot (`activityView`): `waiting` refuses a shortcut. */
   dot: string | null
   onReveal: (path: string) => void
-  terminalEnabled: boolean
   onOpenTerminal: (mode: 'panel' | 'popout') => void
 }
 
@@ -130,7 +129,6 @@ export function TopBar({
   hostLabel,
   dot,
   onReveal,
-  terminalEnabled,
   onOpenTerminal
 }: Props): React.JSX.Element {
   /*
@@ -217,13 +215,13 @@ export function TopBar({
       })
     } else if (item.kind === 'terminal') {
       const actions: MenuItem[] = [
-        { label: 'Open side panel', disabled: !terminalEnabled, onSelect: () => onOpenTerminal('panel') },
-        { label: 'Open pop-out', disabled: !terminalEnabled, onSelect: () => onOpenTerminal('popout') },
+        { label: 'Open side panel', onSelect: () => onOpenTerminal('panel') },
+        { label: 'Open pop-out', onSelect: () => onOpenTerminal('popout') },
         customise
       ]
       views.push({ item, full: <ChipText icon={<IconTerminal />} text="Terminal" />, compact: null,
-        title: terminalEnabled ? 'Open quick terminal · Local command shell' : 'Enable Quick terminal in Appearance settings',
-        act: () => onOpenTerminal('panel'), disabled: !terminalEnabled, menu: actions, key: `terminal:${terminalEnabled}` })
+        title: 'Open quick terminal · Local command shell',
+        act: () => onOpenTerminal('panel'), disabled: false, menu: actions, key: 'terminal' })
     } else if (item.kind === 'shortcut') {
       const v = shortcutVerdict(item, target)
       const what = `${item.send ? 'Types and sends' : 'Types'}: ${item.text.length > 140 ? `${item.text.slice(0, 140)}…` : item.text}`

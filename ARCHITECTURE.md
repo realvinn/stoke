@@ -576,6 +576,10 @@ validates actual properties, status options, page identity and the daily task re
 `plugins/workCredentials.ts` seals its token in a separate owner-only file through the
 system key store; the renderer sees only presence. An unprotected Linux `basic_text`
 backend is refused. No token is included in settings, portable exports or the journal.
+`work:notion:tables` reads paginated `/search` metadata filtered to data sources. The
+Work picker searches shared table names and follows cursors, discards stale responses,
+and offers task/daily selections before schema inspection. Discovery stores no token
+and performs no writes; disabled Work rejects it before creating a client.
 
 `plugins/notionWork.ts` claims operations before any await. Publishing requires a saved
 field preview with current task/daily revisions; this decision is separate from task
@@ -1924,8 +1928,8 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     shell, replay, find, selection and web/OSC links. The panel opens in
                     Stoke; the pop-out has only a current-shell HTTP(S) external-link bridge
   src/components/QuickTerminalButton.tsx  bottom-left Terminal control on every footer,
-                    including when the sidebar is hidden. Off opens opt-in Settings;
-                    enabled toggles the panel without ending its shell. Options open
+                    including when the sidebar is hidden. It opens directly without an
+                    enable toggle; startup stays hidden and starts no shell. Options open
                     the same shell in a separate window; the top-bar shortcut remains
   src/components/RepositoryChip.tsx  read-only local project branch/change summary
                     beside the bottom bar's folder/device information. Its menu shares the safe Git reader,
@@ -2121,10 +2125,10 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     the splash or picker closing ask it `activationAllowed`. Gotcha 88
   src/lib/toasts.ts  the toast store (`toast`, `dismissToast`, `useToasts`; at most three) and
                     the floor the pane in front sets for it (`setToastFloor`). Gotcha 154
-  src/components/AccountChip.tsx  active local agent's account nickname and native sign-in
-                    identity in the title bar; other tabs offer Accounts. The sidebar
-                    footer always names Stoke's own sign-in with an upward-opening menu. Its
-                    floating popover links to login/API account settings and Stoke Hub.
+  src/components/AccountChip.tsx  one Accounts control in the sidebar footer, naming
+                    Stoke's sign-in. Its upward-opening menu separately names the active
+                    local agent and native identity, and opens the shared account directory
+                    or Stoke's Devices & sync page. The title bar retains usage only.
                     Unknown identity and key/provider authentication are explicit; SSH
                     does not query a local login. Account rows show the same identities
                     in AgentsSettings. A verified successful login closes its sign-in

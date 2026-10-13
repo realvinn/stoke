@@ -4,9 +4,10 @@ import { usePlugins } from '../lib/usePlugins'
 import { GrokBotPanel } from './GrokBotPanel'
 import { WorkPanel } from './WorkPanel'
 import '../styles/plugins.css'
-export function PluginsSettings({ defaultProject }: { defaultProject: string }): React.JSX.Element {
+export function PluginsSettings({ defaultProject, initialPlugin = '' }: { defaultProject: string; initialPlugin?: string }): React.JSX.Element {
   const { view, error: loadError } = usePlugins()
-  const [selected, setSelected] = useState('')
+  const [selected, setSelected] = useState(initialPlugin)
+  useEffect(() => { setSelected(initialPlugin) }, [initialPlugin])
   const [busy, setBusy] = useState(false),
     [error, setError] = useState(''),
     [output, setOutput] = useState('')
@@ -27,7 +28,7 @@ export function PluginsSettings({ defaultProject }: { defaultProject: string }):
     window.stoke.plugins
       .pending(true)
       .then((id) => {
-        if (live.current && id) setSelected(id)
+        if (live.current && id && !initialPlugin) setSelected(id)
       })
       .catch(() => {})
     return () => {

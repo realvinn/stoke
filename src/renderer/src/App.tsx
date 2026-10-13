@@ -81,12 +81,12 @@ import { ancestorsOf, navAgents, navAccountAgents, resolveSettingsTarget, type S
 import { Sidebar } from './components/Sidebar'
 import { StatusBar } from './components/StatusBar'
 import { TerminalView } from './components/TerminalView'
+import { AccountChip } from './components/AccountChip'
 import { TitleBar } from './components/TitleBar'
 import { TopBar } from './components/TopBar'
 import { QuickTerminalPanel, useQuickTerminal } from './components/QuickTerminal'
 import { QuickTerminalButton } from './components/QuickTerminalButton'
 import { RepositoryChip } from './components/RepositoryChip'
-import { AccountChip } from './components/AccountChip'
 import { WorkDock } from './components/WorkDock'
 import { SshKeyPrompt } from './components/SshKeyPrompt'
 import { OtherMachines } from './components/OtherMachines'
@@ -5020,16 +5020,15 @@ export function App(): React.JSX.Element {
   /* ------------------------------------------------------------- shortcuts */
 
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null
+  const accountTarget = useMemo(() => activeTab?.kind === 'session' && !activeTab.hostId && !activeTab.installing?.length && !activeTab.enrollHostId && !activeTab.accountLogin
+    ? { cli: activeTab.cliId, accountId: activeTab.accountId || 'default', ptyId: activeTab.ptyId } : null,
+    [activeTab?.kind, activeTab?.hostId, activeTab?.installing?.length, activeTab?.enrollHostId, activeTab?.accountLogin, activeTab?.cliId, activeTab?.accountId, activeTab?.ptyId])
   const repositoryCwd = activeTab && !activeTab.hostId && !activeTab.private
     ? activeTab.kind === 'session' ? activeTab.cwd || null : activeTab.kind === 'new' ? launchTarget?.path ?? null : null
     : null
   const openQuickTerminal = (mode: 'panel' | 'popout'): void => {
     void window.stoke.quickTerminal.open(mode, repositoryCwd ?? undefined).then(result => { if (!result.ok) setError(result.message) }).catch(error => setError(ipcErrorMessage(error)))
   }
-  const manageAgentAccounts = (cli: CodingCliId, kind?: 'login' | 'key'): void => {
-    openSettings({ page: 'agent-accounts', agent: cli }, { id: kind === 'key' ? 'agent-accounts.api' : kind === 'login' ? 'agent-accounts.login' : 'agent-accounts.list', fallback: kind ? 'agent-accounts.list' : null })
-  }
-
   /*
    * Read by the window keydown listener, which is bound once and must not be
    * rebound per keystroke (gotcha 31: a listener reads changing values through
@@ -6021,9 +6020,6 @@ export function App(): React.JSX.Element {
         onOpenPalette={() => setPaletteOpen(true)}
         onOpenSettings={() => openSettings()}
         onOpenPhoneSettings={() => openSettings('remote')}
-        onOpenAgentSettings={manageAgentAccounts}
-        onOpenSyncSettings={() => openSettings('account')}
-        onOpenAccounts={() => openSettings('accounts')}
         labelFor={(t) => {
           if (t.kind !== 'new') return tabLabel(t, null, tagOptions)
           // The tab in front names what its launcher is aimed at, fallback
@@ -6043,8 +6039,7 @@ export function App(): React.JSX.Element {
               topBar={settings.topBar}
               editing={topBarEditing}
               onEditing={setTopBarEditing}
-              onChange={(topBar) => void patchSettings({ topBar, ...(topBar.items.some(item => item.kind === 'terminal') && !settings.topBar.items.some(item => item.kind === 'terminal') ? { quickTerminal: true } : {}) })}
-              terminalEnabled={settings.quickTerminal}
+              onChange={(topBar) => void patchSettings({ topBar })}
               onOpenTerminal={openQuickTerminal}
               tab={activeTab}
               tabCount={tabs.length}
@@ -6153,10 +6148,8 @@ export function App(): React.JSX.Element {
                 remoteChats={remoteChatGroupsShown}
                 onOpenRemoteChat={openRemoteChat}
                 onSetUpChats={() => openSettings('chats')}
+                footer={<AccountChip target={accountTarget} label={accountTarget && activeTab ? tabLabel(activeTab, null, tagOptions).account?.text : undefined} settingsOpen={settingsOpen} onSyncSettings={() => openSettings('account')} onAccounts={() => openSettings('accounts')} />}
                 otherMachines={<OtherMachines view={hubRemote} hosts={settings?.hosts ?? []} onSsh={host => void startHostSession(host)} onOpen={openRemoteSession} />}
-                footer={<>
-                  <AccountChip target={null} surface="sidebar" settingsOpen={settingsOpen} onAgentSettings={manageAgentAccounts} onSyncSettings={() => openSettings('account')} onAccounts={() => openSettings('accounts')} />
-                </>}
               />
             </div>
             <Resizer
@@ -6685,10 +6678,10 @@ export function App(): React.JSX.Element {
 
       <StatusBar
         repository={<RepositoryChip key={repositoryCwd ?? 'no-local-project'} cwd={repositoryCwd} busy={!!activeTab && ['working', 'background'].includes(activityViews[activeTab.id]?.dot ?? '')} onReveal={revealFolder} />}
-        tools={<QuickTerminalButton enabled={settings?.quickTerminal === true} visible={!!quickPanelVisible} onToggle={() => {
+        tools={<QuickTerminalButton visible={!!quickPanelVisible} onToggle={() => {
           if (quickPanelVisible) void window.stoke.quickTerminal.move('hidden').then(result => { if (!result.ok) setError(result.message) }).catch(error => setError(ipcErrorMessage(error)))
           else openQuickTerminal('panel')
-        }} onPopout={() => openQuickTerminal('popout')} onSettings={() => openSettings('appearance', { id: 'appearance.quick-terminal', fallback: null })} />}
+        }} onPopout={() => openQuickTerminal('popout')} onSettings={() => openSettings('terminal', { id: 'terminal.font-size', fallback: null })} />}
         tab={activeTab}
         remoteSession={
           // While the link is open: a refused or lost tab's last reading is not the session's now.

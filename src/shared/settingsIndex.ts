@@ -458,6 +458,7 @@ export const SETTING_ROWS: readonly SettingRow[] = [
   { id: 'accounts.overview', page: 'accounts', label: 'Account manager', keywords: ['all accounts', 'manage accounts', 'subscriptions', 'saved logins', 'multiple accounts'] },
   { id: 'accounts.stoke', page: 'accounts', label: 'Stoke sign-in', keywords: ['stoke account', 'connect devices', 'sign in to stoke', 'device approval', 'sync'] },
   { id: 'accounts.agents', page: 'accounts', label: 'Agent accounts overview', keywords: ['coding accounts', 'subscription sign-ins', 'api accounts', 'default login', 'existing cli login'] },
+  { id: 'accounts.grok-bot', page: 'accounts', label: 'Grok Bot accounts', plugin: 'grok-bot', keywords: ['grok bot', 'desktop logins', 'plugin accounts', 'saved bots'], fallback: 'accounts.agents' },
   // Appearance
   // Both drawn only while no theme is being edited; the editor is where a jump lands then.
   { id: 'appearance.follow-system', page: 'appearance', label: 'Follow my system', keywords: ['dark mode', 'light mode', 'auto theme', 'system appearance', 'night'], fallback: 'appearance.make-theme' },
@@ -468,7 +469,6 @@ export const SETTING_ROWS: readonly SettingRow[] = [
   { id: 'appearance.wallpaper', page: 'appearance', label: 'Wallpaper', keywords: ['background image', 'blur', 'dim', 'panel opacity', 'picture', 'photo'] },
   { id: 'appearance.brand', page: 'appearance', label: 'Show the Stoke mark in the title bar', keywords: ['logo', 'brand', 'title bar'] },
   { id: 'appearance.title-bar', page: 'appearance', label: 'Title bar', keywords: ['show text shortcuts and tools in the title bar', 'customise on the title bar', 'reset to an empty title bar', 'text shortcuts', 'snippets', 'quick prompts', 'saved prompts', 'folder', 'toolbar', 'top bar', 'terminal'] },
-  { id: 'appearance.quick-terminal', page: 'appearance', label: 'Quick terminal', keywords: ['local shell', 'quick commands', 'side panel', 'pop-out', 'separate window', 'bottom left', 'footer', 'terminal', 'top bar', 'off by default', 'powershell', 'command prompt', 'cmd', 'bash', 'zsh', 'switch shells'] },
   { id: 'appearance.interface-scale', page: 'appearance', label: 'Interface scale', keywords: ['zoom', 'ui size', 'bigger', 'smaller', 'text size'] },
   { id: 'appearance.zoom-keys', page: 'appearance', label: 'Zoom keys change', keywords: ['zoom', 'keyboard shortcut', 'cmd plus', 'ctrl plus'] },
   { id: 'appearance.full-screen', page: 'appearance', label: 'Menu bar in full screen', keywords: ['fullscreen', 'menu bar', 'tabs', 'macos'] },
@@ -604,7 +604,7 @@ export const SETTING_ROWS: readonly SettingRow[] = [
   { plugin: 'work', id: 'worklog.plugin', page: 'worklog', label: 'Work plugin', keywords: ['enable', 'disable', 'ideas', 'approved', 'tasks', 'daily plans'] },
   { plugin: 'work', id: 'worklog.boards', page: 'worklog', label: 'Work boards', keywords: ['daily work', 'today', 'to-do', 'working on', 'completed', 'task board', 'backlog', 'completion evidence'], fallback: 'worklog.plugin' },
   { plugin: 'work', id: 'worklog.drafts', page: 'worklog', label: 'Sonnet drafts', keywords: ['draft purpose', 'source notes', 'session notes', 'conversation excerpts', 'idea brief', 'daily summary', 'completion evidence', 'budget', 'claude provider'], fallback: 'worklog.plugin' },
-  { plugin: 'work', id: 'worklog.connection', page: 'worklog', label: 'Notion connection', keywords: ['integration token', 'api key', 'direct api', 'task data source id', 'daily data source id', 'mapping', 'properties', 'schema', 'stoke id'], fallback: 'worklog.plugin' },
+  { plugin: 'work', id: 'worklog.connection', page: 'worklog', label: 'Notion connection', keywords: ['integration token', 'api key', 'direct api', 'task data source id', 'daily data source id', 'mapping', 'properties', 'schema', 'stoke id', 'enter data source IDs manually', 'load tables', 'search tables', 'task table', 'daily work table'], fallback: 'worklog.plugin' },
   { plugin: 'work', id: 'worklog.publish', page: 'worklog', label: 'Publish Work to Notion', keywords: ['publish review', 'saved fields', 'sync', 'retry', 'conflicts', 'journal', 'Notion history', 'Notion publish history', 'read current Notion fields', 'refresh Notion'], fallback: 'worklog.connection' },
   { id: 'worklog.auto', page: 'worklog', label: 'Scan while I work', keywords: ['automatic', 'auto scan', 'background'] },
   { id: 'worklog.targets', page: 'worklog', label: 'Where reviews are filed', keywords: ['notion', 'clickup', 'destination'] },
@@ -638,7 +638,7 @@ export const SETTING_ROWS: readonly SettingRow[] = [
   { id: 'account.overview', page: 'account', label: 'Stoke Hub status', keywords: ['sync status', 'signed in', 'hub', 'in sync', 'conflict', 'sync stopped', 'waiting for you on this computer', 'waiting to join', 'changed in two places'] },
   { id: 'account.create-vault', page: 'account', label: 'Create your vault', keywords: ['vault', 'first device', 'recovery kit', 'encryption'], fallback: 'account.overview' },
   { id: 'account.join', page: 'account', label: 'Join your vault', keywords: ['pair', 'pairing code', 'approve device', 'new computer', 'recovery kit'], fallback: 'account.overview' },
-  { id: 'account.address', page: 'account', label: 'Hub address', keywords: ['hub url', 'server', 'nuc', 'stoke.vinn.dev', 'self-hosted'], fallback: 'account.overview' },
+  { id: 'account.address', page: 'account', label: 'Hub address', keywords: ['hub url', 'server', 'nuc', 'stoke.vinn.dev', 'self-hosted', 'connection settings'], fallback: 'account.overview' },
   { id: 'account.sign-in', page: 'account', label: 'Sign in to Stoke Hub', keywords: ['log in', 'login', 'create account', 'invite', 'password', 'email'], fallback: 'account.overview' },
   { id: 'account.syncing', page: 'account', label: 'What syncs', keywords: ['sync settings', 'sync api keys', 'ssh hosts', 'sync now', 'api keys, for the whole account', 'api keys on this computer'], fallback: 'account.overview' },
   { id: 'account.agent-sync', page: 'account', label: 'Sync agent accounts across devices', keywords: ['sync codex accounts', 'sync claude accounts', 'named accounts', 'account credentials', 'sync logins', 'account profiles'], fallback: 'account.overview' },

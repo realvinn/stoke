@@ -59,6 +59,8 @@ let hiddenLookups = 0
 let unknownCreate = false
 let refuseDaily = false
 let echoError = false
+let searches: Record<string, unknown>[] = []
+let badList = false
 let redirect = false
 let slow = false
 let blockedPatch: (() => void) | null = null
@@ -77,6 +79,13 @@ const server = createServer(async (req, res) => {
   let text = ''; for await (const part of req) text += part
   const body = text ? JSON.parse(text) : null
   const route = req.url ?? ''
+  if (req.method === 'POST' && route === '/v1/search') {
+    searches.push(body)
+    if (badList) { reply(200, { object: 'list', results: [], has_more: true, next_cursor: body.start_cursor }); return }
+    const filtered = body.query === 'Daily'
+    const more = !!body.start_cursor
+    reply(200, { object: 'list', results: filtered || more ? [schema(dailySource)] : [schema(taskSource), schema(taskSource), { ...schema(dailySource), in_trash: true }], has_more: !filtered && !more, next_cursor: !filtered && !more ? dailySource : null }); return
+  }
   if (req.method === 'GET' && route.startsWith('/v1/data_sources/')) { reply(200, schema(route.split('/')[3])); return }
   if (route.endsWith('/query')) {
     const source = route.split('/')[3]
@@ -128,11 +137,22 @@ async function edit(id: string, title: string, brief: string): Promise<void> {
 try {
   console.log('\nNotion: protected token and schema mapping')
   await work.change({ kind: 'enable', enabled: true })
+  const firstTables = await connector.tables('', null, token)
+  check('table discovery lists shared data sources without duplicates or trash', firstTables, { tables: [{ id: taskSource, name: 'Tasks', databaseId: null }], nextCursor: dailySource })
+  const secondTables = await connector.tables('', firstTables.nextCursor, token)
+  check('table discovery follows pagination through the final page', secondTables, { tables: [{ id: dailySource, name: 'Daily work', databaseId: null }], nextCursor: null })
+  check('table discovery asks only for data sources and follows the returned cursor', searches.map(s => [s.filter, s.page_size, s.start_cursor ?? null]), [[{ property: 'object', value: 'data_source' }, 100, null], [{ property: 'object', value: 'data_source' }, 100, dailySource]])
+  check('search by name narrows the table picker', (await connector.tables('Daily', null, token)).tables.map(t => t.name), ['Daily work'])
+  check('discovery does not save credentials or change Notion', [await credentials.present(), writes], [false, 0])
+  badList = true
+  try { await connector.tables('', dailySource, token); check('repeated cursors are refused', true, false) } catch { check('repeated cursors are refused', true, true) }
+  badList = false
   const sources = await connector.inspect(taskSource, dailySource, token)
   check('inspection returns full closed status vocabulary', sources.task.properties.find((p) => p.id === 'status')?.options, Object.values(taskMap.states))
   check('relation schema points to the selected task source', sources.daily.properties.find((p) => p.id === 'task')?.relatedSource, taskSource)
   check('inspection stores no token', await credentials.present(), false)
   await connector.configure({ task: taskMap, daily: dailyMap }, token)
+  check('saved credentials load tables without entering the token again', (await connector.tables('Daily')).tables.map(t => t.id), [dailySource])
   const n = await connector.view()
   check('connection returns only credential presence', [n.tokenPresent, JSON.stringify(n).includes(token)], [true, false])
   check('the token never appears in the journal or ciphertext file', [(await readFile(join(root, 'plugins', 'work-notion.json'), 'utf8')).includes(token), (await readFile(credentials.file, 'utf8')).includes(token)], [false, false])
@@ -359,6 +379,8 @@ try {
   await work.change({ kind: 'enable', enabled: false }); connector.pause()
   const beforeDisabled = writes
   try { await connector.publish(request); check('disabled Work refuses writes', true, false) } catch { check('disabled Work refuses writes', writes, beforeDisabled) }
+  const beforeSearch = searches.length
+  try { await connector.tables(); check('disabled Work refuses table discovery', true, false) } catch { check('disabled Work refuses table discovery without a network call', searches.length, beforeSearch) }
   const plainBackend = { ...backend, selectedBackend: () => 'basic_text' }
   const unsafe = new WorkCredentials(join(root, 'unsafe'), plainBackend, 'linux')
   try { await unsafe.write(token); check('basic_text cannot store Notion tokens', true, false) } catch { check('basic_text cannot store Notion tokens', await unsafe.present(), false) }
