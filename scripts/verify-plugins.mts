@@ -606,6 +606,95 @@ try {
       await assert.rejects(reader.sources(signal), error => error instanceof Error && !error.message.includes('secret-looking-unsupported-value'))
     }
     check(`${platform} rejects future formats and malformed v3 entries without exposing file values`, () => assert.ok(true))
+
+    // Five app instances can each use --user-data-dir and the same slot name.
+    // Windows must open each profile's own Local State key, never the default's.
+    const profileStore = join(root, `desktop-profile-folders-${platform}.json`)
+    const options = {
+      home, platform, environment: {}, profileStore,
+      password: async () => { keyReads++; return 'owned-password' },
+      unprotect: async (blob: Buffer) => { keyReads++; return blob }
+    }
+    const multiple = new GrokBotSessionReader(options)
+    const multiSignal = AbortSignal.timeout(15000)
+    const profiles: { id: string; path: string; descriptor: string; protection: string | null }[] = []
+    const defaultBefore = await readFile(path)
+    const pickerPlugin = new GrokBotPlugin({
+      root: join(root, `multi-profile-import-${platform}`), executable: process.execPath,
+      runner: fileURLToPath(new URL('../src/main/plugins/cliRunner.ts', import.meta.url)),
+      platform, environment: {}, backend: { ...backend, selectedBackend: () => platform === 'linux' ? 'gnome_libsecret' : null },
+      reader: multiple, enabled: async () => true, changed: () => {}
+    })
+    try {
+      assert.equal(await pickerPlugin.chooseProfile(async () => null), null)
+      await assert.rejects(readFile(profileStore))
+      for (let i = 0; i < 5; i++) {
+        const profilePath = join(root, `Grok profile ${platform} ${i + 1} – O'Brien & test`)
+        await mkdir(profilePath)
+        const profileKey = platform === 'win32' ? randomBytes(32) : key
+        const nonce = platform === 'win32' ? randomBytes(12) : Buffer.alloc(16, ' ')
+        const cipher = createCipheriv(platform === 'win32' ? 'aes-256-gcm' : 'aes-128-cbc', profileKey, nonce)
+        const encrypted = Buffer.concat([
+          Buffer.from('v10'), ...(platform === 'win32' ? [nonce] : []),
+          cipher.update(JSON.stringify({ baseUrl: 'https://owned.cursor.sh', token: `owned-profile-${platform}-${i}`, headers: { 'x-anyrun-network-token': `owned-route-${i}` } })),
+          cipher.final(), ...(platform === 'win32' ? [(cipher as import('node:crypto').CipherGCM).getAuthTag()] : [])
+        ]).toString('base64')
+        const descriptor = JSON.stringify({ version: 3, entries: { current: { savedAtMs: Date.now(), encrypted } } })
+        const protection = platform === 'win32'
+          ? JSON.stringify({ os_crypt: { encrypted_key: Buffer.concat([Buffer.from('DPAPI'), profileKey]).toString('base64') } })
+          : null
+        await writeFile(join(profilePath, 'gateway-descriptor.json'), descriptor)
+        if (protection) await writeFile(join(profilePath, 'Local State'), protection)
+        keyReads = 0
+        const picked = await pickerPlugin.chooseProfile(async () => profilePath)
+        assert.ok(picked)
+        assert.deepEqual(picked.sources, [{ id: 'current', label: 'Current desktop login' }])
+        assert.equal(keyReads, 0)
+        assert.equal('path' in picked, false)
+        await pickerPlugin.change({ kind: 'import', profileId: picked.id, sourceSlot: 'current', label: `Account ${i + 1}` })
+        profiles.push({ id: picked.id, path: profilePath, descriptor, protection })
+      }
+      const synced = await pickerPlugin.exportForSync()
+      check(`${platform} imports all five separate desktop profiles with their own routing credentials and protection keys`, () => {
+        assert.equal(synced.length, 5)
+        assert.equal(new Set(profiles.map(profile => profile.id)).size, 5)
+        assert.deepEqual(synced.map(account => account.credential.token), Array.from({ length: 5 }, (_, i) => `owned-profile-${platform}-${i}`))
+        assert.deepEqual(synced.map(account => account.credential.headers), Array.from({ length: 5 }, (_, i) => ({ 'x-anyrun-network-token': `owned-route-${i}` })))
+        assert.ok(!JSON.stringify(synced).includes('O\'Brien'))
+      })
+      assert.deepEqual(await readFile(path), defaultBefore)
+      for (const profile of profiles) {
+        assert.equal(await readFile(join(profile.path, 'gateway-descriptor.json'), 'utf8'), profile.descriptor)
+        if (profile.protection) assert.equal(await readFile(join(profile.path, 'Local State'), 'utf8'), profile.protection)
+      }
+      check(`${platform} importing custom folders leaves every desktop session, default folder and protection key unchanged`, () => assert.ok(true))
+      const restarted = new GrokBotSessionReader(options)
+      keyReads = 0
+      for (const profile of profiles) assert.equal((await restarted.sources(multiSignal, profile.id)).length, 1)
+      const duplicate = await restarted.addProfile(join(profiles[0].path, '.'), multiSignal)
+      assert.equal(duplicate.id, profiles[0].id)
+      assert.equal(keyReads, 0)
+      const remembered = JSON.parse(await readFile(profileStore, 'utf8'))
+      check(`${platform} opaque folder selections survive a reader restart and duplicate selection stays one profile`, () => assert.equal(remembered.profiles.length, 5))
+      const unknown = `gbprofile-${['00000000', '0000', '0000', '0000', '000000000000'].join('-')}`
+      await assert.rejects(restarted.sources(multiSignal, unknown), /Choose a Grok Bot desktop profile folder again/)
+      await assert.rejects(restarted.load('current', multiSignal, '../unselected-profile'), /Choose a Grok Bot desktop profile folder again/)
+      await assert.rejects(restarted.addProfile(home, multiSignal), /No Grok Bot gateway session/)
+      const cancelled = new AbortController()
+      cancelled.abort(new Error('owned profile cancellation'))
+      await assert.rejects(restarted.addProfile(profiles[0].path, cancelled.signal), /owned profile cancellation/)
+      assert.equal(keyReads, 0)
+      check(`${platform} invalid, unselected, missing and cancelled profile choices never fall back to the default login`, () => assert.ok(true))
+      if (platform === 'win32') {
+        const selectedKey = join(profiles[0].path, 'Local State')
+        await rm(selectedKey)
+        try {
+          await assert.rejects(restarted.load('current', multiSignal, profiles[0].id), /Windows encryption-key file is missing/)
+          assert.equal(keyReads, 0)
+          check('a custom Windows profile with no key never uses another profile’s Local State', () => assert.ok(true))
+        } finally { await writeFile(selectedKey, profiles[0].protection!) }
+      }
+    } finally { pickerPlugin.stop() }
   }
   for (const path of [
     '/marketplace',

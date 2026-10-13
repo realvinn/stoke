@@ -2619,7 +2619,7 @@ function pluginPackagesFor(): Promise<import('./plugins/packageManager.ts').Plug
 function grokBotFor(): Promise<import('./plugins/grokBot.ts').GrokBotPlugin> {
   return grokBotLoading ??= Promise.all([import('./plugins/grokBot.ts'), import('./plugins/grokBotSession.ts'), import('./secrets.ts')]).then(([{ GrokBotPlugin }, { GrokBotSessionReader }, { safeStorageBackend }]) => {
     grokBotPlugin = new GrokBotPlugin({ root: join(app.getPath('userData'), 'plugins'), executable: process.execPath, runner: join(__dirname, 'cliRunner.js'), platform: process.platform, environment: process.env,
-      backend: safeStorageBackend(safeStorage, process.platform), reader: new GrokBotSessionReader({ home: homedir(), platform: process.platform, environment: process.env }),
+      backend: safeStorageBackend(safeStorage, process.platform), reader: new GrokBotSessionReader({ home: homedir(), platform: process.platform, environment: process.env, profileStore: join(app.getPath('userData'), 'plugins', 'grok-bot-desktop-profiles.json') }),
       openDesktop: () => shell.openExternal('grokbot://'),
       enabled: async () => (await pluginPackagesFor()).enabled('grok-bot'), changed: view => { send(CH.grokBotChanged, view); hubClient?.accountsChanged() }
     }); return grokBotPlugin
@@ -5310,7 +5310,15 @@ function registerIpc(): void {
   ipcMain.handle(CH.pluginsPending, (event, consume) => { pluginFrame(event); if (appFrame(event) !== win) return null; const id = pendingPlugin; if (consume === true) pendingPlugin = null; return id })
   ipcMain.handle(CH.grokBotRead, async event => { pluginFrame(event); return (await grokBotFor()).read() })
   ipcMain.handle(CH.grokBotInstall, async event => { pluginFrame(event); return (await grokBotFor()).install() })
-  ipcMain.handle(CH.grokBotSources, async event => { pluginFrame(event); return (await grokBotFor()).sources() })
+  ipcMain.handle(CH.grokBotSources, async (event, profileId) => { pluginFrame(event); return (await grokBotFor()).sources(profileId) })
+  ipcMain.handle(CH.grokBotChooseProfile, async event => {
+    pluginFrame(event)
+    const owner = appFrame(event)!
+    return (await grokBotFor()).chooseProfile(async () => {
+      const choice = await dialog.showOpenDialog(owner, { title: 'Choose a Grok Bot desktop profile data folder', properties: ['openDirectory'] })
+      return choice.canceled ? null : (choice.filePaths[0] ?? null)
+    })
+  })
   ipcMain.handle(CH.grokBotChange, async (event, command) => { pluginFrame(event); return (await grokBotFor()).change(command) })
   ipcMain.handle(CH.grokBotOperate, async (event, operation) => { pluginFrame(event); return (await grokBotFor()).operate(operation) })
 

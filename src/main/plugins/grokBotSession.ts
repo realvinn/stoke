@@ -2,13 +2,14 @@
  * 43499fa27f36807f6ac93b56365b3cae5200bc1e (MIT; build/licenses/grok-bot-cli.txt).
  * Only an explicit Import action opens a session. No app auth file is changed.
  */
-import { createDecipheriv, pbkdf2 } from 'node:crypto'
+import { createDecipheriv, pbkdf2, randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
-import { open } from 'node:fs/promises'
-import { join } from 'node:path'
+import { open, realpath, stat } from 'node:fs/promises'
+import { basename, isAbsolute, join } from 'node:path'
 import { promisify } from 'node:util'
-import { grokBotGateway, type GrokBotSource } from '../../shared/grokBot.ts'
+import { grokBotGateway, type GrokBotSource, type GrokBotDesktopProfile } from '../../shared/grokBot.ts'
 import { pluginEnvironment } from './processes.ts'
+import { PluginFile } from './files.ts'
 
 export interface GrokBotSession {
   gatewayUrl: string
@@ -140,16 +141,26 @@ export interface GrokBotSessionReaderOptions {
   home: string
   platform: string
   environment: NodeJS.ProcessEnv
+  /** Device-local folder grants; never included in account sync. */
+  profileStore?: string
   /** Injected only by owned tests; production uses native OS protection. */
   password?: (signal: AbortSignal) => Promise<string>
   unprotect?: (blob: Buffer, signal: AbortSignal) => Promise<Buffer>
 }
+interface DesktopProfiles {
+  version: 1
+  profiles: { id: string; path: string }[]
+}
+const profileIdValid = (value: unknown): value is string =>
+  typeof value === 'string' && /^gbprofile-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value)
 export class GrokBotSessionReader {
   private options: GrokBotSessionReaderOptions
+  private profiles: PluginFile<DesktopProfiles>
   constructor(options: GrokBotSessionReaderOptions) {
     this.options = options
+    this.profiles = new PluginFile(options.profileStore || join(options.home, '.stoke', 'grok-bot-desktop-profiles.json'), 256 * 1024)
   }
-  private root(): string {
+  private defaultRoot(): string {
     const { platform, home, environment: env } = this.options
     return platform === 'win32'
       ? join(env.APPDATA || join(home, 'AppData', 'Roaming'), 'Grok Bot')
@@ -157,15 +168,78 @@ export class GrokBotSessionReader {
         ? join(env.XDG_CONFIG_HOME || join(home, '.config'), 'Grok Bot')
         : join(home, 'Library', 'Application Support', 'Grok Bot')
   }
-  private async descriptor(signal: AbortSignal): Promise<unknown> {
+  private async readProfiles(signal: AbortSignal): Promise<DesktopProfiles> {
+    let raw: unknown
+    try { raw = await this.profiles.read(signal) } catch {
+      signal.throwIfAborted()
+      throw new Error('The saved desktop profile folders cannot be read. Keep the file for recovery.')
+    }
+    if (raw === null) return { version: 1, profiles: [] }
+    if (!record(raw) || raw.version !== 1 || !Array.isArray(raw.profiles) || raw.profiles.length > 32)
+      throw new Error('The saved desktop profile folders cannot be read. Keep the file for recovery.')
+    const ids = new Set<string>()
+    for (const profile of raw.profiles) {
+      if (!record(profile) || !profileIdValid(profile.id) || ids.has(profile.id) ||
+        typeof profile.path !== 'string' || !isAbsolute(profile.path) || profile.path.length > 4096 || /[\u0000-\u001f]/.test(profile.path))
+        throw new Error('The saved desktop profile folders contain an unsupported entry.')
+      ids.add(profile.id)
+    }
+    return raw as unknown as DesktopProfiles
+  }
+  private async root(profileId: string | undefined, signal: AbortSignal): Promise<string> {
+    if (profileId === undefined) return this.defaultRoot()
+    if (!profileIdValid(profileId)) throw new Error('Choose a Grok Bot desktop profile folder again.')
+    return this.profiles.transaction(async storeSignal => {
+      const combined = AbortSignal.any([signal, storeSignal])
+      const profile = (await this.readProfiles(combined)).profiles.find(item => item.id === profileId)
+      combined.throwIfAborted()
+      if (!profile) throw new Error('Choose a Grok Bot desktop profile folder again.')
+      return profile.path
+    })
+  }
+  /** Called only with a folder returned by the native picker, never a renderer path. */
+  async addProfile(path: string, signal: AbortSignal): Promise<GrokBotDesktopProfile> {
+    signal.throwIfAborted()
+    if (typeof path !== 'string' || !isAbsolute(path) || path.length > 4096 || /[\u0000-\u001f]/.test(path))
+      throw new Error('Choose the Grok Bot data folder used by your desktop shortcut.')
+    let folder: string
     try {
-      return await boundedJson(join(this.root(), 'gateway-descriptor.json'), signal)
+      folder = await realpath(path)
+      signal.throwIfAborted()
+      if (!(await stat(folder)).isDirectory()) throw new Error('not a folder')
+    } catch {
+      signal.throwIfAborted()
+      throw new Error('The selected Grok Bot desktop profile folder is unavailable. Check its location and permissions.')
+    }
+    signal.throwIfAborted()
+    if (folder.length > 4096 || /[\u0000-\u001f]/.test(folder))
+      throw new Error('Choose a Grok Bot desktop profile folder with a supported path.')
+    // Check the selected folder before remembering it. Listing never opens credentials.
+    const sources = slots(await this.descriptor(signal, folder)).map(({ id, label }) => ({ id, label }))
+    return this.profiles.transaction(async storeSignal => {
+      const combined = AbortSignal.any([signal, storeSignal])
+      const state = await this.readProfiles(combined)
+      const identity = (value: string): string => this.options.platform === 'win32' ? value.toLowerCase() : value
+      let profile = state.profiles.find(item => identity(item.path) === identity(folder))
+      if (!profile) {
+        if (state.profiles.length >= 32) throw new Error('This computer already has 32 registered Grok Bot desktop profile folders.')
+        profile = { id: `gbprofile-${randomUUID()}`, path: folder }
+        state.profiles.push(profile)
+        await this.profiles.write(state, combined)
+      }
+      combined.throwIfAborted()
+      return { id: profile.id, label: basename(folder), sources }
+    })
+  }
+  private async descriptor(signal: AbortSignal, root: string): Promise<unknown> {
+    try {
+      return await boundedJson(join(root, 'gateway-descriptor.json'), signal)
     } catch (error) {
       if (!(error instanceof DesktopFileError) || error.reason !== 'missing') throw error
       let status: unknown
       try {
         // The public marker contains status only, never account credentials.
-        status = await boundedJson(join(this.root(), 'desktop-status.json'), signal, 'status')
+        status = await boundedJson(join(root, 'desktop-status.json'), signal, 'status')
       } catch {
         signal.throwIfAborted()
       }
@@ -174,8 +248,8 @@ export class GrokBotSessionReader {
       throw error
     }
   }
-  async sources(signal: AbortSignal): Promise<GrokBotSource[]> {
-    return slots(await this.descriptor(signal)).map(
+  async sources(signal: AbortSignal, profileId?: string): Promise<GrokBotSource[]> {
+    return slots(await this.descriptor(signal, await this.root(profileId, signal))).map(
       ({ id, label }) => ({ id, label })
     )
   }
@@ -224,9 +298,11 @@ export class GrokBotSessionReader {
   }
   async load(
     sourceSlot: string | undefined,
-    signal: AbortSignal
+    signal: AbortSignal,
+    profileId?: string
   ): Promise<{ session: GrokBotSession; slot: string }> {
-    const entries = slots(await this.descriptor(signal))
+    const root = await this.root(profileId, signal)
+    const entries = slots(await this.descriptor(signal, root))
     const selected = sourceSlot
       ? entries.find((entry) => entry.id === sourceSlot)
       : entries.length === 1
@@ -241,7 +317,7 @@ export class GrokBotSessionReader {
     let clear: string
     try {
       if (this.options.platform === 'win32') {
-        const state = await boundedJson(join(this.root(), 'Local State'), signal, 'key')
+        const state = await boundedJson(join(root, 'Local State'), signal, 'key')
         const os = record(state) && record(state.os_crypt) ? state.os_crypt : null
         const wrapped = Buffer.from(typeof os?.encrypted_key === 'string' ? os.encrypted_key : '', 'base64')
         if (

@@ -879,6 +879,47 @@ await step('native plugin lifecycle and Grok Bot account isolation', async () =>
     check('the saved-session picker preserves an explicitly chosen v3 slot', await waitFor('second desktop slot selected', () => ev<boolean>(`[...document.querySelectorAll('[aria-label="Grok Bot"] select')].some(select => select.value === 'owned-grok')`)) === true)
     check('native source listing leaves the desktop file byte-for-byte unchanged', readFileSync(descriptor, 'utf8') === sourceFixture)
     await shot('04-grok-bot-desktop-v3')
+    // Mock only the owned fixture's native chooser response. The renderer,
+    // preload, frame guard, profile registration and folder reads remain real.
+    const profileTarget = await waitFor('the owned Grok folder fixture main inspector', async () => (await listTargets(nativeInspectorPort)).find(t => t.type === 'node' && t.webSocketDebuggerUrl), 10_000)
+    const profileMain = await CdpClient.open(profileTarget)
+    try {
+      await profileMain.evaluate(`(() => {
+        const electron = process.getBuiltinModule('module').createRequire(process.cwd() + '/probe-profile.cjs')('electron');
+        globalThis.__stokeProbeGrokFolder = { dialog: electron.dialog, original: electron.dialog.showOpenDialog, next: null };
+        electron.dialog.showOpenDialog = async () => { const state = globalThis.__stokeProbeGrokFolder; return { canceled: state.next === null, filePaths: state.next === null ? [] : [state.next] }; };
+        return true;
+      })()`)
+      const chooseProfile = async (path: string | null): Promise<void> => {
+        await profileMain.evaluate(`globalThis.__stokeProbeGrokFolder.next = ${JSON.stringify(path)}, true`)
+        await ev(`[...document.querySelectorAll('[aria-label="Grok Bot"] button')].find(button => button.textContent === 'Choose desktop profile folder…').click(), true`)
+        await waitFor('the Grok profile picker operation to finish', () => ev<boolean>(`![...document.querySelectorAll('[aria-label="Grok Bot"] button')].find(button => button.textContent === 'Choose desktop profile folder…').disabled`))
+      }
+      await chooseProfile(null)
+      check('cancelling the native profile picker preserves the default selection and session choice', await ev<boolean>(`document.querySelector('[aria-label="Grok Bot"]').textContent.includes('Desktop profile: Default folder') && [...document.querySelectorAll('[aria-label="Grok Bot"] select')].some(select => select.value === 'owned-grok')`))
+      for (let number = 1; number <= 5; number++) {
+        const customFolder = join(home, `Owned Grok profile ${number}`)
+        mkdirSync(customFolder)
+        const customDescriptor = JSON.stringify({ version: 3, entries: { current: { savedAtMs: Date.now(), label: `Owned login ${number}`, encrypted: Buffer.from(`v10owned-profile-${number}`).toString('base64') } } })
+        writeFileSync(join(customFolder, 'gateway-descriptor.json'), customDescriptor)
+        await chooseProfile(customFolder)
+        check(`native profile picker reads separate folder ${number} even though every profile uses the current slot ID`, await ev<boolean>(`document.querySelector('[aria-label="Grok Bot"]').textContent.includes(${JSON.stringify(`Desktop profile: Owned Grok profile ${number}`)}) && [...document.querySelectorAll('[aria-label="Grok Bot"] select option')].some(option => option.value === 'current' && option.textContent === ${JSON.stringify(`Owned login ${number}`)})`))
+        await ev(`[...document.querySelectorAll('[aria-label="Grok Bot"] button')].find(button => button.textContent === 'Read desktop sessions').click(), true`)
+        await waitFor('custom folder refresh stays selected', () => ev<boolean>(`[...document.querySelectorAll('[aria-label="Grok Bot"] select option')].some(option => option.textContent === ${JSON.stringify(`Owned login ${number}`)})`))
+        check(`profile ${number} refresh stays bound to its own folder`, readFileSync(join(customFolder, 'gateway-descriptor.json'), 'utf8') === customDescriptor)
+      }
+      await chooseProfile(null)
+      check('cancelling another profile choice preserves the previously selected custom folder', await ev<boolean>(`document.querySelector('[aria-label="Grok Bot"]').textContent.includes('Desktop profile: Owned Grok profile 5') && [...document.querySelectorAll('[aria-label="Grok Bot"] select option')].some(option => option.textContent === 'Owned login 5')`))
+      await shot('04-grok-bot-custom-profile')
+      await ev(`[...document.querySelectorAll('[aria-label="Grok Bot"] button')].find(button => button.textContent === 'Use default folder').click(), true`)
+      await waitFor('returning to the default clears custom import choices', () => ev<boolean>(`document.querySelector('[aria-label="Grok Bot"]').textContent.includes('Desktop profile: Default folder') && ![...document.querySelectorAll('[aria-label="Grok Bot"] button')].some(button => button.textContent === 'Import as new account')`))
+      await ev(`[...document.querySelectorAll('[aria-label="Grok Bot"] button')].find(button => button.textContent === 'Read desktop sessions').click(), true`)
+      await waitFor('default desktop sessions after custom folders', () => ev<boolean>(`[...document.querySelectorAll('[aria-label="Grok Bot"] select option')].some(option => option.value === 'owned-grok')`))
+      check('default folder refresh restores its sessions and no custom profile modifies its file', readFileSync(descriptor, 'utf8') === sourceFixture)
+    } finally {
+      await profileMain.evaluate(`(() => { const state = globalThis.__stokeProbeGrokFolder; if (state) { state.dialog.showOpenDialog = state.original; delete globalThis.__stokeProbeGrokFolder; } return true; })()`).catch(() => {})
+      profileMain.close()
+    }
     if (opt['gbot-cli']) {
       const runtime = join(ud, 'plugins', 'runtime', 'grok-bot', '0.12.4'); mkdirSync(runtime, { recursive: true })
       for (const filename of ['gbot.mjs', 'gbot-flight.mjs']) copyFileSync(join(resolve(opt['gbot-cli']), filename), join(runtime, filename))

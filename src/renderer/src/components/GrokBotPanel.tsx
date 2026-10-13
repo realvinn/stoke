@@ -11,6 +11,7 @@ export function GrokBotPanel(): React.JSX.Element {
   const [selected, setSelected] = useState('')
   const [nickname, setNickname] = useState('')
   const [sources, setSources] = useState<GrokBotSource[]>([])
+  const [desktopProfile, setDesktopProfile] = useState<{ id: string; label: string } | null>(null)
   const [slot, setSlot] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -139,9 +140,9 @@ export function GrokBotPanel(): React.JSX.Element {
         them on your other approved devices. They are separate from Grok Build and xAI API accounts.
       </p>
       <p className="plugin-muted">
-        Sign in with each Cursor or Grok account in the Grok Bot desktop app, open its Computer
-        view and wait for it to connect, then read desktop sessions and import here. Cursor CLI
-        and Grok Build use their own accounts in Settings → Accounts.
+        Connect each account’s Computer view in Grok Bot, then import its session here. For
+        separate desktop profiles or shortcuts, choose each profile’s data folder below. Manage
+        Cursor CLI and Grok Build accounts separately in Settings → Accounts.
       </p>
       {!view?.cli.installed && (
         <button
@@ -230,21 +231,45 @@ export function GrokBotPanel(): React.JSX.Element {
             void act(async () => {
               setSources([])
               setSlot('')
-              const next = await window.stoke.grokBot.sources()
+              const next = await window.stoke.grokBot.sources(desktopProfile?.id)
               if (live.current) {
                 setSources(next)
-                setSlot(next[0]?.id ?? '')
+                setSlot(next.length === 1 ? next[0].id : '')
               }
             })
           }
         >
           Read desktop sessions
         </button>
+        <button
+          disabled={busy}
+          onClick={() => void act(async () => {
+            const next = await window.stoke.grokBot.chooseProfile()
+            if (live.current && next) {
+              setDesktopProfile({ id: next.id, label: next.label })
+              setSources(next.sources)
+              setSlot(next.sources.length === 1 ? next.sources[0].id : '')
+              setNotice(`Reading ${next.label}. Choose a session and import it as a new account.`)
+            }
+          })}
+        >
+          Choose desktop profile folder…
+        </button>
+        {desktopProfile && (
+          <button disabled={busy} onClick={() => {
+            setDesktopProfile(null)
+            setSources([])
+            setSlot('')
+            setNotice('Reading the default Grok Bot data folder. Click Read desktop sessions to refresh.')
+          }}>Use default folder</button>
+        )}
+        <span className="plugin-muted">Desktop profile: {desktopProfile?.label ?? 'Default folder'}</span>
         {sources.length > 0 && (
           <>
             <label>
               Desktop session
               <select value={slot} onChange={(event) => setSlot(event.target.value)}>
+                {sources.length > 1 && <option value="" disabled>Choose a desktop session…</option>}
                 {sources.map((source) => (
                   <option key={source.id} value={source.id}>
                     {source.label}
@@ -254,7 +279,7 @@ export function GrokBotPanel(): React.JSX.Element {
             </label>
             <button
               disabled={busy || !nickname.trim() || !slot}
-              onClick={() => void act(() => change({ kind: 'import', label: nickname, sourceSlot: slot }))}
+              onClick={() => void act(() => change({ kind: 'import', label: nickname, sourceSlot: slot, profileId: desktopProfile?.id }))}
             >
               Import as new account
             </button>
@@ -263,7 +288,7 @@ export function GrokBotPanel(): React.JSX.Element {
                 disabled={busy || !nickname.trim() || !slot}
                 onClick={() =>
                   void act(() =>
-                    change({ kind: 'import', label: nickname, sourceSlot: slot, replace: selected })
+                    change({ kind: 'import', label: nickname, sourceSlot: slot, profileId: desktopProfile?.id, replace: selected })
                   )
                 }
               >

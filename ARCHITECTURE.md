@@ -1432,6 +1432,16 @@ Session excerpts add `src/main/plugins/workSessionNotes.ts` (bounded transcript 
 and live owner checks) and `scripts/verify-work-session-notes.mts` (real JSONL reads,
 redaction, private/remote admission, owner changes and deadline ownership).
 
+Grok Bot uses `src/main/plugins/grokBot.ts` for saved-account snapshots and explicit
+gateway operations, `grokBotSession.ts` for desktop descriptors and OS decryption,
+and `GrokBotPanel.tsx` for imports. Separate desktop instances can be imported through
+a native folder picker. Device-local folder grants live in
+`plugins/grok-bot-desktop-profiles.json`; the renderer receives opaque IDs and folder
+labels. Windows decryption uses the selected folder's own `Local State`. Profile
+paths and protection keys never sync. `verify:plugins` exercises five independent
+folders per platform, identical slot IDs, different Windows keys, restart, and
+failure without a fallback to another login.
+
 Launcher checks add `src/shared/launchPreflight.ts` (credential-free wire report),
 `src/main/launchPreflight.ts` (captured read-only configuration checks),
 `LaunchSetupCheck.tsx` (explicit review and settings links), and

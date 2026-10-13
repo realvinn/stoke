@@ -19,6 +19,12 @@ export interface GrokBotSource {
   id: string
   label: string
 }
+/** Local desktop profile selection. Folder paths and protection keys stay in main. */
+export interface GrokBotDesktopProfile {
+  id: string
+  label: string
+  sources: GrokBotSource[]
+}
 /** In-memory tab binding and draft; credentials remain in the plugin's vault. */
 export interface GrokBotTabBinding {
   accountId: string
@@ -33,7 +39,7 @@ export interface GrokBotTabBinding {
   sendError?: string
 }
 export type GrokBotAccountCommand =
-  | { kind: 'import'; label: string; sourceSlot?: string; replace?: string }
+  | { kind: 'import'; label: string; sourceSlot?: string; profileId?: string; replace?: string }
   | {
       kind: 'manual'
       label: string

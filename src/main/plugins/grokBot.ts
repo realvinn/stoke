@@ -9,6 +9,7 @@ import {
   isGrokBotAccountId,
   type GrokBotAccount,
   type GrokBotAccountCommand,
+  type GrokBotDesktopProfile,
   type GrokBotOperation,
   type GrokBotResult,
   type GrokBotView
@@ -191,16 +192,35 @@ export class GrokBotPlugin {
     this.options.changed(view)
     return view
   }
-  async sources(): Promise<import('../../shared/grokBot.ts').GrokBotSource[]> {
+  async sources(profileId?: string): Promise<import('../../shared/grokBot.ts').GrokBotSource[]> {
     const epoch = this.epoch
     const controller = new AbortController()
     this.controllers.add(controller)
     const timer = setTimeout(() => controller.abort(), 8000)
     try {
       await this.guard(epoch)
-      const sources = await this.options.reader.sources(controller.signal)
+      const sources = await this.options.reader.sources(controller.signal, profileId)
       await this.guard(epoch)
       return sources
+    } finally {
+      clearTimeout(timer)
+      this.controllers.delete(controller)
+    }
+  }
+  async chooseProfile(choose: () => Promise<string | null>): Promise<GrokBotDesktopProfile | null> {
+    const epoch = this.epoch
+    await this.guard(epoch)
+    // The native dialog may remain open; start the I/O deadline after selection.
+    const path = await choose()
+    await this.guard(epoch)
+    if (path === null) return null
+    const controller = new AbortController()
+    this.controllers.add(controller)
+    const timer = setTimeout(() => controller.abort(), 8000)
+    try {
+      const profile = await this.options.reader.addProfile(path, controller.signal)
+      await this.guard(epoch)
+      return profile
     } finally {
       clearTimeout(timer)
       this.controllers.delete(controller)
@@ -225,7 +245,7 @@ export class GrokBotPlugin {
         const name = label(raw.label)
         const loaded =
           raw.kind === 'import'
-            ? await this.options.reader.load(raw.sourceSlot, signal)
+            ? await this.options.reader.load(raw.sourceSlot, signal, raw.profileId)
             : { slot: '', session: validateGrokBotSession(raw, raw.allowLocal === true) }
         await this.guard(operationEpoch)
         signal.throwIfAborted()

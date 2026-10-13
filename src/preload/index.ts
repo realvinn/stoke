@@ -397,7 +397,8 @@ const api: StokeApi = {
   grokBot: {
     read: () => ipcRenderer.invoke(CH.grokBotRead),
     install: () => ipcRenderer.invoke(CH.grokBotInstall),
-    sources: () => ipcRenderer.invoke(CH.grokBotSources),
+    sources: (profileId) => ipcRenderer.invoke(CH.grokBotSources, profileId),
+    chooseProfile: () => ipcRenderer.invoke(CH.grokBotChooseProfile),
     change: (command) => ipcRenderer.invoke(CH.grokBotChange, command),
     operate: (operation) => ipcRenderer.invoke(CH.grokBotOperate, operation),
     onChange: (cb) => on<[Parameters<typeof cb>[0]]>(CH.grokBotChanged, cb)

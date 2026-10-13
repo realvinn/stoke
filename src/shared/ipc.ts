@@ -512,6 +512,7 @@ export const CH = {
   grokBotChanged: 'plugins:grok-bot:changed',
   grokBotInstall: 'plugins:grok-bot:install',
   grokBotSources: 'plugins:grok-bot:sources',
+  grokBotChooseProfile: 'plugins:grok-bot:choose-profile',
   grokBotChange: 'plugins:grok-bot:change',
   grokBotOperate: 'plugins:grok-bot:operate',
 

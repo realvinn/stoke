@@ -1,6 +1,6 @@
 import type { SshMergeGroup } from './sshRoutes.ts'
 import type { PluginsView, PluginRunResult } from './pluginPackages.ts'
-import type { GrokBotView, GrokBotSource, GrokBotAccountCommand, GrokBotOperation, GrokBotResult } from './grokBot.ts'
+import type { GrokBotView, GrokBotSource, GrokBotDesktopProfile, GrokBotAccountCommand, GrokBotOperation, GrokBotResult } from './grokBot.ts'
 import type { InstallKind } from './installKind'
 import type { RevealInfo } from './fullScreenReveal'
 
@@ -1156,7 +1156,8 @@ export interface StokeApi {
   grokBot: {
     read(): Promise<GrokBotView>
     install(): Promise<GrokBotView>
-    sources(): Promise<GrokBotSource[]>
+    sources(profileId?: string): Promise<GrokBotSource[]>
+    chooseProfile(): Promise<GrokBotDesktopProfile | null>
     change(command: GrokBotAccountCommand): Promise<GrokBotView>
     operate(operation: GrokBotOperation): Promise<GrokBotResult>
     onChange(cb: (view: GrokBotView) => void): () => void
