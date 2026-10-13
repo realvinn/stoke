@@ -505,7 +505,10 @@ jobs:
           # The API returns the real tag object, and needs no checkout at all.
           OBJ="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" -q '.object.sha + " " + .object.type')"
           if [ "${OBJ#* }" = "tag" ]; then
-            gh api "repos/$GITHUB_REPOSITORY/git/tags/${OBJ% *}" -q '.message' > tagmsg.txt
+            # Signed annotations include their signature armor in the API's
+            # message. Keep the human notes, without publishing that footer.
+            gh api "repos/$GITHUB_REPOSITORY/git/tags/${OBJ% *}" -q '.message' \
+              | sed '/^-----BEGIN SSH SIGNATURE-----$/,$d; /^-----BEGIN PGP SIGNATURE-----$/,$d' > tagmsg.txt
           else
             # A lightweight tag has no message of its own. Say so rather than
             # inventing notes from whatever commit it happens to point at.
