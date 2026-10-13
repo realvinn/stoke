@@ -1,6 +1,6 @@
 # Sync saved agent accounts
 
-This feature requires the account-sync update on both computers. Public beta.7 does not include it.
+This feature requires Stoke **1.0.0-beta.8 or later on both computers**. Beta.7 does not include it.
 
 1. Sign in to the same Stoke account on both computers.
 2. Create the encrypted vault on one computer if you have not already. Approve the other device, comparing the six-digit code on both screens, or join using your Recovery Kit.
