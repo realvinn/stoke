@@ -937,7 +937,12 @@ await step('native plugin lifecycle and Grok Bot account isolation', async () =>
       check('one normal desktop app shows all five saved logins with only two exported computer connections', await ev<boolean>(`[...document.querySelectorAll('[aria-label="Grok Bot"] select option')].filter(option => ${JSON.stringify(nativeIds)}.includes(option.value)).length === 5`))
       check('missing native computer connections are visibly marked and cannot be chosen for import', await ev<boolean>(`[...document.querySelectorAll('[aria-label="Grok Bot"] select option')].filter(option => ${JSON.stringify(nativeIds.slice(2))}.includes(option.value)).every(option => option.disabled && option.textContent.includes('open Computer first')) && [...document.querySelectorAll('[aria-label="Grok Bot"] select option')].some(option => option.value === ${JSON.stringify(nativeIds[2])} && option.textContent.includes('current'))`))
       const missingImport = await ev<string>(`window.stoke.grokBot.change(${JSON.stringify({ kind: 'import', label: 'Owned missing native connection', sourceSlot: nativeIds[2] })}).then(() => 'unexpected import', error => String(error))`)
-      check('native import IPC refuses an unconnected saved login with switcher instructions instead of another account', missingImport.includes('no saved computer connection') && missingImport.includes('Switch to this account'))
+      if (!isMac && !isWin) {
+        // This fixture deliberately uses Chromium's basic password store.
+        check('Linux refuses native import before opening credentials without Secret Service', missingImport.includes('Grok Bot sessions require the OS key store') && missingImport.includes('Linux Secret Service first'))
+      } else {
+        check('native import IPC refuses an unconnected saved login with switcher instructions instead of another account', missingImport.includes('no saved computer connection') && missingImport.includes('Switch to this account'))
+      }
       check('native login discovery never exposes protected OAuth or profile contents to the page', await ev<boolean>(`!document.querySelector('[aria-label="Grok Bot"]').textContent.includes('owned-sealed') && !document.querySelector('[aria-label="Grok Bot"]').textContent.includes('owned-private')`))
       await ev(`document.querySelector('[data-testid="grok-desktop-login-summary"]').scrollIntoView({ block: 'center' }), true`)
       await shot('04-grok-bot-native-five-logins-two-connections')
@@ -2312,9 +2317,12 @@ await step('quick terminal switches installed shells, opens wrapped links and re
     const shells = await ev<{ state: QuickTerminalState }>('window.stoke.quickTerminal.read()')
     await ev('window.stoke.quickTerminal.move("panel")').catch(() => {})
     for (const session of shells.state.sessions.filter(session => session.phase !== 'exited')) {
-      await ev(`window.stoke.quickTerminal.selectShell(${JSON.stringify(session.shellId)})`).catch(() => {})
-      await ev('window.stoke.quickTerminal.end()').catch(() => {})
-      await waitFor('the selected disposable shell to exit', () => ev<boolean>(`window.stoke.quickTerminal.read().then(snapshot => snapshot.state.sessions.find(s => s.shellId === ${JSON.stringify(session.shellId)})?.phase === 'exited')`)).catch(() => {})
+      const selected = await ev<QuickTerminalResult>(`window.stoke.quickTerminal.selectShell(${JSON.stringify(session.shellId)})`)
+      if (!selected.ok || selected.state.id !== session.id) throw new Error('The owned cleanup shell could not be selected.')
+      // End only this fixture's idle shell, through its own stdin. api.end()
+      // deliberately requires a native confirmation and must not be bypassed.
+      await ev(`(window.stoke.quickTerminal.write(${JSON.stringify(session.id)}, ${JSON.stringify('exit\r')}), true)`)
+      await waitFor('the selected disposable shell to exit', () => ev<boolean>(`window.stoke.quickTerminal.read().then(snapshot => snapshot.state.sessions.find(s => s.shellId === ${JSON.stringify(session.shellId)})?.phase === 'exited')`))
     }
     await ev('window.stoke.quickTerminal.move("hidden")').catch(() => {})
     check('ending disposable shells cleans up inactive shells too', await waitFor('all disposable quick shells to exit', () => ev('window.stoke.quickTerminal.read().then(snapshot => snapshot.state.sessions.every(session => session.phase === "exited"))'), 10_000).catch(() => false) === true)
@@ -2493,7 +2501,7 @@ async function quitGracefully(label: string): Promise<{ code: number | null; sig
     // ends its shell, which cannot prove native cleanup on window close.
     const before = await ev<{ state: QuickTerminalState }>('window.stoke.quickTerminal.read()')
     check(`quick terminal did not auto-start before ${label}`, before.state.phase === 'idle' || before.state.phase === 'exited')
-      const opened = await ev<QuickTerminalResult>(`window.stoke.quickTerminal.open('panel', ${JSON.stringify(proj)})`)
+    const opened = await ev<QuickTerminalResult>(`window.stoke.quickTerminal.open('panel', ${JSON.stringify(proj)})`)
     const quick = opened.ok && opened.state.phase === 'exited'
       ? await ev<QuickTerminalResult>('window.stoke.quickTerminal.restart()') : opened
     check(`a real quick shell is running before ${label}`, quick.ok && quick.state.phase === 'running' && !!quick.state.id)
