@@ -83,7 +83,7 @@ import {
   writeFileSync,
   appendFileSync
 } from 'node:fs'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { createRequire } from 'node:module'
 import { createServer } from 'node:net'
 import { userInfo } from 'node:os'
@@ -919,6 +919,40 @@ await step('native plugin lifecycle and Grok Bot account isolation', async () =>
     } finally {
       await profileMain.evaluate(`(() => { const state = globalThis.__stokeProbeGrokFolder; if (state) { state.dialog.showOpenDialog = state.original; delete globalThis.__stokeProbeGrokFolder; } return true; })()`).catch(() => {})
       profileMain.close()
+    }
+    const nativeAccountsPath = join(desktopRoot, 'sand-secrets.json')
+    const nativeIds = Array.from({ length: 5 }, (_, i) => createHash('sha256').update(`owned-native-switcher-${i}`).digest('hex'))
+    const nativeAccounts = Object.fromEntries(nativeIds.map((id, i) => [id, { 'cursor-access-token': `owned-sealed-access-${i}`, 'cursor-refresh-token': `owned-sealed-refresh-${i}`, 'cursor-account-profile': `owned-private-profile-${i}` }]))
+    const nativeIndex = (active: string): string => JSON.stringify({ version: 1, 'cursor-accounts': JSON.stringify({ active, accounts: nativeAccounts }) })
+    const nativeConnections = (ids: string[]): string => JSON.stringify({ version: 3, entries: Object.fromEntries(ids.map(id => [id, { savedAtMs: Date.now(), encrypted: Buffer.from('v10owned-native-gateway-' + id).toString('base64') }])) })
+    const refreshNativeSources = async (): Promise<void> => {
+      await ev(`[...document.querySelectorAll('[aria-label="Grok Bot"] button')].find(button => button.textContent === 'Read desktop sessions').click(), true`)
+      await waitFor('native switcher metadata refresh', () => ev<boolean>(`![...document.querySelectorAll('[aria-label="Grok Bot"] button')].find(button => button.textContent === 'Read desktop sessions').disabled`))
+    }
+    try {
+      writeFileSync(nativeAccountsPath, nativeIndex(nativeIds[2]))
+      writeFileSync(descriptor, nativeConnections(nativeIds.slice(0, 2)))
+      await refreshNativeSources()
+      await waitFor('five native desktop logins with two connections', () => ev<boolean>(`document.querySelector('[data-testid="grok-desktop-login-summary"]')?.textContent.includes('5 desktop logins · 2 recent computer connections')`))
+      check('one normal desktop app shows all five saved logins with only two exported computer connections', await ev<boolean>(`[...document.querySelectorAll('[aria-label="Grok Bot"] select option')].filter(option => ${JSON.stringify(nativeIds)}.includes(option.value)).length === 5`))
+      check('missing native computer connections are visibly marked and cannot be chosen for import', await ev<boolean>(`[...document.querySelectorAll('[aria-label="Grok Bot"] select option')].filter(option => ${JSON.stringify(nativeIds.slice(2))}.includes(option.value)).every(option => option.disabled && option.textContent.includes('open Computer first')) && [...document.querySelectorAll('[aria-label="Grok Bot"] select option')].some(option => option.value === ${JSON.stringify(nativeIds[2])} && option.textContent.includes('current'))`))
+      const missingImport = await ev<string>(`window.stoke.grokBot.change(${JSON.stringify({ kind: 'import', label: 'Owned missing native connection', sourceSlot: nativeIds[2] })}).then(() => 'unexpected import', error => String(error))`)
+      check('native import IPC refuses an unconnected saved login with switcher instructions instead of another account', missingImport.includes('no saved computer connection') && missingImport.includes('Switch to this account'))
+      check('native login discovery never exposes protected OAuth or profile contents to the page', await ev<boolean>(`!document.querySelector('[aria-label="Grok Bot"]').textContent.includes('owned-sealed') && !document.querySelector('[aria-label="Grok Bot"]').textContent.includes('owned-private')`))
+      await ev(`document.querySelector('[data-testid="grok-desktop-login-summary"]').scrollIntoView({ block: 'center' }), true`)
+      await shot('04-grok-bot-native-five-logins-two-connections')
+      writeFileSync(nativeAccountsPath, nativeIndex(nativeIds[4]))
+      await refreshNativeSources()
+      check('refresh follows the desktop app’s saved current-account marker without switching an account', await ev<boolean>(`[...document.querySelectorAll('[aria-label="Grok Bot"] select option')].some(option => option.value === ${JSON.stringify(nativeIds[4])} && option.textContent.includes('current')) && ![...document.querySelectorAll('[aria-label="Grok Bot"] select option')].some(option => option.value === ${JSON.stringify(nativeIds[2])} && option.textContent.includes('current'))`))
+      writeFileSync(descriptor, nativeConnections(nativeIds))
+      await refreshNativeSources()
+      await waitFor('all five native connections after Computer views are opened', () => ev<boolean>(`document.querySelector('[data-testid="grok-desktop-login-summary"]')?.textContent.includes('5 desktop logins · 5 recent computer connections')`))
+      check('connecting the missing computers makes all five logins selectable without duplicate account discovery', await ev<boolean>(`[...document.querySelectorAll('[aria-label="Grok Bot"] select option')].filter(option => ${JSON.stringify(nativeIds)}.includes(option.value)).every(option => !option.disabled && !option.textContent.includes('open Computer first'))`))
+      check('reading the native switcher leaves its saved logins and current selection byte-for-byte unchanged', readFileSync(nativeAccountsPath, 'utf8') === nativeIndex(nativeIds[4]))
+    } finally {
+      rmSync(nativeAccountsPath, { force: true })
+      writeFileSync(descriptor, sourceFixture)
+      await refreshNativeSources()
     }
     if (opt['gbot-cli']) {
       const runtime = join(ud, 'plugins', 'runtime', 'grok-bot', '0.12.4'); mkdirSync(runtime, { recursive: true })

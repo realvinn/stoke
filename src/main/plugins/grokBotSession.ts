@@ -65,10 +65,10 @@ const MISSING_SESSION =
 async function boundedJson(
   path: string,
   signal: AbortSignal,
-  purpose: 'session' | 'key' | 'status' = 'session'
+  purpose: 'session' | 'key' | 'status' | 'accounts' = 'session'
 ): Promise<unknown> {
   let file: Awaited<ReturnType<typeof open>> | null = null
-  const name = purpose === 'key' ? 'Windows encryption-key file' : purpose === 'status' ? 'desktop status file' : 'desktop session file'
+  const name = purpose === 'key' ? 'Windows encryption-key file' : purpose === 'status' ? 'desktop status file' : purpose === 'accounts' ? 'saved account list' : 'desktop session file'
   try {
     signal.throwIfAborted()
     file = await open(path, 'r')
@@ -215,7 +215,7 @@ export class GrokBotSessionReader {
     if (folder.length > 4096 || /[\u0000-\u001f]/.test(folder))
       throw new Error('Choose a Grok Bot desktop profile folder with a supported path.')
     // Check the selected folder before remembering it. Listing never opens credentials.
-    const sources = slots(await this.descriptor(signal, folder)).map(({ id, label }) => ({ id, label }))
+    const sources = await this.folderSources(folder, signal)
     return this.profiles.transaction(async storeSignal => {
       const combined = AbortSignal.any([signal, storeSignal])
       const state = await this.readProfiles(combined)
@@ -248,10 +248,67 @@ export class GrokBotSessionReader {
       throw error
     }
   }
+  /** Reads only account IDs and the active marker. No OAuth/profile value is decrypted. */
+  private async nativeLogins(root: string, signal: AbortSignal): Promise<{ ids: string[]; active: string | null } | null> {
+    let raw: unknown
+    try { raw = await boundedJson(join(root, 'sand-secrets.json'), signal, 'accounts') } catch (error) {
+      if (error instanceof DesktopFileError && error.reason === 'missing') return null
+      throw error
+    }
+    if (!record(raw) || ![undefined, 1].includes(raw.version as number | undefined))
+      throw new Error('This Grok Bot saved-account format is not supported. Update Stoke and try again.')
+    // Older app versions keep just one native login and have no account index.
+    if (raw['cursor-accounts'] === undefined) return null
+    if (typeof raw['cursor-accounts'] !== 'string')
+      throw new Error('The Grok Bot saved account list is unreadable. Open its account switcher and try again.')
+    let index: unknown
+    try { index = JSON.parse(raw['cursor-accounts']) } catch {
+      throw new Error('The Grok Bot saved account list is unreadable. Open its account switcher and try again.')
+    }
+    if (!record(index) || !record(index.accounts) ||
+      !(index.active === null || typeof index.active === 'string') || Object.keys(index.accounts).length > 32)
+      throw new Error('The Grok Bot saved account list has unsupported entries. Update Stoke and try again.')
+    const ids: string[] = []
+    for (const [id, account] of Object.entries(index.accounts)) {
+      if (!/^[0-9a-f]{64}$/.test(id) || !record(account))
+        throw new Error('The Grok Bot saved account list has unsupported entries. Update Stoke and try again.')
+      // Match the desktop switcher's requirement for a complete saved login.
+      if (typeof account['cursor-access-token'] === 'string' && account['cursor-access-token'].length &&
+        typeof account['cursor-refresh-token'] === 'string' && account['cursor-refresh-token'].length) ids.push(id)
+    }
+    return { ids, active: typeof index.active === 'string' ? index.active : null }
+  }
+  private async folderSources(root: string, signal: AbortSignal): Promise<GrokBotSource[]> {
+    // Both stores are metadata-only reads. They describe different things:
+    // native saved logins versus recently exported computer connections.
+    const [accounts, descriptor] = await Promise.allSettled([
+      this.nativeLogins(root, signal), this.descriptor(signal, root)
+    ])
+    signal.throwIfAborted()
+    if (accounts.status === 'rejected') throw accounts.reason
+    const native = accounts.value
+    let connections: ReturnType<typeof slots>
+    if (descriptor.status === 'fulfilled') connections = slots(descriptor.value)
+    else if (native?.ids.length && descriptor.reason instanceof DesktopFileError && descriptor.reason.reason === 'missing') connections = []
+    else throw descriptor.reason
+    if (!native?.ids.length) return connections.map(({ id, label }) => ({ id, label }))
+    const byId = new Map(connections.map(entry => [entry.id, entry]))
+    const sources: GrokBotSource[] = native.ids.map((id, index) => {
+      const connection = byId.get(id)
+      byId.delete(id)
+      const state = !connection ? 'missing' : connection.savedAtMs !== undefined && Date.now() - connection.savedAtMs > DESKTOP_SESSION_MAX_AGE_MS ? 'expired' : 'saved'
+      return {
+        id, label: `Desktop login ${index + 1}`, nativeLogin: true, current: id === native.active,
+        connection: state
+      }
+    })
+    // Preserve legacy/orphan exports as separate connections; never guess an
+    // account association or substitute a different login's gateway.
+    sources.push(...[...byId.values()].map(({ id, label }) => ({ id, label })))
+    return sources
+  }
   async sources(signal: AbortSignal, profileId?: string): Promise<GrokBotSource[]> {
-    return slots(await this.descriptor(signal, await this.root(profileId, signal))).map(
-      ({ id, label }) => ({ id, label })
-    )
+    return this.folderSources(await this.root(profileId, signal), signal)
   }
   private execute(executable: string, args: string[], input: string, signal: AbortSignal): Promise<string> {
     return new Promise((resolve, reject) => {
@@ -302,13 +359,23 @@ export class GrokBotSessionReader {
     profileId?: string
   ): Promise<{ session: GrokBotSession; slot: string }> {
     const root = await this.root(profileId, signal)
-    const entries = slots(await this.descriptor(signal, root))
+    let entries: ReturnType<typeof slots>
+    try { entries = slots(await this.descriptor(signal, root)) } catch (error) {
+      if (error instanceof DesktopFileError && error.reason === 'missing' && sourceSlot &&
+        (await this.nativeLogins(root, signal))?.ids.includes(sourceSlot))
+        throw new Error('This desktop login has no saved computer connection. Switch to this account in Grok Bot, open Computer and wait for it to connect, then read desktop sessions again.')
+      throw error
+    }
     const selected = sourceSlot
       ? entries.find((entry) => entry.id === sourceSlot)
       : entries.length === 1
         ? entries[0]
         : undefined
-    if (!selected) throw new Error('Choose which saved desktop session to import.')
+    if (!selected) {
+      if (sourceSlot && (await this.nativeLogins(root, signal))?.ids.includes(sourceSlot))
+        throw new Error('This desktop login has no saved computer connection. Switch to this account in Grok Bot, open Computer and wait for it to connect, then read desktop sessions again.')
+      throw new Error('Choose which saved desktop session to import.')
+    }
     if (selected.savedAtMs !== undefined && Date.now() - selected.savedAtMs > DESKTOP_SESSION_MAX_AGE_MS)
       throw new Error(
         'This saved desktop session has expired. Open Grok Bot with the account you want, load a bot to refresh its session, then read desktop sessions and import again.'

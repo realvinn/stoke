@@ -1441,6 +1441,15 @@ labels. Windows decryption uses the selected folder's own `Local State`. Profile
 paths and protection keys never sync. `verify:plugins` exercises five independent
 folders per platform, identical slot IDs, different Windows keys, restart, and
 failure without a fallback to another login.
+One normal app's `sand-secrets.json` also contains a saved-account index with
+account IDs and an active marker. Source discovery reads that metadata without
+decrypting OAuth/profile values, matches IDs to exported gateway connections,
+and keeps missing/expired connections visible with native account-switcher
+instructions. Import still opens only the explicitly selected gateway snapshot;
+it never switches the desktop app, refreshes OAuth, or falls back to another login.
+`verify:plugins` covers five saved native logins with only two gateway exports,
+zero key-store reads during discovery, missing/expired exports, all five imports
+after connection, and unchanged native login files.
 
 Launcher checks add `src/shared/launchPreflight.ts` (credential-free wire report),
 `src/main/launchPreflight.ts` (captured read-only configuration checks),

@@ -6,6 +6,8 @@ import { grokBotMessages, grokBotThreads, type GrokBotMessage } from '@shared/gr
 const GrokBotMessages = lazy(() => import('./GrokBotMessages')
   .then(module => ({ default: module.GrokBotMessages }))
   .catch(() => ({ default: ({ messages }: { messages: GrokBotMessage[] }) => <div>{messages.map(message => <pre key={message.id}>{message.text}</pre>)}</div> })))
+const sourceCanImport = (source: GrokBotSource | undefined): boolean =>
+  !!source && source.connection !== 'missing' && source.connection !== 'expired'
 export function GrokBotPanel(): React.JSX.Element {
   const [view, setView] = useState<GrokBotView | null>(null)
   const [selected, setSelected] = useState('')
@@ -89,6 +91,8 @@ export function GrokBotPanel(): React.JSX.Element {
       }
     })
   const account = view?.accounts.find((account) => account.id === selected)
+  const desktopLogins = sources.filter(source => source.nativeLogin)
+  const selectedSource = sources.find(source => source.id === slot)
   const chooseTarget = (value: string): void => {
     generation.current++
     setTarget(value)
@@ -187,8 +191,7 @@ export function GrokBotPanel(): React.JSX.Element {
         ))}
         {view?.accounts.length === 0 && (
           <p>
-            No accounts yet. Sign in to the Grok Bot desktop app, then import that login. Repeat for each
-            account.
+            Import a desktop login below to save it in Stoke. Repeat for each account.
           </p>
         )}
       </div>
@@ -234,7 +237,7 @@ export function GrokBotPanel(): React.JSX.Element {
               const next = await window.stoke.grokBot.sources(desktopProfile?.id)
               if (live.current) {
                 setSources(next)
-                setSlot(next.length === 1 ? next[0].id : '')
+                setSlot(next.length === 1 && sourceCanImport(next[0]) ? next[0].id : '')
               }
             })
           }
@@ -248,7 +251,7 @@ export function GrokBotPanel(): React.JSX.Element {
             if (live.current && next) {
               setDesktopProfile({ id: next.id, label: next.label })
               setSources(next.sources)
-              setSlot(next.sources.length === 1 ? next.sources[0].id : '')
+              setSlot(next.sources.length === 1 && sourceCanImport(next.sources[0]) ? next.sources[0].id : '')
               setNotice(`Reading ${next.label}. Choose a session and import it as a new account.`)
             }
           })}
@@ -269,23 +272,24 @@ export function GrokBotPanel(): React.JSX.Element {
             <label>
               Desktop session
               <select value={slot} onChange={(event) => setSlot(event.target.value)}>
-                {sources.length > 1 && <option value="" disabled>Choose a desktop session…</option>}
+                <option value="" disabled>Choose a desktop session…</option>
                 {sources.map((source) => (
-                  <option key={source.id} value={source.id}>
-                    {source.label}
+                  <option key={source.id} value={source.id} disabled={!sourceCanImport(source)}>
+                    {source.label}{source.current ? ' · current' : ''}
+                    {source.connection === 'missing' ? ' · open Computer first' : source.connection === 'expired' ? ' · reconnect Computer' : ''}
                   </option>
                 ))}
               </select>
             </label>
             <button
-              disabled={busy || !nickname.trim() || !slot}
+              disabled={busy || !nickname.trim() || !sourceCanImport(selectedSource)}
               onClick={() => void act(() => change({ kind: 'import', label: nickname, sourceSlot: slot, profileId: desktopProfile?.id }))}
             >
               Import as new account
             </button>
             {account && (
               <button
-                disabled={busy || !nickname.trim() || !slot}
+                disabled={busy || !nickname.trim() || !sourceCanImport(selectedSource)}
                 onClick={() =>
                   void act(() =>
                     change({ kind: 'import', label: nickname, sourceSlot: slot, profileId: desktopProfile?.id, replace: selected })
@@ -298,6 +302,13 @@ export function GrokBotPanel(): React.JSX.Element {
           </>
         )}
       </div>
+      {desktopLogins.length > 0 && (
+        <p className="plugin-muted" data-testid="grok-desktop-login-summary">
+          {desktopLogins.length} desktop logins · {desktopLogins.filter(source => source.connection === 'saved').length} recent computer connections.
+          {desktopLogins.some(source => source.connection !== 'saved') && ' Switch to each missing login in Grok Bot, open Computer and wait for it to connect, then click Read desktop sessions again.'}
+          {' '}The current marker helps identify the account selected in Grok Bot. Give each imported account your own nickname.
+        </p>
+      )}
       <button className="plugin-link" aria-expanded={advanced} onClick={() => setAdvanced(!advanced)}>
         Advanced connection
       </button>

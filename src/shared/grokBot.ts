@@ -18,6 +18,10 @@ export interface GrokBotView {
 export interface GrokBotSource {
   id: string
   label: string
+  /** Saved native logins can exist before a gateway connection is exported. */
+  nativeLogin?: boolean
+  current?: boolean
+  connection?: 'saved' | 'missing' | 'expired'
 }
 /** Local desktop profile selection. Folder paths and protection keys stay in main. */
 export interface GrokBotDesktopProfile {

@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readFile, writeFile, rm, chmod, readdir } from 'node:fs
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
-import { createCipheriv, createDecipheriv, pbkdf2Sync, randomBytes } from 'node:crypto'
+import { createCipheriv, createDecipheriv, createHash, pbkdf2Sync, randomBytes } from 'node:crypto'
 import { createServer } from 'node:http'
 import {
   BUILTIN_PACKAGES,
@@ -606,6 +606,84 @@ try {
       await assert.rejects(reader.sources(signal), error => error instanceof Error && !error.message.includes('secret-looking-unsupported-value'))
     }
     check(`${platform} rejects future formats and malformed v3 entries without exposing file values`, () => assert.ok(true))
+
+    // One normal desktop app can retain five native logins while exporting
+    // connections for just two. The importer must show all five without
+    // decrypting OAuth/profile values or treating missing gateways as logins.
+    const nativePath = join(folder, 'sand-secrets.json')
+    const oldDescriptor = await readFile(path)
+    const ids = Array.from({ length: 5 }, (_, i) => createHash('sha256').update(`owned-native-${platform}-${i}`).digest('hex'))
+    const nativeAccounts = Object.fromEntries(ids.map((id, i) => [id, {
+      'cursor-access-token': ['owned', 'sealed', 'access', String(i)].join('-'),
+      'cursor-refresh-token': ['owned', 'sealed', 'refresh', String(i)].join('-'),
+      'cursor-account-profile': ['owned', 'private', 'profile', String(i)].join('-')
+    }]))
+    const nativeFile = (active: string): string => JSON.stringify({ version: 1, 'cursor-accounts': JSON.stringify({ active, accounts: nativeAccounts }) })
+    const gatewayFile = (selected: string[]): string => JSON.stringify({ version: 3, entries: Object.fromEntries(selected.map(id => [id, { savedAtMs: Date.now(), encrypted: seal(id) }])) })
+    const nativeImporter = new GrokBotPlugin({
+      root: join(root, `native-five-logins-${platform}`), executable: process.execPath,
+      runner: fileURLToPath(new URL('../src/main/plugins/cliRunner.ts', import.meta.url)),
+      platform, environment: {}, backend: { ...backend, selectedBackend: () => platform === 'linux' ? 'gnome_libsecret' : null },
+      reader, enabled: async () => true, changed: () => {}
+    })
+    const nativeSignal = AbortSignal.timeout(10000)
+    try {
+      await writeFile(nativePath, nativeFile(ids[2]))
+      await writeFile(path, gatewayFile(ids.slice(0, 2)))
+      keyReads = 0
+      const listed = await reader.sources(nativeSignal)
+      check(`${platform} one desktop app exposes five saved logins even with just two gateway exports`, () => {
+        assert.equal(listed.length, 5)
+        assert.deepEqual(listed.map(source => source.id), ids)
+        assert.equal(listed.filter(source => source.connection === 'saved').length, 2)
+        assert.equal(listed.filter(source => source.connection === 'missing').length, 3)
+        assert.equal(listed.find(source => source.current)?.id, ids[2])
+        assert.ok(listed.every(source => source.nativeLogin === true))
+        assert.equal(keyReads, 0)
+        assert.ok(!JSON.stringify(listed).includes('owned-sealed'))
+        assert.ok(!JSON.stringify(listed).includes('owned-private'))
+      })
+      await assert.rejects(reader.load(ids[2], nativeSignal), /no saved computer connection.*Switch to this account.*Computer/)
+      assert.equal(keyReads, 0)
+      check(`${platform} an unconnected native login gives switcher instructions without using either cached account`, () => assert.ok(true))
+      await writeFile(path, JSON.stringify({ version: 3, entries: { [ids[2]]: { savedAtMs: Date.now() - 8 * 24 * 60 * 60 * 1000, encrypted: seal(ids[2]) } } }))
+      const expiredNative = await reader.sources(nativeSignal)
+      check(`${platform} saved native login stays visible when its exported computer connection expires`, () => {
+        assert.equal(expiredNative.length, 5)
+        assert.equal(expiredNative.find(source => source.id === ids[2])?.connection, 'expired')
+        assert.equal(keyReads, 0)
+      })
+      await rm(path)
+      const unconnected = await reader.sources(nativeSignal)
+      await assert.rejects(reader.load(ids[4], nativeSignal), /no saved computer connection.*Computer/)
+      check(`${platform} native logins remain visible before any computer descriptor exists`, () => {
+        assert.equal(unconnected.length, 5)
+        assert.ok(unconnected.every(source => source.connection === 'missing'))
+        assert.equal(keyReads, 0)
+      })
+      const beforeAccounts = nativeFile(ids[4]), beforeConnections = gatewayFile(ids)
+      await writeFile(nativePath, beforeAccounts)
+      await writeFile(path, beforeConnections)
+      const ready = await reader.sources(nativeSignal)
+      assert.ok(ready.every(source => source.connection === 'saved'))
+      assert.equal(ready.find(source => source.current)?.id, ids[4])
+      for (let i = 0; i < 5; i++) await nativeImporter.change({ kind: 'import', label: `Native account ${i + 1}`, sourceSlot: ids[i] })
+      const savedNative = await nativeImporter.exportForSync()
+      check(`${platform} all five logins from one app import as separate gateway snapshots after their computers connect`, () => {
+        assert.equal(savedNative.length, 5)
+        assert.deepEqual(savedNative.map(account => account.credential.token), ids.map(id => `desktop-${platform}-${id}`))
+        assert.ok(!JSON.stringify(savedNative).includes('owned-sealed'))
+      })
+      assert.equal(await readFile(nativePath, 'utf8'), beforeAccounts)
+      assert.equal(await readFile(path, 'utf8'), beforeConnections)
+      await writeFile(nativePath, JSON.stringify({ version: 1, 'cursor-accounts': '{owned-private-broken-account-list' }))
+      await assert.rejects(reader.sources(nativeSignal), error => error instanceof Error && /saved account list is unreadable/.test(error.message) && !error.message.includes('owned-private'))
+      check(`${platform} native account discovery never modifies login storage or exposes malformed private contents`, () => assert.ok(true))
+    } finally {
+      nativeImporter.stop()
+      await rm(nativePath, { force: true })
+      await writeFile(path, oldDescriptor)
+    }
 
     // Five app instances can each use --user-data-dir and the same slot name.
     // Windows must open each profile's own Local State key, never the default's.
