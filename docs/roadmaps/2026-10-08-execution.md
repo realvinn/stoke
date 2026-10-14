@@ -2,9 +2,9 @@
 
 The [product roadmap](2026-10-08-product-roadmap.md) defines the requested scope. This record distinguishes implemented behavior from remaining work and live verification.
 
-## Current coverage — 12 October 2026
+## Current coverage — 15 October 2026
 
-The complete roadmap is still in progress. This table reflects the current code; the sections below record verification and limitations.
+The complete roadmap is still in progress. This table reflects the current code; the sections below record verification and limitations. Beta.11 release scope is recorded in [its notes](../releases/1.0.0-beta.11.md); building every supported platform does not complete the remaining roadmap acceptance criteria.
 
 | Request | Implemented | Remaining |
 | --- | --- | --- |
@@ -17,12 +17,12 @@ The complete roadmap is still in progress. This table reflects the current code;
 | R16b: installer fire | Slower shared animation and movement in lower flame rows; generated shell/PowerShell blocks | Native console recordings |
 | R07: files through remote | Phone/local/SSH file uploads and scoped downloads; native Mac/Linux disposable SSH proof | Desktop relay transfer and folders; real interrupted-device transfers |
 | R11: MCP credentials | Guided stdio/HTTP inputs, sealed keys/tokens, reference-based settings and bounded connection/tool-list tests | Broader setup catalog and vendor-specific onboarding |
-| R14: named accounts and usage | Account isolation/nicknames, launch-source binding, labeled readings, active Claude/Codex identity and Stoke sync sign-in details; named Claude/Codex API profiles with provider/key/model settings and launch selection | Cross-device named profiles/credentials, identity adapters for remaining vendors, API balance/quota sources and concurrent real-account proof |
+| R14: named accounts and usage | Account isolation/nicknames, launch-source binding, labeled readings, active Claude/Codex identity and Stoke sign-in details; named API profiles; opt-in encrypted sync for profiles, API credentials, compatible Codex file logins and Grok Bot sessions; one sidebar Accounts entry and agent submenus | Other native/keyring logins require sign-in per device; shared provider connection registry, identity adapters for remaining vendors, API balance/quota sources and concurrent real-account proof |
 | R17: agent updates and live telemetry | Inspected updater ownership, reviewed commands, active-session guards and post-update checks; configured versus observed model labels; native Codex rollout model/context reader, isolated by account; confirmed thread IDs survive restart and resume the same chat | Native Codex continue-last identification, ambiguous same-folder launches, manual thread changes inside a live TUI, OpenCode/other-agent adapters and real vendor updates |
 | R05/R06: Work plugin | Optional local task/daily boards, direct Notion mapping/publish/read reviews, durable recovery, Sonnet drafts and reviewed session excerpts | Legacy Worklog extraction, unrelated Notion imports, automatic digests, additional plugins and real-workspace proof |
 | R03/R16a: admin/root | Existing Linux root launcher behavior and CI root package checks | Opt-in Windows/Mac privileged helpers, grants and native authorization verification |
 | R13: Mac/Linux terminal companion | Existing command-line desktop launcher and account subcommands | Standalone service/credential boundary and terminal navigation, sessions, search, auth and SSH |
-| R18: quick terminal | Default-off terminal in editable top bar, side panel/pop-out, retained shell, resize/find/link controls; native platform proof | Broader real-shell use |
+| R18: quick terminal | Always available from the sidebar, optional editable top-bar item, installed-shell picker, side panel/pop-out, retained shells and resize/find/link controls; startup keeps it closed without launching a shell | Broader real-shell use |
 | Added: agent full access/YOLO | Explicit supported CLI access modes, launch records and resume/restart preservation | Real permission behavior for each claimed vendor |
 | Added: project sidebar menu | Right-click projects for new session, show/collapse sessions, close eligible tabs in this window, rename/change icon, pin, copy path, reveal and remove from sidebar; display changes preserve project files | Closing sessions in other windows from a project menu |
 | Added: duplicate footer usage | Removed; supported usage remains in the top bar | None for this UI change |
@@ -503,4 +503,12 @@ The Work plugin's existing encrypted Notion API connection now loads shared tabl
 
 Quick terminal is available by default from the bottom-left control and optional editable top-bar item, with the enable setting removed. Startup remains hidden and starts no shell. Older disabled preferences migrate to availability; switching shells or hiding retains running processes, and quitting ends owned shells.
 
-Validation: the complete npm run check gate, final typecheck and build pass. The isolated Mac ARM64 packaged probe passes 294 checks with zero failures, including new Notion pagination/search, account navigation, plugin visibility, profile-bound identities, API profiles, browser certificates and popup forms, wrapped links, terminal panel/pop-out handoffs, encrypted cookies and graceful shutdown/restore. Screenshots were inspected at 940 px and with a 200 px sidebar. A Mac restart interrupted an earlier run; final artifacts are retained outside /tmp. No real account login or bot message was used in the UI tests. This source follow-up does not publish another beta.
+Validation: the complete npm run check gate, final typecheck and build pass. The isolated Mac ARM64 packaged probe passes 294 checks with zero failures, including new Notion pagination/search, account navigation, plugin visibility, profile-bound identities, API profiles, browser certificates and popup forms, wrapped links, terminal panel/pop-out handoffs, encrypted cookies and graceful shutdown/restore. Screenshots were inspected at 940 px and with a 200 px sidebar. A Mac restart interrupted an earlier run; final artifacts are retained outside /tmp. No real account login or bot message was used in the UI tests. This source follow-up was included in [beta.10](https://github.com/realvinn/stoke/releases/tag/v1.0.0-beta.10).
+
+## 15 October: Windows account-check cleanup for beta.11
+
+Windows native account probes now retain their launcher while a fixed helper pins process handles, validates fresh ancestry and assigns the owned tree to a private kill-on-close Job Object. New descendants inherit that job. Native termination, process waits and active-job accounting replace the timed taskkill call and launcher-only fallback. Helper failure returns an unavailable identity without hanging the public read, while unconfirmed native children remain owned and are retried at quit. A flushed ownership checkpoint lets helper failure after job assignment confirm Windows cleanup; tracker retirement still waits for native child close. At most two native children remain owned, and quit has a bounded drain with explicit failure diagnostics. Logs contain process/timing/outcome metadata, never agent output or credentials.
+
+The complete local npm run check gate passes, including typechecking, every verification suite and both desktop and remote builds. Five real Windows .cmd fixtures cover ordinary and delayed descendants, missing helpers, early helper timeout and timeout after full job ownership. They require child/launcher exit and bystander survival. Native Windows x64 and ARM64 CI is required before publishing this beta; mocked or Mac-only results do not prove the Windows APIs or nested-job behavior.
+
+Packaged-app verification now uses fresh renderer and main-process debug ports for each launch. CDP discovery bounds both response headers and JSON bodies. Eleven focused socket checks and all 264 packaged Mac ARM64 rehearsal checks pass; that rehearsal used the already published beta.10 binary. The [beta.11 notes](../releases/1.0.0-beta.11.md) describe the new release scope and retain the remaining roadmap limitations.
