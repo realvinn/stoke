@@ -6,13 +6,16 @@ import { join } from 'node:path'
 import { AccountIdentities, planAccountIdentity, probeAccountIdentity, type AccountIdentitySpawn } from '../src/main/accountIdentity.ts'
 import { accountIdentityTarget, accountLoginOutcome, identityFor, nativeAccountIdentity, type AccountIdentityTarget } from '../src/shared/accountIdentity.ts'
 import { hydrateSettings } from '../src/main/settingsSchema.ts'
+import { stopWindowsAccountIdentity, WINDOWS_IDENTITY_CLEANUP_SCRIPT, type WindowsIdentityCleanupOptions } from '../src/main/accountIdentityWindows.ts'
 
 export async function runAccountIdentityChecks(): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), 'stoke-account-identity-'))
   const fixture = join(root, 'native-status.cjs')
   const record = join(root, 'requests.jsonl')
   const pass = (name: string) => console.log(`  PASS ${name}`)
+  const fixtureChildren: ReturnType<typeof spawn>[] = []
   try {
+    assert(!/[^\x00-\x7f]/.test(WINDOWS_IDENTITY_CLEANUP_SCRIPT), 'Windows PowerShell 5.1 receives a fixed ASCII cleanup script')
     const settings = hydrateSettings({ accounts: {
       'claude-work': { id: 'claude-work', cli: 'claude', label: 'Work', kind: 'login', home: join(root, 'claude-work'), apiKey: '' },
       'codex-work': { id: 'codex-work', cli: 'codex', label: 'Codex work', kind: 'login', home: join(root, 'codex-work'), apiKey: '' },
@@ -124,8 +127,10 @@ export async function runAccountIdentityChecks(): Promise<void> {
 const fs = require('node:fs'); const readline = require('node:readline');
 const mode = process.env.STOKE_IDENTITY_FIXTURE_MODE;
 const record = (v) => fs.appendFileSync(process.env.STOKE_IDENTITY_FIXTURE_RECORD, JSON.stringify(v)+'\\n');
-record({argv:process.argv.slice(2),home:process.env.CODEX_HOME||process.env.CLAUDE_CONFIG_DIR,pid:process.pid});
-if (mode==='hang') { process.on('SIGTERM',()=>record({kind:'ignored-term'})); record({kind:'ready-hang',pid:process.pid}); process.stdout.write(JSON.stringify({loggedIn:true,email:'expired@example.test'})); setInterval(()=>{},1000); }
+record({argv:process.argv.slice(2),home:process.env.CODEX_HOME||process.env.CLAUDE_CONFIG_DIR,pid:process.pid,parent:process.ppid});
+if (mode==='tree-leaf') { record({kind:'ready-leaf',pid:process.pid,parent:process.ppid}); setInterval(()=>{},1000); }
+else if (mode==='tree'||mode==='tree-delayed') { const start=()=>require('node:child_process').spawn(process.execPath,[__filename],{env:{...process.env,STOKE_IDENTITY_FIXTURE_MODE:'tree-leaf'},stdio:['ignore','inherit','inherit']}); if(mode==='tree-delayed')setTimeout(start,700);else start(); record({kind:'ready-tree',pid:process.pid,parent:process.ppid}); setInterval(()=>{},1000); }
+else if (mode==='hang') { process.on('SIGTERM',()=>record({kind:'ignored-term'})); record({kind:'ready-hang',pid:process.pid}); process.stdout.write(JSON.stringify({loggedIn:true,email:'expired@example.test'})); setInterval(()=>{},1000); }
 else if (mode==='oversized') { process.stdout.write('x'.repeat(150000)); setInterval(()=>{},1000); }
 else if (mode==='claude') { const b=Buffer.from(JSON.stringify({loggedIn:true,email:'équipe@example.test',subscriptionType:'team'})); const cut=b.indexOf(0xc3)+1; process.stdout.write(b.subarray(0,cut)); setTimeout(()=>process.stdout.write(b.subarray(cut)),10); }
 else { if(mode==='late') { process.on('SIGTERM',()=>{});setInterval(()=>{},1000); } const rl=readline.createInterface({input:process.stdin}); rl.on('line',line=>{const r=JSON.parse(line);record(r);if(r.method==='initialize')process.stdout.write(JSON.stringify({id:r.id,result:{userAgent:'fixture'}})+'\\n');else if(r.method==='account/read') { const reply=()=>{record({kind:'late-reply',pid:process.pid});process.stdout.write(JSON.stringify({id:r.id,result:{account:{type:'chatgpt',email:'codex@example.test',planType:'pro'}}})+'\\n');};if(mode==='late'){record({kind:'late-read',pid:process.pid});setTimeout(reply,150);}else reply(); }}); }
@@ -133,6 +138,7 @@ else { if(mode==='late') { process.on('SIGTERM',()=>{});setInterval(()=>{},1000)
     const spawned: number[] = []
     const run: AccountIdentitySpawn = (_file, args, options) => {
       const child = spawn(process.execPath, [fixture, ...args], options)
+      fixtureChildren.push(child)
       if (child.pid) spawned.push(child.pid)
       return child
     }
@@ -153,7 +159,7 @@ else { if(mode==='late') { process.on('SIGTERM',()=>{});setInterval(()=>{},1000)
     }
     cancel.abort()
     assert.equal(await cancelled, null)
-    assert((await readFile(record, 'utf8')).trim().split('\n').map(line => JSON.parse(line)).some(v => v.kind === 'late-reply' && v.pid === spawned.at(-1)), 'a reply really arrives after cancellation')
+    if (process.platform !== 'win32') assert((await readFile(record, 'utf8')).trim().split('\n').map(line => JSON.parse(line)).some(v => v.kind === 'late-reply' && v.pid === spawned.at(-1)), 'a reply really arrives after cancellation')
     pass('a native Codex reply received after cancellation cannot restore a discarded identity')
     assert.equal(nativeAccountIdentity('claude', await probeAccountIdentity(captured, 'fixture-only', { ...env, STOKE_IDENTITY_FIXTURE_MODE: 'claude' }, 2_000, run)).email, 'équipe@example.test')
     pass('real owned children prove the Codex handshake and read-only request, exact account home, and split UTF-8 Claude identity')
@@ -177,5 +183,78 @@ else { if(mode==='late') { process.on('SIGTERM',()=>{});setInterval(()=>{},1000)
       assert.equal(alive, false, `owned fixture process ${pid} has exited`)
     }
     pass('timeouts, output limits and shutdown reject partial identities and reap every owned child, including a child that ignores SIGTERM')
-  } finally { await rm(root, { recursive: true, force: true }) }
+    if (process.platform === 'win32') {
+      const launcher = join(root, 'native-status.cmd')
+      await writeFile(launcher, `@echo off\r\n"${process.execPath}" "${fixture}" %*\r\n`)
+      const bystander = spawn(process.execPath, [fixture], { env: { ...env, STOKE_IDENTITY_FIXTURE_MODE: 'tree-leaf' }, stdio: 'ignore', windowsHide: true })
+      fixtureChildren.push(bystander)
+      const nativeSpawn: AccountIdentitySpawn = (file, args, options) => {
+        const child = spawn(file, args, options)
+        fixtureChildren.push(child)
+        return child
+      }
+      try {
+        const readyDeadline = Date.now() + 5_000
+        while (!(await readFile(record, 'utf8')).trim().split('\n').map(line => JSON.parse(line)).some(event => event.kind === 'ready-leaf' && event.pid === bystander.pid)) {
+          assert(Date.now() < readyDeadline, 'the sibling bystander starts before its PID is excluded from the owned fixture')
+          await new Promise(resolve => setTimeout(resolve, 20))
+        }
+        assert.deepEqual(await stopWindowsAccountIdentity(bystander.pid!, 1, 2), { cleaned: false, failed: true }, 'a PID outside the exact owned spawn interval is refused')
+        process.kill(bystander.pid!, 0)
+        for (const variant of ['normal', 'delayed-descendant', 'helper-spawn-failure', 'helper-timeout', 'helper-timeout-after-ownership']) {
+          const previous = new Set((await readFile(record, 'utf8')).trim().split('\n').map(line => JSON.parse(line).pid))
+          const stopping = new AccountIdentities()
+          const cancel = new AbortController()
+          const options: WindowsIdentityCleanupOptions = variant === 'helper-spawn-failure' ? { powershell: join(root, 'missing-powershell.exe') } : variant === 'helper-timeout' ? { timeoutMs: 1 } : variant === 'helper-timeout-after-ownership' ? { pauseAfterOwnershipMs: 3000, timeoutAfterOwnershipMs: 25 } : variant === 'delayed-descendant' ? { captureDelayMs: 1500 } : {}
+          const reading = probeAccountIdentity(codex, launcher, { ...env, STOKE_IDENTITY_FIXTURE_MODE: variant === 'delayed-descendant' ? 'tree-delayed' : 'tree' }, 10_000, nativeSpawn, cancel.signal, options)
+          const deadline = Date.now() + 5_000
+          while (true) {
+            const events = (await readFile(record, 'utf8')).trim().split('\n').map(line => JSON.parse(line)).filter(event => !previous.has(event.pid))
+            if (events.some(event => event.kind === 'ready-tree') && (variant === 'delayed-descendant' || events.some(event => event.kind === 'ready-leaf'))) break
+            assert(Date.now() < deadline, 'the actual .cmd launcher starts its native child before shutdown')
+            await new Promise(resolve => setTimeout(resolve, 20))
+          }
+          const shellPid = fixtureChildren.at(-1)!.pid!
+          const warnings: unknown[][] = []
+          const originalWarn = console.warn
+          console.warn = (...values: unknown[]) => { warnings.push(values); originalWarn(...values) }
+          try {
+            cancel.abort()
+            if (variant.startsWith('helper-')) {
+              assert.equal(await reading, null, 'a failed or timed-out cleanup helper settles the public identity result')
+              if (variant === 'helper-timeout-after-ownership') {
+                assert(warnings.some(values => (values[1] as { killed?: boolean; jobOwned?: boolean })?.killed && (values[1] as { jobOwned?: boolean })?.jobOwned), 'the real helper is killed after the full tree is assigned to its kill-on-close job')
+              } else {
+                assert(stopping.pendingCount > 0, 'the native child remains owned after an unconfirmed public result settles')
+                process.kill(shellPid, 0)
+              }
+            }
+            assert.equal(await stopping.shutdown(), 0, 'Windows quit retries earlier failures and drains owned children through native cleanup and close')
+            assert.equal(await reading, null)
+          } finally { console.warn = originalWarn }
+          if (variant.startsWith('helper-')) assert(warnings.some(values => values[0] === '[stoke] account identity tree cleanup failed'), 'the helper failure is actually exercised and diagnosed')
+          assert(!JSON.stringify(warnings).includes(root), 'cleanup diagnostics disclose no fixture paths or executable arguments')
+          const ownedPids = [...new Set((await readFile(record, 'utf8')).trim().split('\n').map(line => JSON.parse(line)).filter(event => !previous.has(event.pid)).map(event => event.pid))]
+          assert(!ownedPids.includes(shellPid), 'the owned launcher is cmd.exe, not a spawn override replacing it with node')
+          assert(ownedPids.length >= 2, 'the native child and grandchild really start, including a grandchild born during capture')
+          for (const pid of [shellPid, ...ownedPids]) {
+            let alive = true
+            try { process.kill(pid, 0) } catch { alive = false }
+            assert.equal(alive, false, `actual .cmd tree fixture process ${pid} has exited`)
+          }
+          assert.equal(bystander.exitCode, null, 'a sibling synthetic process survives owned tree cleanup')
+          process.kill(bystander.pid!, 0)
+          pass(`actual Windows .cmd tree is reaped before quit (${variant}); a sibling bystander survives`)
+        }
+      } finally {
+        const closed = new Promise<void>(resolve => { if (bystander.exitCode !== null || bystander.signalCode !== null) resolve(); else bystander.once('close', () => resolve()) })
+        bystander.kill('SIGKILL'); await closed
+      }
+    }
+  } finally {
+    // Only exact ChildProcess objects created by this suite, never name-wide
+    // termination or discovery of the owner's real agents.
+    for (const child of fixtureChildren) if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
+    await rm(root, { recursive: true, force: true })
+  }
 }

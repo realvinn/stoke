@@ -5,7 +5,7 @@ import { createServer as createHttpServer } from 'node:http'
  *
  *   node scripts/probe-e2e.mts --app <Stoke.app | win-unpacked | linux-unpacked> --work <dir>
  *   node scripts/probe-e2e.mts --dev --work <dir>          the unpackaged build in out/, for a rehearsal
- *       [--port 9339]   the CDP port
+ *       [--port N]      the first launch's CDP port; relaunches use fresh ports
  *       [--ssh]         also the SSH checks — CI only (see below)
  *       [--grok-only --gbot-cli <reviewed runtime>]  boot/session setup and Grok checks only
  *
@@ -111,7 +111,7 @@ const { values: opt } = parseArgs({
     app: { type: 'string' },
     dev: { type: 'boolean', default: false },
     work: { type: 'string' },
-    port: { type: 'string', default: '9339' },
+    port: { type: 'string' },
     ssh: { type: 'boolean', default: false },
     'gbot-cli': { type: 'string' },
     'grok-only': { type: 'boolean', default: false },
@@ -122,6 +122,11 @@ const { values: opt } = parseArgs({
 
 if (!opt.work || (!opt.app && !opt.dev)) {
   console.error('usage: node scripts/probe-e2e.mts (--app <packaged app> | --dev) --work <dir> [--port N] [--ssh]')
+  process.exit(2)
+}
+const firstCdpPort = opt.port === undefined ? 0 : Number(opt.port)
+if (opt.port !== undefined && (!Number.isInteger(firstCdpPort) || firstCdpPort < 1 || firstCdpPort > 65535)) {
+  console.error('--port must be an integer from 1 to 65535.')
   process.exit(2)
 }
 if (opt.ssh && process.env.GITHUB_ACTIONS !== 'true') {
@@ -210,15 +215,29 @@ const gitInit = spawnSync('git', ['-c', 'init.defaultBranch=probe-ui', 'init', '
 if (gitInit.status !== 0) throw new Error(`the owned Git UI fixture could not be initialized: ${gitInit.stderr}`)
 
 const pkg = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8')) as { version: string }
-const port = Number(opt.port)
+let port = 0
 // Only this disposable fixture gets a main-process debugger. Native key-hook
 // emulation needs it: CDP Input.dispatchKeyEvent bypasses Electron's before-input-event.
 // Crash diagnostics remain limited to Windows CI. Clients disconnect before quit.
-const nativeInspectorPort = await new Promise<number>((resolve, reject) => {
-  const server = createServer()
-  server.once('error', reject)
-  server.listen(0, '127.0.0.1', () => { const address = server.address(); const assigned = typeof address === 'object' && address ? address.port : 0; server.close(error => error ? reject(error) : resolve(assigned)) })
-})
+let nativeInspectorPort = 0
+const usedDebugPorts = new Set<number>()
+/** A free loopback port, never reused by another launch in this probe. */
+async function nextDebugPort(preferred = 0): Promise<number> {
+  for (;;) {
+    const assigned = await new Promise<number>((resolve, reject) => {
+      const server = createServer()
+      server.once('error', reject)
+      server.listen(preferred, '127.0.0.1', () => {
+        const address = server.address()
+        const assigned = typeof address === 'object' && address ? address.port : 0
+        server.close(error => error ? reject(error) : resolve(assigned))
+      })
+    })
+    if (usedDebugPorts.has(assigned)) { preferred = 0; continue }
+    usedDebugPorts.add(assigned)
+    return assigned
+  }
+}
 const sid = `probe-sid-${process.pid}-${Date.now()}`
 
 /** A single-quoted POSIX word, or a refusal: these paths are written into launchers. */
@@ -321,7 +340,11 @@ let stoke: ChildProcess | null = null
 let stokeExit: { code: number | null; signal: NodeJS.Signals | null } | null = null
 let launchNo = 0
 
-function launch(): ChildProcess {
+async function launch(): Promise<ChildProcess> {
+  // Windows can retain an old debugger listener briefly after app exit. A
+  // new port also prevents an attachment to a previous, failed-to-quit launch.
+  port = await nextDebugPort(launchNo === 0 ? firstCdpPort : 0)
+  nativeInspectorPort = await nextDebugPort()
   launchNo++
   const log = openSync(join(logs, `stoke-${launchNo}.log`), 'a')
   const args = [...exePrefix, `--user-data-dir=${ud}`, `--remote-debugging-port=${port}`, '--disable-backgrounding-occluded-windows', ...platformFlags, ...(nativeInspectorPort ? [`--inspect=127.0.0.1:${nativeInspectorPort}`] : [])]
@@ -354,10 +377,7 @@ async function stokeCli(...userArgs: string[]): Promise<number | null> {
 let ui: CdpClient | null = null
 
 async function attach(): Promise<CdpClient> {
-  const client = await waitFor('Stoke\'s renderer on the CDP port', async () => {
-    await listTargets(port)
-    return connectStoke(port)
-  }, 90_000, 500)
+  const client = await waitFor('Stoke\'s renderer on the CDP port', () => connectStoke(port), 90_000, 500)
   // Driven while another window may have OS focus: without this a synthetic
   // focus can go nowhere (gotcha 119).
   await client.send('Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => undefined)
@@ -583,7 +603,7 @@ const sshTabs: { key?: string } = {}
 /* ---------------------------------------------------------------- boot */
 
 await step('boot', async () => {
-  launch()
+  await launch()
   await attach()
   const platform = await ev<string>('window.stoke.platform')
   check('window.stoke.platform names this OS', platform === process.platform, `got ${platform}`)
@@ -2626,7 +2646,7 @@ function readCookie(file: string, name: string): { value: string; encLen: number
 
 await step('relaunch: the tabs come back, and resume what they were', async () => {
   const seenPids = new Set(stubRecords().map((r) => r.pid))
-  launch()
+  await launch()
   await attach()
   await waitFor('the shell to mount again', () => ev<boolean>('!!document.querySelector(".app > .titlebar")'), 30_000)
   const paused = await waitFor('the restored tabs', async () => {

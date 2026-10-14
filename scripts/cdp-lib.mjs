@@ -35,15 +35,18 @@ export const CDP_TIMEOUT_MS = 5000
 /** What makes a page target Stoke's renderer (gotcha 6). */
 export const IS_STOKE_EXPR = 'typeof window.stoke === "object" && typeof window.stoke.platform === "string"'
 
-/** Every target the endpoint lists. Throws with the port named when nothing answers. */
-export async function listTargets(port) {
-  let res
+/** Every target the endpoint lists. The deadline covers both headers and the JSON body. */
+export async function listTargets(port, { timeoutMs = CDP_TIMEOUT_MS } = {}) {
+  const signal = AbortSignal.timeout(timeoutMs)
   try {
-    res = await fetch(`http://127.0.0.1:${port}/json/list`)
-  } catch {
-    throw new Error(`No CDP endpoint on port ${port}. Launch the app with --remote-debugging-port=${port} first.`)
+    const res = await fetch(`http://127.0.0.1:${port}/json/list`, { signal })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    return await res.json()
+  } catch (error) {
+    if (signal.aborted) throw new Error(`timed out after ${timeoutMs}ms listing CDP targets on port ${port}`, { cause: error })
+    const detail = error instanceof Error ? error.message : String(error)
+    throw new Error(`Could not list CDP targets on port ${port}: ${detail}. Launch the app with --remote-debugging-port=${port} first.`, { cause: error })
   }
-  return res.json()
 }
 
 /**
@@ -226,7 +229,7 @@ export class CdpClient {
  * when none matches.
  */
 export async function connectPage(port, accept, { what = 'a matching page', timeoutMs = CDP_TIMEOUT_MS } = {}) {
-  const { pages, noDebuggerUrl } = splitPages(await listTargets(port))
+  const { pages, noDebuggerUrl } = splitPages(await listTargets(port, { timeoutMs }))
   const attempts = []
   for (const page of pages) {
     let client = null

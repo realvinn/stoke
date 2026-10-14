@@ -1,6 +1,5 @@
 import { createHash } from 'node:crypto'
-import { execFile, spawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
-import { join } from 'node:path'
+import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
 import { StringDecoder } from 'node:string_decoder'
 import { accountEnv, accountLoginOptions, DEFAULT_ACCOUNT_ID, type AgentAccount } from '../shared/accounts.ts'
 import { accountIdentityKey, nativeAccountIdentity, type AccountIdentity, type AccountIdentityTarget } from '../shared/accountIdentity.ts'
@@ -8,6 +7,7 @@ import type { Settings } from '../shared/types.ts'
 import { spawnSpec } from './cli.ts'
 import { ACCOUNT_PROVIDER_LABELS } from '../shared/accountProviders.ts'
 import { applyClaudeAccountEnv } from '../shared/claudeAccountEnv.ts'
+import { ACCOUNT_IDENTITY_CLEANUP_TIMEOUT_MS, stopWindowsAccountIdentity, type WindowsIdentityCleanupOptions } from './accountIdentityWindows.ts'
 
 export interface AccountIdentityPlan {
   nativeArgs?: string[]
@@ -51,11 +51,14 @@ export function planAccountIdentity(target: AccountIdentityTarget, settings: Ide
 
 export const ACCOUNT_IDENTITY_TIMEOUT_MS = 5_000
 const OUTPUT_LIMIT = 128 * 1024
+// A bounded public reading may fail before its native process can be reaped.
+// Keep that separate lifetime owned, so quit still retries and drains it.
+const ownedIdentityChildren = new Set<{ done: Promise<void>; abort: () => void }>()
 
 /** One owned read-only child. Never starts a turn, signs in, or refreshes tokens. */
 export type AccountIdentitySpawn = (file: string, args: string[], options: SpawnOptions) => ChildProcess
-export async function probeAccountIdentity(plan: AccountIdentityPlan, executable: string, env: Record<string, string>, timeout = ACCOUNT_IDENTITY_TIMEOUT_MS, spawnProcess: AccountIdentitySpawn = spawn, signal?: AbortSignal): Promise<unknown> {
-  if (!plan.native || signal?.aborted) return null
+export async function probeAccountIdentity(plan: AccountIdentityPlan, executable: string, env: Record<string, string>, timeout = ACCOUNT_IDENTITY_TIMEOUT_MS, spawnProcess: AccountIdentitySpawn = spawn, signal?: AbortSignal, cleanupOptions?: WindowsIdentityCleanupOptions): Promise<unknown> {
+  if (!plan.native || signal?.aborted || ownedIdentityChildren.size >= 2) return null
   const args = plan.native === 'claude' ? ['auth', 'status', '--json'] : [...(plan.nativeArgs ?? []), 'app-server', '--listen', 'stdio://']
   if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(executable) && /[&|<>^%!\r\n]/.test([executable, ...args].join(' '))) return null
   const spec = spawnSpec(executable, args)
@@ -65,32 +68,64 @@ export async function probeAccountIdentity(plan: AccountIdentityPlan, executable
     let buffer = ''
     let bytes = 0
     let finished = false
+    let returned = false
     let stopping = false
     let reading = false
     let failed = false
+    let closed = false
+    let cleanupPending = false
+    let cleanupConfirmed = true
+    let cleanupAttempts = 0
+    let spawnedUntil = 0
+    const spawnedFrom = Date.now()
     const decoder = new StringDecoder('utf8')
     let stopTimer: ReturnType<typeof setTimeout> | undefined
     let hardTimer: ReturnType<typeof setTimeout> | undefined
-    const finish = () => { if (finished) return; finished = true; clearTimeout(timer); clearTimeout(stopTimer); clearTimeout(hardTimer); signal?.removeEventListener('abort', abort); resolve(result) }
+    let releaseOwned: () => void = () => {}
+    const owned = { done: new Promise<void>(resolve => { releaseOwned = resolve }), abort: () => abort() }
+    const returnValue = () => { if (!returned) { returned = true; resolve(result) } }
+    const finish = () => {
+      if (finished || !closed || cleanupPending || !cleanupConfirmed) return
+      finished = true; clearTimeout(timer); clearTimeout(stopTimer); clearTimeout(hardTimer)
+      signal?.removeEventListener('abort', abort); ownedIdentityChildren.delete(owned); releaseOwned(); returnValue()
+    }
     const terminate = () => {
-      if (finished) return
+      if (finished || cleanupPending) return
       if (process.platform === 'win32' && child.pid) {
-        // A .cmd launcher owns descendants. Stop its tree before its shell exits.
-        execFile(join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'taskkill.exe'), ['/pid', String(child.pid), '/T', '/F'], { timeout: 2_000, maxBuffer: 4096, windowsHide: true }, (error) => { if (error && !finished) child.kill('SIGKILL') })
+        cleanupConfirmed = false
+        cleanupPending = true
+        // A retry always uses production defaults, including its full deadline.
+        // A failed first helper never turns a suite override into a permanent
+        // cleanup failure, and every retry must prove ownership afresh.
+        void stopWindowsAccountIdentity(child.pid, spawnedFrom, spawnedUntil, cleanupAttempts++ === 0 ? cleanupOptions : undefined).then(({ cleaned, failed: cleanupFailed }) => {
+          cleanupPending = false
+          cleanupConfirmed = cleaned
+          if (cleanupFailed) { failed = true; result = null; returnValue() }
+          finish()
+        })
       } else { child.kill('SIGTERM'); hardTimer = setTimeout(() => child.kill('SIGKILL'), 500) }
     }
     const stop = () => {
       if (stopping || finished) return
       stopping = true
-      child.stdin?.end()
-      stopTimer = setTimeout(terminate, 250)
+      clearTimeout(timer)
+      // EOF may let a .cmd launcher exit before its descendants are bound to
+      // handles. Keep stdin open on Windows until its whole tree is stopped.
+      if (process.platform === 'win32') terminate()
+      else { child.stdin?.end(); stopTimer = setTimeout(terminate, 250) }
     }
     const abort = () => { failed = true; result = null; stop() }
+    owned.abort = () => {
+      abort()
+      if (stopping && !cleanupPending && !cleanupConfirmed && child.exitCode === null && child.signalCode === null) terminate()
+    }
     const timer = setTimeout(abort, timeout)
-    try { child = spawnProcess(spec.file, spec.args, { env, cwd: plan.cwd, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }) }
-    catch { finish(); return }
-    child.on('error', finish)
+    try { child = spawnProcess(spec.file, spec.args, { env, cwd: plan.cwd, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }); spawnedUntil = Date.now() }
+    catch { closed = true; finish(); return }
+    ownedIdentityChildren.add(owned)
+    child.on('error', () => { failed = true; result = null; if (!child.pid) { closed = true; finish() } else stop() })
     child.on('close', (code) => {
+      closed = true
       buffer += decoder.end()
       if (plan.native === 'claude' && !failed && bytes <= OUTPUT_LIMIT) {
         try { const parsed = JSON.parse(buffer); if (code === 0 || code === 1 && parsed.loggedIn === false) result = parsed } catch { result = null }
@@ -156,13 +191,14 @@ export class AccountIdentities {
     this.generation++; this.sessions.clear(); this.reads.clear()
     for (const controller of this.owned.keys()) controller.abort()
   }
-  get pendingCount(): number { return this.jobs.size }
-  async shutdown(timeoutMs = 3_000): Promise<number> {
+  get pendingCount(): number { return this.jobs.size + ownedIdentityChildren.size }
+  async shutdown(timeoutMs = process.platform === 'win32' ? ACCOUNT_IDENTITY_CLEANUP_TIMEOUT_MS + 2_000 : 3_000): Promise<number> {
     this.clear()
+    for (const owned of ownedIdentityChildren) owned.abort()
     let timer: ReturnType<typeof setTimeout> | undefined
     try {
-      await Promise.race([Promise.allSettled([...this.jobs]), new Promise<void>(resolve => { timer = setTimeout(resolve, timeoutMs) })])
-      return this.jobs.size
+      await Promise.race([Promise.allSettled([...this.jobs, ...[...ownedIdentityChildren].map(owned => owned.done)]), new Promise<void>(resolve => { timer = setTimeout(resolve, timeoutMs) })])
+      return this.pendingCount
     } finally { clearTimeout(timer) }
   }
   invalidate(): void { this.reads.clear() }
