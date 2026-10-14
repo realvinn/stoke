@@ -193,6 +193,11 @@ jobs:
           node-version: '24'
           cache: npm
       - run: npm ci
+      # Both native Windows architectures must exercise helper failures and
+      # late descendants; packaged quit alone covers only the ordinary path.
+      - name: Verify native account process cleanup
+        if: runner.os == 'Windows'
+        run: npm run verify:accounts
       - run: npm run build
 
       # The target's own flags, from targets.mjs like every build of it. On a
