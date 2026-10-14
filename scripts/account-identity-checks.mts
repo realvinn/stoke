@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { copyFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { AccountIdentities, planAccountIdentity, probeAccountIdentity, type AccountIdentitySpawn } from '../src/main/accountIdentity.ts'
@@ -129,7 +129,7 @@ const mode = process.env.STOKE_IDENTITY_FIXTURE_MODE;
 const record = (v) => fs.appendFileSync(process.env.STOKE_IDENTITY_FIXTURE_RECORD, JSON.stringify(v)+'\\n');
 record({argv:process.argv.slice(2),home:process.env.CODEX_HOME||process.env.CLAUDE_CONFIG_DIR,pid:process.pid,parent:process.ppid});
 if (mode==='tree-leaf') { record({kind:'ready-leaf',pid:process.pid,parent:process.ppid}); setInterval(()=>{},1000); }
-else if (mode==='tree'||mode==='tree-delayed') { const start=()=>require('node:child_process').spawn(process.execPath,[__filename],{env:{...process.env,STOKE_IDENTITY_FIXTURE_MODE:'tree-leaf'},stdio:['ignore','inherit','inherit']}); if(mode==='tree-delayed')setTimeout(start,700);else start(); record({kind:'ready-tree',pid:process.pid,parent:process.ppid}); setInterval(()=>{},1000); }
+else if (mode==='tree'||mode==='tree-delayed'||mode==='tree-vendor-console') { const start=()=>require('node:child_process').spawn(mode==='tree-vendor-console'?process.env.STOKE_IDENTITY_VENDOR_RUNTIME:process.execPath,[__filename],{env:{...process.env,STOKE_IDENTITY_FIXTURE_MODE:'tree-leaf'},stdio:['ignore','inherit','inherit']}); if(mode==='tree-delayed')setTimeout(start,700);else start(); record({kind:'ready-tree',pid:process.pid,parent:process.ppid}); setInterval(()=>{},1000); }
 else if (mode==='hang') { process.on('SIGTERM',()=>record({kind:'ignored-term'})); record({kind:'ready-hang',pid:process.pid}); process.stdout.write(JSON.stringify({loggedIn:true,email:'expired@example.test'})); setInterval(()=>{},1000); }
 else if (mode==='oversized') { process.stdout.write('x'.repeat(150000)); setInterval(()=>{},1000); }
 else if (mode==='claude') { const b=Buffer.from(JSON.stringify({loggedIn:true,email:'équipe@example.test',subscriptionType:'team'})); const cut=b.indexOf(0xc3)+1; process.stdout.write(b.subarray(0,cut)); setTimeout(()=>process.stdout.write(b.subarray(cut)),10); }
@@ -185,6 +185,8 @@ else { if(mode==='late') { process.on('SIGTERM',()=>{});setInterval(()=>{},1000)
     pass('timeouts, output limits and shutdown reject partial identities and reap every owned child, including a child that ignores SIGTERM')
     if (process.platform === 'win32') {
       const launcher = join(root, 'native-status.cmd')
+      const vendorRuntime = join(root, 'conhost.exe')
+      await copyFile(process.execPath, vendorRuntime)
       await writeFile(launcher, `@echo off\r\n"${process.execPath}" "${fixture}" %*\r\n`)
       const bystander = spawn(process.execPath, [fixture], { env: { ...env, STOKE_IDENTITY_FIXTURE_MODE: 'tree-leaf' }, stdio: 'ignore', windowsHide: true })
       fixtureChildren.push(bystander)
@@ -201,12 +203,12 @@ else { if(mode==='late') { process.on('SIGTERM',()=>{});setInterval(()=>{},1000)
         }
         assert.deepEqual(await stopWindowsAccountIdentity(bystander.pid!, 1, 2), { cleaned: false, failed: true }, 'a PID outside the exact owned spawn interval is refused')
         process.kill(bystander.pid!, 0)
-        for (const variant of ['normal', 'delayed-descendant', 'helper-spawn-failure', 'helper-timeout', 'helper-timeout-after-ownership']) {
+        for (const variant of ['normal', 'delayed-descendant', 'vendor-console-basename', 'helper-spawn-failure', 'helper-timeout', 'helper-timeout-after-ownership']) {
           const previous = new Set((await readFile(record, 'utf8')).trim().split('\n').map(line => JSON.parse(line).pid))
           const stopping = new AccountIdentities()
           const cancel = new AbortController()
           const options: WindowsIdentityCleanupOptions = variant === 'helper-spawn-failure' ? { powershell: join(root, 'missing-powershell.exe') } : variant === 'helper-timeout' ? { timeoutMs: 1 } : variant === 'helper-timeout-after-ownership' ? { pauseAfterOwnershipMs: 3000, timeoutAfterOwnershipMs: 25 } : variant === 'delayed-descendant' ? { captureDelayMs: 1500 } : {}
-          const reading = probeAccountIdentity(codex, launcher, { ...env, STOKE_IDENTITY_FIXTURE_MODE: variant === 'delayed-descendant' ? 'tree-delayed' : 'tree' }, 10_000, nativeSpawn, cancel.signal, options)
+          const reading = probeAccountIdentity(codex, launcher, { ...env, STOKE_IDENTITY_VENDOR_RUNTIME: vendorRuntime, STOKE_IDENTITY_FIXTURE_MODE: variant === 'delayed-descendant' ? 'tree-delayed' : variant === 'vendor-console-basename' ? 'tree-vendor-console' : 'tree' }, 10_000, nativeSpawn, cancel.signal, options)
           const deadline = Date.now() + 5_000
           while (true) {
             const events = (await readFile(record, 'utf8')).trim().split('\n').map(line => JSON.parse(line)).filter(event => !previous.has(event.pid))
