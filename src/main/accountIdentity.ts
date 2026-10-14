@@ -97,7 +97,13 @@ export async function probeAccountIdentity(plan: AccountIdentityPlan, executable
         // A retry always uses production defaults, including its full deadline.
         // A failed first helper never turns a suite override into a permanent
         // cleanup failure, and every retry must prove ownership afresh.
-        void stopWindowsAccountIdentity(child.pid, spawnedFrom, spawnedUntil, cleanupAttempts++ === 0 ? cleanupOptions : undefined).then(({ cleaned, failed: cleanupFailed }) => {
+        const pid = child.pid
+        // Node sets exitCode/signalCode before closing libuv's process handle.
+        // Until then that handle pins this PID to the exact process we spawned.
+        // The helper first pins its own handle, then requests this private ack.
+        // https://github.com/nodejs/node/blob/v24.21.0/lib/internal/child_process.js
+        // https://github.com/nodejs/node/blob/v24.21.0/deps/uv/src/win/process.c
+        void stopWindowsAccountIdentity(pid, spawnedFrom, spawnedUntil, { ...(cleanupAttempts++ === 0 ? cleanupOptions : {}), ownsRoot: () => child.pid === pid && child.exitCode === null && child.signalCode === null }).then(({ cleaned, failed: cleanupFailed }) => {
           cleanupPending = false
           cleanupConfirmed = cleaned
           if (cleanupFailed) { failed = true; result = null; returnValue() }

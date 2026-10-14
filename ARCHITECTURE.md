@@ -1716,8 +1716,8 @@ src/main/         Electron main process
                     identities. Whitelisted public fields only; never refreshes tokens or
                     starts an agent turn. No electron import. verify:accounts
   accountIdentityWindows.ts fixed native Windows account-check cleanup helper. Pins process
-                    handles, validates ancestry and contains the owned tree in a kill-on-close
-                    Job Object; bounded waits and credential-free diagnostics. Failed public
+                    handles, validates ancestry and contains owned programs in private kill-on-close
+                    jobs; private root acknowledgement, bounded waits and credential-free diagnostics. Failed public
                     reads retain native cleanup ownership. Actual .cmd fixtures in verify:accounts
   settingsSchema.ts defaults + hydrate, with no electron import so a suite can run it
   tabStore.ts       the tabs that were open at quit. Restoring is a relaunch

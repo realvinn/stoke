@@ -99,12 +99,16 @@ import { terminalLinkPoint } from './probe/terminal-link.mjs'
 import { nativeCrashScript } from './probe/native-crash.mjs'
 import { accountSyncFixture } from './probe/account-sync.mts'
 import type { HubView } from '../src/shared/hub/client.ts'
+import type { AccountIdentity, AccountIdentityTarget } from '../src/shared/accountIdentity.ts'
 import type { BrowserState } from '../src/shared/types.ts'
 import type { QuickTerminalResult, QuickTerminalState } from '../src/shared/quickTerminal.ts'
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const isWin = process.platform === 'win32'
 const isMac = process.platform === 'darwin'
+// Windows ARM64's first PowerShell identity cleanup has a measured cold start.
+// Only waits for native account results need room for its 30-second helper.
+const nativeIdentityUiWaitMs = isWin ? (process.arch === 'arm64' ? 40_000 : 30_000) : 15_000
 
 const { values: opt } = parseArgs({
   options: {
@@ -399,6 +403,22 @@ async function attach(): Promise<CdpClient> {
 async function ev<T = unknown>(expr: string, timeoutMs = 10_000): Promise<T> {
   if (!ui) throw new Error('not attached to the renderer')
   return (await ui.evaluate(expr, { timeoutMs })) as T
+}
+
+/** Leave a slow native IPC in the page, then poll its result with short CDP evaluations. */
+async function readNativeAccountIdentity(target: AccountIdentityTarget): Promise<AccountIdentity> {
+  const key = `__stokeProbeIdentity-${randomUUID()}`
+  const property = JSON.stringify(key)
+  await ev(`(() => { const result = { done: false }; window[${property}] = result; window.stoke.accounts.identity(${JSON.stringify(target)}, true).then(value => { result.value = value; result.done = true; }, error => { result.error = String(error?.message ?? error); result.done = true; }); return true; })()`)
+  try {
+    const result = await waitFor('the native account identity result', async () => {
+      const result = await ev<{ done: boolean; value?: AccountIdentity; error?: string }>(`window[${property}]`)
+      return result?.done ? result : null
+    }, isWin ? nativeIdentityUiWaitMs : 10_000)
+    if (result.error !== undefined) throw new Error(result.error)
+    if (!result.value) throw new Error('the native account identity response contained no identity')
+    return result.value
+  } finally { await ev(`delete window[${property}], true`).catch(() => {}) }
 }
 
 async function shot(name: string): Promise<void> {
@@ -1270,7 +1290,7 @@ await step('the sidebar account menu follows the agent and leaves the title bar 
     for (const id of AGENTS) {
       await activate(tabs[id]!.ptyId)
       const expected = id === 'opencode' ? 'Identity unavailable' : `${id}@example.test`
-      await waitFor(`${id}'s own account indicator`, () => ev<boolean>(`document.querySelector('[data-testid="stoke-account"] .account-chip-identity')?.textContent === ${JSON.stringify(expected)}`))
+      await waitFor(`${id}'s own account indicator`, () => ev<boolean>(`document.querySelector('[data-testid="stoke-account"] .account-chip-identity')?.textContent === ${JSON.stringify(expected)}`), id === 'opencode' ? 30_000 : nativeIdentityUiWaitMs)
       check(`${id}: the sidebar menu names its own agent and account`, await ev<boolean>(`document.querySelector('[data-testid="stoke-account"]')?.textContent.includes(${JSON.stringify(id === 'claude' ? 'Claude Code' : id === 'codex' ? 'Codex' : 'OpenCode')}) && document.querySelector('[data-testid="stoke-account"]')?.getAttribute('data-account') === 'default'`) === true)
     }
     await activate(tabs.claude!.ptyId)
@@ -1279,7 +1299,7 @@ await step('the sidebar account menu follows the agent and leaves the title bar 
     check('Accounts has exactly one sidebar entry and no title-bar chip', await ev<boolean>(`document.querySelectorAll('[data-testid="stoke-account"]').length === 1 && !!document.querySelector('.sidebar-footer [data-testid="stoke-account"]') && !document.querySelector('.titlebar .account-chip')`) === true)
     check('every visible title-bar action fits at the minimum window width', await ev<boolean>(`[...document.querySelectorAll('.titlebar-actions button')].filter(button => button.offsetWidth).every(button => { const r = button.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth + 1 && r.top >= 0 && r.bottom <= innerHeight; })`) === true)
     await ev(`document.querySelector('[data-testid="stoke-account"]').click(), true`)
-    await waitFor('the account popover', () => ev<boolean>(`document.querySelector('[data-testid="account-identity"]')?.textContent === 'claude@example.test'`))
+    await waitFor('the account popover', () => ev<boolean>(`document.querySelector('[data-testid="account-identity"]')?.textContent === 'claude@example.test'`), nativeIdentityUiWaitMs)
     check('the account popover fits and receives keyboard focus', await ev<boolean>(`(() => { const panel = document.querySelector('.account-panel'), r = panel.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth + 1 && r.bottom <= innerHeight && document.activeElement === panel; })()`) === true)
     check('the popover includes Stoke’s own sync sign-in', await ev<boolean>(`document.querySelector('.account-panel-sync')?.textContent.includes('Stoke account')`) === true)
     await shot('04-account-details-narrow')
@@ -1293,7 +1313,7 @@ await step('the sidebar account menu follows the agent and leaves the title bar 
     await ev(`document.querySelector('[data-testid="stoke-account"]').click(), true`)
     await waitFor('account details reopened', () => ev<boolean>('!!document.querySelector(".account-panel")'))
     await manageAgentAccountsFromMenu()
-    await waitFor('Default and Work identities in account settings', () => ev<boolean>(`document.querySelector('[data-testid="default-account-identity"]')?.textContent === 'claude@example.test' && document.querySelector('.agent-account-stored[data-account="${created}"]')?.textContent.includes('work@example.test')`))
+    await waitFor('Default and Work identities in account settings', () => ev<boolean>(`document.querySelector('[data-testid="default-account-identity"]')?.textContent === 'claude@example.test' && document.querySelector('.agent-account-stored[data-account="${created}"]')?.textContent.includes('work@example.test')`), nativeIdentityUiWaitMs)
     check('Settings shows each account’s own signed-in email', await ev<boolean>(`!!document.querySelector('[data-testid="agent-accounts"]') && !document.querySelector('.account-panel')`) === true)
     check('the existing login is clearly Default; saved accounts and add forms start compact', await ev<boolean>(`document.querySelector('.account-manager-existing')?.textContent.includes('You don’t need to add it again') && !document.querySelector('.agent-account-stored form') && !document.querySelector('[data-testid="add-login-account"]').open && !document.querySelector('[data-testid="add-api-account"]').open && !!document.querySelector('[data-testid="add-account-start"]')`) === true)
     await ui!.send('Emulation.setDeviceMetricsOverride', { width: 940, height: 720, deviceScaleFactor: 1, mobile: false })
@@ -1470,7 +1490,7 @@ await step('completed sign-ins close with the verified email; failed and unknown
       // Codex exits immediately, also exercising the cached PTY-exit replay
       // when the native process finishes before React adopts its tab.
       const title = `Successfully signed in to ${cli === 'claude' ? 'Claude Code' : 'Codex'} as ${cli}@example.test`
-      await waitFor('a success popup naming the native account email', () => ev<boolean>(`[...document.querySelectorAll('.toast-title')].some(node => node.textContent === ${JSON.stringify(title)})`))
+      await waitFor('a success popup naming the native account email', () => ev<boolean>(`[...document.querySelectorAll('.toast-title')].some(node => node.textContent === ${JSON.stringify(title)})`), nativeIdentityUiWaitMs)
       await waitFor('the completed sign-in tab to close automatically', () => ev<boolean>(`![...document.querySelectorAll('.tablist .tab')].some(tab => tab.textContent.includes('Sign in · Login probe')) && [...window.stokeTerminals.keys()].every(id => ${JSON.stringify(before)}.includes(id))`))
       if (cli === 'claude') check('a background sign-in finishing preserves the foreground session', await ev(ACTIVE_PTY) === tabs.codex!.ptyId)
       check(`${cli}: successful sign-in closes its tab and identifies the reported email`, true)
@@ -1489,7 +1509,7 @@ await step('completed sign-ins close with the verified email; failed and unknown
       signInPtys.push(ptyId)
       rmSync(join(agentsDir, 'login-wait'), { force: true })
       const title = `${cli === 'claude' ? 'Claude Code' : 'Codex'} sign-in ${outcome === 'failed' ? 'did not complete' : 'could not be verified'}`
-      await waitFor('the unsuccessful sign-in notification', () => ev<boolean>(`[...document.querySelectorAll('.toast-title')].some(node => node.textContent === ${JSON.stringify(title)})`))
+      await waitFor('the unsuccessful sign-in notification', () => ev<boolean>(`[...document.querySelectorAll('.toast-title')].some(node => node.textContent === ${JSON.stringify(title)})`), nativeIdentityUiWaitMs)
       check(`${outcome}: the sign-in output stays visible and no success is announced`, await ev<boolean>(`window.stokeTerminals.has(${JSON.stringify(ptyId)}) && ![...document.querySelectorAll('.toast-title')].some(node => node.textContent.startsWith('Successfully signed in'))`) === true)
       await shot(`04-login-${outcome}`)
       rmSync(marker, { force: true })
@@ -1682,7 +1702,7 @@ await step('selected Claude logins own their authentication despite inherited an
       await ev(`document.querySelector('.agent-account-stored[data-account="${account.id}"] input[type="radio"]').click(), true`)
       await waitFor('the named login to be selected', () => ev<boolean>(`window.stoke.settings.get().then(s => s.agents.defaultAccount.claude === ${JSON.stringify(account.id)})`))
       await ev(`[...document.querySelectorAll('.agent-account-stored[data-account="${account.id}"] button')].find(button => ['Sign in', 'Reconnect'].includes(button.textContent.trim())).click(), true`)
-      await waitFor('the named login completion to report its own email', () => ev<boolean>(`[...document.querySelectorAll('.toast-title')].some(node => node.textContent === 'Successfully signed in to Claude Code as profile${number}@example.test')`))
+      await waitFor('the named login completion to report its own email', () => ev<boolean>(`[...document.querySelectorAll('.toast-title')].some(node => node.textContent === 'Successfully signed in to Claude Code as profile${number}@example.test')`), nativeIdentityUiWaitMs)
       const login = await waitFor('the named sign-in process record', async () => oneShots().find(event => event.kind === 'account-login' && event.home === account.home))
       check(`Profile ${number}: auth login receives its own home and no inherited credential selectors`, Array.isArray(login.authOverrides) && login.authOverrides.length === 0)
       await ev(`document.querySelector('button[title="Close settings (Esc)"]')?.click(), true`)
@@ -1697,7 +1717,7 @@ await step('selected Claude logins own their authentication despite inherited an
       const rec = await waitFor('the selected login launch record', () => stubByPid(pid), 10_000)
       check(`Profile ${number}: the selected login launches in its own credential home`, rec!.start.env.CLAUDE_CONFIG_DIR === account.home)
       check(`Profile ${number}: API, gateway, OAuth and cloud-provider overrides cannot leak into the login`, names.every(name => !Object.keys(rec!.start.env).some(key => key.toUpperCase() === name)))
-      await waitFor('the header to identify the running login account', () => ev<boolean>(`document.querySelector('[data-testid="stoke-account"]')?.getAttribute('data-account') === ${JSON.stringify(account.id)} && document.querySelector('[data-testid="stoke-account"]')?.textContent.includes('profile${number}@example.test')`))
+      await waitFor('the header to identify the running login account', () => ev<boolean>(`document.querySelector('[data-testid="stoke-account"]')?.getAttribute('data-account') === ${JSON.stringify(account.id)} && document.querySelector('[data-testid="stoke-account"]')?.textContent.includes('profile${number}@example.test')`), nativeIdentityUiWaitMs)
       check(`Profile ${number}: the active account matches its native signed-in email`, true)
       const identity = await waitFor('the native identity process record', async () => oneShots().find(event => event.kind === 'account-identity' && event.home === account.home))
       check(`Profile ${number}: auth status uses the same isolated credential environment`, Array.isArray(identity.authOverrides) && identity.authOverrides.length === 0)
@@ -1773,7 +1793,7 @@ await step('encrypted accounts arrive through native IPC and select the right Co
     check('five Grok Bot accounts arrive without enabling their plugin', grokIds.length === 5)
     await ev(`window.stoke.plugins.toggle('grok-bot', false)`)
     await ev(`document.querySelector('button[title="Close settings (Esc)"]').click(), true`)
-    const identity = await ev<any>(`window.stoke.accounts.identity({cli:'codex',accountId:${JSON.stringify(work.id)}},true)`)
+    const identity = await readNativeAccountIdentity({ cli: 'codex', accountId: work.id })
     check('the native identity probe names the imported subscription email', identity.email === 'synced-work@example.test', JSON.stringify(identity))
     await ev(`window.stoke.settings.get().then(s => window.stoke.settings.set({ agents: { ...s.agents, defaultAccount: { ...s.agents.defaultAccount, codex: ${JSON.stringify(work.id)} }, endpoints: { ...s.agents.endpoints, codex: {mode:'custom',baseUrl:'https://wrong-api.example.test/v1',apiKey:'owned-global-key',model:'wrong-api-model'} } } }))`)
     const taken = await ev<string[]>('[...window.stokeTerminals.keys()]'), project = join(root, 'synced-account-project')
