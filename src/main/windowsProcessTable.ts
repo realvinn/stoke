@@ -16,14 +16,15 @@ $module = $assembly.DefineDynamicModule('StokeProcessTable')
 $builder = $module.DefineType('StokeProcessTable', [Reflection.TypeAttributes]'Public, Abstract, Sealed')
 $dllConstructor = [Runtime.InteropServices.DllImportAttribute].GetConstructor([Type[]]@([string]))
 $dllFields = [Reflection.FieldInfo[]]@([Runtime.InteropServices.DllImportAttribute].GetField('SetLastError'), [Runtime.InteropServices.DllImportAttribute].GetField('ExactSpelling'), [Runtime.InteropServices.DllImportAttribute].GetField('CharSet'))
+$dllAttribute = [Reflection.Emit.CustomAttributeBuilder]::new($dllConstructor, [object[]]@('kernel32.dll'), $dllFields, [object[]]@($true, $true, [Runtime.InteropServices.CharSet]::Unicode))
 $errorField = $builder.DefineField('LastError', [int], [Reflection.FieldAttributes]'Public, Static')
 $getLastError = [Runtime.InteropServices.Marshal].GetMethod('GetLastWin32Error', [Type[]]@())
 function Add-NativeMethod([string]$nativeName, [Type]$nativeReturn, [Type[]]$nativeParameters) {
   # DefinePInvokeMethod fixes import metadata before SetCustomAttribute can
   # enable SetLastError. Let DllImport define that metadata in one operation.
   $method = $builder.DefineMethod($nativeName, [Reflection.MethodAttributes]'Public, Static', $nativeReturn, $nativeParameters)
-  $attribute = [Reflection.Emit.CustomAttributeBuilder]::new($dllConstructor, [object[]]@('kernel32.dll'), $dllFields, [object[]]@($true, $true, [Runtime.InteropServices.CharSet]::Unicode))
-  $method.SetCustomAttribute($attribute)
+  # The immutable import metadata is identical for every native declaration.
+  $method.SetCustomAttribute($dllAttribute)
   $method.SetImplementationFlags($method.GetMethodImplementationFlags() -bor [Reflection.MethodImplAttributes]::PreserveSig)
   # PowerShell's binder may call native code before the next script statement.
   # Capture the saved error in managed IL immediately after the P/Invoke call.

@@ -16,6 +16,13 @@ export async function runAccountIdentityChecks(): Promise<void> {
   const record = join(root, 'requests.jsonl')
   const pass = (name: string) => console.log(`  PASS ${name}`)
   const fixtureChildren: ReturnType<typeof spawn>[] = []
+  const fixtureClosed: Promise<void>[] = []
+  const remember = (child: ReturnType<typeof spawn>) => {
+    fixtureChildren.push(child)
+    fixtureClosed.push(new Promise(resolve => child.once('close', () => resolve())))
+    return child
+  }
+  let originalFailure: unknown
   try {
     assert(!/[^\x00-\x7f]/.test(WINDOWS_IDENTITY_CLEANUP_SCRIPT), 'Windows PowerShell 5.1 receives a fixed ASCII cleanup script')
     const settings = hydrateSettings({ accounts: {
@@ -141,8 +148,7 @@ else { if(mode==='late') { process.on('SIGTERM',()=>{});setInterval(()=>{},1000)
 `, { mode: 0o600 })
     const spawned: number[] = []
     const run: AccountIdentitySpawn = (_file, args, options) => {
-      const child = spawn(process.execPath, [fixture, ...args], options)
-      fixtureChildren.push(child)
+      const child = remember(spawn(process.execPath, [fixture, ...args], options))
       if (child.pid) spawned.push(child.pid)
       return child
     }
@@ -196,12 +202,9 @@ else { if(mode==='late') { process.on('SIGTERM',()=>{});setInterval(()=>{},1000)
       const vendorRuntime = join(root, 'conhost.exe')
       await copyFile(process.execPath, vendorRuntime)
       await writeFile(launcher, `@echo off\r\n"${process.execPath}" "${fixture}" %*\r\n`)
-      const bystander = spawn(process.execPath, [fixture], { env: { ...env, STOKE_IDENTITY_FIXTURE_MODE: 'tree-leaf' }, stdio: 'ignore', windowsHide: true })
-      fixtureChildren.push(bystander)
+      const bystander = remember(spawn(process.execPath, [fixture], { env: { ...env, STOKE_IDENTITY_FIXTURE_MODE: 'tree-leaf' }, stdio: 'ignore', windowsHide: true }))
       const nativeSpawn: AccountIdentitySpawn = (file, args, options) => {
-        const child = spawn(file, args, options)
-        fixtureChildren.push(child)
-        return child
+        return remember(spawn(file, args, options))
       }
       try {
         const readyDeadline = Date.now() + 5_000
@@ -215,15 +218,16 @@ else { if(mode==='late') { process.on('SIGTERM',()=>{});setInterval(()=>{},1000)
         assert.deepEqual(await stopWindowsAccountIdentity(bystander.pid!, 1, 2, { ownsRoot: () => { refusals++; return false } }), { cleaned: false, failed: true }, 'a pinned PID without the private owned-process acknowledgement is refused')
         assert.equal(refusals, 1, 'the helper really pins the PID and requests main’s ownership acknowledgement')
         process.kill(bystander.pid!, 0)
-        const bound = spawn(process.execPath, [fixture], { env: { ...env, STOKE_IDENTITY_FIXTURE_MODE: 'tree-leaf' }, stdio: 'ignore', windowsHide: true })
-        fixtureChildren.push(bound)
+        const bound = remember(spawn(process.execPath, [fixture], { env: { ...env, STOKE_IDENTITY_FIXTURE_MODE: 'tree-leaf' }, stdio: 'ignore', windowsHide: true }))
         const boundClosed = new Promise<void>(resolve => bound.once('close', () => resolve()))
         const boundPid = bound.pid!
         assert.deepEqual(await stopWindowsAccountIdentity(boundPid, 1, 2, { ownsRoot: () => bound.pid === boundPid && bound.exitCode === null && bound.signalCode === null }), { cleaned: true, failed: false }, 'main’s exact live process handle binds the owned root despite deliberately mismatched JavaScript timestamps')
         await boundClosed
         pass('native root binding uses a private pinned-handle acknowledgement; refused acknowledgements preserve the bystander and clock offsets cannot select another PID')
         for (const variant of ['normal', 'delayed-descendant', 'exited-child-late-sibling', 'vendor-console-basename', 'helper-spawn-failure', 'helper-timeout', 'helper-timeout-after-ownership']) {
-          const previous = new Set((await readFile(record, 'utf8')).trim().split('\n').map(line => JSON.parse(line).pid))
+          // Windows may reuse a PID after the previous variant closes. Slice
+          // the append-only fixture journal by record offset, never old PIDs.
+          const recordStart = (await readFile(record, 'utf8')).trim().split('\n').length
           const stopping = new AccountIdentities()
           const cancel = new AbortController()
           const captureMarker = join(root, 'capture-paused')
@@ -232,9 +236,12 @@ else { if(mode==='late') { process.on('SIGTERM',()=>{});setInterval(()=>{},1000)
           const reading = probeAccountIdentity(codex, launcher, { ...env, STOKE_IDENTITY_CAPTURE_MARKER: captureMarker, STOKE_IDENTITY_VENDOR_RUNTIME: vendorRuntime, STOKE_IDENTITY_FIXTURE_MODE: variant === 'delayed-descendant' ? 'tree-delayed' : variant === 'exited-child-late-sibling' ? 'tree-exiting-sibling' : variant === 'vendor-console-basename' ? 'tree-vendor-console' : 'tree' }, 10_000, nativeSpawn, cancel.signal, options)
           const deadline = Date.now() + 5_000
           while (true) {
-            const events = (await readFile(record, 'utf8')).trim().split('\n').map(line => JSON.parse(line)).filter(event => !previous.has(event.pid))
+            const events = (await readFile(record, 'utf8')).trim().split('\n').slice(recordStart).map(line => JSON.parse(line))
             if (events.some(event => event.kind === 'ready-tree') && (variant === 'delayed-descendant' || events.some(event => event.kind === (variant === 'exited-child-late-sibling' ? 'ready-exiting-leaf' : 'ready-leaf')))) break
-            assert(Date.now() < deadline, 'the actual .cmd launcher starts its native child before shutdown')
+            if (Date.now() >= deadline) {
+              console.warn('[stoke] native account identity fixture not ready', { variant, stage: 'startup', events: events.length, readyTrees: events.filter(event => event.kind === 'ready-tree').length, readyLeaves: events.filter(event => event.kind === 'ready-leaf' || event.kind === 'ready-exiting-leaf').length, launcherPid: fixtureChildren.at(-1)?.pid ?? null, launcherExitCode: fixtureChildren.at(-1)?.exitCode ?? null })
+              assert.fail(`the actual .cmd launcher starts its native child before shutdown (${variant})`)
+            }
             await new Promise(resolve => setTimeout(resolve, 20))
           }
           const shellPid = fixtureChildren.at(-1)!.pid!
@@ -261,7 +268,7 @@ else { if(mode==='late') { process.on('SIGTERM',()=>{});setInterval(()=>{},1000)
             assert.equal(pauses.length, 1, 'the fixture changes the tree only after the native helper finishes its first assignments')
             assert(pauses[0].jobs >= 3, 'the launcher, parent and exiting leaf are assigned before the fixture marker is written')
             assert(captureReports.filter(report => report.phase === 'capture').length >= 2, 'a late sibling forces another capture pass over the already pinned exited leaf')
-            const events = (await readFile(record, 'utf8')).trim().split('\n').map(line => JSON.parse(line)).filter(event => !previous.has(event.pid))
+            const events = (await readFile(record, 'utf8')).trim().split('\n').slice(recordStart).map(line => JSON.parse(line))
             const exited = events.find(event => event.kind === 'exiting-leaf')
             assert(exited, 'the first held leaf exits in response to the post-assignment marker')
             assert(events.some(event => event.kind === 'closed-exiting-leaf' && event.childPid === exited.pid), 'the parent observes the original leaf close before spawning its late sibling')
@@ -270,7 +277,7 @@ else { if(mode==='late') { process.on('SIGTERM',()=>{});setInterval(()=>{},1000)
             assert.equal(stopping.pendingCount, 0, 'the exited child and late sibling leave no retained native identity reads')
           }
           assert(!JSON.stringify(warnings).includes(root), 'cleanup diagnostics disclose no fixture paths or executable arguments')
-          const ownedPids = [...new Set((await readFile(record, 'utf8')).trim().split('\n').map(line => JSON.parse(line)).filter(event => !previous.has(event.pid)).map(event => event.pid))]
+          const ownedPids = [...new Set((await readFile(record, 'utf8')).trim().split('\n').slice(recordStart).map(line => JSON.parse(line).pid))]
           assert(!ownedPids.includes(shellPid), 'the owned launcher is cmd.exe, not a spawn override replacing it with node')
           assert(ownedPids.length >= 2, 'the native child and grandchild really start, including a grandchild born during capture')
           for (const pid of [shellPid, ...ownedPids]) {
@@ -287,10 +294,27 @@ else { if(mode==='late') { process.on('SIGTERM',()=>{});setInterval(()=>{},1000)
         bystander.kill('SIGKILL'); await closed
       }
     }
+  } catch (error) {
+    originalFailure = error
+    throw error
   } finally {
     // Only exact ChildProcess objects created by this suite, never name-wide
     // termination or discovery of the owner's real agents.
+    let teardownFailure: unknown
+    try {
+      const pending = await new AccountIdentities().shutdown()
+      if (pending !== 0) teardownFailure = new Error(`native identity fixture teardown retained ${pending} reads`)
+    } catch (error) { teardownFailure = error }
     for (const child of fixtureChildren) if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
-    await rm(root, { recursive: true, force: true })
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      await Promise.race([Promise.all(fixtureClosed), new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('native identity fixture children did not close during teardown')), 5_000) })])
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    } catch (error) { teardownFailure ??= error }
+    finally { clearTimeout(timer) }
+    if (teardownFailure) {
+      if (originalFailure) console.warn('[stoke] native account identity fixture teardown failed after original assertion', { code: (teardownFailure as { code?: string }).code ?? null })
+      else throw teardownFailure
+    }
   }
 }

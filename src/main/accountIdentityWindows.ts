@@ -29,8 +29,14 @@ export interface WindowsIdentityCleanupResult { cleaned: boolean; failed: boolea
  * https://learn.microsoft.com/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesstimes
  * Variable data stays in environment values; output is numeric metadata only.
  */
-const CLEANUP_STAGES = ['initializing', 'system-directory', 'root-parent', 'root-open', 'root-created', 'root-ack', 'job-create', 'job-limit', 'capture', 'root-ancestry', 'parent-order', 'image-query', 'job-query', 'job-assign', 'job-stop', 'process-wait', 'job-accounting', 'done']
+const CLEANUP_STAGES = ['initializing', 'native-assembly', 'native-methods', 'native-type', 'native-snapshot', 'system-directory', 'root-parent', 'root-open', 'root-created', 'root-ack', 'job-create', 'job-limit', 'capture', 'root-ancestry', 'parent-order', 'image-query', 'job-query', 'job-assign', 'job-stop', 'process-wait', 'job-accounting', 'done']
+const nativeStage = (stage: string) => `[Console]::WriteLine('{"phase":"stage","stage":"${stage}","targetPid":0,"targetDepth":0}'); [Console]::Out.Flush()\n`
 export const WINDOWS_IDENTITY_CLEANUP_SCRIPT = "[Console]::WriteLine('{\"phase\":\"stage\",\"stage\":\"initializing\",\"targetPid\":0,\"targetDepth\":0}'); [Console]::Out.Flush()\n" + WINDOWS_PROCESS_TABLE_SCRIPT
+  .replace('$assemblyName =', nativeStage('native-assembly') + '$assemblyName =')
+  .replace('function Add-NativeMethod', '$script:stokeIdentityNativeMethods = 0\nfunction Add-NativeMethod')
+  .replace('  # DefinePInvokeMethod', `  $script:stokeIdentityNativeMethods++
+  [Console]::WriteLine((@{ phase = 'stage'; stage = 'native-methods'; targetPid = 0; targetDepth = 0; nativeMethods = $script:stokeIdentityNativeMethods } | ConvertTo-Json -Compress)); [Console]::Out.Flush()
+  # DefinePInvokeMethod`)
   .replace('$native = $builder.CreateType()', `Add-NativeMethod 'OpenProcess' ([IntPtr]) ([Type[]]@([uint32], [bool], [uint32]))
 Add-NativeMethod 'GetProcessTimes' ([bool]) ([Type[]]@([IntPtr], [long].MakeByRefType(), [long].MakeByRefType(), [long].MakeByRefType(), [long].MakeByRefType()))
 Add-NativeMethod 'GetSystemDirectoryW' ([uint32]) ([Type[]]@([IntPtr], [uint32]))
@@ -42,7 +48,8 @@ Add-NativeMethod 'QueryInformationJobObject' ([bool]) ([Type[]]@([IntPtr], [int]
 Add-NativeMethod 'AssignProcessToJobObject' ([bool]) ([Type[]]@([IntPtr], [IntPtr]))
 Add-NativeMethod 'IsProcessInJob' ([bool]) ([Type[]]@([IntPtr], [IntPtr], [bool].MakeByRefType()))
 Add-NativeMethod 'TerminateJobObject' ([bool]) ([Type[]]@([IntPtr], [uint32]))
-$native = $builder.CreateType()`)
+$native = $builder.CreateType()`.replace('$native =', nativeStage('native-type') + '$native ='))
+  .replace('$snapshot = $native::', nativeStage('native-snapshot') + '$snapshot = $native::')
   .replace('[Console]::Write($result.ToString())', '$rows = $result.ToString()') + '\nfunction Read-CurrentParents {\n' + WINDOWS_PROCESS_TABLE_SCRIPT.slice(WINDOWS_PROCESS_TABLE_SCRIPT.indexOf('$snapshot = $native::')).replace('[Console]::Write($result.ToString())', 'return $result.ToString()') + '\n}\n' + `
 $rootId = [uint32]::Parse($env:STOKE_IDENTITY_ROOT_PID)
 $ownerId = [uint32]::Parse($env:STOKE_IDENTITY_OWNER_PID)
@@ -283,7 +290,10 @@ export function stopWindowsAccountIdentity(pid: number, spawnedFrom: number, spa
       }
       const owned = reports.some(report => report.phase === 'owned' && Number.isInteger(report.captured) && (report.captured as number) > 0 && Number.isInteger(report.jobs) && (report.jobs as number) > 0)
       const lastStage = reports.filter(report => CLEANUP_STAGES.includes(String(report.stage)) && Number.isInteger(report.targetPid) && Number.isInteger(report.targetDepth)).at(-1)
-      if (lastStage) { metadata.stage = String(lastStage.stage); metadata.targetPid = lastStage.targetPid as number; metadata.targetDepth = lastStage.targetDepth as number }
+      if (lastStage) {
+        metadata.stage = String(lastStage.stage); metadata.targetPid = lastStage.targetPid as number; metadata.targetDepth = lastStage.targetDepth as number
+        if (Number.isInteger(lastStage.nativeMethods)) metadata.nativeMethods = lastStage.nativeMethods as number
+      }
       if (error) {
         metadata.code = error.code ?? null; metadata.killed = !!error.killed; metadata.signal = error.signal ?? null; metadata.jobOwned = owned
         console.warn('[stoke] account identity tree cleanup failed', metadata)

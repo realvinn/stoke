@@ -1441,6 +1441,7 @@ await step('sidebar accounts, repository details and bottom-left terminal are di
     await ev(`document.querySelector('[data-testid="footer-terminal"]').focus(), true`)
     await pressEnter()
     await waitFor('terminal panel from the footer', () => ev<boolean>(`window.stoke.quickTerminal.read().then(snapshot => !!snapshot.state.id && snapshot.state.mode === 'panel')`))
+    await waitFor('the rendered terminal dock', () => ev<boolean>(`!!document.querySelector('.quick-terminal-dock')`))
     check('Enter opens the local shell without a setup gate', await ev<boolean>(`!!document.querySelector('.quick-terminal-dock') && !document.querySelector('[data-setting="appearance.quick-terminal"]')`) === true)
     await ev('window.stoke.quickTerminal.move("hidden")')
     await ev('document.querySelector(\'button[title="Toggle sidebar"]\').click(), true')
@@ -2190,17 +2191,17 @@ await step('browser load errors and explicit certificate reviews work in native 
   }
 })
 
-await step('a click on a hard-wrapped terminal URL opens its complete address', async () => {
+for (const layout of ['hardlink', 'paddedlink']) await step(`a click on a ${layout === 'paddedlink' ? 'padded hard-wrapped' : 'hard-wrapped'} terminal URL opens its complete address`, async () => {
   const t = tabs.codex!
   await activate(t.ptyId)
   await typeLine(t.ptyId, '')
   const cols = await ev<number>(`window.stokeTerminals.get(${JSON.stringify(t.ptyId)}).cols`)
-  await typeLine(t.ptyId, `hardlink ${site.base}/whoami?terminal=hard&padding= ${cols}`)
-  const link = await waitFor('the stub\'s hard link output', () => stubRecords('codex').find(r => r.pid === t.pid)?.events.find(e => e.kind === 'hardlink') ?? null, 10_000)
+  await typeLine(t.ptyId, `${layout} ${site.base}/whoami?terminal=${layout}&padding= ${cols}`)
+  const link = await waitFor('the stub\'s hard link output', () => stubRecords('codex').find(r => r.pid === t.pid)?.events.find(e => e.kind === layout) ?? null, 10_000)
   const target = String(link.url)
   const point = await waitFor('the hard-wrapped tail in the production terminal', () => ev<{ x: number; y: number; hardBoundary: boolean } | null>(`(() => {
     const t = window.stokeTerminals.get(${JSON.stringify(t.ptyId)}), screen = t.element.querySelector('.xterm-screen').getBoundingClientRect();
-    return (${terminalLinkPoint.toString()})(t, ${JSON.stringify(target)}, screen);
+    return (${terminalLinkPoint.toString()})(t, ${JSON.stringify(target)}, screen, ${layout === 'paddedlink'});
   })()`), 10_000)
   check('the terminal URL crosses an explicit hard line, not only normal soft wraps', point.hardBoundary === true)
   await ev('(window.__stokeTerminalLinkOff = window.stoke.browser.onState(state => { window.__stokeTerminalLinkState = state }), true)')
@@ -2211,6 +2212,7 @@ await step('a click on a hard-wrapped terminal URL opens its complete address', 
     await ui!.send('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', clickCount: 1, x: point.x, y: point.y })
     const opened = await waitFor('the whole terminal URL to commit in Stoke', () => ev<BrowserState | null>(`window.__stokeTerminalLinkState?.url === ${JSON.stringify(target)} && !window.__stokeTerminalLinkState.loading ? window.__stokeTerminalLinkState : null`), 20_000)
     check('clicking the terminal tail preserves the full URL including its query', opened.url === target, opened.url)
+    if (layout === 'paddedlink') await shot('04-terminal-padded-link')
   } finally {
     await ev('(window.__stokeTerminalLinkOff?.(), delete window.__stokeTerminalLinkOff, delete window.__stokeTerminalLinkState, true)')
   }
