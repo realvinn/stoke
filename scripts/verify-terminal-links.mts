@@ -26,11 +26,8 @@ for (const screen of ['normal', 'alternate']) {
       await write(terminal, value)
       const first = terminalLinkRepairs(terminal, 1)
       const tail = terminalLinkRepairs(terminal, 2)
-      if (mode === 'soft') check(`${screen}: ordinary soft wraps stay with the normal web provider`, [first, tail], [[], []])
-      else {
-        check(`${screen}/${mode}: either half activates one complete URL`, [first.map((l) => l.text), tail.map((l) => l.text)], [[url], [url]])
-        check(`${screen}/${mode}: range covers both rows and every clickable cell`, first[0]?.range, { start: { x: 1, y: 1 }, end: { x: url.length - 40, y: 2 } })
-      }
+      check(`${screen}/${mode}: either half activates one complete URL`, [first.map((l) => l.text), tail.map((l) => l.text)], [[url], [url]])
+      check(`${screen}/${mode}: range covers both rows and every clickable cell`, first[0]?.range, { start: { x: 1, y: 1 }, end: { x: url.length - 40, y: 2 } })
     } finally { terminal.dispose() }
   }
 }
@@ -46,8 +43,12 @@ for (const screen of ['normal', 'alternate']) {
     await write(terminal, url.slice(0, 39) + ' ' + '\r\n' + url.slice(39))
     check('an actual printed trailing space remains a URL delimiter', terminalLinkRepairs(terminal, 1), [])
     terminal.reset()
+    await write(terminal, url.slice(0, 39) + '\r\n' + url.slice(39))
+    check('an unoccupied one-cell gutter preserves the complete URL from either row', [terminalLinkRepairs(terminal, 1)[0]?.text, terminalLinkRepairs(terminal, 2)[0]?.text], [url, url])
+    check('a one-cell gutter maps the URL tail without including the empty cell', terminalLinkRepairs(terminal, 2)[0]?.range, { start: { x: 1, y: 1 }, end: { x: url.length - 39, y: 2 } })
+    terminal.reset()
     await write(terminal, url.slice(0, 40) + '\r\n  ' + url.slice(40))
-    check('indented hard lines need explicit selection rather than automatic joining', terminalLinkRepairs(terminal, 1), [])
+    check('a hanging indent after a full URL row preserves the complete address', terminalLinkRepairs(terminal, 1)[0]?.text, url)
     terminal.reset()
     const long = 'https://example.com/' + 'x'.repeat(120)
     await write(terminal, wrap(long, 40, () => '\r\n'))
@@ -56,6 +57,46 @@ for (const screen of ['normal', 'alternate']) {
     await write(terminal, url.slice(0, 40) + '\r\n' + url.slice(40))
     terminal.resize(80, 12)
     check('a resize never invents a hard wrap inside the wider grid', terminalLinkRepairs(terminal, 1), [])
+  } finally { terminal.dispose() }
+}
+for (const screen of ['normal', 'alternate']) {
+  for (const mode of ['newline', 'cursor']) {
+    for (const printedPadding of [false, true]) {
+      const terminal = new headless.Terminal({ cols: 80, rows: 12, allowProposedApi: true })
+      try {
+        if (screen === 'alternate') await write(terminal, '\x1b[?1049h')
+        const long = 'https://example.com/project?code=' + 'abcdefghijklmnopqrstuvwxyz'.repeat(7) + '&end=whole'
+        const parts = long.match(/.{1,74}/g)!
+        const value = parts.map((part, index) => (index ? mode === 'newline' ? '\r\n' : `\x1b[${index + 1};1H` : '') + '  ' + part + (printedPadding && index < parts.length - 1 ? '    ' : '')).join('')
+        await write(terminal, value)
+        const links = parts.map((_, index) => terminalLinkRepairs(terminal, index + 1)[0])
+        check(`${screen}/${mode}/${printedPadding ? 'printed' : 'empty'} gutter: every padded row opens the whole URL`, links.map((link) => link?.text), parts.map(() => long))
+        check(`${screen}/${mode}/${printedPadding ? 'printed' : 'empty'} gutter: clickable range excludes leading and final padding`, links[0]?.range, { start: { x: 3, y: 1 }, end: { x: 2 + parts.at(-1)!.length, y: parts.length } })
+      } finally { terminal.dispose() }
+    }
+  }
+}
+{
+  const terminal = new headless.Terminal({ cols: 80, rows: 80, allowProposedApi: true })
+  try {
+    const long = 'https://example.com/auth?state=' + 'x'.repeat(3500) + '&end=whole'
+    await write(terminal, long)
+    const lastRow = Math.ceil(long.length / terminal.cols)
+    check('a soft-wrapped URL beyond the web addon 2 KiB window stays whole from either end', [terminalLinkRepairs(terminal, 1)[0]?.text, terminalLinkRepairs(terminal, lastRow)[0]?.text], [long, long])
+    check('a long soft-wrapped link retains its exact final cell', terminalLinkRepairs(terminal, lastRow)[0]?.range.end, { x: long.length % terminal.cols, y: lastRow })
+    terminal.reset()
+    await write(terminal, '  https://example.com/short\r\n  unrelated')
+    check('matching indentation does not join a genuinely short URL to a word', terminalLinkRepairs(terminal, 1), [])
+    terminal.reset()
+    const padded = '  ' + url + 'x'.repeat(74 - url.length)
+    await write(terminal, padded + '\r\n  unrelated words')
+    check('a full padded URL row does not borrow prose', terminalLinkRepairs(terminal, 1), [])
+    terminal.reset()
+    await write(terminal, padded + '\r\n  https://other.example/')
+    check('a separate URL in the same padded column remains separate', terminalLinkRepairs(terminal, 1), [])
+    terminal.reset()
+    await write(terminal, padded + '\r\n    /different-indent')
+    check('inconsistent content-column indentation is not guessed', terminalLinkRepairs(terminal, 1), [])
   } finally { terminal.dispose() }
 }
 {

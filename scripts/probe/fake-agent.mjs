@@ -464,16 +464,18 @@ rl.on('line', async (raw) => {
     await mcpVisit(mcp[1])
     return
   }
-  const link = /^hardlink\s+(\S+)(?:\s+(\d+))?$/.exec(line)
+  const link = /^(hardlink|paddedlink)\s+(\S+)(?:\s+(\d+))?$/.exec(line)
   if (link) {
     // ConPTY can report a stale/fallback stdout width after a pane resize.
     // The probe supplies the production xterm's current width explicitly.
-    const cols = Math.max(8, Math.min(1024, Number(link[2]) || process.stdout.columns || 80))
-    const url = link[1] + 'x'.repeat(cols * 2) + '&end=terminal-tail'
-    record('hardlink', { url, cols })
+    const cols = Math.max(16, Math.min(1024, Number(link[3]) || process.stdout.columns || 80))
+    const padded = link[1] === 'paddedlink', width = padded ? cols - 6 : cols
+    const url = link[2] + 'x'.repeat(cols * 2) + '&end=terminal-tail'
+    record(link[1], { url, cols })
     // A TUI repaint: two full rows with explicit CRLF, rather than xterm's
     // ordinary autowrap flag. A click on the last row must open the whole URL.
-    process.stdout.write('\r\n\x1b[?7l' + Array.from({ length: Math.ceil(url.length / cols) }, (_, i) => url.slice(i * cols, (i + 1) * cols)).join('\r\n') + '\x1b[?7h\r\n')
+    const rows = Array.from({ length: Math.ceil(url.length / width) }, (_, i) => (padded ? '  ' : '') + url.slice(i * width, (i + 1) * width) + (padded ? '    ' : ''))
+    process.stdout.write('\r\n\x1b[?7l' + rows.join('\r\n') + '\x1b[?7h\r\n')
     return
   }
   if (!claude || !line.trim()) return

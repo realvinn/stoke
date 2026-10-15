@@ -1,6 +1,7 @@
-/** xterm's ordinary web provider joins only rows marked isWrapped. SSH/tmux
- * screen repainting can instead place a URL using CRLF or cursor positioning.
- * Repair those full-width boundaries without joining ordinary short lines. */
+/** xterm's ordinary web provider joins only rows marked isWrapped and limits
+ * its search to 2 KiB. CLI/SSH screen painting can also place URLs inside a
+ * padded column using CRLF or cursor positioning. Recover complete bounded
+ * links from either layout without borrowing ordinary short prose lines. */
 interface Cell { getChars(): string; getWidth(): number }
 interface Line { isWrapped: boolean; getCell(index: number): Cell | undefined }
 export interface LinkTerminal {
@@ -13,7 +14,7 @@ export interface TerminalLinkRepair {
   text: string
   range: { start: { x: number; y: number }; end: { x: number; y: number } }
 }
-const MAX_ROWS = 32
+const MAX_ROWS = 128
 const MAX_CHARS = 8192
 const fragment = (value: string): boolean => !!value && !/[\s"'<>`{}|\\\^\u2500-\u257f]/u.test(value)
 
@@ -48,6 +49,58 @@ function trimLink(value: string): string {
     while (text.endsWith(close) && text.split(close).length > text.split(open).length) text = text.slice(0, -1)
   }
   return text
+}
+
+/** Some TUIs wrap at their content margin rather than xterm's last column.
+ * Only URI-only rows within a small gutter are eligible. The first row must
+ * start with a URL, continuations share an indent (or a first hanging indent),
+ * and a short row, prose, blank line or another URL ends the candidate. */
+function paddedLinkRepair(terminal: LinkTerminal, current: Row): TerminalLinkRepair[] {
+  const body = (row: Row): Row => {
+    const start = row.text.search(/\S/)
+    if (start < 0) return { ...row, text: '', positions: [] }
+    const end = row.text.trimEnd().length
+    return { ...row, text: row.text.slice(start, end), positions: row.positions.slice(start, end) }
+  }
+  const left = (row: Row): number => row.positions[0]?.x ?? terminal.cols
+  const right = (row: Row): number => { const last = row.positions.at(-1); return last ? last.x + last.width : 0 }
+  const startsUrl = (row: Row): boolean => /^https?:\/\//i.test(row.text)
+  const eligible = (row: Row): boolean => left(row) <= 8 && fragment(row.text)
+  const joinsPadded = (previous: Row, next: Row): boolean => {
+    if (next.wrapped || !eligible(previous) || !eligible(next) || startsUrl(next)) return false
+    const margin = terminal.cols - right(previous)
+    if (margin < 0 || margin > 8) return false
+    // An actual printed last-column space is commonly a URL delimiter.
+    // An unoccupied last cell can instead be the CLI's one-cell gutter.
+    if (left(previous) === 0 && left(next) === 0 && margin === 1 && previous.full) return false
+    return left(previous) === left(next) || (startsUrl(previous) && left(previous) === 0)
+  }
+  const rows = [body(current)]
+  if (!eligible(rows[0])) return []
+  let chars = rows[0].text.length
+  while (!startsUrl(rows[0]) && rows[0].y > 0) {
+    const raw = rowOf(terminal, rows[0].y - 1)
+    if (!raw) return []
+    const previous = body(raw)
+    if (!joinsPadded(previous, rows[0]) || rows.length >= MAX_ROWS || chars + previous.text.length > MAX_CHARS) return []
+    rows.unshift(previous); chars += previous.text.length
+  }
+  if (!startsUrl(rows[0])) return []
+  while (rows.at(-1)!.y + 1 < terminal.buffer.active.length) {
+    const raw = rowOf(terminal, rows.at(-1)!.y + 1)
+    if (!raw) break
+    const next = body(raw)
+    if (!joinsPadded(rows.at(-1)!, next)) break
+    if (rows.length >= MAX_ROWS || chars + next.text.length > MAX_CHARS) return []
+    rows.push(next); chars += next.text.length
+  }
+  if (rows.length < 2) return []
+  const positions = rows.flatMap((row) => row.positions)
+  const uri = trimLink(rows.map((row) => row.text).join(''))
+  if (!terminalHttpLink(uri)) return []
+  const start = positions[0], end = positions[uri.length - 1]
+  if (!end || current.y < start.y || current.y > end.y) return []
+  return [{ text: uri, range: { start: { x: start.x + 1, y: start.y + 1 }, end: { x: end.x + end.width, y: end.y + 1 } } }]
 }
 export function terminalHttpLink(value: unknown): string | null {
   if (typeof value !== 'string' || value.length > MAX_CHARS || /[\s\x00-\x1f\x7f]/.test(value)) return null
@@ -94,15 +147,14 @@ export function terminalLinkRepairs(terminal: LinkTerminal, lineNumber: number):
   }
   const text = rows.map((r) => r.text).join('')
   const positions = rows.flatMap((r) => r.positions)
-  const hard = new Set(rows.slice(1).filter((r) => !r.wrapped).map((r) => r.y))
   const found: TerminalLinkRepair[] = []
   for (const match of text.matchAll(/https?:\/\/[^\s"'<>`{}|\\\^\u2500-\u257f]+/gi)) {
     const uri = trimLink(match[0])
     if (!terminalHttpLink(uri)) continue
     const start = positions[match.index!]
     const end = positions[match.index! + uri.length - 1]
-    if (!start || !end || start.y === end.y || current.y < start.y || current.y > end.y || ![...hard].some((y) => y > start.y && y <= end.y)) continue
+    if (!start || !end || start.y === end.y || current.y < start.y || current.y > end.y) continue
     found.push({ text: uri, range: { start: { x: start.x + 1, y: start.y + 1 }, end: { x: end.x + end.width, y: end.y + 1 } } })
   }
-  return found
+  return found.length ? found : paddedLinkRepair(terminal, current)
 }
