@@ -1137,6 +1137,8 @@ npm run verify:theme-gen      # the theme generator: that a five-field seed repr
 npm run verify:targets        # what a release builds: every target on a NATIVE runner, the
                               # workflow and every dist:* reading scripts/targets.mjs, and the
                               # two verify jobs held step for step (gotchas 67, 113)
+npm run verify:probe          # probe journal epochs: reused PIDs across/within CLIs, launch
+                              # folder scope, complete append records and relaunch freshness
 npm run verify:manifests      # the update-manifest merger and the publish gate, against the
                               # real v0.9.4 feeds, electron-builder's own writer and
                               # electron-updater's own per-arch file pick (gotcha 68)
@@ -1718,7 +1720,15 @@ src/main/         Electron main process
   accountIdentityWindows.ts fixed native Windows account-check cleanup helper. Pins process
                     handles, validates ancestry and contains owned programs in private kill-on-close
                     jobs; private root acknowledgement, bounded waits and credential-free diagnostics. Failed public
-                    reads retain native cleanup ownership. Actual .cmd fixtures in verify:accounts
+                    reads retain native cleanup ownership. Loads the packaged AnyCPU
+                    StokeIdentityNative.dll from a private main-configured path, without runtime
+                    compilation or Reflection.Emit. Actual .cmd fixtures in verify:accounts
+  build/windows-identity/StokeIdentityNative.cs fixed Windows P/Invoke declarations and immediate
+                    managed error capture. scripts/build-windows-identity.mjs compiles it with
+                    the OS .NET Framework compiler during Windows build/dev and verification;
+                    generated output stays in ignored out/native/windows-identity. Windows-only
+                    extraResources copies the DLL outside app.asar. assert-windows-identity.mjs
+                    checks every packaged copy is IL-only AnyCPU through the PTY packaging gate
   settingsSchema.ts defaults + hydrate, with no electron import so a suite can run it
   tabStore.ts       the tabs that were open at quit. Restoring is a relaunch
                     (`claude --resume`), never a reattach: a CLI child cannot outlive the app.
@@ -2597,7 +2607,10 @@ scripts/          the verify-*.mts suites, make-icon.cjs
                     `--ssh` (CI only: ssh reads the passwd home) a real sshd, `~.`, and a
                     key enrollment. `--dev` runs the unpackaged build for a rehearsal. Not
                     a suite; its tally and exit code are the last statement
-  probe/            the probe's parts. terminal-link.mjs locates a complete URL across hard
+  probe/            the probe's parts. agent-records.mjs splits append-only journals into
+                    start-line epochs and selects the intended CLI/PID/folder, so reused
+                    PIDs cannot substitute an old account launch or its events.
+                    terminal-link.mjs locates a complete URL across hard
                     rows; ssh-files.mjs owns the CI-only disposable Mac/Linux SSH file fixture.
                     native-crash.mjs initializes local reports and shutdown phase markers in
                     the disposable Windows CI main process only; submission stays disabled.

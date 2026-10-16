@@ -28,6 +28,7 @@ import { QuickTerminal } from './quickTerminal.ts'
 import { ownedPtyExits } from './ptyExitTracker.ts'
 import { boundUsageReading, UsageBindings, usageCacheKey } from './usageBindings.ts'
 import { AccountIdentities, planAccountIdentity, probeAccountIdentity } from './accountIdentity.ts'
+import { configureWindowsAccountIdentityLibrary } from './accountIdentityWindows.ts'
 import { accountIdentityTarget } from '../shared/accountIdentity.ts'
 import type { QuickTerminalAppearance, QuickTerminalMode, QuickTerminalSurface } from '../shared/quickTerminal.ts'
 import { quickTerminalLink } from '../shared/quickTerminal.ts'
@@ -717,6 +718,9 @@ const timers: NodeJS.Timeout[] = []
 const usageScheduler = new UsageScheduler()
 const usageBindings = new UsageBindings()
 const accountIdentities = new AccountIdentities()
+if (process.platform === 'win32') configureWindowsAccountIdentityLibrary(app.isPackaged
+  ? join(process.resourcesPath, 'windows-identity', 'StokeIdentityNative.dll')
+  : join(app.getAppPath(), 'out', 'native', 'windows-identity', 'StokeIdentityNative.dll'))
 
 /* ------------------------------------------------- keeping the CLI current */
 

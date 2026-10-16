@@ -1,5 +1,13 @@
 import { execFile } from 'node:child_process'
+import { basename, isAbsolute } from 'node:path'
 import { WINDOWS_PROCESS_TABLE_SCRIPT, windowsProcessTableSpec } from './windowsProcessTable.ts'
+
+let nativeLibrary: string | undefined
+/** Main supplies its fixed build resource; no renderer or inherited env selects code. */
+export function configureWindowsAccountIdentityLibrary(path: string): void {
+  if (!isAbsolute(path) || basename(path) !== 'StokeIdentityNative.dll') throw new Error('Invalid private Windows identity library path')
+  nativeLibrary = path
+}
 
 // Native ARM64 CI cold initialization exceeded 12 s before capture began.
 export const ACCOUNT_IDENTITY_CLEANUP_TIMEOUT_MS = process.platform === 'win32' && process.arch === 'arm64' ? 30_000 : 12_000
@@ -29,28 +37,12 @@ export interface WindowsIdentityCleanupResult { cleaned: boolean; failed: boolea
  * https://learn.microsoft.com/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesstimes
  * Variable data stays in environment values; output is numeric metadata only.
  */
-const CLEANUP_STAGES = ['initializing', 'native-assembly', 'native-methods', 'native-type', 'native-snapshot', 'system-directory', 'root-parent', 'root-open', 'root-created', 'root-ack', 'job-create', 'job-limit', 'capture', 'root-ancestry', 'parent-order', 'image-query', 'job-query', 'job-assign', 'job-stop', 'process-wait', 'job-accounting', 'done']
+const CLEANUP_STAGES = ['initializing', 'native-library', 'native-snapshot', 'system-directory', 'root-parent', 'root-open', 'root-created', 'root-ack', 'job-create', 'job-limit', 'capture', 'root-ancestry', 'parent-order', 'image-query', 'job-query', 'job-assign', 'job-stop', 'process-wait', 'job-accounting', 'done']
 const nativeStage = (stage: string) => `[Console]::WriteLine('{"phase":"stage","stage":"${stage}","targetPid":0,"targetDepth":0}'); [Console]::Out.Flush()\n`
-export const WINDOWS_IDENTITY_CLEANUP_SCRIPT = "[Console]::WriteLine('{\"phase\":\"stage\",\"stage\":\"initializing\",\"targetPid\":0,\"targetDepth\":0}'); [Console]::Out.Flush()\n" + WINDOWS_PROCESS_TABLE_SCRIPT
-  .replace('$assemblyName =', nativeStage('native-assembly') + '$assemblyName =')
-  .replace('function Add-NativeMethod', '$script:stokeIdentityNativeMethods = 0\nfunction Add-NativeMethod')
-  .replace('  # DefinePInvokeMethod', `  $script:stokeIdentityNativeMethods++
-  [Console]::WriteLine((@{ phase = 'stage'; stage = 'native-methods'; targetPid = 0; targetDepth = 0; nativeMethods = $script:stokeIdentityNativeMethods } | ConvertTo-Json -Compress)); [Console]::Out.Flush()
-  # DefinePInvokeMethod`)
-  .replace('$native = $builder.CreateType()', `Add-NativeMethod 'OpenProcess' ([IntPtr]) ([Type[]]@([uint32], [bool], [uint32]))
-Add-NativeMethod 'GetProcessTimes' ([bool]) ([Type[]]@([IntPtr], [long].MakeByRefType(), [long].MakeByRefType(), [long].MakeByRefType(), [long].MakeByRefType()))
-Add-NativeMethod 'GetSystemDirectoryW' ([uint32]) ([Type[]]@([IntPtr], [uint32]))
-Add-NativeMethod 'QueryFullProcessImageNameW' ([bool]) ([Type[]]@([IntPtr], [uint32], [IntPtr], [uint32].MakeByRefType()))
-Add-NativeMethod 'WaitForSingleObject' ([uint32]) ([Type[]]@([IntPtr], [uint32]))
-Add-NativeMethod 'CreateJobObjectW' ([IntPtr]) ([Type[]]@([IntPtr], [string]))
-Add-NativeMethod 'SetInformationJobObject' ([bool]) ([Type[]]@([IntPtr], [int], [IntPtr], [uint32]))
-Add-NativeMethod 'QueryInformationJobObject' ([bool]) ([Type[]]@([IntPtr], [int], [IntPtr], [uint32], [IntPtr]))
-Add-NativeMethod 'AssignProcessToJobObject' ([bool]) ([Type[]]@([IntPtr], [IntPtr]))
-Add-NativeMethod 'IsProcessInJob' ([bool]) ([Type[]]@([IntPtr], [IntPtr], [bool].MakeByRefType()))
-Add-NativeMethod 'TerminateJobObject' ([bool]) ([Type[]]@([IntPtr], [uint32]))
-$native = $builder.CreateType()`.replace('$native =', nativeStage('native-type') + '$native ='))
-  .replace('$snapshot = $native::', nativeStage('native-snapshot') + '$snapshot = $native::')
-  .replace('[Console]::Write($result.ToString())', '$rows = $result.ToString()') + '\nfunction Read-CurrentParents {\n' + WINDOWS_PROCESS_TABLE_SCRIPT.slice(WINDOWS_PROCESS_TABLE_SCRIPT.indexOf('$snapshot = $native::')).replace('[Console]::Write($result.ToString())', 'return $result.ToString()') + '\n}\n' + `
+const snapshotScript = WINDOWS_PROCESS_TABLE_SCRIPT.slice(WINDOWS_PROCESS_TABLE_SCRIPT.indexOf('$snapshot = $native::'))
+export const WINDOWS_IDENTITY_CLEANUP_SCRIPT = nativeStage('initializing') + "$ErrorActionPreference = 'Stop'\n" + nativeStage('native-library') + `[void][Reflection.Assembly]::LoadFile($env:STOKE_IDENTITY_NATIVE_LIBRARY)
+$native = [StokeIdentityNative]
+` + nativeStage('native-snapshot') + snapshotScript.replace('[Console]::Write($result.ToString())', '$rows = $result.ToString()') + '\nfunction Read-CurrentParents {\n' + snapshotScript.replace('[Console]::Write($result.ToString())', 'return $result.ToString()') + '\n}\n' + `
 $rootId = [uint32]::Parse($env:STOKE_IDENTITY_ROOT_PID)
 $ownerId = [uint32]::Parse($env:STOKE_IDENTITY_OWNER_PID)
 $earliest = [long]116444736000000000 + ([long]::Parse($env:STOKE_IDENTITY_SPAWN_FROM) - 1) * 10000
@@ -273,13 +265,17 @@ try {
 `
 
 export function stopWindowsAccountIdentity(pid: number, spawnedFrom: number, spawnedUntil: number, options: WindowsIdentityCleanupOptions = {}): Promise<WindowsIdentityCleanupResult> {
+  if (!nativeLibrary) {
+    console.warn('[stoke] account identity tree cleanup has no configured native library')
+    return Promise.resolve({ cleaned: false, failed: true })
+  }
   const [command] = windowsProcessTableSpec()
   const started = Date.now()
   return new Promise(resolve => {
     let afterOwnershipTimer: ReturnType<typeof setTimeout> | undefined
     const helper = execFile(options.powershell ?? command, ['-NoProfile', '-NonInteractive', '-Command', WINDOWS_IDENTITY_CLEANUP_SCRIPT], {
       timeout: options.timeoutMs ?? ACCOUNT_IDENTITY_CLEANUP_TIMEOUT_MS, maxBuffer: 4096, windowsHide: true,
-      env: { ...process.env, STOKE_IDENTITY_ROOT_PID: String(pid), STOKE_IDENTITY_OWNER_PID: String(process.pid), STOKE_IDENTITY_ROOT_ACK: options.ownsRoot ? '1' : '0', STOKE_IDENTITY_SPAWN_FROM: String(spawnedFrom), STOKE_IDENTITY_SPAWN_UNTIL: String(spawnedUntil), STOKE_IDENTITY_CAPTURE_DELAY: String(Math.max(0, Math.min(2000, options.captureDelayMs ?? 0))), STOKE_IDENTITY_POST_OWNERSHIP_PAUSE: String(Math.max(0, Math.min(3000, options.pauseAfterOwnershipMs ?? 0))) }
+      env: { ...process.env, STOKE_IDENTITY_NATIVE_LIBRARY: nativeLibrary, STOKE_IDENTITY_ROOT_PID: String(pid), STOKE_IDENTITY_OWNER_PID: String(process.pid), STOKE_IDENTITY_ROOT_ACK: options.ownsRoot ? '1' : '0', STOKE_IDENTITY_SPAWN_FROM: String(spawnedFrom), STOKE_IDENTITY_SPAWN_UNTIL: String(spawnedUntil), STOKE_IDENTITY_CAPTURE_DELAY: String(Math.max(0, Math.min(2000, options.captureDelayMs ?? 0))), STOKE_IDENTITY_POST_OWNERSHIP_PAUSE: String(Math.max(0, Math.min(3000, options.pauseAfterOwnershipMs ?? 0))) }
     }, (error, stdout) => {
       clearTimeout(afterOwnershipTimer)
       const metadata: Record<string, string | number | boolean | null> = { pid, elapsedMs: Date.now() - started }

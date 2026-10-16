@@ -35,6 +35,7 @@ electronFuses:
 files:
   - build/licenses/**
   - out/**
+  - '!out/native/**'
   - package.json
   - '!**/*.map'
 # @lydell/node-pty ships prebuilt .node binaries; they must live outside the asar
@@ -87,6 +88,8 @@ win:
   extraResources:
     - from: build/bin/stoke.cmd
       to: bin/stoke.cmd
+    - from: out/native/windows-identity/StokeIdentityNative.dll
+      to: windows-identity/StokeIdentityNative.dll
 nsis:
   # The installer's name, unchanged from every release so far: install.ps1,
   # the worker and every latest.yml already in the wild name

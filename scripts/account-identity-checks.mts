@@ -7,8 +7,9 @@ import { join } from 'node:path'
 import { AccountIdentities, planAccountIdentity, probeAccountIdentity, type AccountIdentitySpawn } from '../src/main/accountIdentity.ts'
 import { accountIdentityTarget, accountLoginOutcome, identityFor, nativeAccountIdentity, type AccountIdentityTarget } from '../src/shared/accountIdentity.ts'
 import { hydrateSettings } from '../src/main/settingsSchema.ts'
-import { ACCOUNT_IDENTITY_CLEANUP_TIMEOUT_MS, stopWindowsAccountIdentity, WINDOWS_IDENTITY_CLEANUP_SCRIPT, WINDOWS_IDENTITY_DEPTH_SORT, type WindowsIdentityCleanupOptions } from '../src/main/accountIdentityWindows.ts'
+import { ACCOUNT_IDENTITY_CLEANUP_TIMEOUT_MS, configureWindowsAccountIdentityLibrary, stopWindowsAccountIdentity, WINDOWS_IDENTITY_CLEANUP_SCRIPT, WINDOWS_IDENTITY_DEPTH_SORT, type WindowsIdentityCleanupOptions } from '../src/main/accountIdentityWindows.ts'
 import { windowsProcessTableSpec } from '../src/main/windowsProcessTable.ts'
+import { buildWindowsIdentityLibrary, assertWindowsIdentityImage } from './build-windows-identity.mjs'
 
 export async function runAccountIdentityChecks(): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), 'stoke-account-identity-'))
@@ -24,7 +25,14 @@ export async function runAccountIdentityChecks(): Promise<void> {
   }
   let originalFailure: unknown
   try {
+    if (process.platform === 'win32') {
+      const library = await buildWindowsIdentityLibrary()
+      assert(library, 'native Windows verification builds the same private library that packaging includes')
+      assertWindowsIdentityImage(await readFile(library))
+      configureWindowsAccountIdentityLibrary(library)
+    }
     assert(!/[^\x00-\x7f]/.test(WINDOWS_IDENTITY_CLEANUP_SCRIPT), 'Windows PowerShell 5.1 receives a fixed ASCII cleanup script')
+    assert(!/Add-Type|Reflection\.Emit|DefineDynamicAssembly|csc\.exe/.test(WINDOWS_IDENTITY_CLEANUP_SCRIPT), 'installed identity cleanup loads compiled code without building types or starting a compiler')
     const settings = hydrateSettings({ accounts: {
       'claude-work': { id: 'claude-work', cli: 'claude', label: 'Work', kind: 'login', home: join(root, 'claude-work'), apiKey: '' },
       'codex-work': { id: 'codex-work', cli: 'codex', label: 'Codex work', kind: 'login', home: join(root, 'codex-work'), apiKey: '' },

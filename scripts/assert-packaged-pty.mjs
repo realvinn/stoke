@@ -21,6 +21,7 @@ import { readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { TARGETS, ptyPackageFor, targetFor } from './targets.mjs'
+import { assertPackagedWindowsIdentity } from './assert-windows-identity.mjs'
 
 const UNPACKED = 'app.asar.unpacked'
 
@@ -110,6 +111,7 @@ function main(argv) {
     process.exit(1)
   }
   console.log(`${expected} is present in all ${hits.length} packaged output(s) under ${root}/.`)
+  if (target.platform === 'win32') assertPackagedWindowsIdentity(hits)
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main(process.argv.slice(2))

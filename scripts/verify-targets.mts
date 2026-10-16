@@ -43,6 +43,7 @@ import {
   targetFor
 } from './targets.mjs'
 import { auditPty, findPtyDirs } from './assert-packaged-pty.mjs'
+import { assertWindowsIdentityImage } from './build-windows-identity.mjs'
 
 const require = createRequire(import.meta.url)
 const root = new URL('../', import.meta.url)
@@ -788,6 +789,32 @@ console.log('\nan arm64 installer its own extractor can read (gotcha 102)')
   ok('and reads the built installer back, after building and before uploading', buildAt >= 0 && assertAt > buildAt && uploadAt > assertAt)
   const winWorkflow = read('.github/workflows/windows.yml')
   ok('the Windows workflow builds the same way and asserts the same', winWorkflow.includes("ELECTRON_BUILDER_7Z_FILTER: ${{ matrix.arch == 'arm64' && 'BCJ' || '' }}") && winWorkflow.includes('node scripts/assert-nsis-payload.mjs release'))
+}
+
+console.log('\nthe packaged Windows account helper is managed AnyCPU code')
+{
+  const image = Buffer.alloc(1024)
+  image.writeUInt16LE(0x5a4d, 0); image.writeUInt32LE(0x80, 0x3c)
+  image.writeUInt32LE(0x00004550, 0x80); image.writeUInt16LE(0x14c, 0x84)
+  image.writeUInt16LE(1, 0x86); image.writeUInt16LE(224, 0x94); image.writeUInt16LE(0x2000, 0x96)
+  image.writeUInt16LE(0x10b, 0x98); image.writeUInt32LE(16, 0xf4)
+  image.writeUInt32LE(0x2000, 0x168); image.writeUInt32LE(72, 0x16c)
+  image.writeUInt32LE(0x2000, 0x184); image.writeUInt32LE(512, 0x188); image.writeUInt32LE(512, 0x18c)
+  image.writeUInt32LE(72, 512); image.writeUInt32LE(0x2050, 520); image.writeUInt32LE(1, 528)
+  image.writeUInt32LE(0x424a5342, 592); image.write('StokeIdentityNative', 608, 'ascii')
+  const accepted = (bytes: Buffer) => { try { assertWindowsIdentityImage(bytes); return true } catch { return false } }
+  check('IL-only PE32 metadata accepts AnyCPU without requiring native x86', accepted(image), true)
+  for (const [name, flags] of [['native code', 0], ['32-bit required', 3], ['32-bit preferred', 0x20001]] as const) {
+    const wrong = Buffer.from(image); wrong.writeUInt32LE(flags, 528)
+    check(`the image gate refuses ${name}`, accepted(wrong), false)
+  }
+  check('a missing/truncated DLL is refused', accepted(image.subarray(0, 128)), false)
+  const noClr = Buffer.from(image); noClr.writeUInt32LE(0, 0x168)
+  check('a native PE DLL without a CLR header is refused', accepted(noClr), false)
+  ok('Windows dev and builds compile the fixed library before launching or packaging', pkg.scripts.dev.includes('build-windows-identity.mjs') && pkg.scripts.build.includes('build-windows-identity.mjs'))
+  const builder = read('electron-builder.yml')
+  ok('the native resource stays outside app.asar and is copied only by the Windows target', builder.includes("'!out/native/**'") && /win:[\s\S]*?from: out\/native\/windows-identity\/StokeIdentityNative\.dll\s+to: windows-identity\/StokeIdentityNative\.dll/.test(builder))
+  ok('the actual packaged-output gate also validates the Windows identity DLL', read('scripts/assert-packaged-pty.mjs').includes("if (target.platform === 'win32') assertPackagedWindowsIdentity(hits)"))
 }
 
 console.log(failures ? `\n${failures} FAILED` : '\nall pass')
