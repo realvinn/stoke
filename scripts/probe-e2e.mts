@@ -96,6 +96,7 @@ import { startLoginServer } from './probe/login-server.mjs'
 import { createCertificate, startTlsServer } from './probe/tls-server.mjs'
 import { createSshFileFixture, removeSshFileFixture } from './probe/ssh-files.mjs'
 import { terminalLinkPoint } from './probe/terminal-link.mjs'
+import { readAgentRecords, selectAgentRecord } from './probe/agent-records.mjs'
 import { nativeCrashScript } from './probe/native-crash.mjs'
 import { accountSyncFixture } from './probe/account-sync.mts'
 import type { HubView } from '../src/shared/hub/client.ts'
@@ -504,6 +505,8 @@ async function pressEnter(): Promise<void> {
 
 interface StubRecord {
   file: string
+  startIndex: number
+  key: string
   pid: number
   id: string
   start: { argv: string[]; cwd: string; env: Record<string, unknown> } & Record<string, unknown>
@@ -511,22 +514,11 @@ interface StubRecord {
 }
 
 function stubRecords(id?: string): StubRecord[] {
-  const out: StubRecord[] = []
-  for (const name of readdirSync(agentsDir)) {
-    const m = /^([a-z]+)-(\d+)\.jsonl$/.exec(name)
-    if (!m || (id && m[1] !== id)) continue
-    const events = readFileSync(join(agentsDir, name), 'utf8')
-      .split('\n')
-      .filter(Boolean)
-      .map((l) => JSON.parse(l) as Record<string, unknown> & { kind: string })
-    const start = events.find((e) => e.kind === 'start') as StubRecord['start'] | undefined
-    if (start) out.push({ file: name, pid: Number(m[2]), id: m[1], start, events })
-  }
-  return out.sort((a, b) => Number(a.events[0]?.t ?? 0) - Number(b.events[0]?.t ?? 0))
+  return readAgentRecords(agentsDir, id)
 }
 
-function stubByPid(pid: number): StubRecord | null {
-  return stubRecords().find((r) => r.pid === pid) ?? null
+function stubByPid(id: string, pid: number, cwd?: string): StubRecord | null {
+  return selectAgentRecord(stubRecords(id), id, pid, cwd)
 }
 
 /** The pid a terminal's banner names. */
@@ -662,7 +654,7 @@ await step('a Claude session from `stoke <folder> --new`', async () => {
   const ptyId = await termShowing('STOKE-PROBE claude ready', 'the Claude stub\'s banner in a terminal')
   const pid = await pidIn(ptyId, 'claude')
   tabs.claude = { ptyId, pid }
-  const rec = await waitFor('the Claude stub\'s start record', () => stubByPid(pid) ?? stubRecords('claude').at(-1) ?? null, 10_000)
+  const rec = await waitFor('the Claude stub\'s start record', () => stubByPid('claude', pid, proj), 10_000)
   const argv = rec.start.argv
   claudeSession = argAfter(argv, '--session-id') ?? ''
   check('it was started with --session-id <uuid>', /^[0-9a-f-]{36}$/.test(claudeSession), `argv ${JSON.stringify(argv)}`)
@@ -671,7 +663,7 @@ await step('a Claude session from `stoke <folder> --new`', async () => {
   check('and --mcp-config naming Stoke\'s browser server', !!argAfter(argv, '--mcp-config'))
   check('in the folder asked for', rec.start.cwd === proj || realpathSync(rec.start.cwd) === proj, `cwd ${rec.start.cwd}`)
   check('the launcher the settings name, not some other claude', argv.length > 0 && rec.id === 'claude')
-  const statusRun = await waitFor('the first statusLine render', () => stubRecords('claude').find((r) => r.pid === rec.pid)?.events.find((e) => e.kind === 'statusline') ?? null, 20_000)
+  const statusRun = await waitFor('the first statusLine render', () => stubByPid('claude', rec.pid, proj)?.events.find((e) => e.kind === 'statusline') ?? null, 20_000)
   check('--settings carries a statusLine command', statusRun.ran === true, JSON.stringify(statusRun).slice(0, 600))
   check('which exited 0 in the shell the CLI would use', statusRun.status === 0, `shell ${String(statusRun.shell)} status ${String(statusRun.status)} stderr ${String(statusRun.stderr ?? '').slice(0, 400)}`)
   const payloadFile = join(tmp, 'stoke', 'statusline', `${claudeSession}.json`)
@@ -698,7 +690,7 @@ await step('typing reaches the session, and its hooks land', async () => {
   check('keystrokes typed into the terminal reached the process (GOT …)', got === true, got ? '' : (await bufferOf(t.ptyId)).slice(-800))
   const reply = await waitFor('the reply', async () => ((await bufferOf(t.ptyId)).includes('REPLY stoke probe reply 1') ? true : null), 15_000).catch(() => false)
   check('the stub answered the turn', reply === true)
-  const rec = stubRecords('claude').find((r) => r.pid === t.pid)
+  const rec = stubByPid('claude', t.pid, proj)
   const hooks = (rec?.events ?? []).filter((e) => e.kind === 'hook')
   check('UserPromptSubmit and Stop hooks ran and exited 0', ['UserPromptSubmit', 'Stop'].every((ev) => hooks.some((h) => h.event === ev && h.status === 0)), JSON.stringify(hooks).slice(0, 600))
   const eventsFile = join(tmp, 'stoke', 'statusline', `${claudeSession}.events.jsonl`)
@@ -792,7 +784,7 @@ await step('a `stoke <folder> --continue` tab: Stoke holds no id and learns it f
   check('the request was handed over', code === 0, `exit ${code}`)
   const ptyId = await termShowing('STOKE-PROBE claude continued', 'the continued Claude stub\'s banner', 45_000, taken)
   const pid = await pidIn(ptyId, 'claude')
-  const rec = await waitFor('the continued stub\'s start record', () => stubByPid(pid), 10_000)
+  const rec = await waitFor('the continued stub\'s start record', () => stubByPid('claude', pid, projContinue), 10_000)
   const argv = rec.start.argv
   check('it was started with --continue, and neither --session-id nor --resume', argv.includes('--continue') && !argv.includes('--session-id') && !argv.includes('--resume'), JSON.stringify(argv))
   const stubId = String(rec.events.find((e) => e.kind === 'claude-session')?.sessionId ?? '')
@@ -837,7 +829,7 @@ for (const id of ['codex', 'opencode'] as const) {
     const others = AGENTS.filter((a) => a !== id).map((a) => `STOKE-PROBE ${a} ready`)
     const text = await bufferOf(ptyId)
     check('that shows only its own agent', !others.some((o) => text.includes(o)))
-    const rec = await waitFor(`the ${id} stub's start record`, () => stubByPid(pid) ?? stubRecords(id).at(-1) ?? null, 10_000)
+    const rec = await waitFor(`the ${id} stub's start record`, () => stubByPid(id, pid, proj), 10_000)
     check('its process is the stub launcher, not a real install', rec.id === id, rec.file)
     if (id === 'codex') {
       check('handed Stoke\'s MCP server as -c mcp_servers.stoke.* (agentLaunchPlan)', rec.start.argv.some((a) => a.startsWith('mcp_servers.stoke.url=')), JSON.stringify(rec.start.argv))
@@ -1615,7 +1607,7 @@ await step('named API profiles save in Settings and launch with their own creden
       opened.push(ptyId)
       await activate(ptyId)
       const pid = await pidIn(ptyId, cli)
-      const rec = await waitFor('the API agent launch record', () => stubByPid(pid), 10_000)
+      const rec = await waitFor('the API agent launch record', () => stubByPid(cli, pid, folder), 10_000)
       const env = rec!.start.env as Record<string, string>
       check(`${cli}: only its selected API credential reaches the launch`, env[cli === 'claude' ? 'ANTHROPIC_API_KEY' : 'STOKE_ACCOUNT_API_KEY'] === `<set, ${key.length} chars>` && !JSON.stringify(rec!.start.argv).includes(key))
       const flag = cli === 'claude' ? '--model' : '-m'
@@ -1655,7 +1647,7 @@ await step('named API profiles save in Settings and launch with their own creden
     const ptyId = await termShowing('STOKE-PROBE opencode ready', 'OpenCode on its selected Anthropic account', 45_000, taken)
     opened.push(ptyId); await activate(ptyId)
     const pid = await pidIn(ptyId, 'opencode')
-    const record = await waitFor('OpenCode API launch record', () => stubByPid(pid), 10_000)
+    const record = await waitFor('OpenCode API launch record', () => stubByPid('opencode', pid, folder), 10_000)
     const env = record!.start.env as Record<string, string>
     const config = JSON.parse(env.OPENCODE_CONFIG_CONTENT)
     check('OpenCode uses the selected Anthropic key and Messages adapter', env.STOKE_ACCOUNT_API_KEY === `<set, ${source.apiKey.length} chars>` && config.provider.stoke_account.npm === '@ai-sdk/anthropic' && config.provider.stoke_account.options.apiKey === '{env:STOKE_ACCOUNT_API_KEY}' && config.provider.stoke_account.options.baseURL === 'https://api.anthropic.com/v1')
@@ -1715,7 +1707,7 @@ await step('selected Claude logins own their authentication despite inherited an
       opened.push(ptyId)
       await activate(ptyId)
       const pid = await pidIn(ptyId, 'claude')
-      const rec = await waitFor('the selected login launch record', () => stubByPid(pid), 10_000)
+      const rec = await waitFor('the selected login launch record', () => stubByPid('claude', pid, folder), 10_000)
       check(`Profile ${number}: the selected login launches in its own credential home`, rec!.start.env.CLAUDE_CONFIG_DIR === account.home)
       check(`Profile ${number}: API, gateway, OAuth and cloud-provider overrides cannot leak into the login`, names.every(name => !Object.keys(rec!.start.env).some(key => key.toUpperCase() === name)))
       await waitFor('the header to identify the running login account', () => ev<boolean>(`document.querySelector('[data-testid="stoke-account"]')?.getAttribute('data-account') === ${JSON.stringify(account.id)} && document.querySelector('[data-testid="stoke-account"]')?.textContent.includes('profile${number}@example.test')`), nativeIdentityUiWaitMs)
@@ -1801,7 +1793,7 @@ await step('encrypted accounts arrive through native IPC and select the right Co
     mkdirSync(project, { recursive: true }); await stokeCli('--cli', 'codex', '--new', project)
     const ptyId = await termShowing('STOKE-PROBE codex ready', 'the synced subscription session', 45_000, taken)
     opened.push(ptyId)
-    const rec = await waitFor('the synced account launch record', async () => stubByPid(await pidIn(ptyId, 'codex')))
+    const rec = await waitFor('the synced account launch record', async () => stubByPid('codex', await pidIn(ptyId, 'codex'), project))
     check('the native launch uses the selected imported home and login store', rec!.start.env.CODEX_HOME === work.home && rec!.start.argv.includes('cli_auth_credentials_store="file"'))
     check('the native subscription launch excludes the global API endpoint', !rec!.start.argv.some(arg => arg.includes('wrong-api') || arg.startsWith('model_provider=')))
     await activate(ptyId)
@@ -1847,7 +1839,8 @@ await step('dragging a live agent into a separate Stoke window keeps the process
     await waitFor('the original PTY in the detached terminal', () => ev<boolean>(`window.stokeTerminals?.has(${JSON.stringify(t.ptyId)}) === true`))
     check('a detached Stoke window starts with its sidebar hidden', await ev<boolean>(`!document.querySelector('.sidebar')`) === true)
     check('the original window releases its transferred terminal', await primary.evaluate(`!window.stokeTerminals.has(${JSON.stringify(t.ptyId)})`) === true)
-    check('the detached window has the same running agent process', stubRecords('codex').length === recordsBefore && !!stubRecords('codex').find(record => record.pid === t.pid && !record.events.some(event => event.kind === 'exit')))
+    const detachedRecord = stubByPid('codex', t.pid, proj)
+    check('the detached window has the same running agent process', stubRecords('codex').length === recordsBefore && !!detachedRecord && !detachedRecord.events.some(event => event.kind === 'exit'))
     // Flush any incidental input in the disposable stub before this exact-line contract.
     await typeLine(t.ptyId, '')
     await typeLine(t.ptyId, 'detached-window-input')
@@ -2197,7 +2190,7 @@ for (const layout of ['hardlink', 'paddedlink']) await step(`a click on a ${layo
   await typeLine(t.ptyId, '')
   const cols = await ev<number>(`window.stokeTerminals.get(${JSON.stringify(t.ptyId)}).cols`)
   await typeLine(t.ptyId, `${layout} ${site.base}/whoami?terminal=${layout}&padding= ${cols}`)
-  const link = await waitFor('the stub\'s hard link output', () => stubRecords('codex').find(r => r.pid === t.pid)?.events.find(e => e.kind === layout) ?? null, 10_000)
+  const link = await waitFor('the stub\'s hard link output', () => stubByPid('codex', t.pid, proj)?.events.find(e => e.kind === layout) ?? null, 10_000)
   const target = String(link.url)
   const point = await waitFor('the hard-wrapped tail in the production terminal', () => ev<{ x: number; y: number; hardBoundary: boolean } | null>(`(() => {
     const t = window.stokeTerminals.get(${JSON.stringify(t.ptyId)}), screen = t.element.querySelector('.xterm-screen').getBoundingClientRect();
@@ -2387,7 +2380,7 @@ await step('agents read the logged-in page through Stoke\'s browser MCP', async 
     }
     const target = `${site.base}/account?via=${id}`
     await typeLine(t.ptyId, `mcp ${target}`)
-    const rec = await waitFor(`${id}'s MCP record`, () => stubRecords(id).find((r) => r.pid === t.pid)?.events.find((e) => e.kind === 'mcp' && e.url === target) ?? null, 90_000).catch(() => null)
+    const rec = await waitFor(`${id}'s MCP record`, () => stubByPid(id, t.pid, proj)?.events.find((e) => e.kind === 'mcp' && e.url === target) ?? null, 90_000).catch(() => null)
     check(`${id}: browser_open and browser_read answered, over ${String(rec?.via ?? 'nothing')}`, rec?.ok === true, JSON.stringify(rec).slice(0, 600))
     check(`${id}: and the page it read is signed in`, String(rec?.read ?? '').includes('Signed in as probe-user'), String(rec?.read ?? '').slice(0, 300))
   }
@@ -2667,7 +2660,7 @@ function readCookie(file: string, name: string): { value: string; encLen: number
 /* -------------------------------------------------------------- relaunch */
 
 await step('relaunch: the tabs come back, and resume what they were', async () => {
-  const seenPids = new Set(stubRecords().map((r) => r.pid))
+  const seenEpochs = new Set(stubRecords().map((r) => r.key))
   await launch()
   await attach()
   await waitFor('the shell to mount again', () => ev<boolean>('!!document.querySelector(".app > .titlebar")'), 30_000)
@@ -2699,17 +2692,17 @@ await step('relaunch: the tabs come back, and resume what they were', async () =
     await sleep(700)
   }
   const fresh = await waitFor('the resumed agents to start', () => {
-    const now = stubRecords().filter((r) => !seenPids.has(r.pid))
+    const now = stubRecords().filter((r) => !seenEpochs.has(r.key))
     return AGENTS.every((a) => now.some((r) => r.id === a)) ? now : null
-  }, 60_000).catch(() => stubRecords().filter((r) => !seenPids.has(r.pid)))
+  }, 60_000).catch(() => stubRecords().filter((r) => !seenEpochs.has(r.key)))
   // The main tab's, if two Claude tabs came back (the --continue tab is closed
   // in its own step; if that failed, it is not this check's failure).
-  const claudeAgain = fresh.find((r) => r.id === 'claude' && argAfter(r.start.argv, '--resume') === claudeSession) ?? fresh.find((r) => r.id === 'claude')
+  const claudeAgain = selectAgentRecord(fresh.filter(r => argAfter(r.start.argv, '--resume') === claudeSession), 'claude', undefined, proj) ?? selectAgentRecord(fresh, 'claude', undefined, proj)
   check('Claude came back with --resume <the same session id> (gotcha 81)', argAfter(claudeAgain?.start.argv ?? [], '--resume') === claudeSession, JSON.stringify(claudeAgain?.start.argv ?? null))
   check('and no --session-id beside it (the CLI refuses the pair)', !(claudeAgain?.start.argv ?? []).includes('--session-id'))
-  const codexAgain = fresh.find((r) => r.id === 'codex')
+  const codexAgain = selectAgentRecord(fresh, 'codex', undefined, proj)
   check('Codex resumes its confirmed native conversation instead of account-wide latest', !!codexNativeId && (codexAgain?.start.argv ?? []).includes(codexNativeId) && (codexAgain?.start.argv ?? []).includes('resume') && !(codexAgain?.start.argv ?? []).includes('--last'), JSON.stringify(codexAgain?.start.argv ?? null))
-  const opencodeAgain = fresh.find((r) => r.id === 'opencode')
+  const opencodeAgain = selectAgentRecord(fresh, 'opencode', undefined, proj)
   check('OpenCode came back with --continue', (opencodeAgain?.start.argv ?? []).includes('--continue'), JSON.stringify(opencodeAgain?.start.argv ?? null))
   if (claudeAgain) {
     const ptyId = await termShowing(`STOKE-PROBE claude resumed ${claudeSession}`, 'the resumed Claude tab', 20_000)
@@ -2727,7 +2720,7 @@ await step('relaunch: the browser is still logged in', async () => {
   if (!t) throw new Error('no resumed Codex tab to ask through')
   const target = `${site.base}/account?via=codex-after-relaunch`
   await typeLine(t.ptyId, `mcp ${target}`)
-  const rec = await waitFor('the MCP read after relaunch', () => stubRecords('codex').find((r) => r.pid === t.pid)?.events.find((e) => e.kind === 'mcp' && e.url === target) ?? null, 90_000).catch(() => null)
+  const rec = await waitFor('the MCP read after relaunch', () => stubByPid('codex', t.pid, proj)?.events.find((e) => e.kind === 'mcp' && e.url === target) ?? null, 90_000).catch(() => null)
   check('the login survived the quit: the page reads signed in', String(rec?.read ?? '').includes('Signed in as probe-user'), JSON.stringify(rec).slice(0, 600))
 })
 
