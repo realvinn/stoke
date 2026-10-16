@@ -11,9 +11,6 @@ export function configureWindowsAccountIdentityLibrary(path: string): void {
 
 // Native ARM64 CI cold initialization exceeded 12 s before capture began.
 export const ACCOUNT_IDENTITY_CLEANUP_TIMEOUT_MS = process.platform === 'win32' && process.arch === 'arm64' ? 30_000 : 12_000
-// Windows PowerShell 5.1 cannot sort a Hashtable by naming its key as a
-// property. A calculated lookup works there and preserves job nesting order.
-export const WINDOWS_IDENTITY_DEPTH_SORT = "Sort-Object -Property { [int]$_['Depth'] }"
 export interface WindowsIdentityCleanupOptions {
   /** Suite seams; production always uses the fixed native helper and limits. */
   powershell?: string
@@ -40,7 +37,7 @@ export interface WindowsIdentityCleanupResult { cleaned: boolean; failed: boolea
 const CLEANUP_STAGES = ['initializing', 'native-library', 'native-snapshot', 'system-directory', 'root-parent', 'root-open', 'root-created', 'root-ack', 'job-create', 'job-limit', 'capture', 'root-ancestry', 'parent-order', 'image-query', 'job-query', 'job-assign', 'job-stop', 'process-wait', 'job-accounting', 'done']
 const nativeStage = (stage: string) => `[Console]::WriteLine('{"phase":"stage","stage":"${stage}","targetPid":0,"targetDepth":0}'); [Console]::Out.Flush()\n`
 const snapshotScript = WINDOWS_PROCESS_TABLE_SCRIPT.slice(WINDOWS_PROCESS_TABLE_SCRIPT.indexOf('$snapshot = $native::'))
-export const WINDOWS_IDENTITY_CLEANUP_SCRIPT = nativeStage('initializing') + "$ErrorActionPreference = 'Stop'\n" + nativeStage('native-library') + `[void][Reflection.Assembly]::LoadFile($env:STOKE_IDENTITY_NATIVE_LIBRARY)
+export const WINDOWS_IDENTITY_CLEANUP_SCRIPT = nativeStage('initializing') + "$ErrorActionPreference = 'Stop'\n$PSModuleAutoLoadingPreference = 'None'\n" + nativeStage('native-library') + `[void][Reflection.Assembly]::LoadFile($env:STOKE_IDENTITY_NATIVE_LIBRARY)
 $native = [StokeIdentityNative]
 ` + nativeStage('native-snapshot') + snapshotScript.replace('[Console]::Write($result.ToString())', '$rows = $result.ToString()') + '\nfunction Read-CurrentParents {\n' + snapshotScript.replace('[Console]::Write($result.ToString())', 'return $result.ToString()') + '\n}\n' + `
 $rootId = [uint32]::Parse($env:STOKE_IDENTITY_ROOT_PID)
@@ -113,7 +110,7 @@ try {
     # while its exact owned ChildProcess still holds the original handle;
     # this avoids comparing coarse JavaScript and native creation clocks.
     $stage = 'root-ack'
-    [Console]::WriteLine((@{ phase = 'root-pinned'; pid = $rootId } | ConvertTo-Json -Compress)); [Console]::Out.Flush()
+    [Console]::WriteLine([string]::Format([Globalization.CultureInfo]::InvariantCulture, '{{"phase":"root-pinned","pid":{0}}}', [object[]]@($rootId))); [Console]::Out.Flush()
     if ([Console]::In.ReadLine() -ne ('owned-root:' + [string]$rootId)) { throw 'root-not-owned' }
     $rootAcknowledged = $true
   } elseif ($rootProcess.Created -gt $latest) { throw 'root-replaced' }
@@ -131,7 +128,7 @@ try {
   $delay = [int]::Parse($env:STOKE_IDENTITY_CAPTURE_DELAY)
   do {
     $stage = 'capture'
-    [Console]::WriteLine((@{ phase = 'stage'; stage = $stage; targetPid = $targetPid; targetDepth = $targetDepth; captured = $held.Count; jobs = $jobs.Count } | ConvertTo-Json -Compress)); [Console]::Out.Flush()
+    [Console]::WriteLine([string]::Format([Globalization.CultureInfo]::InvariantCulture, '{{"phase":"stage","stage":"capture","targetPid":{0},"targetDepth":{1},"captured":{2},"jobs":{3}}}', [object[]]@($targetPid, $targetDepth, $held.Count, $jobs.Count))); [Console]::Out.Flush()
     do {
       $added = $false
       foreach ($processId in @($parents.Keys)) {
@@ -152,9 +149,16 @@ try {
     if ($currentParents.ContainsKey($rootId)) {
       if ($currentParents[$rootId] -ne $ownerId) { throw 'root-ancestry-changed' }
     } elseif ($native::WaitForSingleObject($rootProcess.Handle, 0) -ne 0) { throw 'root-ancestry-changed' }
-    $ordered = @($held.Values | ${WINDOWS_IDENTITY_DEPTH_SORT})
+    [uint32[]]$heldIds = [Array]::CreateInstance([uint32], $held.Count)
+    [int[]]$heldDepths = [Array]::CreateInstance([int], $held.Count)
+    $orderAt = 0
+    foreach ($owned in $held.Values) {
+      $heldIds[$orderAt] = $owned.Id; $heldDepths[$orderAt] = $owned.Depth; $orderAt++
+    }
+    $orderedIds = $native::OrderByDepth($heldIds, $heldDepths)
     $visited = @{}
-    foreach ($owned in $ordered) {
+    foreach ($ownedId in $orderedIds) {
+      $owned = $held[$ownedId]
       $targetPid = $owned.Id; $targetDepth = $owned.Depth
       if ($owned.Id -ne $rootId) {
         # Preserve the edge captured with this pinned handle. An exited
@@ -199,8 +203,8 @@ try {
     # Only the suite pauses capture. Future children of assigned parents
     # inherit this job; pre-assignment children are captured by the next pass.
     if ($delay -gt 0) {
-      [Console]::WriteLine((@{ phase = 'capture-paused'; captured = $held.Count; jobs = $jobs.Count } | ConvertTo-Json -Compress)); [Console]::Out.Flush()
-      Start-Sleep -Milliseconds $delay; $delay = 0
+      [Console]::WriteLine([string]::Format([Globalization.CultureInfo]::InvariantCulture, '{{"phase":"capture-paused","captured":{0},"jobs":{1}}}', [object[]]@($held.Count, $jobs.Count))); [Console]::Out.Flush()
+      [Threading.Thread]::Sleep($delay); $delay = 0
     }
     $parents = @{}
     foreach ($row in (Read-CurrentParents).Split([char]10)) {
@@ -218,10 +222,10 @@ try {
   # trusted OS console facility subtrees remain outside this ownership.
   # Future descendants inherit their parent's private job. If the helper
   # exits, all sole non-inherited job handles close and terminate the union.
-  [Console]::WriteLine((@{ phase = 'owned'; captured = $captured; jobs = $jobs.Count } | ConvertTo-Json -Compress))
+  [Console]::WriteLine([string]::Format([Globalization.CultureInfo]::InvariantCulture, '{{"phase":"owned","captured":{0},"jobs":{1}}}', [object[]]@($captured, $jobs.Count)))
   [Console]::Out.Flush()
   $pause = [int]::Parse($env:STOKE_IDENTITY_POST_OWNERSHIP_PAUSE)
-  if ($pause -gt 0) { Start-Sleep -Milliseconds $pause }
+  if ($pause -gt 0) { [Threading.Thread]::Sleep($pause) }
   foreach ($ownedJob in $jobs) {
     if (-not $native::TerminateJobObjectChecked($ownedJob, 1)) {
       $nativeError = $native::LastError
@@ -248,7 +252,7 @@ try {
       if (-not $native::QueryInformationJobObjectChecked($ownedJob, 1, $info, 48, [IntPtr]::Zero)) { $nativeError = $native::LastError; throw 'job-accounting-failed' }
       $remaining += [Runtime.InteropServices.Marshal]::ReadInt32($info, 40)
     }
-    if ($remaining -ne 0 -and $wait.ElapsedMilliseconds -lt 2000) { Start-Sleep -Milliseconds 10 }
+    if ($remaining -ne 0 -and $wait.ElapsedMilliseconds -lt 2000) { [Threading.Thread]::Sleep(10) }
   } while ($remaining -ne 0 -and $wait.ElapsedMilliseconds -lt 2000)
   if ($remaining -eq 0) { $stage = 'done' }
 } catch {
@@ -261,7 +265,7 @@ try {
   if ($info -ne [IntPtr]::Zero) { [Runtime.InteropServices.Marshal]::FreeHGlobal($info) }
   if ($pathBuffer -ne [IntPtr]::Zero) { [Runtime.InteropServices.Marshal]::FreeHGlobal($pathBuffer) }
 }
-[Console]::Write((@{ phase = 'done'; stage = $stage; targetPid = $targetPid; targetDepth = $targetDepth; creationBeforeMs = $creationBeforeMs; creationAfterMs = $creationAfterMs; rootAcknowledged = $rootAcknowledged; facilities = $facilities; jobs = $jobs.Count; captured = $captured; remaining = $remaining; nativeError = $nativeError } | ConvertTo-Json -Compress))
+[Console]::Write([string]::Format([Globalization.CultureInfo]::InvariantCulture, '{{"phase":"done","stage":"{0}","targetPid":{1},"targetDepth":{2},"creationBeforeMs":{3},"creationAfterMs":{4},"rootAcknowledged":{5},"facilities":{6},"jobs":{7},"captured":{8},"remaining":{9},"nativeError":{10}}}', [object[]]@($stage, $targetPid, $targetDepth, $creationBeforeMs, $creationAfterMs, $rootAcknowledged.ToString().ToLowerInvariant(), $facilities, $jobs.Count, $captured, $remaining, $nativeError)))
 `
 
 export function stopWindowsAccountIdentity(pid: number, spawnedFrom: number, spawnedUntil: number, options: WindowsIdentityCleanupOptions = {}): Promise<WindowsIdentityCleanupResult> {

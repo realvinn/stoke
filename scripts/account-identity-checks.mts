@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { AccountIdentities, planAccountIdentity, probeAccountIdentity, type AccountIdentitySpawn } from '../src/main/accountIdentity.ts'
 import { accountIdentityTarget, accountLoginOutcome, identityFor, nativeAccountIdentity, type AccountIdentityTarget } from '../src/shared/accountIdentity.ts'
 import { hydrateSettings } from '../src/main/settingsSchema.ts'
-import { ACCOUNT_IDENTITY_CLEANUP_TIMEOUT_MS, configureWindowsAccountIdentityLibrary, stopWindowsAccountIdentity, WINDOWS_IDENTITY_CLEANUP_SCRIPT, WINDOWS_IDENTITY_DEPTH_SORT, type WindowsIdentityCleanupOptions } from '../src/main/accountIdentityWindows.ts'
+import { ACCOUNT_IDENTITY_CLEANUP_TIMEOUT_MS, configureWindowsAccountIdentityLibrary, stopWindowsAccountIdentity, WINDOWS_IDENTITY_CLEANUP_SCRIPT, type WindowsIdentityCleanupOptions } from '../src/main/accountIdentityWindows.ts'
 import { windowsProcessTableSpec } from '../src/main/windowsProcessTable.ts'
 import { buildWindowsIdentityLibrary, assertWindowsIdentityImage } from './build-windows-identity.mjs'
 
@@ -24,15 +24,18 @@ export async function runAccountIdentityChecks(): Promise<void> {
     return child
   }
   let originalFailure: unknown
+  let nativeLibrary: string | null = null
   try {
     if (process.platform === 'win32') {
-      const library = await buildWindowsIdentityLibrary()
-      assert(library, 'native Windows verification builds the same private library that packaging includes')
-      assertWindowsIdentityImage(await readFile(library))
-      configureWindowsAccountIdentityLibrary(library)
+      nativeLibrary = await buildWindowsIdentityLibrary()
+      assert(nativeLibrary, 'native Windows verification builds the same private library that packaging includes')
+      assertWindowsIdentityImage(await readFile(nativeLibrary))
+      configureWindowsAccountIdentityLibrary(nativeLibrary)
     }
     assert(!/[^\x00-\x7f]/.test(WINDOWS_IDENTITY_CLEANUP_SCRIPT), 'Windows PowerShell 5.1 receives a fixed ASCII cleanup script')
     assert(!/Add-Type|Reflection\.Emit|DefineDynamicAssembly|csc\.exe/.test(WINDOWS_IDENTITY_CLEANUP_SCRIPT), 'installed identity cleanup loads compiled code without building types or starting a compiler')
+    assert(WINDOWS_IDENTITY_CLEANUP_SCRIPT.includes("$PSModuleAutoLoadingPreference = 'None'"), 'every actual native cleanup fixture runs with module autoload disabled')
+    assert(!/ConvertTo-Json|Sort-Object|Start-Sleep|ForEach-Object|Import-Module/i.test(WINDOWS_IDENTITY_CLEANUP_SCRIPT), 'identity cleanup has no Utility cmdlet or implicit cold module dependency')
     const settings = hydrateSettings({ accounts: {
       'claude-work': { id: 'claude-work', cli: 'claude', label: 'Work', kind: 'login', home: join(root, 'claude-work'), apiKey: '' },
       'codex-work': { id: 'codex-work', cli: 'codex', label: 'Codex work', kind: 'login', home: join(root, 'codex-work'), apiKey: '' },
@@ -203,9 +206,9 @@ else { if(mode==='late') { process.on('SIGTERM',()=>{});setInterval(()=>{},1000)
     pass('timeouts, output limits and shutdown reject partial identities and reap every owned child, including a child that ignores SIGTERM')
     if (process.platform === 'win32') {
       const [powershell] = windowsProcessTableSpec()
-      const sorted = await new Promise<string>((resolve, reject) => execFile(powershell, ['-NoProfile', '-NonInteractive', '-Command', `$items = @(@{Id=2;Depth=2}, @{Id=0;Depth=0}, @{Id=1;Depth=1}); $ordered = @($items | ${WINDOWS_IDENTITY_DEPTH_SORT}); [Console]::Write(($ordered | ForEach-Object { $_['Id'] }) -join ',')`], { timeout: ACCOUNT_IDENTITY_CLEANUP_TIMEOUT_MS, maxBuffer: 4096, windowsHide: true }, (error, stdout) => error ? reject(error) : resolve(String(stdout))))
-      assert.equal(sorted, '0,1,2', 'the actual Windows PowerShell helper sorts Hashtable keys with an explicit parent-first calculation')
-      pass('native Windows PowerShell orders held Hashtable processes parent before child, including PowerShell 5.1')
+      const sorted = await new Promise<string>((resolve, reject) => execFile(powershell, ['-NoProfile', '-NonInteractive', '-Command', `$ErrorActionPreference='Stop'; $PSModuleAutoLoadingPreference='None'; [void][Reflection.Assembly]::LoadFile($env:STOKE_IDENTITY_NATIVE_LIBRARY); $ids=[uint32[]]@(2,0,1); $depths=[int[]]@(2,0,1); $ordered=[StokeIdentityNative]::OrderByDepth($ids,$depths); $output=[Text.StringBuilder]::new(); foreach($id in $ordered){if($output.Length -gt 0){[void]$output.Append(',')};[void]$output.Append($id)}; [Console]::Write($output.ToString())`], { timeout: ACCOUNT_IDENTITY_CLEANUP_TIMEOUT_MS, maxBuffer: 4096, windowsHide: true, env: { ...process.env, STOKE_IDENTITY_NATIVE_LIBRARY: nativeLibrary! } }, (error, stdout) => error ? reject(error) : resolve(String(stdout))))
+      assert.equal(sorted, '0,1,2', 'the compiled primitive-pair ordering preserves parent-before-child depth without a cmdlet')
+      pass('native Windows parent-depth ordering uses the compiled library with module autoload disabled')
       const launcher = join(root, 'native-status.cmd')
       const vendorRuntime = join(root, 'conhost.exe')
       await copyFile(process.execPath, vendorRuntime)

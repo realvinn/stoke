@@ -7,6 +7,18 @@ public static class StokeIdentityNative
 {
     public static int LastError;
 
+    // Primitive pairs avoid PowerShell object wrappers and any Automation
+    // assembly dependency. The caller retains the exact pinned records.
+    public static uint[] OrderByDepth(uint[] ids, int[] depths)
+    {
+        if (ids == null || depths == null || ids.Length != depths.Length)
+            throw new ArgumentException("Mismatched pinned-process ordering arrays");
+        uint[] ordered = (uint[])ids.Clone();
+        int[] keys = (int[])depths.Clone();
+        Array.Sort(keys, ordered);
+        return ordered;
+    }
+
     [DllImport("kernel32.dll", SetLastError = true, ExactSpelling = true, CharSet = CharSet.Unicode)]
     public static extern IntPtr CreateToolhelp32Snapshot(uint flags, uint processId);
 

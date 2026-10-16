@@ -1722,7 +1722,9 @@ src/main/         Electron main process
                     jobs; private root acknowledgement, bounded waits and credential-free diagnostics. Failed public
                     reads retain native cleanup ownership. Loads the packaged AnyCPU
                     StokeIdentityNative.dll from a private main-configured path, without runtime
-                    compilation or Reflection.Emit. Actual .cmd fixtures in verify:accounts
+                    compilation or Reflection.Emit. Module autoload stays disabled; invariant
+                    numeric JSON, primitive depth sorting and managed sleeps avoid Utility
+                    cmdlet startup. Actual .cmd fixtures in verify:accounts
   build/windows-identity/StokeIdentityNative.cs fixed Windows P/Invoke declarations and immediate
                     managed error capture. scripts/build-windows-identity.mjs compiles it with
                     the OS .NET Framework compiler during Windows build/dev and verification;
