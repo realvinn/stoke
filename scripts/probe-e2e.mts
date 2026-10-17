@@ -322,6 +322,7 @@ function stokeEnv(): NodeJS.ProcessEnv {
   env.TMP = tmp
   env.ELECTRON_ENABLE_LOGGING = '1'
   env.STOKE_PROBE_SITE = site.base
+  env.STOKE_PROBE_TAB_VALUE = ''
   if (isWin) {
     env.USERPROFILE = home
     env.APPDATA = join(home, 'AppData', 'Roaming')
@@ -2371,6 +2372,103 @@ await step('quick terminal switches installed shells, opens wrapped links and re
   }
 })
 
+await step('each tab keeps its local terminal, and pinning deliberately follows across tabs', async () => {
+  const fixture = join(root, 'quick-tab-state.cjs')
+  writeFileSync(fixture, `const fs=require('node:fs');fs.writeFileSync(process.argv[2],JSON.stringify({cwd:process.cwd(),value:process.env.STOKE_PROBE_TAB_VALUE||null}));process.stdout.write('STOKE_PIN_'+process.argv[3]+'\\n');`)
+  const quote = (value: string): string => isWin ? `"${value}"` : shWord(value)
+  const readQuick = () => ev<{ state: QuickTerminalState; data: string }>('window.stoke.quickTerminal.read()')
+  const enterQuick = async (id: string, command: string) => {
+    await waitFor('the selected tab shell is rendered', () => ev<boolean>(`!!window.stokeQuickTerminals.get(${JSON.stringify(id)})`))
+    await ev(`(window.stokeQuickTerminals.get(${JSON.stringify(id)}).focus(), true)`)
+    await ui!.send('Input.insertText', { text: command }); await pressEnter()
+  }
+  const shellReport = (id: string, folder: string, label: string) => enterQuick(id, `${quote(process.execPath)} ${quote(fixture)} ${quote(join(folder, `${label}.json`))} ${label}`)
+  const report = (folder: string, label: string): { cwd: string; value: string | null } | null => { try { return JSON.parse(readFileSync(join(folder, `${label}.json`), 'utf8')) } catch { return null } }
+  const clickPin = async (pinned: boolean) => {
+    const point = await waitFor('the terminal pin control', () => ev<{ x: number; y: number } | null>(`(() => { const button = document.querySelector('[aria-label="Keep terminal across tabs"]'); if (!button || button.disabled) return null; const r = button.getBoundingClientRect(); return r.width ? { x:r.x+r.width/2, y:r.y+r.height/2 } : null; })()`))
+    await ui!.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', clickCount: 1 })
+    await ui!.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'left', clickCount: 1 })
+    await waitFor('the pin action to reach the owned terminal state and rendered control', () => ev<boolean>(`window.stoke.quickTerminal.read().then(snapshot => snapshot.state.pinned === ${pinned} && document.querySelector('[aria-label="Keep terminal across tabs"]')?.getAttribute('aria-pressed') === '${pinned}')`))
+  }
+  let extraPty = '', extraPid = 0
+  try {
+    await activate(tabs.claude!.ptyId)
+    await ev(`document.querySelector('[data-testid="footer-terminal"]').click(), true`)
+    await waitFor('the current tab terminal panel', () => ev<boolean>('window.stoke.quickTerminal.read().then(snapshot => snapshot.state.mode === "panel")'))
+    // The earlier shell-switch fixture deliberately retains its last picker
+    // selection, even after exit. These commands require the default shell.
+    await waitFor('the per-tab installed-shell picker', () => ev<boolean>(`!!document.querySelector('[aria-label="Terminal shell"]') && !document.querySelector('[aria-label="Terminal shell"]').disabled`))
+    if ((await readQuick()).state.shellId !== 'default') {
+      await ev(`(() => { const select = document.querySelector('[aria-label="Terminal shell"]'); select.value = 'default'; select.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`)
+      await waitFor('the first tab selects its default shell before restarting', () => ev<boolean>(`window.stoke.quickTerminal.read().then(snapshot => snapshot.state.shellId === 'default' && document.querySelector('[aria-label="Terminal shell"]').value === 'default')`))
+    }
+    if ((await readQuick()).state.phase === 'exited') {
+      await waitFor('the retained shell restart action is ready', () => ev<boolean>(`!![...document.querySelectorAll('.quick-terminal button')].find(button => button.textContent === 'New shell' && !button.disabled)`))
+      await ev(`([...document.querySelectorAll('.quick-terminal button')].find(button => button.textContent === 'New shell')?.click(), true)`)
+    }
+    const one = await waitFor('the first tab native shell', async () => { const snapshot = await readQuick(); return snapshot.state.phase === 'running' && snapshot.state.id ? snapshot : null })
+    check('an unpinned terminal belongs to the selected tab and project', !one.state.pinned && !!one.state.contextId && one.state.cwd === proj)
+    await enterQuick(one.state.id!, isWin ? 'set "STOKE_PROBE_TAB_VALUE=one"' : "export STOKE_PROBE_TAB_VALUE='one'")
+    await shellReport(one.state.id!, proj, 'ONE')
+    await waitFor('the first tab shell variable and cwd', () => report(proj, 'ONE')?.value === 'one' && report(proj, 'ONE')?.cwd === proj)
+    await waitFor('the first tab shell output', () => ev<boolean>('window.stoke.quickTerminal.read().then(snapshot => snapshot.data.includes("STOKE_PIN_ONE"))'))
+    const taken = Object.values(tabs).map(tab => tab!.ptyId)
+    check('an extra owned stub tab opens in a different folder', await stokeCli('--cli', 'opencode', '--new', projContinue) === 0)
+    extraPty = await termShowing('STOKE-PROBE opencode ready', 'the second-folder stub tab', 45_000, taken)
+    extraPid = await pidIn(extraPty, 'opencode')
+    await waitFor('the second-folder stub start record', () => stubByPid('opencode', extraPid, projContinue))
+    await activate(extraPty)
+    const two = await waitFor('the second tab gets its own visible shell', async () => { const snapshot = await readQuick(); return snapshot.state.phase === 'running' && snapshot.state.id !== one.state.id && snapshot.state.cwd === projContinue ? snapshot : null })
+    check('switching tabs selects a different terminal and context', !!two.state.id && two.state.contextId !== one.state.contextId && !two.state.pinned)
+    await shellReport(two.state.id!, projContinue, 'TWO')
+    await waitFor('the second tab variable and cwd stay independent', () => report(projContinue, 'TWO')?.value === null && report(projContinue, 'TWO')?.cwd === projContinue)
+    check('the second tab buffer does not contain the first tab output', !(await readQuick()).data.includes('STOKE_PIN_ONE'))
+    await activate(tabs.claude!.ptyId)
+    await waitFor('the first tab restores its original shell and buffer', async () => { const snapshot = await readQuick(); return snapshot.state.id === one.state.id && snapshot.data.includes('STOKE_PIN_ONE') })
+    await waitFor('the original tab quick-terminal replay to render', () => ev<boolean>(`(() => { const t = window.stokeQuickTerminals.get(${JSON.stringify(one.state.id)}); if (!t) return false; const b = t.buffer.active; for (let i=0;i<b.length;i++) if (b.getLine(i)?.translateToString(true).includes('STOKE_PIN_ONE')) return true; return false; })()`))
+    await ev('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))')
+    check('automatically following the selected tab preserves agent input focus', await ev<boolean>(`document.activeElement === window.stokeTerminals.get(${JSON.stringify(tabs.claude!.ptyId)})?.textarea`) === true)
+    await shellReport(one.state.id!, proj, 'RETURNED')
+    check('switching tabs retains the original shell variable', await waitFor('the retained first-tab variable', () => report(proj, 'RETURNED')?.value === 'one') === true)
+    await clickPin(true)
+    await activate(extraPty)
+    const pinned = await waitFor('the pinned shell stays selected in another tab', async () => { const snapshot = await readQuick(); return snapshot.state.pinned && snapshot.state.id === one.state.id ? snapshot : null })
+    check('the rendered pin action preserves the original process, folder and output across tabs', pinned.state.contextId === one.state.contextId && pinned.state.cwd === proj && pinned.data.includes('STOKE_PIN_ONE'))
+    await shot('05-quick-terminal-pinned-across-tabs')
+    await clickPin(false)
+    const restored = await waitFor('unpinning restores the currently selected tab terminal', async () => { const snapshot = await readQuick(); return !snapshot.state.pinned && snapshot.state.id === two.state.id ? snapshot : null })
+    check('unpin restores the other tab process, cwd and buffer', restored.state.contextId === two.state.contextId && restored.state.cwd === projContinue && !restored.data.includes('STOKE_PIN_ONE'))
+    await shellReport(two.state.id!, projContinue, 'UNPINNED')
+    check('the restored second shell retains its independent variables', await waitFor('the unpinned second-tab variable', () => report(projContinue, 'UNPINNED')?.value === null) === true)
+    await shot('05-quick-terminal-unpinned-current-tab')
+    await ev(`document.querySelector('[data-testid="footer-terminal"]').click(), true`)
+    await waitFor('the per-tab shell is hidden from the footer', () => ev<boolean>('window.stoke.quickTerminal.read().then(snapshot => snapshot.state.mode === "hidden")'))
+    await ev(`document.querySelector('[data-testid="footer-terminal"]').click(), true`)
+    check('explicitly reopening Terminal focuses the shell input', await waitFor('the explicitly opened quick-terminal input focus', () => ev<boolean>(`document.activeElement === window.stokeQuickTerminals.get(${JSON.stringify(two.state.id)})?.textarea`)) === true)
+    check('explicit reopening keeps the current tab native shell', (await readQuick()).state.id === two.state.id)
+  } finally {
+    await ev('window.stoke.quickTerminal.pin(false)').catch(() => {})
+    for (const pty of [extraPty, tabs.claude!.ptyId].filter(Boolean)) {
+      await activate(pty)
+      await ev('window.stoke.quickTerminal.move("panel")')
+      const snapshot = await readQuick()
+      for (const session of snapshot.state.sessions.filter(item => item.phase === 'running')) {
+        const selected = await ev<QuickTerminalResult>(`window.stoke.quickTerminal.selectShell(${JSON.stringify(session.shellId)})`)
+        if (!selected.ok || selected.state.id !== session.id) throw new Error('The owned per-tab cleanup shell could not be selected.')
+        await ev(`(window.stoke.quickTerminal.write(${JSON.stringify(session.id)}, 'exit\\r'), true)`)
+        await waitFor('the owned per-tab native shell to exit', () => ev<boolean>(`window.stoke.quickTerminal.read().then(snapshot => snapshot.state.sessions.find(item => item.id === ${JSON.stringify(session.id)})?.phase === 'exited')`))
+      }
+      await ev('window.stoke.quickTerminal.move("hidden")')
+    }
+    if (extraPty) {
+      await activate(extraPty)
+      await ev('(document.querySelector(".tablist .tab[aria-selected=\'true\'] .tab-close")?.click(), true)')
+      check('closing the additional owned stub tab ends its process', await waitFor('the additional stub exit marker', () => exitMarkers().includes(`exit-opencode-${extraPid}`), 20_000) === true)
+    }
+    await activate(tabs.claude!.ptyId)
+  }
+})
+
 await step('agents read the logged-in page through Stoke\'s browser MCP', async () => {
   for (const id of AGENTS) {
     const t = tabs[id]
@@ -2539,15 +2637,19 @@ async function quitGracefully(label: string): Promise<{ code: number | null; sig
   const child = stoke
   if (!child || stokeExit) return stokeExit
   if (isWin) {
-    // Leave an actual quick shell alive too: earlier link/handoff coverage
-    // ends its shell, which cannot prove native cleanup on window close.
-    const before = await ev<{ state: QuickTerminalState }>('window.stoke.quickTerminal.read()')
-    check(`quick terminal did not auto-start before ${label}`, before.state.phase === 'idle' || before.state.phase === 'exited')
-    const opened = await ev<QuickTerminalResult>(`window.stoke.quickTerminal.open('panel', ${JSON.stringify(proj)})`)
-    const quick = opened.ok && opened.state.phase === 'exited'
-      ? await ev<QuickTerminalResult>('window.stoke.quickTerminal.restart()') : opened
-    check(`a real quick shell is running before ${label}`, quick.ok && quick.state.phase === 'running' && !!quick.state.id)
-    await ev('window.stoke.quickTerminal.move("hidden")')
+    // Keep native shells in two tab contexts alive: a quit must drain both
+    // the displayed context and a hidden context, through actual callbacks.
+    const liveQuickIds: string[] = []
+    for (const cli of ['claude', 'codex'] as const) {
+      await activate(tabs[cli]!.ptyId)
+      const opened = await ev<QuickTerminalResult>(`window.stoke.quickTerminal.open('panel', ${JSON.stringify(proj)})`)
+      const quick = opened.ok && opened.state.phase === 'exited'
+        ? await ev<QuickTerminalResult>('window.stoke.quickTerminal.restart()') : opened
+      check(`a real ${cli}-tab quick shell is running before ${label}`, quick.ok && quick.state.phase === 'running' && !!quick.state.id)
+      if (quick.ok && quick.state.id) liveQuickIds.push(quick.state.id)
+      await ev('window.stoke.quickTerminal.move("hidden")')
+    }
+    check(`two different tab terminals remain owned before ${label}`, new Set(liveQuickIds).size === 2)
   }
   // Hold an actual owned identity child at quit, including a Windows .cmd
   // launcher tree. EOF and SIGTERM are deliberately ignored by this fixture.

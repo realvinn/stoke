@@ -1,4 +1,4 @@
-import { access, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { QuickTerminal, quickTerminalEnv } from '../src/main/quickTerminal.ts'
@@ -137,6 +137,10 @@ try {
   check('reopening an ended shell does not secretly spawn', (await service.open('popout')).id, id)
   const next = await service.restart('panel')
   check('explicit new shell has a new identity', next.id !== id, true)
+  check('restarting from a pop-out into the panel updates the terminal view', next.mode, 'panel')
+  const afterRestart = await service.context('restart-view', root)
+  check('a later tab activation retains the restarted panel presentation', afterRestart.mode, 'panel')
+  await service.context(null, root)
   enabled = false; service.disable()
   check('disable hides and waits for process exit', [service.view().mode, await until(() => service.view().phase === 'exited')], ['hidden', true])
   check('disabling also closes inactive shell processes', await until(() => service.view().sessions.every(session => session.phase === 'exited')), true)
@@ -161,6 +165,161 @@ try {
   check('queued frames covered by a snapshot never replay twice', written, ['snapshot🔥', 'after', 'next'])
   const env = quickTerminalEnv({ PATH: '/stale', NODE_OPTIONS: 'never', ELECTRON_RUN_AS_NODE: '1', CLAUDE_CODE_CHILD_SESSION: 'yes', TERM_PROGRAM: 'another-wrapper', STOKE_QUICK_FIXTURE: 'retained' }, '/usr/bin:/bin')
   check('agent runtime markers cannot nest shell commands', [env.NODE_OPTIONS, env.ELECTRON_RUN_AS_NODE, env.CLAUDE_CODE_CHILD_SESSION, env.TERM_PROGRAM, env.STOKE_QUICK_FIXTURE], [undefined, undefined, undefined, 'Stoke', 'retained'])
+
+  console.log('\nQuick terminal: independent tab folders, shell state and pinning')
+  const folderA = join(root, 'tab-one'), folderB = join(root, 'tab-two')
+  await Promise.all([mkdir(folderA), mkdir(folderB)])
+  let tabPreparations = 0
+  const scoped = new QuickTerminal({ enabled: () => enabled, onState: () => {}, onData: () => {}, environment: async () => { tabPreparations++; return quickTerminalEnv({ ...process.env, HOME: root, ZDOTDIR: root, STOKE_TAB_VALUE: '' }, process.env.PATH || '/usr/bin:/bin') } })
+  const reportFixture = join(root, 'tab-shell-report.cjs')
+  await writeFile(reportFixture, `const fs = require('node:fs'); fs.writeFileSync(process.argv[2], JSON.stringify({cwd:process.cwd(),value:process.env.STOKE_TAB_VALUE||null})); process.stdout.write('STOKE_CONTEXT_'+process.argv[3]+'\\n');`)
+  const shellQuote = (value: string): string => process.platform === 'win32' ? `"${value}"` : `'${value.replace(/'/g, "'\\''")}'`
+  const report = (shell: QuickTerminalState, folder: string, label: string, value?: string): string => {
+    const path = join(folder, `${label}.json`)
+    const powershell = process.platform === 'win32' && /(?:powershell|pwsh)\.exe$/i.test(shell.shell)
+    const assign = value === undefined ? '' : powershell ? `$env:STOKE_TAB_VALUE='${value}'; ` : process.platform === 'win32' ? `set "STOKE_TAB_VALUE=${value}"\r` : `export STOKE_TAB_VALUE='${value}'; `
+    scoped.write('panel', shell.id!, `${assign}${powershell ? '& ' : ''}${shellQuote(process.execPath)} ${shellQuote(reportFixture)} ${shellQuote(path)} ${label}\r`)
+    return path
+  }
+  const reading = async (path: string): Promise<{ cwd: string; value: string | null } | null> => { try { return JSON.parse(await readFile(path, 'utf8')) } catch { return null } }
+  try {
+    await scoped.context('tab-one', folderA); await scoped.context('tab-two', folderB)
+    check('changing hidden tabs never prepares or starts a shell', [tabPreparations, scoped.view().id, scoped.view().mode], [0, null, 'hidden'])
+    await scoped.context('tab-one', folderA)
+    const a = await scoped.open('panel')
+    const aReport = report(a, folderA, 'ONE', 'one')
+    check('the first tab executes in its own folder with its own shell variable', await until(async () => { const value = await reading(aReport); return value?.cwd === await realpath(folderA) && value.value === 'one' }), true)
+    check('the first tab output reaches only its own replay', await until(() => scoped.snapshot().data.includes('STOKE_CONTEXT_ONE')), true)
+    const b = await scoped.context('tab-two', folderB)
+    check('switching visible tabs selects a different native shell and folder', [b.id !== a.id, b.contextId, b.cwd, b.mode, b.shellId], [true, 'tab-two', await realpath(folderB), 'panel', 'default'])
+    const bReport = report(b, folderB, 'TWO')
+    check('another tab does not inherit the first shell variable', await until(async () => { const value = await reading(bReport); return value?.cwd === await realpath(folderB) && value.value === null }), true)
+    check('another tab has its own output buffer', [await until(() => scoped.snapshot().data.includes('STOKE_CONTEXT_TWO')), scoped.snapshot().data.includes('STOKE_CONTEXT_ONE')], [true, false])
+    const stale = join(folderA, 'stale-input.json')
+    scoped.write('panel', a.id!, `${shellQuote(process.execPath)} ${shellQuote(reportFixture)} ${shellQuote(stale)} STALE\r`)
+    scoped.resize('panel', a.id!, 119, 39)
+    check('an inactive tab id cannot resize the current tab', [scoped.view().cols, scoped.view().rows], [80, 24])
+    const bBarrier = report(b, folderB, 'BARRIER', 'two')
+    check('the active shell still executes after stale input was refused', await until(async () => (await reading(bBarrier))?.value === 'two'), true)
+    const back = await scoped.context('tab-one', folderA)
+    check('returning to a tab restores its exact process and output', [back.id, scoped.snapshot().data.includes('STOKE_CONTEXT_ONE'), scoped.snapshot().data.includes('STOKE_CONTEXT_TWO')], [a.id, true, false])
+    const retained = report(back, folderA, 'RETAINED')
+    check('returning to a tab retains its shell variable', await until(async () => (await reading(retained))?.value === 'one'), true)
+    check('an inactive tab id cannot send commands to either shell', await refused(() => access(stale)), true)
+    const secondShell = (await scoped.shells()).find(shell => shell.id === (process.platform === 'win32' ? 'powershell' : 'bash')) ?? (await scoped.shells()).find(shell => shell.id !== 'default')
+    check('tab isolation also has a second installed shell to exercise', !!secondShell, true)
+    if (secondShell) {
+      const aOther = await scoped.selectShell('panel', secondShell.id)
+      const otherReport = report(aOther, folderA, 'OTHER', 'alternate-one')
+      check('a tab can select and execute another installed shell independently', await until(async () => (await reading(otherReport))?.value === 'alternate-one', 15_000), true)
+      const bAgain = await scoped.context('tab-two', folderB)
+      check('another tab retains its own selected shell and native process', [bAgain.shellId, bAgain.id], ['default', b.id])
+      const aAgain = await scoped.context('tab-one', folderA)
+      check('a tab remembers its alternate shell and buffer', [aAgain.shellId, aAgain.id, scoped.snapshot().data.includes('STOKE_CONTEXT_OTHER')], [secondShell.id, aOther.id, true])
+      const pinned = await scoped.pin(true)
+      const across = await scoped.context('tab-two', folderB)
+      check('pinning keeps the selected shell, folder and buffer across tabs', [pinned.pinned, across.pinned, across.contextId, across.id, across.cwd, scoped.snapshot().data.includes('STOKE_CONTEXT_OTHER')], [true, true, 'tab-one', aOther.id, await realpath(folderA), true])
+      const unpinned = await scoped.pin(false)
+      check('unpinning restores the current tab process, shell selection and buffer', [unpinned.pinned, unpinned.contextId, unpinned.id, unpinned.shellId, scoped.snapshot().data.includes('STOKE_CONTEXT_TWO'), scoped.snapshot().data.includes('STOKE_CONTEXT_OTHER')], [false, 'tab-two', b.id, 'default', true, false])
+    }
+    scoped.move('hidden')
+    const prepared = tabPreparations
+    await scoped.context('tab-one', folderA); await scoped.context('tab-two', folderB)
+    check('hidden tab switches preserve shells without spawning more', [tabPreparations, scoped.view().mode], [prepared, 'hidden'])
+    check('all context and shell processes remain owned until disposal', ownedPtyExits.count >= (secondShell ? 3 : 2), true)
+    scoped.retainContexts(new Set(['tab-two']))
+    check('closing an ordinary tab drains all its selected and inactive shells', await until(() => ownedPtyExits.count === 1), true)
+    scoped.retainContexts(new Set(['tab-one', 'tab-two']))
+    await scoped.context('tab-one', folderA)
+    const reopened = await scoped.open('panel')
+    check('a retired tab cannot reuse its old native process', reopened.id !== a.id, true)
+    await scoped.pin(true); await scoped.context('tab-two', folderB)
+    scoped.retainContexts(new Set(['tab-two']))
+    check('closing a pinned source tab keeps its shell alive until unpin', [scoped.view().id, scoped.view().pinned, ownedPtyExits.count], [reopened.id, true, 2])
+    const afterOrphan = await scoped.pin(false)
+    check('unpin restores the live current tab after the pinned source was closed', [afterOrphan.contextId, afterOrphan.id, afterOrphan.pinned, await until(() => ownedPtyExits.count === 1)], ['tab-two', b.id, false, true])
+    scoped.retainContexts(new Set(['tab-one', 'tab-two']))
+    await scoped.context('tab-one', folderA); await scoped.context('tab-two', folderB)
+    check('multiple tab shells remain owned immediately before app disposal', ownedPtyExits.count, 2)
+  } finally {
+    scoped.dispose()
+    check('app disposal drains native shells from every tab and shell selection', await ownedPtyExits.wait(), 0)
+  }
+
+  let releaseActivation!: () => void
+  const activationGate = new Promise<void>(resolve => { releaseActivation = resolve })
+  let activationPreparations = 0
+  const activationFolders: string[] = []
+  const activating = new QuickTerminal({ enabled: () => enabled, onState: () => {}, onData: () => {}, environment: async () => { if (++activationPreparations === 1) await activationGate; return quickTerminalEnv({ ...process.env, HOME: root, ZDOTDIR: root }, process.env.PATH || '/usr/bin:/bin') }, runtime: async () => {
+    const [pty, screen] = await Promise.all([import('@lydell/node-pty'), import('../src/main/screenMirror.ts')])
+    return { spawn: (...args: Parameters<typeof pty.spawn>) => { activationFolders.push(String(args[2].cwd)); return pty.spawn(...args) }, mirror: (cols: number, rows: number) => new screen.ScreenMirror(cols, rows) }
+  } })
+  try {
+    await activating.context('tab-one', folderA)
+    const openingTab = activating.open('panel')
+    await until(() => activationPreparations === 1)
+    const changingTab = activating.context('tab-two', folderB)
+    releaseActivation()
+    check('changing tabs cancels a pending opening instead of activating it late', await refused(() => openingTab), true)
+    await changingTab
+    check('the current tab wins after the old preparation completes', [activating.view().contextId, activating.view().cwd === await realpath(folderA), activating.view().sessions.some(session => session.phase === 'starting')], ['tab-two', false, false])
+    check('a cancelled tab preparation never creates its native process', activationFolders.includes(await realpath(folderA)), false)
+  } finally { releaseActivation(); activating.dispose(); check('cancelled tab activation leaves no native process or transport behind', await ownedPtyExits.wait(), 0) }
+
+  let releaseRapid!: () => void
+  const rapidGate = new Promise<void>(resolve => { releaseRapid = resolve })
+  let rapidPreparations = 0
+  const rapid = new QuickTerminal({ enabled: () => enabled, onState: () => {}, onData: () => {}, environment: async () => { if (++rapidPreparations === 1) await rapidGate; return quickTerminalEnv({ ...process.env, HOME: root, ZDOTDIR: root }, process.env.PATH || '/usr/bin:/bin') } })
+  try {
+    await rapid.context('tab-one', folderA)
+    const oldOpening = refused(() => rapid.open('panel'))
+    await until(() => rapidPreparations === 1)
+    const toB = rapid.context('tab-two', folderB)
+    const backToA = rapid.context('tab-one', folderA)
+    const transitions = Promise.allSettled([toB, backToA])
+    releaseRapid()
+    check('rapid tab changes cancel the original pending shell opening', await oldOpening, true)
+    check('rapid tab transitions settle without operation-claim races', (await transitions).every(result => result.status === 'fulfilled'), true)
+    check('rapid A to B to A activation selects the final tab without reviving a canceled start', [rapid.view().contextId, rapid.view().cwd, rapid.view().phase, rapid.view().mode], ['tab-one', await realpath(folderA), 'running', 'panel'])
+  } finally { releaseRapid(); rapid.dispose(); check('rapid activation drains every owned native shell', await ownedPtyExits.wait(), 0) }
+
+  let releaseExplicit!: () => void
+  const explicitGate = new Promise<void>(resolve => { releaseExplicit = resolve })
+  let explicitPreparations = 0
+  const explicit = new QuickTerminal({ enabled: () => enabled, onState: () => {}, onData: () => {}, environment: async () => { if (++explicitPreparations === 2) await explicitGate; return quickTerminalEnv({ ...process.env, HOME: root, ZDOTDIR: root }, process.env.PATH || '/usr/bin:/bin') } })
+  try {
+    await explicit.context('tab-two', folderB)
+    const current = await explicit.open('panel')
+    const oldRequest = refused(() => explicit.open('popout', folderA, 'tab-one'))
+    await until(() => explicitPreparations === 2)
+    await explicit.context('tab-two', folderB)
+    releaseExplicit()
+    check('an explicit open superseded during tab preparation is refused', await oldRequest, true)
+    check('a superseded open cannot apply its folder or pop-out mode to another tab', [explicit.view().id, explicit.view().contextId, explicit.view().cwd, explicit.view().mode], [current.id, 'tab-two', await realpath(folderB), 'panel'])
+  } finally { releaseExplicit(); explicit.dispose(); check('superseded explicit opens drain their owned transports', await ownedPtyExits.wait(), 0) }
+
+  const recoveringFolder = join(root, 'not-yet-created')
+  const recovering = new QuickTerminal({ enabled: () => enabled, onState: () => {}, onData: () => {}, environment: async () => quickTerminalEnv({ ...process.env, HOME: root, ZDOTDIR: root }, process.env.PATH || '/usr/bin:/bin') })
+  try {
+    await recovering.context('unavailable-folder', recoveringFolder)
+    check('opening an unavailable tab folder is refused', await refused(() => recovering.open('panel')), true)
+    check('retrying an unavailable idle tab never falls back to a home shell', [await refused(() => recovering.restart('panel')), recovering.view().id, recovering.view().phase], [true, null, 'idle'])
+    await mkdir(recoveringFolder)
+    const recovered = await recovering.restart('panel')
+    check('an idle tab retry uses its own folder after it becomes available', [recovered.contextId, recovered.cwd, recovered.phase, recovered.mode], ['unavailable-folder', await realpath(recoveringFolder), 'running', 'panel'])
+  } finally { recovering.dispose(); check('folder recovery drains its native shell', await ownedPtyExits.wait(), 0) }
+
+  const orphaned = new QuickTerminal({ enabled: () => enabled, onState: () => {}, onData: () => {}, environment: async () => quickTerminalEnv({ ...process.env, HOME: root, ZDOTDIR: root }, process.env.PATH || '/usr/bin:/bin') })
+  try {
+    await orphaned.context('tab-one', folderA)
+    const pinnedSource = await orphaned.open('panel')
+    await orphaned.pin(true); await orphaned.context('tab-two', join(root, 'unavailable-unpin-target'))
+    orphaned.retainContexts(new Set(['tab-two']))
+    check('a closed pinned source remains owned until the unpin attempt', [orphaned.view().id, ownedPtyExits.count], [pinnedSource.id, 1])
+    check('unpinning into an unavailable tab folder reports the failure', await refused(() => orphaned.pin(false)), true)
+    check('failed unpin still retires the closed source native shell', await ownedPtyExits.wait(), 0)
+    check('failed follow does not restore a closed pinned context', [orphaned.view().contextId, orphaned.view().pinned], ['tab-two', false])
+  } finally { orphaned.dispose(); check('failed unpin leaves no native shell transport', await ownedPtyExits.wait(), 0) }
 
   console.log('\nQuick terminal: cancellation and bad folders')
   let release!: () => void

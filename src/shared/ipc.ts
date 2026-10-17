@@ -3,6 +3,8 @@ export const CH = {
   quickTerminalRead: 'quick-terminal:read',
   quickTerminalShells: 'quick-terminal:shells',
   quickTerminalSelectShell: 'quick-terminal:select-shell',
+  quickTerminalContext: 'quick-terminal:context',
+  quickTerminalPin: 'quick-terminal:pin',
   quickTerminalOpen: 'quick-terminal:open',
   quickTerminalMove: 'quick-terminal:move',
   quickTerminalRestart: 'quick-terminal:restart',

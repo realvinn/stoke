@@ -1711,6 +1711,10 @@ src/main/         Electron main process
   tabWindowState.ts acknowledged live-tab ownership across native Stoke windows; loading
                     and failed targets never remove the source; tabs from every window
                     join the existing private-filtered restore snapshot
+  quickTerminal.ts  machine-local shell banks keyed by live tab, optional pin across tabs,
+                    bounded preparation and retained PTY replay. Superseded starts cannot
+                    change another tab's shell; closed unpinned banks and app quit drain
+                    owned shells. Transfer reservations preserve banks across windows
   macReveal.ts      owned macOS metadata helper lifecycle, only during native full screen
   accountIdentity.ts read-only Claude auth status / Codex account/read in owned, bounded
                     subprocesses. Captures each PTY's launch account/home/provider source;
@@ -1942,8 +1946,8 @@ src/main/         Electron main process
                       push services only), all in remotePhone.ts. 136
 src/preload/      contextBridge -> window.stoke
 src/renderer/     desktop React UI (all colour via CSS custom properties)
-  src/components/QuickTerminal.tsx  optional command shell panel and pop-out; one live
-                    shell, replay, find, selection and web/OSC links. The panel opens in
+  src/components/QuickTerminal.tsx  command shell panel and pop-out; retained shells per
+                    tab, optional pin across tabs, replay, find, selection and web/OSC links. The panel opens in
                     Stoke; the pop-out has only a current-shell HTTP(S) external-link bridge
   src/components/QuickTerminalButton.tsx  bottom-left Terminal control on every footer,
                     including when the sidebar is hidden. It opens directly without an

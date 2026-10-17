@@ -353,6 +353,8 @@ function updateNativeReveal(): void {
 
 let quickTerminalWindow: BrowserWindow | null = null
 let quickTerminalOwner: number | null = null
+const quickTerminalContexts = new Map<number, { id: string | null; cwd?: string }>()
+let quickTerminalOpenClaim: object | null = null
 function quickPanelOwner(): BrowserWindow | null { return appWindows().find(w => w.id === quickTerminalOwner) ?? win }
 let quickTerminal: QuickTerminal | null = null
 let appQuitting = false
@@ -2311,6 +2313,7 @@ function cancelTabTransfer(id: string): void {
   clearTimeout(transferTimers.get(id))
   transferTimers.delete(id)
   windowTabs.pending.delete(id)
+  reconcileQuickTerminalContexts()
   const source = appWindows().find(w => w.id === pending.source)
   source?.webContents.send(CH.winTabRemoved, []) // releases the renderer's in-flight guard
   if (returningWindows.delete(pending.source)) return
@@ -2377,6 +2380,8 @@ function createDetachedWindow(): BrowserWindow {
     windowTabs.remove(popup.id)
     windowSavedTabs.delete(popup.id)
     windowSavedIds.delete(popup.id)
+    quickTerminalContexts.delete(popup.id)
+    reconcileQuickTerminalContexts()
   })
   return popup
 }
@@ -2414,6 +2419,21 @@ function quickTerminalFor(): QuickTerminal {
     onState: state => sendQuickTerminal(CH.quickTerminalState, state),
     onData: frame => sendQuickTerminal(CH.quickTerminalData, frame)
   })
+}
+function quickTerminalContextId(owner: BrowserWindow, id: string | null): string {
+  return id ?? `window:${owner.id}:launcher`
+}
+function validQuickTerminalContext(id: unknown, cwd: unknown): id is string | null {
+  return (id === null || typeof id === 'string' && !!id && id.length <= 512 && !/[\x00-\x1f]/.test(id)) &&
+    (cwd === undefined || typeof cwd === 'string' && isAbsolute(cwd) && cwd.length <= 8192 && !cwd.includes('\0'))
+}
+function reconcileQuickTerminalContexts(): void {
+  if (!quickTerminal) return
+  const live = new Set<string>()
+  for (const tabs of windowTabs.tabs.values()) for (const tab of tabs) live.add(tab.id)
+  for (const pending of windowTabs.pending.values()) for (const tab of pending.transfer.packet.tabs) live.add(tab.id)
+  for (const owner of appWindows()) live.add(quickTerminalContextId(owner, null))
+  quickTerminal.retainContexts(live)
 }
 function quickTerminalAppearance(): QuickTerminalAppearance {
   const s = getSettings()
@@ -3501,7 +3521,8 @@ function createWindow(): void {
     if (!appQuitting && detachedWindows.size) { event.preventDefault(); win?.hide() }
   })
   win.on('closed', () => {
-    if (win) { windowTabs.remove(win.id); windowSavedTabs.delete(win.id); windowSavedIds.delete(win.id); lastNativeOffsets.delete(win.id) }
+    if (win) { windowTabs.remove(win.id); windowSavedTabs.delete(win.id); windowSavedIds.delete(win.id); lastNativeOffsets.delete(win.id); quickTerminalContexts.delete(win.id) }
+    reconcileQuickTerminalContexts()
     macReveal?.setActive(false)
     usageBindings.clear()
     accountIdentities.clear()
@@ -3561,7 +3582,7 @@ function registerIpc(): void {
   /* ---------------------------------------------------------- window chrome */
   ipcMain.on(CH.winTabPublish, (event, tabs: unknown) => {
     const owner = appFrame(event)
-    if (owner) windowTabs.publish(owner.id, tabs)
+    if (owner && windowTabs.publish(owner.id, tabs)) reconcileQuickTerminalContexts()
   })
   ipcMain.handle(CH.winTabBootstrap, event => {
     const owner = appFrame(event)
@@ -3581,6 +3602,7 @@ function registerIpc(): void {
     const packet = pending.transfer.packet
     const accepted = windowTabs.accept(id, target.id)
     if (!accepted) return
+    reconcileQuickTerminalContexts()
     clearTimeout(transferTimers.get(id)); transferTimers.delete(id)
     const source = appWindows().find(w => w.id === accepted.source)
     const prior = windowSavedTabs.get(accepted.source)
@@ -4656,8 +4678,11 @@ function registerIpc(): void {
     const surface = quickTerminalSurface(event)
     if (!surface) return { ok: false, message: 'Open the terminal in Stoke.' }
     try {
+      const ownerAtStart = quickTerminalOwner
       const state = await action(surface)
+      if (ownerAtStart !== quickTerminalOwner) return { ok: true, state: appFrame(event) ? { ...quickTerminalFor().view(), mode: 'hidden' } : quickTerminalFor().view() }
       await presentQuickTerminal(state.mode)
+      if (ownerAtStart !== quickTerminalOwner) return { ok: true, state: appFrame(event) ? { ...quickTerminalFor().view(), mode: 'hidden' } : quickTerminalFor().view() }
       return { ok: true, state: quickTerminalFor().view() }
     } catch (error) { return { ok: false, message: error instanceof Error ? error.message : 'The shell could not finish this action.' } }
   }
@@ -4672,9 +4697,39 @@ function registerIpc(): void {
     return quickTerminalFor().shells()
   })
   ipcMain.handle(CH.quickTerminalSelectShell, (event, shellId) => quickAction(event, surface => quickTerminalFor().selectShell(surface, shellId)))
-  ipcMain.handle(CH.quickTerminalOpen, (event, mode, cwd) => {
+  ipcMain.handle(CH.quickTerminalContext, async (event, contextId: unknown, cwd: unknown) => {
     const owner = appFrame(event)
-    if (owner && (mode === 'panel' || mode === 'popout')) quickTerminalOwner = owner.id
+    if (!owner || !validQuickTerminalContext(contextId, cwd)) return { ok: false, message: 'Choose a tab and local folder for the terminal.' }
+    const previous = quickTerminalContexts.get(owner.id)
+    if (owner === quickPanelOwner() && (previous?.id !== contextId || previous?.cwd !== cwd)) quickTerminalOpenClaim = null
+    quickTerminalContexts.set(owner.id, { id: contextId, cwd: cwd as string | undefined })
+    if (owner !== quickPanelOwner()) return { ok: true, state: { ...quickTerminalFor().view(), mode: 'hidden' } }
+    try {
+      const state = await quickTerminalFor().context(quickTerminalContextId(owner, contextId), cwd as string | undefined)
+      return { ok: true, state: owner === quickPanelOwner() ? state : { ...state, mode: 'hidden' } }
+    } catch (error) { return { ok: false, message: error instanceof Error ? error.message : 'The terminal could not follow this tab.' } }
+  })
+  ipcMain.handle(CH.quickTerminalPin, (event, pinned) => quickAction(event, surface => {
+    if (quickTerminalFor().view().mode !== surface) throw new Error('Use the current terminal view to pin this shell.')
+    return quickTerminalFor().pin(pinned)
+  }))
+  ipcMain.handle(CH.quickTerminalOpen, (event, mode, cwd, contextId) => {
+    const owner = appFrame(event)
+    if (owner && (mode === 'panel' || mode === 'popout')) {
+      const saved = quickTerminalContexts.get(owner.id)
+      const desired = contextId === undefined ? { id: saved?.id ?? null, cwd: cwd ?? saved?.cwd } : { id: contextId, cwd }
+      if (!validQuickTerminalContext(desired.id, desired.cwd)) return { ok: false, message: 'Choose a tab and local folder for the terminal.' }
+      quickTerminalContexts.set(owner.id, desired)
+      const claim = {}; quickTerminalOpenClaim = claim
+      if (quickPanelOwner() !== owner) quickTerminalFor().move('hidden')
+      const changedOwner = quickPanelOwner() !== owner
+      quickTerminalOwner = owner.id
+      return quickAction(event, async () => {
+        if (changedOwner) await quickTerminalFor().pin(false)
+        if (quickTerminalOpenClaim !== claim || quickPanelOwner() !== owner) return quickTerminalFor().view()
+        return quickTerminalFor().open(mode, desired.cwd, quickTerminalContextId(owner, desired.id))
+      })
+    }
     return quickAction(event, () => {
     if (mode !== 'panel' && mode !== 'popout') throw new Error('Choose a terminal view.')
     return quickTerminalFor().open(mode, cwd)
@@ -4682,7 +4737,7 @@ function registerIpc(): void {
   })
   ipcMain.handle(CH.quickTerminalMove, (event, mode) => {
     const owner = appFrame(event)
-    if (owner && mode === 'panel') quickTerminalOwner = owner.id
+    if (owner && mode === 'panel' && owner !== quickPanelOwner()) return { ok: false, message: 'Open this tab’s terminal first.' }
     return quickAction(event, () => quickTerminalFor().move(mode))
   })
   ipcMain.handle(CH.quickTerminalRestart, event => quickAction(event, surface => {

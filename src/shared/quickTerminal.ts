@@ -13,6 +13,9 @@ export interface QuickTerminalState {
   cwd: string
   shell: string
   shellId: string
+  /** Origin of the displayed terminal; stays on that tab while pinned. */
+  contextId: string | null
+  pinned: boolean
   sessions: { shellId: string; id: string; phase: QuickTerminalState['phase'] }[]
   cols: number
   rows: number
@@ -34,7 +37,9 @@ export interface QuickTerminalApi {
   read(): Promise<QuickTerminalSnapshot>
   shells(): Promise<QuickTerminalShell[]>
   selectShell(shellId: string): Promise<QuickTerminalResult>
-  open(mode: QuickTerminalSurface, cwd?: string): Promise<QuickTerminalResult>
+  context(contextId: string | null, cwd?: string): Promise<QuickTerminalResult>
+  pin(pinned: boolean): Promise<QuickTerminalResult>
+  open(mode: QuickTerminalSurface, cwd?: string, contextId?: string | null): Promise<QuickTerminalResult>
   move(mode: QuickTerminalMode): Promise<QuickTerminalResult>
   restart(): Promise<QuickTerminalResult>
   end(): Promise<QuickTerminalResult>

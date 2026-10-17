@@ -699,6 +699,7 @@ export function App(): React.JSX.Element {
    */
   const [topBarEditing, setTopBarEditing] = useState(false)
   const quickTerminalState = useQuickTerminal(window.stoke.quickTerminal)
+  const [quickTerminalFocus, setQuickTerminalFocus] = useState<{ sequence: number; contextId: string | null; owner: object | null }>({ sequence: 0, contextId: null, owner: null })
   const quickPanelVisible = quickTerminalState?.enabled === true && quickTerminalState.mode === 'panel'
   const topBarOn = settings?.topBar.enabled === true
   // Turned off mid-edit: the next time it is on, it is on to use, not to arrange.
@@ -5026,8 +5027,31 @@ export function App(): React.JSX.Element {
   const repositoryCwd = activeTab && !activeTab.hostId && !activeTab.private
     ? activeTab.kind === 'session' ? activeTab.cwd || null : activeTab.kind === 'new' ? launchTarget?.path ?? null : null
     : null
+  const quickTerminalContext = activeTab?.id ?? null
+  const quickTerminalIntentScope = useRef({ contextId: quickTerminalContext, cwd: repositoryCwd })
+  if (quickTerminalIntentScope.current.contextId !== quickTerminalContext || quickTerminalIntentScope.current.cwd !== repositoryCwd) quickTerminalIntentScope.current = { contextId: quickTerminalContext, cwd: repositoryCwd }
+  const quickTerminalOpenIntent = useRef<object | null>(null)
+  useEffect(() => {
+    // Main records each window's desired tab and applies the owning window
+    // only, including when its native browser view holds keyboard focus.
+    // No local path comes from SSH, another device or a private session.
+    const owner = quickTerminalIntentScope.current
+    let current = true
+    void window.stoke.quickTerminal.context(quickTerminalContext, repositoryCwd ?? undefined)
+      .then(result => { if (current && quickTerminalIntentScope.current === owner && !result.ok) setError(result.message) })
+      .catch(error => { if (current && quickTerminalIntentScope.current === owner) setError(ipcErrorMessage(error)) })
+    return () => { current = false }
+  }, [quickTerminalContext, repositoryCwd, focusTick])
   const openQuickTerminal = (mode: 'panel' | 'popout'): void => {
-    void window.stoke.quickTerminal.open(mode, repositoryCwd ?? undefined).then(result => { if (!result.ok) setError(result.message) }).catch(error => setError(ipcErrorMessage(error)))
+    // Include the tab in the explicit request as well: a click can arrive
+    // before the context effect has run after a tab switch.
+    const owner = quickTerminalIntentScope.current
+    const intent = {}; quickTerminalOpenIntent.current = intent
+    const current = (): boolean => quickTerminalOpenIntent.current === intent && quickTerminalIntentScope.current === owner && activeTabIdRef.current === quickTerminalContext
+    if (mode === 'panel') setQuickTerminalFocus(previous => ({ sequence: previous.sequence + 1, contextId: quickTerminalContext, owner }))
+    void window.stoke.quickTerminal.open(mode, repositoryCwd ?? undefined, quickTerminalContext)
+      .then(result => { if (current() && !result.ok) setError(result.message) })
+      .catch(error => { if (current()) setError(ipcErrorMessage(error)) })
   }
   /*
    * Read by the window keydown listener, which is bound once and must not be
@@ -6666,7 +6690,7 @@ export function App(): React.JSX.Element {
         */}
         {quickPanelVisible && quickTerminalState && settings && (
           <div className="quick-terminal-dock">
-            <QuickTerminalPanel api={window.stoke.quickTerminal} state={quickTerminalState} appearance={{ theme, fontFamily: settings.fontFamily, fontSize: settings.fontSize, uiScale: settings.uiScale, terminal: settings.terminal }} surface="panel" onOpenUrl={openUrl} />
+            <QuickTerminalPanel api={window.stoke.quickTerminal} state={quickTerminalState} appearance={{ theme, fontFamily: settings.fontFamily, fontSize: settings.fontSize, uiScale: settings.uiScale, terminal: settings.terminal }} surface="panel" focusRequest={quickTerminalFocus.owner === quickTerminalIntentScope.current ? quickTerminalFocus : undefined} onOpenUrl={openUrl} />
           </div>
         )}
         {worklogOpen && (
