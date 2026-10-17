@@ -97,6 +97,7 @@ import { createCertificate, startTlsServer } from './probe/tls-server.mjs'
 import { createSshFileFixture, removeSshFileFixture } from './probe/ssh-files.mjs'
 import { terminalLinkPoint } from './probe/terminal-link.mjs'
 import { readAgentRecords, selectAgentRecord } from './probe/agent-records.mjs'
+import { logicalTerminalText } from './probe/terminal-text.mjs'
 import { nativeCrashScript } from './probe/native-crash.mjs'
 import { accountSyncFixture } from './probe/account-sync.mts'
 import type { HubView } from '../src/shared/hub/client.ts'
@@ -524,7 +525,8 @@ function stubByPid(id: string, pid: number, cwd?: string): StubRecord | null {
 
 /** The pid a terminal's banner names. */
 async function pidIn(ptyId: string, id: string): Promise<number> {
-  const m = new RegExp(`STOKE-PROBE ${id} ready pid=(\\d+)`).exec(await bufferOf(ptyId))
+  const text = await ev<string>('(' + logicalTerminalText.toString() + ')(window.stokeTerminals.get(' + JSON.stringify(ptyId) + ')?.buffer.active)')
+  const m = new RegExp(`STOKE-PROBE ${id} ready pid=(\\d+)`).exec(text)
   if (!m) throw new Error(`pty ${ptyId} shows no ${id} banner`)
   return Number(m[1])
 }
@@ -2391,6 +2393,7 @@ await step('each tab keeps its local terminal, and pinning deliberately follows 
     await waitFor('the pin action to reach the owned terminal state and rendered control', () => ev<boolean>(`window.stoke.quickTerminal.read().then(snapshot => snapshot.state.pinned === ${pinned} && document.querySelector('[aria-label="Keep terminal across tabs"]')?.getAttribute('aria-pressed') === '${pinned}')`))
   }
   let extraPty = '', extraPid = 0
+  let originalFailure: unknown
   try {
     await activate(tabs.claude!.ptyId)
     await ev(`document.querySelector('[data-testid="footer-terminal"]').click(), true`)
@@ -2412,7 +2415,7 @@ await step('each tab keeps its local terminal, and pinning deliberately follows 
     await shellReport(one.state.id!, proj, 'ONE')
     await waitFor('the first tab shell variable and cwd', () => report(proj, 'ONE')?.value === 'one' && report(proj, 'ONE')?.cwd === proj)
     await waitFor('the first tab shell output', () => ev<boolean>('window.stoke.quickTerminal.read().then(snapshot => snapshot.data.includes("STOKE_PIN_ONE"))'))
-    const taken = Object.values(tabs).map(tab => tab!.ptyId)
+    const taken = Object.keys(await buffers())
     check('an extra owned stub tab opens in a different folder', await stokeCli('--cli', 'opencode', '--new', projContinue) === 0)
     extraPty = await termShowing('STOKE-PROBE opencode ready', 'the second-folder stub tab', 45_000, taken)
     extraPid = await pidIn(extraPty, 'opencode')
@@ -2446,7 +2449,12 @@ await step('each tab keeps its local terminal, and pinning deliberately follows 
     await ev(`document.querySelector('[data-testid="footer-terminal"]').click(), true`)
     check('explicitly reopening Terminal focuses the shell input', await waitFor('the explicitly opened quick-terminal input focus', () => ev<boolean>(`document.activeElement === window.stokeQuickTerminals.get(${JSON.stringify(two.state.id)})?.textarea`)) === true)
     check('explicit reopening keeps the current tab native shell', (await readQuick()).state.id === two.state.id)
+  } catch (error) {
+    originalFailure = error
+    await shot('05-quick-terminal-tab-failure')
+    throw error
   } finally {
+    try {
     await ev('window.stoke.quickTerminal.pin(false)').catch(() => {})
     for (const pty of [extraPty, tabs.claude!.ptyId].filter(Boolean)) {
       await activate(pty)
@@ -2463,9 +2471,13 @@ await step('each tab keeps its local terminal, and pinning deliberately follows 
     if (extraPty) {
       await activate(extraPty)
       await ev('(document.querySelector(".tablist .tab[aria-selected=\'true\'] .tab-close")?.click(), true)')
-      check('closing the additional owned stub tab ends its process', await waitFor('the additional stub exit marker', () => exitMarkers().includes(`exit-opencode-${extraPid}`), 20_000) === true)
+      if (extraPid) check('closing the additional owned stub tab ends its process', await waitFor('the additional stub exit marker', () => exitMarkers().includes(`exit-opencode-${extraPid}`), 20_000) === true)
     }
     await activate(tabs.claude!.ptyId)
+    } catch (error) {
+      if (!originalFailure) throw error
+      console.log('  (per-tab cleanup also failed: ' + String(error) + ')')
+    }
   }
 })
 

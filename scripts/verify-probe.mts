@@ -5,6 +5,8 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { parseAgentRecords, readAgentRecords, selectAgentRecord } from './probe/agent-records.mjs'
+import { logicalTerminalText } from './probe/terminal-text.mjs'
+import headless from '@xterm/headless'
 
 let failures = 0
 function check(name: string, run: () => void): void {
@@ -100,6 +102,22 @@ try {
     assert.equal(selectAgentRecord(readAgentRecords(directory), 'codex', undefined, folder)?.start.argv[1], 'latest')
   })
 } finally { rmSync(directory, { recursive: true, force: true }) }
+
+for (const cols of [16, 25, 26, 28, 32, 80]) {
+  const term = new headless.Terminal({ cols, rows: 8, allowProposedApi: true })
+  try {
+    await new Promise<void>(resolve => term.write('before\r\nSTOKE-PROBE opencode ready pid=8392\r\nafter', resolve))
+    check('native agent banners survive soft wrapping at ' + cols + ' columns', () => {
+      const text = logicalTerminalText(term.buffer.active)
+      assert.ok(text.includes('before\nSTOKE-PROBE opencode ready pid=8392\nafter'))
+      assert.equal(/STOKE-PROBE opencode ready pid=(\d+)/.exec(text)?.[1], '8392')
+      if (cols === 26) {
+        const physical = Array.from({ length: term.buffer.active.length }, (_, row) => term.buffer.active.getLine(row)?.translateToString(true)).join('\n')
+        assert.equal(/STOKE-PROBE opencode ready pid=(\d+)/.exec(physical), null, 'the previous physical-line parser loses this banner')
+      }
+    })
+  } finally { term.dispose() }
+}
 
 console.log(failures ? `\n${failures} FAILED` : '\nall pass')
 process.exitCode = failures ? 1 : 0
