@@ -2688,11 +2688,15 @@ if (isWin) await step('Windows tab shortcuts reach Stoke from agent, quick-termi
     await waitFor('the DOM fallback close-tab action', async () => JSON.stringify(await tabIds()) === JSON.stringify(originalTabs))
     owned.delete(fallback)
     await ev('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))')
-    const input = await ev<{ count: number; data: unknown[]; keyEvents: unknown[] }>('({ count: window.__stokeTabKeyInputCount, data: window.__stokeTabKeyInputs, keyEvents: window.__stokeTabKeyEvents })')
-    writeFileSync(join(logs, 'windows-tab-shortcut-inputs.json'), JSON.stringify(input, null, 2))
-    // Keep the original assertion strict until native diagnostics establish
-    // whether a payload is keyboard input or an automatic terminal response.
-    check('native hooks and the focused-terminal DOM fallback emit no PTY control input', input.count === 0, JSON.stringify(input))
+    const input = await ev<{ count: number; data: Array<{ length: number; data: string; clipped: boolean }>; keyEvents: unknown[] }>('({ count: window.__stokeTabKeyInputCount, data: window.__stokeTabKeyInputs, keyEvents: window.__stokeTabKeyEvents })')
+    // Native Windows captured exactly these focus-out/in reports while tabs
+    // changed. Installed xterm's _handleTextAreaBlur/Focus emit them through
+    // onData when sendFocus is enabled; they are not shortcut keystrokes.
+    // Admit only the two complete three-byte frames, never arbitrary ANSI.
+    const focusReports = input.data.filter(frame => !frame.clipped && frame.length === 3 && (frame.data === '\x1b[O' || frame.data === '\x1b[I')).length
+    const observed = { ...input, focusReports, unexpectedFrames: input.data.length - focusReports, complete: input.count === input.data.length }
+    writeFileSync(join(logs, 'windows-tab-shortcut-inputs.json'), JSON.stringify(observed, null, 2))
+    check('native hooks and the focused-terminal DOM fallback send no shortcut keystrokes to the PTY', observed.complete && observed.keyEvents.length === 0 && observed.unexpectedFrames === 0, JSON.stringify(observed))
     await activate(source.ptyId)
     await shot('05-windows-tab-shortcuts')
   } finally {
