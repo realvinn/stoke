@@ -787,9 +787,18 @@ React 19, hand-written CSS, no component library.
 - `lib/ptyBus.ts` retains output per process and replays it on attach, which also makes the
   component safe under React StrictMode's double-mount. A replay past its 1 MB cap starts with
   the modes the dropped front had set (`ReplayModes`, gotcha 159).
-- Shortcuts (`lib/shortcuts.ts`) use Cmd on macOS and **Ctrl+Shift** elsewhere, because bare
-  `Ctrl+K`/`Ctrl+W`/`Ctrl+T` are readline bindings Claude Code's own prompt uses. Matching is
-  on `event.code` so holding Shift does not break it.
+- Tab shortcuts share `tabShortcut` (`shared/windowShortcuts.ts`) between native input and
+  the renderer. Cmd+T/W on macOS and Ctrl+T/W on Windows/Linux open/close tabs; Ctrl+Tab and
+  Ctrl+Shift+Tab cycle them. Windows/Linux retain Ctrl+Shift+T/W, and the existing primary
+  modifier + Shift + bracket aliases remain. Main intercepts these before input reaches the
+  focused terminal, quick shell or embedded browser, then routes the action to its owning
+  Stoke window. Repeats are consumed without repeating an action. The renderer/xterm path
+  uses the same matcher; other letter shortcuts keep Ctrl+Shift off macOS to preserve the
+  CLI's ordinary control keys. Matching uses `event.code`, with a native key fallback.
+- In macOS full screen, Follow moves only `.titlebar` (tabs and usage) to the native menu's
+  measured edge, with no extra gap. The workspace, terminal grids, footer and browser bounds
+  stay fixed. The shifted header participates in floating-layer overlap so the native page
+  yields only while the two intersect. Reserve remains a separate layout option.
 
 ## Build and packaging
 
@@ -1025,8 +1034,8 @@ npm run verify:registry       # Claude Code's session registry: parsing junk, mi
                               # that exists only in memory — rebind on /clear, once, and never a
                               # path outside the directory it was handed (gotcha 74); and
                               # activityView's whole table beside the hooks (gotcha 104)
-npm run verify:shortcuts      # app chords vs the keys the terminal owns, the zoom maths, and
-                              # that Ctrl+Tab and the bare brackets still reach the CLI
+npm run verify:shortcuts      # shared native/renderer tab chords, aliases, repeats/IME,
+                              # app chords vs terminal keys, labels and zoom maths
 npm run verify:find           # Find in a conversation: what a transcript gives the search (tool
                               # calls and output, never thinking or sidechains), the pattern,
                               # a hit's window and token, newest first and the caps, the chunked
@@ -1045,7 +1054,7 @@ npm run verify:drop           # what a dropped file types: quoting per platform,
 npm run verify:tab-windows    # acknowledged ownership, failed/duplicate handoffs, account and
                              # private restore scope; native reveal slide/display geometry
 npm run verify:fullscreen     # the macOS full-screen menu bar: how far it reaches (notch,
-                              # never-hide, failed reads) and when the shell moves under it
+                              # never-hide, failed reads) and when the header moves under it
                               # and back, replayed from measured pointer events (gotcha 105)
 npm run verify:layers         # nothing floats behind the docked browser: the overlap rule,
                               # and every component that draws a popover, menu or dialog
@@ -1714,7 +1723,9 @@ src/main/         Electron main process
   quickTerminal.ts  machine-local shell banks keyed by live tab, optional pin across tabs,
                     bounded preparation and retained PTY replay. Superseded starts cannot
                     change another tab's shell; closed unpinned banks and app quit drain
-                    owned shells. Transfer reservations preserve banks across windows
+                    owned shells. A runtime context ID preserves the bank through an agent
+                    restart/resume; launching from a New Project tab gets a fresh bank.
+                    Transfer reservations preserve banks across windows
   macReveal.ts      owned macOS metadata helper lifecycle, only during native full screen
   accountIdentity.ts read-only Claude auth status / Codex account/read in owned, bounded
                     subprocesses. Captures each PTY's launch account/home/provider source;
@@ -1947,7 +1958,7 @@ src/main/         Electron main process
 src/preload/      contextBridge -> window.stoke
 src/renderer/     desktop React UI (all colour via CSS custom properties)
   src/components/QuickTerminal.tsx  command shell panel and pop-out; retained shells per
-                    tab, optional pin across tabs, replay, find, selection and web/OSC links. The panel opens in
+                    tab context, optional pin across tabs, replay, find, selection and web/OSC links. The panel opens in
                     Stoke; the pop-out has only a current-shell HTTP(S) external-link bridge
   src/components/QuickTerminalButton.tsx  bottom-left Terminal control on every footer,
                     including when the sidebar is hidden. It opens directly without an
@@ -2128,6 +2139,8 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
   src/lib/tabs.ts   besides the tab arithmetic, every relaunch decision as a pure function:
                     `relaunchPlan`, `pendingRelaunchStep` (Wait), `autoRelaunchStep`
                     (`cliRelaunch: 'auto'`) and `looksTyped` (what counts as a draft); and
+                    `replaceOrAppend` retains a session's quick-terminal context on session
+                    replacement, while launcher-to-session starts with a fresh context;
                     the launcher's: `continuePlan` (Continue resumes by id, never a twin),
                     `newTabToReuse`, `tabLabel` (the agent tag: shown or not, the user's
                     label, on tabs whose agent is not the default one); and the menus':
@@ -2173,7 +2186,11 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     refreshes matching views after sign-in, skips non-agent tabs
   src/lib/floatingLayers.ts  every open popover, menu and picker (`useFloatingLayer`), and
                     whether one lies over `.browser-hole` (`useBrowserCovered`), which App
-                    hides the docked browser for. verify:layers. Gotcha 14
+                    hides the docked browser for. The moving full-screen header registers
+                    too, with bounded per-frame measurements during its motion. BrowserPanel
+                    refreshes coverage whenever its placeholder's bounds change, including
+                    first mount, so a stationary header cannot leave the native page hidden
+                    after the browser's chrome or layout moves. verify:layers. Gotcha 14
   src/lib/settingsJump.ts  showing one Settings row: found by its `data-setting` (looked for
                     each frame while its page draws, its `fallback` after 250 ms), every
                     `<details>` around it opened and the row let settle a frame or two before
@@ -2417,11 +2434,12 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     (`partitionFor`; Default keeps `persist:stoke-browser`), the hydrate that
                     repairs a settings file's list, and id/label minting. verify:browser-profiles
   tabWindows.ts     live tab contract, window handoff packets, eligible tabs and tear-off
-                    threshold; renderer/types.ts re-exports the common Tab type
+                    threshold; validated runtime quick-terminal context IDs retain shell
+                    ownership across session replacement. renderer/types.ts re-exports Tab
   nativeReveal.ts   native menu-window geometry to a partial reveal offset; no pixels
   fullScreenReveal.ts  how far macOS's full-screen menu bar and title strip reach over the
                     window (main measures the inputs), and the pointer rule that moves the
-                    shell below them and back. Pure, geometry passed in, so
+                    header below them and back. Pure, geometry passed in, so
                     verify:fullscreen replays the measured events. Gotcha 105
   floating.ts       `coversBrowser`: whether any floating layer's rect overlaps the docked
                     browser's. Pure, so verify:layers runs it. Gotcha 14
@@ -2525,7 +2543,8 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     agent's account), `claudeWindowsFor` (one Claude account's endpoint
                     reading merged with only its own payloads), the panel's groups
   codexContext.ts   Codex rollout token/model fold; last-response usage, never the cumulative total
-  windowShortcuts.ts native window-cycle chord matcher and wrapping order
+  windowShortcuts.ts shared native/renderer tab matcher, native window-cycle matcher and
+                    wrapping order; embedded browser input routes to its Stoke window
   codexResume.ts    watcher defaults/hydration and strict terminal limit-error/reset-date parsing
   codexUsage.ts     Codex's rate limits from a rollout's `token_count` lines: seconds to ms
                     once, the plan's bucket first, a window reset since the turn dropped

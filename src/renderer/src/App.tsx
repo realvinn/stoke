@@ -14,7 +14,7 @@ import { agentSeed, paintAgentColors, type AgentColors } from '@shared/agentColo
 import { accountSeed, accountsOf, DEFAULT_ACCOUNT_ID } from '@shared/accounts'
 import { accountLoginOutcome, type AccountIdentity } from '@shared/accountIdentity'
 import { accountIdentityChanged } from './lib/useAccountIdentity'
-import { canMoveTab, type TabWindowPacket, type TabWindowTransfer } from '@shared/tabWindows'
+import { canMoveTab, quickTerminalIdForTab, type TabWindowPacket, type TabWindowTransfer } from '@shared/tabWindows'
 import { nextReveal, REVEAL_ENTRY_GRACE_MS, revealKeyCounts } from '@shared/fullScreenReveal'
 import type { RevealInfo, RevealInput, RevealState } from '@shared/fullScreenReveal'
 import { AgentPicker } from './components/AgentPicker'
@@ -62,7 +62,7 @@ import {
   type DraftTrack
 } from '@shared/activityView'
 import { pressClock } from './lib/pressBurst'
-import { useBrowserCovered } from './lib/floatingLayers'
+import { useBrowserCovered, useFloatingLayer } from './lib/floatingLayers'
 import type { StokeCliRequest } from '@shared/stokeArgs'
 import { activeThemeId, resolveTheme } from '@shared/themes'
 import { worklogButtonState } from '@shared/worklog'
@@ -4589,20 +4589,9 @@ export function App(): React.JSX.Element {
     if (tab?.kind === 'session' && tab.status === 'running') focusTerm(tab.ptyId)
   }, [shellInert])
 
-  /*
-   * macOS full screen: keep the tabs out from under the menu bar. Gotcha 105.
-   *
-   * macOS slides its menu bar, and a title strip under it, down over the top of
-   * a full-screen window — 62px on macOS 27, deeper than the whole title bar —
-   * and on macOS 27 it does so on entering full screen and stays. `revealInset`
-   * is how far it reaches (main measures it); `fullScreenReveal` is what to do.
-   * `reserve` keeps that room free for all of full screen. `follow` slides the
-   * whole shell down by it once the pointer is up on the reveal, and back a
-   * moment after the pointer has gone below the title bar, with `nextReveal` as
-   * the rule. It rests by `top`, never by resizing a row, so a trip to the tabs
-   * resizes no pty, and slides by a transform (below); BrowserPanel walks the
-   * native view along with the slide.
-   */
+  /* macOS full screen: follow native menu geometry with the tabs/usage row.
+   * The workspace and its terminal/browser bounds stay fixed. Pointer timing
+   * is only the fallback when native geometry is unavailable. */
   const [revealInfo, setRevealInfo] = useState<RevealInfo>(NO_REVEAL)
   useEffect(() => {
     if (platform !== 'darwin' || !fullScreen) {
@@ -4769,33 +4758,24 @@ export function App(): React.JSX.Element {
   // slide back up has a `top: 0` to transition to.
   const revealLayout = revealInset > 0 && revealMode !== 'off' ? revealMode : undefined
   const nativeFollow = revealLayout === 'follow' && nativeReveal !== null && !shellInert
-  const shellOffset = nativeFollow ? nativeReveal : followReveal && revealShift ? revealInset : 0
-  const revealShifted = revealLayout === 'follow' && shellOffset > 0
+  const chromeOffset = nativeFollow ? nativeReveal : followReveal && revealShift ? revealInset : 0
+  const revealShifted = revealLayout === 'follow' && chromeOffset > 0
+  const [chromeAnimating, setChromeAnimating] = useState(false)
+  const revealChromeRef = useRef<HTMLElement | null>(null)
+  useLayoutEffect(() => { revealChromeRef.current = appRef.current?.querySelector<HTMLElement>(':scope > .titlebar') ?? null }, [])
 
-  /*
-   * The slide between the two resting places, as FLIP: `top` jumps straight to
-   * where the shell rests (the CSS), and a transform carries it there from where
-   * it was, on the compositor. Animating `top` itself repainted and rasterised
-   * the whole shell on the main thread every frame — measured, 7.7–15.1 ms of
-   * paint per slide and dropped frames in 2 of 15 slides with terminals
-   * streaming; a transform, 0–2.8 ms and none in 16. Only the 240 ms of the
-   * slide is transformed: a transform left in place would make `.app` the
-   * containing block for every `position: fixed` overlay inside it, and a tab's
-   * context menu, opened exactly while shifted, would land 62px low.
-   *
-   * A slide that reverses halfway starts from where the shell visibly is, read
-   * off the running animation. Reduced motion is checked here because the
-   * stylesheet's global rule does not reach `element.animate()` (gotcha 72).
-   */
+  /* Fallback motion animates only the chrome, never an ancestor of the
+   * workspace. Native samples follow the actual menu position directly. */
   const slideRef = useRef<{ rest: number; anim: Animation | null }>({ rest: 0, anim: null })
   useLayoutEffect(() => {
-    const el = appRef.current
+    const el = appRef.current?.querySelector<HTMLElement>(':scope > .titlebar')
     const slide = slideRef.current
-    const rest = shellOffset
-    if (nativeFollow) { slide.anim?.cancel(); slide.anim = null; slide.rest = rest; return }
+    const rest = chromeOffset
+    if (nativeFollow) { slide.anim?.cancel(); slide.anim = null; slide.rest = rest; setChromeAnimating(false); return }
     const from = slide.rest
     slide.rest = rest
-    if (!el || rest === from) return
+    if (!el) { setChromeAnimating(false); return }
+    if (rest === from) return
     let carried = 0
     if (slide.anim) {
       const transform = getComputedStyle(el).transform
@@ -4803,21 +4783,25 @@ export function App(): React.JSX.Element {
       slide.anim.cancel()
       slide.anim = null
     }
-    if (revealLayout !== 'follow' || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+    if (revealLayout !== 'follow' || window.matchMedia('(prefers-reduced-motion: reduce)').matches) { setChromeAnimating(false); return }
     const offset = from + carried - rest
-    if (Math.abs(offset) < 1) return
+    if (Math.abs(offset) < 1) { setChromeAnimating(false); return }
     const root = getComputedStyle(document.documentElement)
     const anim = el.animate([{ transform: `translateY(${offset}px)` }, { transform: 'translateY(0)' }], {
       duration: Number.parseFloat(root.getPropertyValue('--dur-slow')) || 240,
       easing: root.getPropertyValue('--ease').trim() || 'ease-out'
     })
     slide.anim = anim
+    setChromeAnimating(true)
     const done = (): void => {
-      if (slide.anim === anim) slide.anim = null
+      if (slide.anim === anim) { slide.anim = null; setChromeAnimating(false) }
     }
     anim.addEventListener('finish', done)
     anim.addEventListener('cancel', done)
-  }, [shellOffset, nativeFollow, revealLayout])
+  }, [chromeOffset, nativeFollow, revealLayout])
+  // A native browser page paints above DOM. When the moving chrome actually
+  // intersects it, use the same fixed-bounds still handoff as other popovers.
+  useFloatingLayer(revealChromeRef, revealLayout === 'follow' && (revealShifted || chromeAnimating || slideRef.current.rest > 0), chromeOffset)
 
   useEffect(() => {
     void refreshAgents()
@@ -5027,7 +5011,7 @@ export function App(): React.JSX.Element {
   const repositoryCwd = activeTab && !activeTab.hostId && !activeTab.private
     ? activeTab.kind === 'session' ? activeTab.cwd || null : activeTab.kind === 'new' ? launchTarget?.path ?? null : null
     : null
-  const quickTerminalContext = activeTab?.id ?? null
+  const quickTerminalContext = activeTab ? quickTerminalIdForTab(activeTab) : null
   const quickTerminalIntentScope = useRef({ contextId: quickTerminalContext, cwd: repositoryCwd })
   if (quickTerminalIntentScope.current.contextId !== quickTerminalContext || quickTerminalIntentScope.current.cwd !== repositoryCwd) quickTerminalIntentScope.current = { contextId: quickTerminalContext, cwd: repositoryCwd }
   const quickTerminalOpenIntent = useRef<object | null>(null)
@@ -5047,7 +5031,8 @@ export function App(): React.JSX.Element {
     // before the context effect has run after a tab switch.
     const owner = quickTerminalIntentScope.current
     const intent = {}; quickTerminalOpenIntent.current = intent
-    const current = (): boolean => quickTerminalOpenIntent.current === intent && quickTerminalIntentScope.current === owner && activeTabIdRef.current === quickTerminalContext
+    const tabId = activeTab?.id ?? null
+    const current = (): boolean => quickTerminalOpenIntent.current === intent && quickTerminalIntentScope.current === owner && activeTabIdRef.current === tabId
     if (mode === 'panel') setQuickTerminalFocus(previous => ({ sequence: previous.sequence + 1, contextId: quickTerminalContext, owner }))
     void window.stoke.quickTerminal.open(mode, repositoryCwd ?? undefined, quickTerminalContext)
       .then(result => { if (current() && !result.ok) setError(result.message) })
@@ -5284,7 +5269,13 @@ export function App(): React.JSX.Element {
       }
     }
     window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+    const offNativeTabs = window.stoke.window.onTabShortcut(action => {
+      if (action.type === 'newTab') openNewTab()
+      else if (action.type === 'closeTab') { const id = activeTabIdRef.current; if (id) requestCloseTab(id) }
+      else if (action.type === 'tab') { const target = tabsRef.current[action.index - 1]; if (target) setActiveTabId(target.id) }
+      else if (action.type === 'cycleTab') setActiveTabId(current => cycleTab(tabsRef.current.map(tab => tab.id), current, action.delta) ?? current)
+    })
+    return () => { window.removeEventListener('keydown', onKey); offNativeTabs() }
   }, [isMac, tabs, activeTabId, requestCloseTab, openNewTab])
 
   /* ------------------------------------------------- first-run campfire */
@@ -6011,7 +6002,7 @@ export function App(): React.JSX.Element {
       ref={appRef}
       data-reveal={revealLayout}
       data-shifted={revealShifted || undefined}
-      style={revealLayout ? ({ '--reveal-inset': `${nativeFollow ? shellOffset : revealInset}px` } as React.CSSProperties) : undefined}
+      style={revealLayout ? ({ '--reveal-inset': `${nativeFollow ? chromeOffset : revealInset}px` } as React.CSSProperties) : undefined}
     >
       <TitleBar
         hostedBy={hostedBy}
@@ -6662,7 +6653,6 @@ export function App(): React.JSX.Element {
             <div style={{ width: browserWidth, minWidth: quickPanelVisible ? 320 : undefined, display: 'flex', flexShrink: quickPanelVisible ? 1 : 0 }}>
               <BrowserPanel
                 state={browserState}
-                shellOffset={shellOffset}
                 bookmarks={settings?.browser.bookmarks ?? []}
                 onAskClaude={askClaude}
                 onClose={() => setBrowserOpen(false)}

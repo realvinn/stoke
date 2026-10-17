@@ -42,13 +42,19 @@ function recompute(): void {
   for (const l of listeners) l()
 }
 
+/** The browser's placeholder can move while an open layer stays stationary. */
+export function refreshFloatingLayers(): void {
+  recompute()
+}
+
 /*
  * A layer's rect can move after it registers: ContextMenu renders hidden for a
  * frame and nudges itself back on screen in an effect, a popover grows when its
  * content loads and slides into place as it enters, and the window can be
  * resized with a popover open. One more measurement on the next frame, one per
  * resize of the layer, one when its entrance ends (all in `useFloatingLayer`)
- * and one per window resize cover them without polling.
+ * and one per window resize cover them without polling. BrowserPanel also
+ * refreshes on placeholder layout changes, including its first mount.
  */
 if (typeof window !== 'undefined') window.addEventListener('resize', recompute)
 
@@ -62,7 +68,7 @@ function subscribe(listener: () => void): () => void {
  * layer is counted in the same commit that mounts it, before the frame paints.
  * Pass `true` for a component that is only mounted while open.
  */
-export function useFloatingLayer(ref: RefObject<Element | null>, open: boolean): void {
+export function useFloatingLayer(ref: RefObject<Element | null>, open: boolean, motionKey?: number): void {
   useLayoutEffect(() => {
     if (!open) return
     const id = ++seq
@@ -90,6 +96,19 @@ export function useFloatingLayer(ref: RefObject<Element | null>, open: boolean):
       recompute()
     }
   }, [open, ref])
+  // Position-only native reveal samples do not trigger ResizeObserver. Follow
+  // their short compositor motion without polling stationary layers forever.
+  useLayoutEffect(() => {
+    if (!open || motionKey === undefined) return
+    const until = performance.now() + 400
+    let frame = 0
+    const measure = (): void => {
+      recompute()
+      if (performance.now() < until) frame = requestAnimationFrame(measure)
+    }
+    measure()
+    return () => cancelAnimationFrame(frame)
+  }, [open, ref, motionKey])
 }
 
 /** True while an open floating layer overlaps the docked browser. */

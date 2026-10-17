@@ -107,6 +107,11 @@ console.log('\nadoptRemoteTab: a phone Resume takes the ended twin\'s place')
 }
 
 console.log('\nreplaceOrAppend: a launch consumes the New Project tab it started from')
+const restarting = { id: 'new-pty', kind: 'session' }
+const firstRestart = replaceOrAppend([{ id: 'old-pty', kind: 'session' }], restarting, 'old-pty')
+check('restarting an agent retains the session tab shell bank', firstRestart[0].quickTerminalContextId, 'old-pty')
+check('repeated restarts retain the original shell bank', replaceOrAppend(firstRestart, { id: 'third-pty', kind: 'session' }, 'new-pty')[0].quickTerminalContextId, 'old-pty')
+check('a project launch does not inherit a scratch launcher shell', replaceOrAppend([{ id: 'scratch-tab', kind: 'new' }], restarting, 'scratch-tab')[0].quickTerminalContextId, undefined)
 const abc = [{ id: 'a' }, { id: 'b' }, { id: 'c' }]
 check(
   'replacing a tab that exists lands the new tab at the replaced index',

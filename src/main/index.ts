@@ -294,9 +294,9 @@ import {
 
 import { MacReveal } from './macReveal.ts'
 import { nativeRevealOffset } from '../shared/nativeReveal.ts'
-import { windowShortcut, nextWindow } from '../shared/windowShortcuts.ts'
+import { windowShortcut, nextWindow, tabShortcut } from '../shared/windowShortcuts.ts'
 import { TabWindowState } from './tabWindowState.ts'
-import { canMoveTab, type TabWindowPacket, type TabWindowTransfer } from '../shared/tabWindows.ts'
+import { canMoveTab, quickTerminalIdForTab, type TabWindowPacket, type TabWindowTransfer } from '../shared/tabWindows.ts'
 
 const isMac = process.platform === 'darwin'
 const isWindows = process.platform === 'win32'
@@ -313,6 +313,8 @@ const transferTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const returningWindows = new Set<number>()
 function appWindows(): BrowserWindow[] { return [...(win ? [win] : []), ...detachedWindows.values()].filter(w => !w.isDestroyed()) }
 function switchWindow(owner: BrowserWindow, input: Electron.Input): boolean {
+  const tabAction = tabShortcut({ ...input, isAutoRepeat: false }, isMac)
+  if (tabAction) { if (!input.isAutoRepeat) owner.webContents.send(CH.winTabShortcut, tabAction); return true }
   const windows = appWindows(), delta = windowShortcut(input, isMac, windows.length)
   const target = delta === null ? null : nextWindow(windows, owner, delta)
   if (!target) return false
@@ -2430,8 +2432,8 @@ function validQuickTerminalContext(id: unknown, cwd: unknown): id is string | nu
 function reconcileQuickTerminalContexts(): void {
   if (!quickTerminal) return
   const live = new Set<string>()
-  for (const tabs of windowTabs.tabs.values()) for (const tab of tabs) live.add(tab.id)
-  for (const pending of windowTabs.pending.values()) for (const tab of pending.transfer.packet.tabs) live.add(tab.id)
+  for (const tabs of windowTabs.tabs.values()) for (const tab of tabs) live.add(quickTerminalIdForTab(tab))
+  for (const pending of windowTabs.pending.values()) for (const tab of pending.transfer.packet.tabs) live.add(quickTerminalIdForTab(tab))
   for (const owner of appWindows()) live.add(quickTerminalContextId(owner, null))
   quickTerminal.retainContexts(live)
 }

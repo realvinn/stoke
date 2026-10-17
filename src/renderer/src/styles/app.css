@@ -449,51 +449,24 @@ body {
   background: var(--bg);
 }
 
-/*
- * macOS full screen: room for the menu bar that slides down over the tabs.
- * Gotcha 105. `--reveal-inset` is how far it reaches — the menu bar plus the
- * title strip macOS hangs under it, 62px on macOS 27 — measured by main and
- * written inline by App.
- *
- * `follow` moves the whole shell down while the pointer is up on the reveal,
- * resting by `top` rather than a taller row: every row keeps its size, so no
- * pty resizes, and the bottom of the shell hangs off the window until it goes
- * back. No transition here: App slides it between the two resting places with
- * a transform animation (FLIP), because a transitioned `top` repainted the
- * whole shell on the main thread every frame and dropped frames under load.
- * `reserve` gives the room for all of full screen instead, so the rows do
- * shrink — once, on entering full screen, which resizes them anyway.
- * Either way the band above the title bar is painted as title bar: it is what
- * shows there once macOS slides its own strip back up.
- */
-.app[data-reveal] {
-  position: relative;
-}
-
-.app[data-reveal='follow'] {
-  top: 0;
-}
-
-.app[data-reveal='follow'][data-shifted] {
-  top: var(--reveal-inset, 0px);
-}
-
-.app[data-reveal='reserve'] {
-  padding-top: var(--reveal-inset, 0px);
-}
-
+/* macOS full screen: only the tabs/usage chrome follows the native menu.
+ * The body, terminal grids, browser page and footer keep their bounds. */
+.app[data-reveal] { position: relative; }
+.app[data-reveal='follow'] > .titlebar { top: 0; z-index: 3; }
+.app[data-reveal='follow'][data-shifted] > .titlebar { top: var(--reveal-inset, 0px); }
+.app[data-reveal='reserve'] { padding-top: var(--reveal-inset, 0px); }
 .app[data-reveal]::before {
   content: '';
   position: absolute;
   inset-inline: 0;
   top: 0;
-  height: var(--reveal-inset, 0px);
+  height: 0;
   background: var(--bg-sunken);
+  pointer-events: none;
+  z-index: 2;
 }
-
-.app[data-reveal='follow']::before {
-  top: calc(-1 * var(--reveal-inset, 0px));
-}
+.app[data-reveal='follow'][data-shifted]::before,
+.app[data-reveal='reserve']::before { height: var(--reveal-inset, 0px); }
 
 :root[data-wallpaper] .app[data-reveal]::before {
   background: color-mix(in srgb, var(--bg-sunken) calc(var(--panel-alpha, 0.85) * 100%), transparent);

@@ -56,6 +56,7 @@ const api: StokeApi = {
 
   window: {
     detached: process.argv.includes('--stoke-detached-window'),
+    onTabShortcut: cb => on(CH.winTabShortcut, cb),
     tabBootstrap: () => ipcRenderer.invoke(CH.winTabBootstrap),
     publishTabs: tabs => ipcRenderer.send(CH.winTabPublish, tabs),
     detachTab: packet => ipcRenderer.invoke(CH.winTabDetach, packet),

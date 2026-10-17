@@ -15,6 +15,7 @@ import type { CodingCliId } from '../../../shared/codingClis.ts'
 import { agentTagText } from '../../../shared/agents.ts'
 import { foldGroup } from '../../../shared/paths.ts'
 import { PRIVATE_FOLDER_TEXT } from '../../../shared/privateChat.ts'
+import { quickTerminalIdForTab } from '../../../shared/tabWindows.ts'
 
 /**
  * Which tab id to select once `closedId` is gone, or null when the list empties.
@@ -41,7 +42,7 @@ export function neighbourOf(ids: string[], closedId: string): string | null {
  * `startSession` and `startHostSession` both call this one function instead
  * of each carrying its own copy of the same replace-or-append arithmetic.
  */
-export function replaceOrAppend<T extends { id: string }>(
+export function replaceOrAppend<T extends { id: string; kind?: string; quickTerminalContextId?: string }>(
   list: T[],
   tab: T,
   replaceTabId?: string | null
@@ -49,7 +50,12 @@ export function replaceOrAppend<T extends { id: string }>(
   const at = replaceTabId ? list.findIndex((t) => t.id === replaceTabId) : -1
   if (at < 0) return [...list, tab]
   const next = [...list]
-  next[at] = tab
+  // A new PTY in the same session tab must not end its local dev server.
+  // Launching from a New Project tab gets a fresh project shell instead.
+  const previous = list[at]
+  next[at] = previous.kind === 'session' && tab.kind === 'session'
+    ? { ...tab, quickTerminalContextId: quickTerminalIdForTab(previous) }
+    : tab
   return next
 }
 

@@ -19,6 +19,7 @@ export const CH = {
   quickTerminalOpenLink: 'quick-terminal:open-link',
   // window chrome
   winTabBootstrap: 'win:tab-bootstrap',
+  winTabShortcut: 'win:tab-shortcut',
   winIsFocused: 'win:is-focused',
   winTabPublish: 'win:tab-publish',
   winTabDetach: 'win:tab-detach',

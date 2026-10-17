@@ -273,6 +273,16 @@ a frame of a moving one.
 
 ## 105. macOS's full-screen reveal is two windows over the page, 62px deep, and on macOS 27 it arrives with full screen
 
+> **Superseded on 2026-10-18 by the owner's requested behavior.** Follow mode now
+> moves only `.titlebar` (tabs and usage) to the sampled native menu edge. The
+> workspace, footer, terminal grids and browser viewport stay fixed. Native
+> samples apply directly; fallback FLIP motion is confined to the header and
+> respects reduced motion. The header registers with `useFloatingLayer` while
+> shifted/moving so the native browser cannot paint over it; BrowserPanel
+> refreshes intersection when its placeholder mounts or changes layout. Reserve
+> mode remains an explicit setting. The whole-shell movement below is history,
+> not an implementation requirement.
+
 **In native full screen, the top of the screen belongs to macOS.** Pushing the pointer against it
 slides the menu bar down, and under it a standard title strip holding the traffic lights and the
 window title. Electron makes that strip opaque in full screen (`NativeWindowMac::

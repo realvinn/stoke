@@ -216,10 +216,9 @@ rule file named on the group line.
 **Keyboard chords** — `.claude/rules/keys.md`
 - **32.** Zoom-out must stay bare Cmd/Ctrl+`-` and refuse Shift: Ctrl+Shift+`-` is Ctrl+`_`, which
   xterm sends as `C0.US` (readline's undo); zoom-in accepts Shift because `+` is Shift+`=`.
-- **56.** Bind only chords xterm ignores — Meta on macOS; off it, Ctrl+Shift for letters and
-  brackets (bare Ctrl+`-`/`=`/`0` are zoom's exception, 32): `matchShortcut` withholds every match
-  from the pty, and the bare Ctrl+1..9 tab chords already steal Ctrl+3..8. Stepping chords read
-  pending state; `zoom` still steps from `settingsRef`.
+- **56.** Tab controls reserve standard Ctrl+T/W/Tab off Mac, intercepted before PTY input
+  in native WebContents and xterm's custom handler; retain Shift aliases and other CLI Ctrl keys.
+  Stepping chords read pending state; `zoom` still steps from `settingsRef`.
 - **145.** Let one function decide a chord two features share and have every listener ask it (`findOwner`:
   focus picks the terminal's or the docked browser's Cmd+F); never a panel's window listener acting from any focus.
 
@@ -471,8 +470,8 @@ rule file named on the group line.
   `1ms`/one iteration, so the resting style is what paints, and anything resting at `opacity: 0`
   (`.campfire-spark`) vanishes rather than stills. Prove it with
   `--force-prefers-reduced-motion` and a screenshot.
-- **105.** Keep the tabs out from under macOS's full-screen reveal (menu bar + title strip, 62px on
-  macOS 27) by sliding `.app` with `top`, never a row (`nextReveal`, `revealInsetFor`).
+- **105.** Follow macOS's native menu edge with `.titlebar` only; keep workspace/footer/browser
+  bounds fixed and register the shifted header with floating layers (2026-10-18 supersedes whole-shell movement).
 - **114.** Add a terminal-card shadow as a `--pane-*` layer of `.term-host`'s one `box-shadow`, never
   a `box-shadow` of its own: set outright, the frame's rule hid the drop ring on every framed pane.
 - **137.** Never show-then-focus through `visibility`: under reduced motion the global 1ms transition

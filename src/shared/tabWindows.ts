@@ -32,6 +32,8 @@ export type TabKind = 'session' | 'new' | 'remote' | 'grok-bot'
 export interface Tab {
   agentAccess?: import('./agentAccess.ts').AgentAccessMode
   id: string
+  /** Runtime shell-bank identity, retained when this tab's agent PTY restarts. */
+  quickTerminalContextId?: string
   kind: TabKind
   /** Cloud bot conversation, independent of coding CLI/PTYS and local folders. */
   grokBot?: import('./grokBot.ts').GrokBotTabBinding
@@ -184,6 +186,11 @@ export interface TabWindowPacket {
   stored: { state: import('./types.ts').StoredTabs; ids: string[] }
 }
 export interface TabWindowTransfer { id: string; packet: TabWindowPacket }
+
+export function quickTerminalIdForTab(tab: { id: string; quickTerminalContextId?: string }): string {
+  const id = tab.quickTerminalContextId
+  return typeof id === 'string' && !!id && id.length <= 200 && !/[\x00-\x1f]/.test(id) ? id : tab.id
+}
 
 export function canMoveTab(tab: Tab): boolean {
   return tab.kind !== 'remote' && !tab.grokBot?.sending && !tab.installing?.length && !tab.enrollHostId && !tab.accountLogin && !tab.reconnect

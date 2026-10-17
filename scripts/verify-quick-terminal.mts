@@ -215,7 +215,7 @@ try {
       const bAgain = await scoped.context('tab-two', folderB)
       check('another tab retains its own selected shell and native process', [bAgain.shellId, bAgain.id], ['default', b.id])
       const aAgain = await scoped.context('tab-one', folderA)
-      check('a tab remembers its alternate shell and buffer', [aAgain.shellId, aAgain.id, scoped.snapshot().data.includes('STOKE_CONTEXT_OTHER')], [secondShell.id, aOther.id, true])
+      check('a tab remembers its alternate shell and buffer', [aAgain.shellId, aAgain.id, await until(() => scoped.snapshot().data.includes('STOKE_CONTEXT_OTHER'))], [secondShell.id, aOther.id, true])
       const pinned = await scoped.pin(true)
       const across = await scoped.context('tab-two', folderB)
       check('pinning keeps the selected shell, folder and buffer across tabs', [pinned.pinned, across.pinned, across.contextId, across.id, across.cwd, scoped.snapshot().data.includes('STOKE_CONTEXT_OTHER')], [true, true, 'tab-one', aOther.id, await realpath(folderA), true])

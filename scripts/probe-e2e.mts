@@ -152,6 +152,7 @@ interface Result {
   detail: string
 }
 const results: Result[] = []
+const skipped: Array<{ name: string; reason: string }> = []
 
 function check(name: string, ok: boolean, detail = ''): boolean {
   results.push({ name, ok, detail })
@@ -408,6 +409,24 @@ async function ev<T = unknown>(expr: string, timeoutMs = 10_000): Promise<T> {
   return (await ui.evaluate(expr, { timeoutMs })) as T
 }
 
+/** CDP keyboard dispatch skips Electron's native hook. Emit on the exact
+ * owned WebContents so the packaged, registered handler and preload route run. */
+async function nativeKey(client: CdpClient, key: string, options: { code?: string; control?: boolean; meta?: boolean; shift?: boolean; focus?: boolean } = {}): Promise<boolean> {
+  const target = await waitFor('the disposable fixture main inspector', async () => (await listTargets(nativeInspectorPort)).find(target => target.type === 'node' && target.webSocketDebuggerUrl), 10_000)
+  const main = await CdpClient.open(target)
+  try {
+    return await main.evaluate(`(() => {
+      const electron = process.getBuiltinModule('module').createRequire(process.cwd() + '/probe-input.cjs')('electron');
+      const wc = electron.webContents.fromDevToolsTargetId(${JSON.stringify(client.page.id)});
+      if (!wc || wc.isDestroyed()) throw new Error('fixture key target is missing');
+      if (${options.focus === true}) { wc.focus(); if (!wc.isFocused()) throw new Error('fixture key target did not receive native focus'); }
+      let prevented = false;
+      wc.emit('before-input-event', { preventDefault() { prevented = true } }, ${JSON.stringify({ type: 'keyDown', key, code: options.code ?? key, meta: options.meta ?? isMac, control: options.control ?? !isMac, shift: options.shift ?? false, alt: false, isAutoRepeat: false, isComposing: false })});
+      return prevented;
+    })()`)
+  } finally { main.close() }
+}
+
 /** Leave a slow native IPC in the page, then poll its result with short CDP evaluations. */
 async function readNativeAccountIdentity(target: AccountIdentityTarget): Promise<AccountIdentity> {
   const key = `__stokeProbeIdentity-${randomUUID()}`
@@ -441,10 +460,7 @@ const BUFFERS = [
   '  const m = window.stokeTerminals',
   '  if (!m) return out',
   '  for (const [id, t] of m) {',
-  '    const b = t.buffer.active',
-  '    const lines = []',
-  '    for (let i = 0; i < b.length; i++) lines.push(b.getLine(i)?.translateToString(true) ?? "")',
-  '    out[id] = lines.join("\\n")',
+  '    out[id] = (' + logicalTerminalText.toString() + ')(t.buffer.active)',
   '  }',
   '  return out',
   '})()'
@@ -1850,19 +1866,7 @@ await step('dragging a live agent into a separate Stoke window keeps the process
     await waitFor('typing in the moved terminal to reach its original process', async () => (await bufferOf(t.ptyId)).includes('GOT detached-window-input'))
     await shot('04-detached-agent-window')
     const windowKey = async (client: CdpClient, key: 'ArrowLeft' | 'ArrowRight'): Promise<void> => {
-      const target = await waitFor('the disposable fixture main inspector', async () => (await listTargets(nativeInspectorPort)).find(t => t.type === 'node' && t.webSocketDebuggerUrl), 10000)
-      const main = await CdpClient.open(target)
-      try {
-        const prevented = await main.evaluate(`(() => {
-          const electron = process.getBuiltinModule('module').createRequire(process.cwd() + '/probe-input.cjs')('electron');
-          const wc = electron.webContents.fromDevToolsTargetId(${JSON.stringify(client.page.id)});
-          if (!wc || wc.isDestroyed()) throw new Error('fixture key target is missing');
-          let prevented = false;
-          wc.emit('before-input-event', { preventDefault() { prevented = true } }, { type: 'keyDown', key: ${JSON.stringify(key)}, code: ${JSON.stringify(key)}, meta: ${process.platform === 'darwin'}, control: ${process.platform !== 'darwin'}, shift: false, alt: false, isAutoRepeat: false, isComposing: false });
-          return prevented;
-        })()`)
-        if (!prevented) throw new Error('the registered native window shortcut did not consume its chord')
-      } finally { main.close() }
+      if (!await nativeKey(client, key)) throw new Error('the registered native window shortcut did not consume its chord')
     }
     await ev('window.stoke.window.focus(), true')
     await waitFor('detached window native focus', () => ev<boolean>('window.stoke.window.isFocused()'))
@@ -1992,6 +1996,103 @@ await step('the docked browser logs in, and keeps it to its own profile', async 
   check('the second profile does NOT carry the first one\'s login (gotcha 107)', /"authed":\s*false/.test(other), other)
   await ev('window.stoke.browser.useProfile("default")')
   await sleep(500)
+})
+
+if (isMac) await step('sampled macOS menu offsets move only the tabs and usage row', async () => {
+  // This is a stylesheet/geometry regression, using sampled native offsets.
+  // It deliberately does not claim an actual AppKit menu-bar interaction.
+  await activate(tabs.codex!.ptyId)
+  const pageUrl = `${site.base}/whoami?sampled-menu-geometry=1`
+  await ev('(window.__stokeMenuBrowserOff = window.stoke.browser.onState(state => { window.__stokeMenuBrowserState = state }), true)')
+  const saved = await ev<{ reveal: string | null; shifted: string | null; style: string | null }>(`(() => { const app = document.querySelector('.app'); return { reveal: app.getAttribute('data-reveal'), shifted: app.getAttribute('data-shifted'), style: app.getAttribute('style') }; })()`)
+  const revealFixtureKey = JSON.stringify(`__stokeSampledReveal-${randomUUID()}`)
+  let page: CdpClient | null = null, main: CdpClient | null = null, pageTabId = ''
+  try {
+    await ev(`(window.stoke.browser.newTab(${JSON.stringify(pageUrl)}), window.stoke.browser.show(), true)`)
+    pageTabId = await waitFor('the owned menu-layout browser fixture', () => ev<string | null>(`window.__stokeMenuBrowserState?.tabs.find(tab => tab.url === ${JSON.stringify(pageUrl)} && !tab.loading)?.id ?? null`))
+    page = await connectBrowserPage(port, (url: string) => url === pageUrl)
+    const target = await waitFor('the owned menu-layout main inspector', async () => (await listTargets(nativeInspectorPort)).find(target => target.type === 'node' && target.webSocketDebuggerUrl), 10_000)
+    main = await CdpClient.open(target)
+    type Rect = { x: number; y: number; width: number; height: number }
+    type Layout = { app: Rect; titlebar: Rect; body: Rect; footer: Rect; terminal: Rect; browserHole: Rect }
+    const nativeBounds = async (): Promise<Rect> => main!.evaluate(`(() => {
+      const electron = process.getBuiltinModule('module').createRequire(process.cwd() + '/probe-menu-layout.cjs')('electron');
+      const wc = electron.webContents.fromDevToolsTargetId(${JSON.stringify(page.page.id)});
+      const view = electron.BrowserWindow.getAllWindows().flatMap(win => win.contentView.children).find(view => view.webContents === wc);
+      if (!view) throw new Error('owned native browser view is missing');
+      return view.getBounds();
+    })()`)
+    const sample = (offset: number): Promise<Layout> => ev<Layout>(`(async () => {
+      const app = document.querySelector('.app'); app.setAttribute('data-reveal', 'follow'); app.toggleAttribute('data-shifted', ${offset > 0}); app.style.setProperty('--reveal-inset', '${offset}px');
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const rect = element => { if (!element) throw new Error('owned layout element is missing'); const r = element.getBoundingClientRect(); return { x:r.x, y:r.y, width:r.width, height:r.height }; };
+      return { app: rect(app), titlebar: rect(app.querySelector(':scope > .titlebar')), body: rect(app.querySelector(':scope > .body-row')), footer: rect(app.querySelector(':scope > .statusbar')), terminal: rect(window.stokeTerminals.get(${JSON.stringify(tabs.codex!.ptyId)})?.element?.querySelector('.xterm-screen')), browserHole: rect(document.querySelector('.browser-hole')) };
+    })()`)
+    const baseline = await sample(0)
+    const nativeBaseline = await waitFor('the native browser to match its fixed hole', async () => { const bounds = await nativeBounds(); return Math.abs(bounds.y - baseline.browserHole.y) <= 1 && Math.abs(bounds.height - baseline.browserHole.height) <= 1 ? bounds : null })
+    const same = (a: Rect, b: Rect): boolean => (['x', 'y', 'width', 'height'] as const).every(key => Math.abs(a[key] - b[key]) <= 1)
+    for (const offset of [17, 62, 36, 0]) {
+      const layout = await sample(offset)
+      const native = await nativeBounds()
+      check(`${offset}px sampled menu edge moves the tabs/usage row by exactly that offset`, Math.abs(layout.titlebar.y - baseline.titlebar.y - offset) <= 1 && Math.abs(layout.titlebar.height - baseline.titlebar.height) <= 1)
+      check(`${offset}px sampled menu edge keeps app, body, footer, terminal and browser hole fixed`, (['app', 'body', 'footer', 'terminal', 'browserHole'] as const).every(key => same(layout[key], baseline[key])))
+      check(`${offset}px sampled menu edge keeps the actual native browser view fixed`, same(native, nativeBaseline))
+      if (offset === 62) await shot('04-macos-sampled-menu-edge')
+    }
+    // A second regression uses owned synthetic native notifications so the
+    // real React header layer registers. No AppKit menu/window state changes.
+    // Restore the exact IPC handlers even if a bounded visibility wait fails.
+    await main.evaluate(`(() => {
+      const electron = process.getBuiltinModule('module').createRequire(process.cwd() + '/probe-menu-layout.cjs')('electron');
+      const wc = electron.webContents.fromDevToolsTargetId(${JSON.stringify(ui!.page.id)}), handlers = electron.ipcMain._invokeHandlers;
+      if (!wc || !(handlers instanceof Map)) throw new Error('owned reveal fixture IPC is unavailable');
+      const names = ['win:revealInfo', 'win:native-reveal'];
+      const originals = names.map(name => [name, handlers.get(name)]);
+      if (originals.some(([, handler]) => typeof handler !== 'function')) throw new Error('owned reveal fixture handler is missing');
+      const fixture = { wc, offset: 17, originals, electron };
+      globalThis[${revealFixtureKey}] = fixture;
+      for (const [name, original] of originals) {
+        electron.ipcMain.removeHandler(name);
+        electron.ipcMain.handle(name, (event, ...args) => event.sender === wc ? name === 'win:revealInfo' ? { inset: 512, onEntry: false } : fixture.offset : original(event, ...args));
+      }
+      wc.send('win:fullScreenChanged', true);
+      return true;
+    })()`)
+    const setOwnedOffset = async (offset: number): Promise<void> => {
+      await main!.evaluate(`(() => { const fixture = globalThis[${revealFixtureKey}]; fixture.offset = ${offset}; fixture.wc.send('win:native-reveal-changed', fixture.offset); return true; })()`)
+      await waitFor('the registered sampled header position', () => ev<boolean>(`(() => { const app = document.querySelector('.app'), header = app?.querySelector(':scope > .titlebar'); return app?.getAttribute('data-reveal') === 'follow' && !!header && Math.abs(header.getBoundingClientRect().y - ${baseline.titlebar.y + offset}) <= 1; })()`), 5000)
+      // Deliberately exceed useFloatingLayer's finite 400ms motion observer.
+      await sleep(500)
+    }
+    const overlaps = (): Promise<boolean> => ev<boolean>(`(() => { const h = document.querySelector('.app > .titlebar')?.getBoundingClientRect(), b = document.querySelector('.browser-hole')?.getBoundingClientRect(); return !!h && !!b && h.right > b.left && h.left < b.right && h.bottom > b.top && h.top < b.bottom; })()`)
+    await ev(`document.querySelector('button[title="Close browser panel"]').click(), true`)
+    await waitFor('the browser panel to unmount before the stationary header fixture', () => ev<boolean>('!document.querySelector(".browser-hole")'), 5000)
+    await setOwnedOffset(17)
+    await ev(`document.querySelector('button[title^="Toggle browser ("]').click(), true`)
+    await waitFor('the browser hole to remount under the stationary header', () => ev<boolean>('!!document.querySelector(".browser-hole")'), 5000)
+    check('a browser mounted after the header stops moving has no overlap at 17px', !await overlaps())
+    check('mounting a clear browser refreshes floating coverage after the 400ms watcher ends', await waitFor('the remounted native browser page to show', () => page!.evaluate('document.visibilityState === "visible"'), 5000) === true)
+    const hole = await ev<Rect>(`(() => { const r = document.querySelector('.browser-hole').getBoundingClientRect(); return { x:r.x, y:r.y, width:r.width, height:r.height }; })()`)
+    await setOwnedOffset(Math.round(hole.y - baseline.titlebar.height + 2))
+    check('the stationary sampled header actually intersects the browser before the toolbar changes', await overlaps())
+    check('overlapping header hides the real native page and leaves its still', await waitFor('the browser still handoff for the registered header', async () => await page!.evaluate('document.visibilityState === "hidden"') && await ev<boolean>('!!document.querySelector(".browser-still")'), 5000) === true)
+    await main.evaluate(`(globalThis[${revealFixtureKey}].wc.send('browser:findRequested'), true)`)
+    await waitFor('the browser find toolbar to move its hole clear of the stationary header', async () => await ev<boolean>('!!document.querySelector(".browser-find")') && !await overlaps(), 5000)
+    check('a toolbar layout change refreshes coverage after header motion has ended', await waitFor('the moved-clear native page to show', () => page!.evaluate('document.visibilityState === "visible"'), 5000) === true)
+    await ev(`document.querySelector('.browser-find button[title="Close find"]').click(), true`)
+    await waitFor('closing the find toolbar to restore header intersection', overlaps, 5000)
+    check('moving the hole back under the stationary header hides the native page again', await waitFor('the intersecting native page to hide again', () => page!.evaluate('document.visibilityState === "hidden"'), 5000) === true)
+    await shot('04-macos-stationary-header-browser-coverage')
+    await setOwnedOffset(0)
+    check('returning the sampled header to zero restores the native page', await waitFor('the uncovered native browser page to return', () => page!.evaluate('document.visibilityState === "visible"'), 5000) === true)
+  } finally {
+    await main?.evaluate(`(() => { const fixture = globalThis[${revealFixtureKey}]; if (!fixture) return false; for (const [name, handler] of fixture.originals) { fixture.electron.ipcMain.removeHandler(name); fixture.electron.ipcMain.handle(name, handler); } const owner = fixture.electron.BrowserWindow.fromWebContents(fixture.wc); fixture.wc.send('win:native-reveal-changed', null); fixture.wc.send('win:fullScreenChanged', owner?.isFullScreen() ?? false); delete globalThis[${revealFixtureKey}]; return true; })()`).catch(() => {})
+    await ev(`(() => { const app = document.querySelector('.app'), saved = ${JSON.stringify(saved)}; for (const [attribute, value] of [['data-reveal', saved.reveal], ['data-shifted', saved.shifted], ['style', saved.style]]) { if (value === null) app.removeAttribute(attribute); else app.setAttribute(attribute, value); } return true; })()`).catch(() => {})
+    if (pageTabId) await ev(`(window.stoke.browser.closeTab(${JSON.stringify(pageTabId)}), true)`).catch(() => {})
+    page?.close(); main?.close()
+    await ev('(window.__stokeMenuBrowserOff?.(), delete window.__stokeMenuBrowserOff, delete window.__stokeMenuBrowserState, true)').catch(() => {})
+    await activate(tabs.codex!.ptyId).catch(() => {})
+  }
 })
 
 await step('browser links retain popup navigation, POST data and profile isolation', async () => {
@@ -2449,6 +2550,26 @@ await step('each tab keeps its local terminal, and pinning deliberately follows 
     await ev(`document.querySelector('[data-testid="footer-terminal"]').click(), true`)
     check('explicitly reopening Terminal focuses the shell input', await waitFor('the explicitly opened quick-terminal input focus', () => ev<boolean>(`document.activeElement === window.stokeQuickTerminals.get(${JSON.stringify(two.state.id)})?.textarea`)) === true)
     check('explicit reopening keeps the current tab native shell', (await readQuick()).state.id === two.state.id)
+    // Restart only this fixture's extra fake agent. Replacing its agent PTY
+    // must preserve the tab's independent, still-running native shell.
+    await enterQuick(two.state.id!, isWin ? 'set "STOKE_PROBE_TAB_VALUE=two"' : "export STOKE_PROBE_TAB_VALUE='two'")
+    const previousPty = extraPty, previousPid = extraPid
+    const beforeStrip = await ev<{ ids: string[]; selected: string }>(`({ ids: [...document.querySelectorAll('.tablist .tab')].map(tab => tab.getAttribute('data-tab-id')), selected: document.querySelector('.tablist .tab[aria-selected="true"]').getAttribute('data-tab-id') })`)
+    await ev(`window.stoke.pty.kill(${JSON.stringify(previousPty)})`)
+    await waitFor('the owned extra fake agent to exit before restart', () => exitMarkers().includes(`exit-opencode-${previousPid}`), 20_000)
+    await waitFor('the ended fake agent restart action', () => ev<boolean>(`!![...document.querySelectorAll('.term-exit button')].find(button => button.textContent.trim() === 'Start again')`))
+    const beforeRestart = Object.keys(await buffers())
+    await ev(`([...document.querySelectorAll('.term-exit button')].find(button => button.textContent.trim() === 'Start again').click(), true)`)
+    extraPty = await termShowing('STOKE-PROBE opencode ready', 'the restarted extra fake agent', 45_000, beforeRestart)
+    extraPid = await pidIn(extraPty, 'opencode')
+    await activate(extraPty)
+    const restarted = await waitFor('the native shell to remain on the restarted tab', async () => { const snapshot = await readQuick(); return snapshot.state.id === two.state.id && snapshot.state.contextId === two.state.contextId && snapshot.state.phase === 'running' && snapshot.data.includes('STOKE_PIN_TWO') ? snapshot : null })
+    const afterStrip = await ev<{ ids: string[]; selected: string }>(`({ ids: [...document.querySelectorAll('.tablist .tab')].map(tab => tab.getAttribute('data-tab-id')), selected: document.querySelector('.tablist .tab[aria-selected="true"]').getAttribute('data-tab-id') })`)
+    const sameSlot = afterStrip.selected !== beforeStrip.selected && JSON.stringify(afterStrip.ids) === JSON.stringify(beforeStrip.ids.map(id => id === beforeStrip.selected ? afterStrip.selected : id))
+    check('restarting an owned agent replaces its tab slot and keeps its shell process, cwd and output', sameSlot && extraPty !== previousPty && restarted.state.cwd === projContinue && restarted.data.includes('STOKE_PIN_TWO'), JSON.stringify({ sameSlot, countBefore: beforeStrip.ids.length, countAfter: afterStrip.ids.length, oldIndex: beforeStrip.ids.indexOf(beforeStrip.selected), newIndex: afterStrip.ids.indexOf(afterStrip.selected), sameShell: restarted.state.id === two.state.id, sameContext: restarted.state.contextId === two.state.contextId, sameCwd: restarted.state.cwd === projContinue }))
+    await shellReport(two.state.id!, projContinue, 'RESTARTED')
+    check('the shell environment survives replacing the agent PTY', await waitFor('the restarted tab shell variable', () => report(projContinue, 'RESTARTED')?.value === 'two') === true)
+    await shot('05-quick-terminal-agent-restarted')
   } catch (error) {
     originalFailure = error
     await shot('05-quick-terminal-tab-failure')
@@ -2478,6 +2599,93 @@ await step('each tab keeps its local terminal, and pinning deliberately follows 
       if (!originalFailure) throw error
       console.log('  (per-tab cleanup also failed: ' + String(error) + ')')
     }
+  }
+})
+
+if (isWin) await step('Windows tab shortcuts reach Stoke from agent, quick-terminal and native browser focus', async () => {
+  const source = tabs.codex!
+  const selected = () => ev<string | null>(`document.querySelector('.tablist .tab[aria-selected="true"]')?.getAttribute('data-tab-id') ?? null`)
+  const tabIds = () => ev<string[]>(`[...document.querySelectorAll('.tablist .tab')].map(tab => tab.getAttribute('data-tab-id'))`)
+  const owned = new Set<string>()
+  const originalQuick = await ev<{ state: QuickTerminalState }>('window.stoke.quickTerminal.read()')
+  const pageUrl = `${site.base}/whoami?native-tab-shortcuts=1`
+  let page: CdpClient | null = null
+  let quickId = ''
+  let pageTabId = ''
+  try {
+    await activate(source.ptyId)
+    const originalTabs = await tabIds()
+    await ev(`(() => { window.__stokeTabKeyInputs = []; window.__stokeTabKeyOff = []; const term = window.stokeTerminals.get(${JSON.stringify(source.ptyId)}); window.__stokeTabKeyOff.push(term.onData(data => window.__stokeTabKeyInputs.push({ surface: 'agent', data }))); return true; })()`)
+    await ev('(window.__stokeTabBrowserOff = window.stoke.browser.onState(state => { window.__stokeTabBrowserState = state }), true)')
+    await ev(`(window.stoke.browser.newTab(${JSON.stringify(pageUrl)}), true)`)
+    pageTabId = await waitFor('the owned browser shortcut fixture', () => ev<string | null>(`window.__stokeTabBrowserState?.tabs.find(tab => tab.url === ${JSON.stringify(pageUrl)} && !tab.loading)?.id ?? null`))
+    page = await connectBrowserPage(port, (url: string) => url === pageUrl)
+    await page.send('Emulation.setFocusEmulationEnabled', { enabled: true })
+    // These fixtures exercise Electron's actual registered native listeners.
+    // They do not claim that CDP generated an OS-delivered keyboard event.
+    for (const surface of ['agent terminal', 'quick terminal', 'native browser'] as const) {
+      await activate(source.ptyId)
+      await ev('window.stoke.window.focus(), true')
+      let target = ui!
+      if (surface === 'quick terminal') {
+        const opened = await ev<QuickTerminalResult>(`window.stoke.quickTerminal.open('panel', ${JSON.stringify(proj)})`)
+        if (!opened.ok || !opened.state.id) throw new Error('the owned shortcut shell could not open')
+        quickId = opened.state.id
+        await waitFor('the shortcut shell input', () => ev<boolean>(`!!window.stokeQuickTerminals.get(${JSON.stringify(quickId)})`))
+        await ev(`(() => { const term = window.stokeQuickTerminals.get(${JSON.stringify(quickId)}); window.__stokeTabKeyOff.push(term.onData(data => window.__stokeTabKeyInputs.push({ surface: 'quick', data }))); term.focus(); return true; })()`)
+        check('the quick-terminal shortcut starts with shell input focused', await ev<boolean>(`document.activeElement === window.stokeQuickTerminals.get(${JSON.stringify(quickId)}).textarea`))
+      } else if (surface === 'native browser') {
+        await ev(`(window.stoke.browser.selectTab(${JSON.stringify(pageTabId)}), window.stoke.browser.show(), true)`)
+        await waitFor('the native shortcut page to be visible', () => page!.evaluate('document.visibilityState === "visible"'))
+        await page.evaluate('window.focus(), true')
+        target = page
+      } else {
+        await ev(`window.stokeTerminals.get(${JSON.stringify(source.ptyId)}).focus(), true`)
+        check('the agent shortcut starts with terminal input focused', await ev<boolean>(`document.activeElement === window.stokeTerminals.get(${JSON.stringify(source.ptyId)}).textarea`))
+      }
+      const before = await tabIds()
+      check(`${surface}: the focused native Ctrl+T handler consumes the chord`, await nativeKey(target, 't', { code: 'KeyT', focus: true }))
+      const created = await waitFor('one disposable Stoke tab from Ctrl+T', async () => { const ids = await tabIds(), current = await selected(); return ids.length === before.length + 1 && current && !before.includes(current) ? { ids, current } : null })
+      owned.add(created.current)
+      const previous = created.ids[(created.ids.indexOf(created.current) + created.ids.length - 1) % created.ids.length]
+      check(`${surface}: Ctrl+Shift+Tab is consumed`, await nativeKey(target, 'Tab', { code: 'Tab', shift: true }))
+      await waitFor('the previous Stoke tab from Ctrl+Shift+Tab', async () => await selected() === previous)
+      check(`${surface}: Ctrl+Tab is consumed`, await nativeKey(target, 'Tab', { code: 'Tab' }))
+      await waitFor('Ctrl+Tab returns to the disposable Stoke tab', async () => await selected() === created.current)
+      check(`${surface}: Ctrl+W is consumed`, await nativeKey(target, 'w', { code: 'KeyW' }))
+      await waitFor('Ctrl+W closes only the selected disposable Stoke tab', async () => { const ids = await tabIds(); return !ids.includes(created.current) && JSON.stringify(ids) === JSON.stringify(before) })
+      owned.delete(created.current)
+      check(`${surface}: new, previous, next and close preserve all existing tabs`, true)
+    }
+    // The DOM fallback is a separate path: CDP bypasses before-input-event,
+    // but a focused xterm must still reserve these application shortcuts.
+    await activate(source.ptyId)
+    await ev(`window.stokeTerminals.get(${JSON.stringify(source.ptyId)}).focus(), true`)
+    const dispatch = async (key: string, code: string, virtualKey: number) => {
+      for (const type of ['rawKeyDown', 'keyUp']) await ui!.send('Input.dispatchKeyEvent', { type, key, code, modifiers: 2, windowsVirtualKeyCode: virtualKey, nativeVirtualKeyCode: virtualKey })
+    }
+    await dispatch('t', 'KeyT', 84)
+    const fallback = await waitFor('the DOM fallback new-tab action', async () => { const ids = await tabIds(), current = await selected(); return ids.length === originalTabs.length + 1 && current && !originalTabs.includes(current) ? current : null })
+    owned.add(fallback)
+    await dispatch('w', 'KeyW', 87)
+    await waitFor('the DOM fallback close-tab action', async () => JSON.stringify(await tabIds()) === JSON.stringify(originalTabs))
+    owned.delete(fallback)
+    await ev('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))')
+    check('native hooks and the focused-terminal DOM fallback emit no PTY control input', await ev<boolean>('window.__stokeTabKeyInputs.length === 0'))
+    await activate(source.ptyId)
+    await shot('05-windows-tab-shortcuts')
+  } finally {
+    for (const id of owned) await ev(`document.querySelector('.tablist .tab[data-tab-id="'+${JSON.stringify(id)}+'"] .tab-close')?.click(), true`).catch(() => {})
+    await ev('(window.__stokeTabKeyOff?.forEach(off => off.dispose()), window.__stokeTabBrowserOff?.(), delete window.__stokeTabKeyOff, delete window.__stokeTabKeyInputs, delete window.__stokeTabBrowserOff, delete window.__stokeTabBrowserState, true)').catch(() => {})
+    if (quickId && originalQuick.state.id !== quickId) {
+      await activate(source.ptyId).catch(() => {})
+      await ev(`(window.stoke.quickTerminal.write(${JSON.stringify(quickId)}, 'exit\\r'), true)`).catch(() => {})
+      await waitFor('the disposable shortcut shell to exit', () => ev<boolean>('window.stoke.quickTerminal.read().then(snapshot => snapshot.state.phase === "exited")'), 10_000).catch(() => {})
+    }
+    await ev('window.stoke.quickTerminal.move("hidden")').catch(() => {})
+    if (pageTabId) await ev(`(window.stoke.browser.closeTab(${JSON.stringify(pageTabId)}), true)`).catch(() => {})
+    page?.close()
+    await activate(source.ptyId).catch(() => {})
   }
 })
 
@@ -2742,7 +2950,11 @@ await step('a graceful quit reaches every session and seals the cookie', async (
   if (cookieDb) {
     const row = readCookie(cookieDb, 'sid')
     check('it holds the login cookie', !!row, JSON.stringify(row))
-    check('ENCRYPTED: an empty value and a non-empty encrypted_value (gotcha 108)', !!row && row.value === '' && row.encLen > 0, JSON.stringify(row))
+    if (opt.dev) {
+      const limitation = { name: 'cookie encryption at rest', reason: '--dev runs stock Electron without the packaged cookie-encryption fuse; packaged probes retain the strict database assertion.' }
+      skipped.push(limitation)
+      console.log(`  SKIP  ${limitation.name}\n        ${limitation.reason}`)
+    } else check('ENCRYPTED: an empty value and a non-empty encrypted_value (gotcha 108)', !!row && row.value === '' && row.encLen > 0, JSON.stringify(row))
   }
   const twoDb = profileTwo ? findCookieDb(join(ud, 'Partitions', `stoke-browser-${profileTwo}`)) : null
   check('the second profile\'s store has no such cookie', !twoDb || !readCookie(twoDb, 'sid'), twoDb ?? '(no store written)')
@@ -2878,13 +3090,14 @@ if (stoke && !stokeExit) {
 ui?.close()
 
 const failed = results.filter((r) => !r.ok)
-writeFileSync(join(root, 'probe-summary.json'), JSON.stringify({ platform: process.platform, arch: process.arch, version: pkg.version, results }, null, 2))
+writeFileSync(join(root, 'probe-summary.json'), JSON.stringify({ platform: process.platform, arch: process.arch, version: pkg.version, results, skipped }, null, 2))
 if (process.env.GITHUB_STEP_SUMMARY) {
   const lines = [`### Probe — ${process.platform}-${process.arch}${opt.dev ? ' (unpackaged)' : ''}`, '', `${results.length - failed.length} passed, ${failed.length} failed`, '']
   for (const r of results) lines.push(`- ${r.ok ? '✅' : '❌'} ${r.name}`)
+  for (const r of skipped) lines.push(`- ⏭ ${r.name}: ${r.reason}`)
   appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines.join('\n') + '\n')
 }
-console.log(`\n${results.length - failed.length} passed, ${failed.length} failed`)
+console.log(`\n${results.length - failed.length} passed, ${failed.length} failed${skipped.length ? `, ${skipped.length} skipped` : ''}`)
 for (const r of failed) console.log(`  FAIL  ${r.name}`)
 process.exitCode = failed.length ? 1 : 0
 // A failed first quit can leave an older owned app's stdio referenced after

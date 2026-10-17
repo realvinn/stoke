@@ -17,6 +17,7 @@
  *   node scripts/verify-shortcuts.mts
  */
 import { chordLabel, matchShortcut, typeThroughKey } from '../src/renderer/src/lib/shortcuts.ts'
+import { tabShortcut } from '../src/shared/windowShortcuts.ts'
 import {
   FONT_SIZE_MAX,
   FONT_SIZE_MIN,
@@ -116,12 +117,20 @@ check('Cmd+K opens the palette on macOS', onMac(key('KeyK', { meta: true })), { 
 check('Ctrl+Shift+K does on Windows', onWin(key('KeyK', { ctrl: true, shift: true })), { type: 'palette' })
 /*
  * And bare Ctrl+K stays the terminal's. This is the rule zoom is an exception
- * to, so it is pinned right beside it: Ctrl+K, Ctrl+W and Ctrl+T are readline
- * bindings Claude Code's own prompt uses, which is why every letter chord off
- * macOS demands Shift.
+ * to, so it is pinned right beside it: Ctrl+K and Ctrl+F are readline
+ * bindings Claude Code's own prompt uses, so non-tab letter chords off
+ * macOS retain Shift.
  */
 check('bare Ctrl+K is left to readline', onWin(key('KeyK', { ctrl: true })), null)
-check('bare Ctrl+W is too', onWin(key('KeyW', { ctrl: true })), null)
+check('Ctrl+W closes the selected Stoke tab on Windows', onWin(key('KeyW', { ctrl: true })), { type: 'closeTab' })
+check('Ctrl+T opens a Stoke tab on Windows', onWin(key('KeyT', { ctrl: true })), { type: 'newTab' })
+check('Ctrl+Shift+T remains a compatible alias', onWin(key('KeyT', { ctrl: true, shift: true })), { type: 'newTab' })
+check('Ctrl+Tab cycles forward before terminal input', onWin(key('Tab', { ctrl: true })), { type: 'cycleTab', delta: 1 })
+check('Ctrl+Shift+Tab cycles backward', onWin(key('Tab', { ctrl: true, shift: true })), { type: 'cycleTab', delta: -1 })
+check('Mac Ctrl+Tab cycles without intercepting Cmd+Tab', [onMac(key('Tab', { ctrl: true })), onMac(key('Tab', { meta: true }))], [{ type: 'cycleTab', delta: 1 }, null])
+const nativeKey = { type: 'keyDown', key: 't', control: true, meta: false, shift: false, alt: false }
+check('the native path works without a physical code', tabShortcut(nativeKey, false), { type: 'newTab' })
+check('held keys, key-up, IME and AltGr do not create tabs', [{ ...nativeKey, isAutoRepeat: true }, { ...nativeKey, type: 'keyUp' }, { ...nativeKey, isComposing: true }, { ...nativeKey, alt: true }].map(input => tabShortcut(input, false)), [null, null, null, null])
 check('Cmd+T opens a tab', onMac(key('KeyT', { meta: true })), { type: 'newTab' })
 check('Cmd+Comma opens settings', onMac(key('Comma', { meta: true })), { type: 'settings' })
 check('Ctrl+3 selects a tab, with no Shift on either platform', onWin(key('Digit3', { ctrl: true })), { type: 'tab', index: 3 })
@@ -197,15 +206,8 @@ check(
 /* ------------------------------------------------------- cycling the strip */
 
 console.log('\nnext / previous tab, and the chord it deliberately is not')
-/*
- * Ctrl+Tab is the obvious binding and is unusable: xterm's Tab branch reads
- * only `shiftKey`, so Ctrl+Tab sends C0.HT from xterm's own textarea listener
- * — which runs before this window-level handler — and preventing the default
- * afterwards cannot unsend it. If this ever starts matching, every Ctrl+Tab
- * types a tab character into the prompt as well as switching tabs.
- */
-check('Ctrl+Tab is not a shortcut on Windows', onWin(key('Tab', { ctrl: true })), null)
-check('nor Ctrl+Shift+Tab', onWin(key('Tab', { ctrl: true, shift: true })), null)
+/* Native before-input interception and xterm's custom handler reserve the
+ * tab chords before terminal input. The native packaged probe verifies both. */
 check('nor Cmd+Tab on macOS', onMac(key('Tab', { meta: true })), null)
 
 const NEXT = { type: 'cycleTab', delta: 1 }
@@ -257,7 +259,8 @@ console.log('\nthe label says what this platform actually needs')
  * combination that does nothing and reaches the CLI's prompt instead.
  */
 check('macOS letter chord carries no Shift', chordLabel('newTab', true), '\u2318T')
-check('off macOS it does', chordLabel('newTab', false), 'Ctrl+Shift+T')
+check('Windows advertises standard Ctrl+T', chordLabel('newTab', false), 'Ctrl+T')
+check('Windows advertises standard Ctrl+W', chordLabel('closeTab', false), 'Ctrl+W')
 check('the cycle chord carries Shift on macOS as well', chordLabel('nextTab', true), '\u21e7\u2318]')
 check('and off it', chordLabel('prevTab', false), 'Ctrl+Shift+[')
 check('settings is a comma, not a letter', chordLabel('settings', true), '\u2318,')

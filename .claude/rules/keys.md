@@ -40,6 +40,14 @@ first, because it is the assertion that protects something rather than adding so
 
 ## 56. A shortcut is only safe if xterm ignores it, and Ctrl+Tab is not
 
+> **Superseded on 2026-10-18 by the owner's standard Windows shortcuts.** Tab
+> controls reserve Ctrl+T/W and Ctrl+Tab/Shift+Tab on Windows/Linux, retaining the
+> Shift aliases. Shared `tabShortcut` matching runs in Electron's
+> `before-input-event` for app and embedded-page WebContents, and in the DOM/xterm
+> custom handler fallback. Bound controls are withheld before PTY input; they
+> must never be handled only by a bubbling window listener. Mac uses Cmd+T/W
+> and Ctrl+Tab. Other letter controls keep their existing Shift requirement.
+
 **A shortcut is only safe if xterm ignores it, and Ctrl+Tab is not.** Every chord in
 `shortcuts.ts` survives because xterm's `evaluateKeyboardEvent` declines it: Meta on macOS,
 and `ctrlKey && !shiftKey` off it, which is why the letter chords all demand Shift there

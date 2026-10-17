@@ -520,6 +520,7 @@ export interface StokeApi {
 
   window: {
     detached: boolean
+    onTabShortcut(cb: (action: import('./windowShortcuts').TabShortcut) => void): () => void
     tabBootstrap(): Promise<import('./tabWindows').TabWindowTransfer | null>
     publishTabs(tabs: import('./tabWindows').Tab[]): void
     detachTab(packet: import('./tabWindows').TabWindowPacket): Promise<{ ok: boolean; message?: string }>

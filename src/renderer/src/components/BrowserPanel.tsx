@@ -17,6 +17,7 @@ import {
 import { matchShortcut } from '../lib/shortcuts'
 import { hasActiveFinder } from '../lib/termRegistry'
 import { findOwner, findTargetOf } from '../lib/terminalFind'
+import { refreshFloatingLayers } from '../lib/floatingLayers'
 
 interface Props {
   state: BrowserState
@@ -24,12 +25,6 @@ interface Props {
   /** Hand the current page to the active Claude session. */
   onAskClaude: (url: string, title: string) => void
   onClose: () => void
-  /**
-   * How far the whole shell is shifted down under macOS's full-screen menu bar
-   * (gotcha 105). A position-only move of an ancestor, so named here to make
-   * the rect be re-sent even if this component is ever memoised.
-   */
-  shellOffset: number
   /** Browser profiles, Default first, and the one in use. See browserProfiles.ts. */
   profiles: BrowserProfile[]
   currentProfile: string
@@ -46,9 +41,6 @@ interface Props {
   still: string | null
 }
 
-/** --dur-slow is 240ms; follow the shell's slide a little past its end. */
-const SHELL_SLIDE_FOLLOW_MS = 400
-
 /** Chromium zoom is logarithmic; this step is roughly 20% per press. */
 const ZOOM_STEP = 0.5
 
@@ -64,7 +56,6 @@ export function BrowserPanel({
   bookmarks,
   onAskClaude,
   onClose,
-  shellOffset,
   profiles,
   currentProfile,
   onManageProfiles,
@@ -144,6 +135,9 @@ export function BrowserPanel({
     const key = `${r.left},${r.top},${r.width},${r.height}`
     if (key === sentRef.current) return
     sentRef.current = key
+    // A stationary menu/header may stop covering the page when browser chrome
+    // changes, or may have registered before this placeholder even existed.
+    refreshFloatingLayers()
     window.stoke.browser.setBounds({ x: r.left, y: r.top, width: r.width, height: r.height })
   }, [])
 
@@ -167,26 +161,6 @@ export function BrowserPanel({
    * means the common case is a `getBoundingClientRect` and a string compare.
    */
   useLayoutEffect(report)
-
-  /*
-   * The shell sliding under the full-screen menu bar (gotcha 105) is one such
-   * move, and a slide: a transform animated over --dur-slow, and nothing fires
-   * while it runs (`getBoundingClientRect` includes the transform). So the rect is re-sent every frame for a little longer than
-   * the slide — `report` sends only when it changed, so the tail costs a
-   * rect read a frame — and the page moves with the shell instead of jumping
-   * to where it ends up.
-   */
-  useLayoutEffect(() => {
-    report()
-    const until = performance.now() + SHELL_SLIDE_FOLLOW_MS
-    let frame = 0
-    const step = (): void => {
-      report()
-      if (performance.now() < until) frame = requestAnimationFrame(step)
-    }
-    frame = requestAnimationFrame(step)
-    return () => cancelAnimationFrame(frame)
-  }, [report, shellOffset])
 
   useLayoutEffect(() => {
     const hole = holeRef.current

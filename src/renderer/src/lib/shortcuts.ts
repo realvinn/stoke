@@ -1,3 +1,5 @@
+import { tabShortcut } from '../../../shared/windowShortcuts.ts'
+
 export type ShortcutAction =
   | { type: 'palette' }
   | { type: 'newTab' }
@@ -14,9 +16,10 @@ export type ShortcutAction =
  * App-level shortcuts, chosen so they never collide with what the terminal
  * needs.
  *
- * macOS uses Cmd, which terminal programs leave alone. Windows and Linux
- * require Shift as well, because bare Ctrl+K / Ctrl+W / Ctrl+T are readline
- * bindings that Claude Code's own prompt uses.
+ * macOS uses Cmd. Tab controls on Windows/Linux reserve Ctrl+T/W and
+ * Ctrl+Tab, with the existing Shift aliases retained. Main intercepts these
+ * before xterm or a browser page can consume them. Other letter controls keep
+ * Shift so readline bindings such as Ctrl+K/F remain available to the CLI.
  *
  * Matching is on `event.code` rather than `event.key` so that holding Shift
  * (which turns "," into "<") does not break the match.
@@ -28,9 +31,12 @@ export type ShortcutAction =
  * here once, unused and wrong for exactly the digits, and was deleted.
  */
 export function matchShortcut(
-  e: Pick<KeyboardEvent, 'code' | 'ctrlKey' | 'metaKey' | 'shiftKey' | 'altKey'>,
+  e: Pick<KeyboardEvent, 'code' | 'ctrlKey' | 'metaKey' | 'shiftKey' | 'altKey'> & Partial<Pick<KeyboardEvent, 'isComposing' | 'repeat'>>,
   isMac: boolean
 ): ShortcutAction | null {
+  if (e.isComposing) return null
+  const tabAction = tabShortcut({ type: 'keyDown', key: '', code: e.code, control: e.ctrlKey, meta: e.metaKey, shift: e.shiftKey, alt: e.altKey }, isMac)
+  if (tabAction) return e.repeat ? null : tabAction
   const primary = isMac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey
   if (!primary || e.altKey) return null
 
@@ -72,29 +78,8 @@ export function matchShortcut(
       break
   }
 
-  /*
-   * Next / previous tab, and the third exception to the Shift rule — this one
-   * needs Shift on BOTH platforms, which no other chord here does.
-   *
-   * The obvious binding is Ctrl+Tab, and it cannot be used. xterm's Tab branch
-   * consults `shiftKey` and nothing else (`Keyboard.ts`: shift gives CBT,
-   * otherwise C0.HT), so Ctrl+Tab sends a literal tab to the pty — and it does
-   * it from xterm's own listener on the textarea, which runs at target phase,
-   * before this window listener ever sees the event. Preventing the default
-   * afterwards is too late: `triggerDataEvent` has already fired. Every chord
-   * in this file is safe precisely because xterm ignores it, and Ctrl+Tab is
-   * not one of those.
-   *
-   * `⇧⌘]` / `Ctrl+Shift+]` is. On macOS it carries Meta, which xterm's
-   * `evaluateKeyboardEvent` never acts on; off macOS the bracket keys are in
-   * the same `ctrlKey && !shiftKey` branch as the letters (keyCode 221 -> GS),
-   * so holding Shift takes them out of it exactly as it does for Ctrl+K. It is
-   * also what Safari, Chrome and VS Code already use on the Mac, so the
-   * gesture is one people have.
-   *
-   * Before the gate below, because that gate REFUSES Shift on macOS and this
-   * chord requires it.
-   */
+  // Standard tab controls are handled above by the shared native/DOM matcher.
+  // The remaining Shift chords keep the CLI's ordinary control keys available.
   if (e.shiftKey) {
     if (e.code === 'BracketRight') return { type: 'cycleTab', delta: 1 }
     if (e.code === 'BracketLeft') return { type: 'cycleTab', delta: -1 }
@@ -164,22 +149,17 @@ const CHORD_KEY: Record<ChordName, string> = {
 /**
  * The chord as the user in front of this machine would actually type it.
  *
- * It lives here, beside `matchShortcut`, because the two cannot be allowed to
- * drift: every tooltip in the title bar said "Ctrl/Cmd+T", which is right on
- * macOS and wrong on the other two platforms — off macOS the letter chords all
- * require Shift, for the readline reason `matchShortcut` documents, so the app
- * was telling Windows and Linux users to press a key combination that does
- * nothing and reaches the CLI's prompt instead. A slash between two platforms'
- * modifiers cannot express a per-platform Shift, so it is derived rather than
- * written out.
+ * Labels share the binding rules: Windows/Linux tab controls advertise
+ * Ctrl+T/W; other letter chords retain Shift. Cycle and private-chat aliases
+ * use Shift on both platforms.
  *
  * Mac order is Apple's own — ⌃⌥⇧⌘ — so Shift precedes Command.
  */
 export function chordLabel(name: ChordName, isMac: boolean): string {
   const cycles = name === 'nextTab' || name === 'prevTab'
-  // Shift on every letter chord off macOS, and on the cycle pair and the
-  // private chat everywhere.
-  const shift = cycles || name === 'newPrivate' || !isMac
+  // Non-tab letter chords retain Shift off macOS; cycle aliases and private
+  // chat use Shift everywhere.
+  const shift = cycles || name === 'newPrivate' || (!isMac && name !== 'newTab' && name !== 'closeTab')
   return isMac ? `${shift ? '\u21e7' : ''}\u2318${CHORD_KEY[name]}` : `Ctrl+${shift ? 'Shift+' : ''}${CHORD_KEY[name]}`
 }
 
