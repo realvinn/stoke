@@ -2609,13 +2609,22 @@ if (isWin) await step('Windows tab shortcuts reach Stoke from agent, quick-termi
   const owned = new Set<string>()
   const originalQuick = await ev<{ state: QuickTerminalState }>('window.stoke.quickTerminal.read()')
   const pageUrl = `${site.base}/whoami?native-tab-shortcuts=1`
+  const inputPhase = (phase: string): Promise<unknown> => ev(`(window.__stokeTabKeyPhase = ${JSON.stringify(phase)}, true)`)
   let page: CdpClient | null = null
   let quickId = ''
   let pageTabId = ''
   try {
     await activate(source.ptyId)
     const originalTabs = await tabIds()
-    await ev(`(() => { window.__stokeTabKeyInputs = []; window.__stokeTabKeyOff = []; const term = window.stokeTerminals.get(${JSON.stringify(source.ptyId)}); window.__stokeTabKeyOff.push(term.onData(data => window.__stokeTabKeyInputs.push({ surface: 'agent', data }))); return true; })()`)
+    await ev(`(() => {
+      window.__stokeTabKeyInputs = []; window.__stokeTabKeyEvents = []; window.__stokeTabKeyInputCount = 0; window.__stokeTabKeyOff = []; window.__stokeTabKeyPhase = 'browser setup';
+      window.__stokeObserveTabKeys = (term, surface) => {
+        const event = data => ({ surface, phase: window.__stokeTabKeyPhase, at: Math.round(performance.now()), length: data.length, data: data.slice(0, 128), codes: [...data.slice(0, 128)].map(char => char.codePointAt(0)), clipped: data.length > 128 });
+        window.__stokeTabKeyOff.push(term.onData(data => { window.__stokeTabKeyInputCount++; if (window.__stokeTabKeyInputs.length < 64) window.__stokeTabKeyInputs.push(event(data)); }));
+        window.__stokeTabKeyOff.push(term.onKey(({ key }) => { if (window.__stokeTabKeyEvents.length < 64) window.__stokeTabKeyEvents.push(event(key)); }));
+      };
+      window.__stokeObserveTabKeys(window.stokeTerminals.get(${JSON.stringify(source.ptyId)}), 'agent'); return true;
+    })()`)
     await ev('(window.__stokeTabBrowserOff = window.stoke.browser.onState(state => { window.__stokeTabBrowserState = state }), true)')
     await ev(`(window.stoke.browser.newTab(${JSON.stringify(pageUrl)}), true)`)
     pageTabId = await waitFor('the owned browser shortcut fixture', () => ev<string | null>(`window.__stokeTabBrowserState?.tabs.find(tab => tab.url === ${JSON.stringify(pageUrl)} && !tab.loading)?.id ?? null`))
@@ -2624,6 +2633,7 @@ if (isWin) await step('Windows tab shortcuts reach Stoke from agent, quick-termi
     // These fixtures exercise Electron's actual registered native listeners.
     // They do not claim that CDP generated an OS-delivered keyboard event.
     for (const surface of ['agent terminal', 'quick terminal', 'native browser'] as const) {
+      await inputPhase(`${surface}: setup and focus`)
       await activate(source.ptyId)
       await ev('window.stoke.window.focus(), true')
       let target = ui!
@@ -2632,7 +2642,7 @@ if (isWin) await step('Windows tab shortcuts reach Stoke from agent, quick-termi
         if (!opened.ok || !opened.state.id) throw new Error('the owned shortcut shell could not open')
         quickId = opened.state.id
         await waitFor('the shortcut shell input', () => ev<boolean>(`!!window.stokeQuickTerminals.get(${JSON.stringify(quickId)})`))
-        await ev(`(() => { const term = window.stokeQuickTerminals.get(${JSON.stringify(quickId)}); window.__stokeTabKeyOff.push(term.onData(data => window.__stokeTabKeyInputs.push({ surface: 'quick', data }))); term.focus(); return true; })()`)
+        await ev(`(() => { const term = window.stokeQuickTerminals.get(${JSON.stringify(quickId)}); window.__stokeObserveTabKeys(term, 'quick'); term.focus(); return true; })()`)
         check('the quick-terminal shortcut starts with shell input focused', await ev<boolean>(`document.activeElement === window.stokeQuickTerminals.get(${JSON.stringify(quickId)}).textarea`))
       } else if (surface === 'native browser') {
         await ev(`(window.stoke.browser.selectTab(${JSON.stringify(pageTabId)}), window.stoke.browser.show(), true)`)
@@ -2644,14 +2654,18 @@ if (isWin) await step('Windows tab shortcuts reach Stoke from agent, quick-termi
         check('the agent shortcut starts with terminal input focused', await ev<boolean>(`document.activeElement === window.stokeTerminals.get(${JSON.stringify(source.ptyId)}).textarea`))
       }
       const before = await tabIds()
+      await inputPhase(`${surface}: native Ctrl+T`)
       check(`${surface}: the focused native Ctrl+T handler consumes the chord`, await nativeKey(target, 't', { code: 'KeyT', focus: true }))
       const created = await waitFor('one disposable Stoke tab from Ctrl+T', async () => { const ids = await tabIds(), current = await selected(); return ids.length === before.length + 1 && current && !before.includes(current) ? { ids, current } : null })
       owned.add(created.current)
       const previous = created.ids[(created.ids.indexOf(created.current) + created.ids.length - 1) % created.ids.length]
+      await inputPhase(`${surface}: native Ctrl+Shift+Tab`)
       check(`${surface}: Ctrl+Shift+Tab is consumed`, await nativeKey(target, 'Tab', { code: 'Tab', shift: true }))
       await waitFor('the previous Stoke tab from Ctrl+Shift+Tab', async () => await selected() === previous)
+      await inputPhase(`${surface}: native Ctrl+Tab`)
       check(`${surface}: Ctrl+Tab is consumed`, await nativeKey(target, 'Tab', { code: 'Tab' }))
       await waitFor('Ctrl+Tab returns to the disposable Stoke tab', async () => await selected() === created.current)
+      await inputPhase(`${surface}: native Ctrl+W`)
       check(`${surface}: Ctrl+W is consumed`, await nativeKey(target, 'w', { code: 'KeyW' }))
       await waitFor('Ctrl+W closes only the selected disposable Stoke tab', async () => { const ids = await tabIds(); return !ids.includes(created.current) && JSON.stringify(ids) === JSON.stringify(before) })
       owned.delete(created.current)
@@ -2659,24 +2673,31 @@ if (isWin) await step('Windows tab shortcuts reach Stoke from agent, quick-termi
     }
     // The DOM fallback is a separate path: CDP bypasses before-input-event,
     // but a focused xterm must still reserve these application shortcuts.
+    await inputPhase('DOM fallback: setup and focus')
     await activate(source.ptyId)
     await ev(`window.stokeTerminals.get(${JSON.stringify(source.ptyId)}).focus(), true`)
     const dispatch = async (key: string, code: string, virtualKey: number) => {
       for (const type of ['rawKeyDown', 'keyUp']) await ui!.send('Input.dispatchKeyEvent', { type, key, code, modifiers: 2, windowsVirtualKeyCode: virtualKey, nativeVirtualKeyCode: virtualKey })
     }
+    await inputPhase('DOM fallback: Ctrl+T')
     await dispatch('t', 'KeyT', 84)
     const fallback = await waitFor('the DOM fallback new-tab action', async () => { const ids = await tabIds(), current = await selected(); return ids.length === originalTabs.length + 1 && current && !originalTabs.includes(current) ? current : null })
     owned.add(fallback)
+    await inputPhase('DOM fallback: Ctrl+W')
     await dispatch('w', 'KeyW', 87)
     await waitFor('the DOM fallback close-tab action', async () => JSON.stringify(await tabIds()) === JSON.stringify(originalTabs))
     owned.delete(fallback)
     await ev('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))')
-    check('native hooks and the focused-terminal DOM fallback emit no PTY control input', await ev<boolean>('window.__stokeTabKeyInputs.length === 0'))
+    const input = await ev<{ count: number; data: unknown[]; keyEvents: unknown[] }>('({ count: window.__stokeTabKeyInputCount, data: window.__stokeTabKeyInputs, keyEvents: window.__stokeTabKeyEvents })')
+    writeFileSync(join(logs, 'windows-tab-shortcut-inputs.json'), JSON.stringify(input, null, 2))
+    // Keep the original assertion strict until native diagnostics establish
+    // whether a payload is keyboard input or an automatic terminal response.
+    check('native hooks and the focused-terminal DOM fallback emit no PTY control input', input.count === 0, JSON.stringify(input))
     await activate(source.ptyId)
     await shot('05-windows-tab-shortcuts')
   } finally {
     for (const id of owned) await ev(`document.querySelector('.tablist .tab[data-tab-id="'+${JSON.stringify(id)}+'"] .tab-close')?.click(), true`).catch(() => {})
-    await ev('(window.__stokeTabKeyOff?.forEach(off => off.dispose()), window.__stokeTabBrowserOff?.(), delete window.__stokeTabKeyOff, delete window.__stokeTabKeyInputs, delete window.__stokeTabBrowserOff, delete window.__stokeTabBrowserState, true)').catch(() => {})
+    await ev('(window.__stokeTabKeyOff?.forEach(off => off.dispose()), window.__stokeTabBrowserOff?.(), delete window.__stokeTabKeyOff, delete window.__stokeTabKeyInputs, delete window.__stokeTabKeyEvents, delete window.__stokeTabKeyInputCount, delete window.__stokeTabKeyPhase, delete window.__stokeObserveTabKeys, delete window.__stokeTabBrowserOff, delete window.__stokeTabBrowserState, true)').catch(() => {})
     if (quickId && originalQuick.state.id !== quickId) {
       await activate(source.ptyId).catch(() => {})
       await ev(`(window.stoke.quickTerminal.write(${JSON.stringify(quickId)}, 'exit\\r'), true)`).catch(() => {})
