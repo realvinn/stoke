@@ -283,6 +283,18 @@ a frame of a moving one.
 > mode remains an explicit setting. The whole-shell movement below is history,
 > not an implementation requirement.
 
+> **Checked on 2026-10-19 after the owner reported tabs still covered.** A
+> layer-24 sample is the menu bar alone, not the menu plus title strip: this
+> machine reports a 30pt menu and a separate, Stoke-owned layer-0 AppKit strip
+> of 32pt. The sampler now includes only its parent's short, wide layer-0
+> windows as well as the system menu windows. `nativeRevealOffset` takes their
+> lowest actual edge, including during animation, rather than assuming a
+> 62pt aggregate frame or adding a guessed strip height. A disposable native
+> Electron window confirmed the 32pt strip at y=-32 when parked, on a 2x Retina
+> display with 1440×900 point bounds. Revealed/partial/notch/44pt-toolbar
+> geometry has regression vectors; an OS-level screenshot and a real pointer
+> reveal remain unmeasured here. No workspace or footer layout changes.
+
 **In native full screen, the top of the screen belongs to macOS.** Pushing the pointer against it
 slides the menu bar down, and under it a standard title strip holding the traffic lights and the
 window title. Electron makes that strip opaque in full screen (`NativeWindowMac::

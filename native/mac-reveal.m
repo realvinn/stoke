@@ -7,6 +7,10 @@ static volatile sig_atomic_t running = 1;
 static void stop(int ignored) { (void)ignored; running = 0; }
 int main(void) {
   signal(SIGTERM, stop); signal(SIGINT, stop);
+  // AppKit's full-screen title strip is a separate layer-0 window owned by
+  // Stoke. Layer 24 contains only the menu bar (30pt here), not the strip
+  // underneath it (32pt here). Sampling the menu alone leaves tabs covered.
+  const pid_t owner = getppid();
   while (running) {
     @autoreleasepool {
       CFArrayRef raw = CGWindowListCopyWindowInfo(kCGWindowListOptionAll, kCGNullWindowID);
@@ -14,7 +18,8 @@ int main(void) {
       else {
         NSMutableArray *frames = [NSMutableArray array];
         for (NSDictionary *window in (__bridge NSArray *)raw) {
-          if ([window[(id)kCGWindowLayer] intValue] != 24) continue;
+          const int layer = [window[(id)kCGWindowLayer] intValue];
+          if (layer != 24 && !(layer == 0 && [window[(id)kCGWindowOwnerPID] intValue] == owner)) continue;
           CGRect bounds;
           if (!CGRectMakeWithDictionaryRepresentation((__bridge CFDictionaryRef)window[(id)kCGWindowBounds], &bounds)) continue;
           if (bounds.size.width < 300 || bounds.size.height < 16 || bounds.size.height > 160) continue;

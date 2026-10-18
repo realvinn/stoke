@@ -60,6 +60,15 @@ console.log('PASS tab handoff: ownership, duplicate/late acknowledgements, faile
 
 const bounds = { x: 0, y: 0, width: 1440, height: 900 }
 const frame = (y: number, extra = {}) => ({ x: 0, y, width: 1440, height: 62, onscreen: true, ...extra })
+const menu = (y: number, extra = {}) => frame(y, { height: 30, ...extra })
+const strip = (y: number, extra = {}) => frame(y, { height: 32, ...extra })
+assert.equal(nativeRevealOffset([menu(0), strip(30)], bounds, 62), 62, 'real menu and AppKit strip are separate windows; clearing only the 30pt menu leaves tabs covered')
+assert.equal(nativeRevealOffset([menu(-62), strip(-32)], bounds, 62), 0, 'both parked windows clear the page')
+assert.equal(nativeRevealOffset([menu(-45), strip(-15)], bounds, 62), 17, 'the actual title-strip edge moves before the menu itself reaches the page')
+assert.equal(nativeRevealOffset([menu(-26), strip(4)], bounds, 62), 36, 'both separate windows track the same native hide progress')
+assert.equal(nativeRevealOffset([menu(0), strip(30, { height: 44 })], bounds, 62), 74, 'a taller native toolbar is measured rather than guessed from the menu height')
+assert.equal(nativeRevealOffset([menu(0, { height: 37 }), strip(37)], { ...bounds, y: 37 }, 32), 32, 'subtract the actual notch-safe window origin exactly once')
+assert.equal(nativeRevealOffset([menu(0), strip(30.25)], bounds, 62), 63, 'fractional points round away from native chrome, leaving no covered edge')
 assert.equal(nativeRevealOffset([frame(-62)], bounds, 62), 0)
 assert.equal(nativeRevealOffset([frame(-45)], bounds, 62), 17, 'follows the actual reveal during its slide')
 assert.equal(nativeRevealOffset([frame(0)], bounds, 62), 62)
