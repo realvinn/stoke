@@ -90,6 +90,8 @@ echo(                          auggie, vibe
 echo(  stoke --continue [DIR]  pick up the last Claude Code conversation in DIR
 echo(  stoke --open [DIR]      add DIR to the sidebar and select it; starts nothing
 echo(  stoke update            open Settings, Updates and check for a new Stoke; installs nothing
+echo(  stoke login             open Stoke sign-in and device sync setup
+echo(  stoke remote            open Phone access setup; starts nothing automatically
 echo(  stoke account list      the agent accounts Stoke holds, and their folders
 echo(  stoke account add AGENT NAME
 echo(                          make an account of an agent and sign it in, in a Stoke tab

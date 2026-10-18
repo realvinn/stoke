@@ -135,6 +135,13 @@
         sees Windows and hands over to this one.
       </p>
 
+      <h2>Want the beta?</h2>
+      <p>The plain commands install the latest stable release. To select the newest published beta on macOS, Linux or Git Bash:</p>
+      <pre><span class="prompt">$ </span>curl -fsSL https://stoke.vinn.dev/install.sh | sh -s -- --beta</pre>
+      <p>In Windows PowerShell:</p>
+      <pre><span class="prompt">&gt; </span>&amp; ([scriptblock]::Create((irm https://stoke.vinn.dev/install.ps1))) -Beta</pre>
+      <p><code>STOKE_CHANNEL=beta</code> selects the same channel. An exact <code>STOKE_VERSION</code> overrides it. Run installers from a terminal outside Stoke.</p>
+
       <h2>What it does</h2>
       <ul>
         <li>Asks GitHub for the latest release — no account, no token, nothing to sign in to.</li>
@@ -161,7 +168,7 @@
         running there. <code>stoke --new</code> always opens another tab, <code>stoke --cli
         codex</code> starts a different coding CLI, <code>stoke --open</code> only adds the
         folder to the sidebar, and <code>stoke --help</code> lists the rest. A running Stoke takes
-        the request; one that is not running starts.
+        the request; one that is not running starts. <code>stoke login</code> opens Stoke sign-in and device sync setup; <code>stoke remote</code> opens Phone access setup.
       </p>
       <p>
         The command is a link in <code>~/.local/bin</code> on macOS, made by the installer (or by

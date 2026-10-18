@@ -51,6 +51,7 @@ if [ -n "${ZSH_VERSION:-}" ]; then setopt sh_word_split 2>/dev/null || true; fi
 
 STOKE_RELEASES='https://github.com/realvinn/stoke/releases'
 STOKE_LATEST_DL="$STOKE_RELEASES/latest/download"
+STOKE_RELEASES_API='https://api.github.com/repos/realvinn/stoke/releases?per_page=100'
 STOKE_PS1_LINE='powershell -ExecutionPolicy Bypass -c "irm https://stoke.vinn.dev | iex"'
 # What a Windows shell running THIS script is handed over to (windows_handoff).
 # The readable path rather than the bare host: nothing a proxy does to the
@@ -388,7 +389,10 @@ usage() {
 stoke installer
 
   curl -fsSL https://stoke.vinn.dev | sh
+  curl -fsSL https://stoke.vinn.dev | sh -s -- --beta
 
+  --beta              install the newest published beta; stable is the default.
+  STOKE_CHANNEL=beta  the same selection through an environment variable.
   STOKE_DRY_RUN=1     resolve, download and verify, then stop. Installs nothing.
   STOKE_FORCE=1       install even when the installed copy is the same or newer.
   STOKE_VERSION=1.0.0-beta.6  install this exact published version (including betas).
@@ -405,7 +409,7 @@ stoke installer
   --print-wrapper [APPIMAGE]  the Linux launcher this would install.
   --preflight         what this script makes of THIS machine. Resolves nothing,
                       downloads nothing, writes nothing.
-  --print-release     the selected release's download URL; no network or writes.
+  --print-release     selected download URL; --beta resolves it online. No writes.
   --compare-versions A B  print -1, 0 or 1 in semantic version order.
   --sha512 FILE       a file's sha512 in the base64 form the release manifests
                       use, so a download can be checked against one by hand.
@@ -909,8 +913,85 @@ asset_matches() {
   return 1
 }
 
+# The public API lists published releases, unlike /latest which excludes betas.
+# Extract only top-level release fields, ignoring braces and field names inside
+# descriptions or assets. Tags are allow-listed, never shell code or URLs. No jq,
+# Node or Python is needed on a clean Mac/Linux install.
+beta_versions() {
+  LC_ALL=C awk '
+    function finish_field() {
+      gsub(/^[ \t\r\n]+|[ \t\r\n]+$/, "", value)
+      if (key == "draft") draft=value
+      if (key == "prerelease") pre=value
+      key=""; value=""
+    }
+    {
+      line=$0 "\n"
+      if (!started) {
+        if (line ~ /^[ \t\r\n]*$/) next
+        if (line !~ /^[ \t\r\n]*\[/) { invalid=1; exit }
+        started=1
+      }
+      for (i=1; i<=length(line); i++) {
+        c=substr(line,i,1)
+        if (quoted) {
+          if (escaped) { escaped=0; if (capture) { if (length(word) < 200) word=word "\\" c; else overflow=1 }; continue }
+          if (c == "\\") { escaped=1; continue }
+          if (c == "\"") {
+            quoted=0
+            if (depth == 2) {
+              if (!colon) pending=(overflow ? "" : word)
+              else if (key == "tag_name") tag=(overflow ? "" : word)
+            }
+          } else if (capture) { if (length(word) < 200) word=word c; else overflow=1 }
+          continue
+        }
+        if (c == "\"") { quoted=1; word=""; overflow=0; capture=(depth == 2 && (!colon || key == "tag_name")); continue }
+        if (c == "{" || c == "[") {
+          depth++
+          if (depth == 2 && c == "{") { tag=""; draft=""; pre=""; pending=""; key=""; value=""; colon=0 }
+          continue
+        }
+        if (depth == 2 && c == ":") { key=pending; colon=1; value=""; continue }
+        if (depth == 2 && (c == "," || c == "}")) {
+          finish_field(); colon=0
+          if (c == "}" && draft == "false" && pre == "true" &&
+              tag ~ /^v[0-9]+\.[0-9]+\.[0-9]+-beta(\.[0-9A-Za-z-]+)*$/) versions=versions substr(tag,2) "\n"
+        } else if (depth == 2 && colon) value=value c
+        if (c == "}" || c == "]") { depth--; if (depth < 0) { invalid=1; exit } }
+      }
+    }
+    END {
+      if (invalid || depth != 0 || quoted || versions == "") exit 1
+      printf "%s", versions
+    }
+  '
+}
+
 release_download() {
+  case ${STOKE_CHANNEL:-stable} in
+    stable | beta) : ;;
+    *) die 'STOKE_CHANNEL must be stable or beta.' ;;
+  esac
   STOKE_REQUESTED_VERSION=${STOKE_VERSION:-}
+  if [ -z "$STOKE_REQUESTED_VERSION" ] && [ "${STOKE_CHANNEL:-stable}" = beta ]; then
+    if ! beta_json=$(curl -fsSL --connect-timeout 15 --max-time 45 --max-filesize 16777216 "$STOKE_RELEASES_API"); then
+      die 'Could not find the latest beta on GitHub. Try again, or select an exact STOKE_VERSION. Nothing was installed.'
+    fi
+    if ! beta_candidates=$(printf %s "$beta_json" | beta_versions); then
+      die 'GitHub returned no supported published beta. Try again, or select an exact STOKE_VERSION. Nothing was installed.'
+    fi
+    while IFS= read -r beta_version; do
+      [ -n "$beta_version" ] || continue
+      if [ -z "$STOKE_REQUESTED_VERSION" ]; then STOKE_REQUESTED_VERSION=$beta_version
+      else
+        version_cmp "$beta_version" "$STOKE_REQUESTED_VERSION"
+        if [ "$VER_CMP" = 1 ]; then STOKE_REQUESTED_VERSION=$beta_version; fi
+      fi
+    done <<BETA_VERSIONS
+$beta_candidates
+BETA_VERSIONS
+  fi
   if [ -n "$STOKE_REQUESTED_VERSION" ]; then
     case $STOKE_REQUESTED_VERSION in
       *[!0-9A-Za-z.-]*) die 'STOKE_VERSION contains invalid characters.' ;;
@@ -1301,6 +1382,8 @@ Usage: stoke [options] [DIR]
   stoke --continue [DIR]  pick up the last Claude Code conversation in DIR
   stoke --open [DIR]      add DIR to the sidebar and select it; starts nothing
   stoke update            open Settings, Updates and check for a new Stoke; installs nothing
+  stoke login             open Stoke sign-in and device sync setup
+  stoke remote            open Phone access setup; starts nothing automatically
   stoke --version         the installed version
   stoke --help            this
 
@@ -1568,6 +1651,9 @@ do_fire_frames() {
 # --- main ----------------------------------------------------------------
 
 main() {
+  # Consume channel selection before the offline diagnostic flag, if any.
+  # Export it because a Git Bash install hands over to PowerShell below.
+  while [ "${1:-}" = --beta ]; do STOKE_CHANNEL=beta; export STOKE_CHANNEL; shift; done
   case ${1:-} in
     --help | -h)
       usage
@@ -1619,12 +1705,12 @@ main() {
     *) die "Unknown option: $1" 'Run with --help to see what this understands.' ;;
   esac
 
-  release_download
-
   # Windows first, because sniffing cannot catch it: curl.exe ships in every
   # Windows 10 1803+ and sends `curl/8.x`, indistinguishable from curl on Linux,
   # so stoke.vinn.dev hands it THIS script. Hand over to the one that runs there.
   if on_windows; then windows_handoff; fi
+
+  release_download
 
   case "$(uname -s)" in
     Darwin) PLATFORM=mac ;;

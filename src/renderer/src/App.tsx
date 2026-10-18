@@ -3167,6 +3167,10 @@ export function App(): React.JSX.Element {
       void window.stoke.self.check()
       return
     }
+    if (req.kind === 'setup') {
+      openSettings(req.page)
+      return
+    }
     // `stoke account add`: main has made the account and asks for its sign-in.
     // An `account-add` itself never arrives here — main turns it into this.
     if (req.kind === 'account-add') return
@@ -3268,9 +3272,9 @@ export function App(): React.JSX.Element {
       .pending()
       .then(
         (reqs) => {
-          // A launch that came with a folder is not one for "start a session on
-          // launch" to add a second session to.
-          if (reqs.some((r) => r.kind === 'session' || r.kind === 'open')) autoStarted.current = true
+          // An explicit folder or setup request owns this launch. Opening
+          // sign-in/Phone access must not start a default agent behind it.
+          if (reqs.some((r) => r.kind === 'session' || r.kind === 'open' || r.kind === 'setup')) autoStarted.current = true
           for (const r of reqs) void launchRef.current(r)
         },
         () => {}

@@ -15,7 +15,10 @@
 # byte against the sha512 in that release's own update manifest before running
 # anything. $env:STOKE_DRY_RUN = '1' does all of that and stops before running
 # the installer.
-# For a published beta, set $env:STOKE_VERSION = '1.0.0-beta.6' before running
+# For the newest published beta, run:
+#     & ([scriptblock]::Create((irm https://stoke.vinn.dev/install.ps1))) -Beta
+# Or set $env:STOKE_CHANNEL='beta' before the usual one-liner.
+# For an exact published version, set $env:STOKE_VERSION = '1.0.0-beta.6' before running
 # the one-liner. With no version selected, it installs the latest stable release.
 #
 # ---------------------------------------------------------------------------
@@ -35,6 +38,8 @@
 # Mac — the art block, the last line being the call, no Invoke-WebRequest, the
 # upgrade-detection GUID — and PowerShell 7 parses this file clean.
 # ---------------------------------------------------------------------------
+param([switch]$Beta)
+
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
@@ -346,6 +351,7 @@ $FireStride = 3
 
 $StokeReleases = 'https://github.com/realvinn/stoke/releases'
 $StokeLatestDownload = "$StokeReleases/latest/download"
+$StokeReleasesApi = 'https://api.github.com/repos/realvinn/stoke/releases?per_page=100'
 
 function Get-StokeDownloadBase([string]$Version) {
   if (-not $Version) { return $StokeLatestDownload }
@@ -353,6 +359,29 @@ function Get-StokeDownloadBase([string]$Version) {
     throw 'STOKE_VERSION must be a version such as 1.0.0-beta.6, without a v prefix.'
   }
   return "$StokeReleases/download/v$Version"
+}
+# Keep exact version pins authoritative, even when -Beta / STOKE_CHANNEL is set.
+# This only selects a tag; the ordinary platform manifest and sha512 checks still
+# verify the selected release and every downloaded byte before installation.
+function Get-StokeRequestedVersion([string]$Version, [string]$Channel) {
+  if ($Channel -and $Channel -cne 'stable' -and $Channel -cne 'beta') {
+    throw 'STOKE_CHANNEL must be stable or beta.'
+  }
+  if ($Version) { $null = Get-StokeDownloadBase $Version; return $Version }
+  if ($Channel -cne 'beta') { return '' }
+  try { $releases = Invoke-RestMethod -Uri $StokeReleasesApi -UseBasicParsing }
+  catch { throw 'Could not find the latest beta on GitHub. Try again, or select an exact STOKE_VERSION. Nothing was installed.' }
+  if ($releases -isnot [Array]) { throw 'GitHub returned no supported published beta. Nothing was installed.' }
+  $selected = ''
+  foreach ($release in $releases) {
+    $tag = [string]$release.tag_name
+    if ($release.draft -isnot [bool] -or $release.draft -or $release.prerelease -isnot [bool] -or -not $release.prerelease) { continue }
+    if ($tag -cnotmatch '\Av[0-9]+\.[0-9]+\.[0-9]+-beta(\.[0-9A-Za-z-]+)*\z') { continue }
+    $version = $tag.Substring(1)
+    if (-not $selected -or (Compare-StokeVersion $version $selected) -gt 0) { $selected = $version }
+  }
+  if (-not $selected) { throw 'GitHub returned no supported published beta. Try again, or select an exact STOKE_VERSION. Nothing was installed.' }
+  return $selected
 }
 $StokeShLine = 'curl -fsSL https://stoke.vinn.dev | sh'
 $Esc = [char]27
@@ -442,7 +471,8 @@ function Install-Stoke {
     # script and the app agree about what "latest" means by construction. The
     # /releases/latest/download/ redirect needs no API token and has no rate
     # limit worth thinking about.
-    $requestedVersion = $env:STOKE_VERSION
+    $channel = if ($Beta) { 'beta' } else { $env:STOKE_CHANNEL }
+    $requestedVersion = Get-StokeRequestedVersion $env:STOKE_VERSION $channel
     $downloadBase = Get-StokeDownloadBase $requestedVersion
     $manifestText = Invoke-RestMethod -Uri "$downloadBase/latest.yml" -UseBasicParsing
 

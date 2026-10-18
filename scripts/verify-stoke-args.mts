@@ -154,6 +154,15 @@ check('`--continue --cli claude` is allowed, since it IS Claude', parse('--conti
 check('`--open` adds the folder and starts nothing', parse('--open'), { kind: 'open', cwd: CWD })
 check('`--open dir` likewise', parse('--open', 'dir'), { kind: 'open', cwd: `${CWD}/dir` })
 check('`stoke update` is the update request', parse('update'), { kind: 'update' })
+check('`stoke login` opens Stoke sign-in setup', parse('login'), { kind: 'setup', page: 'account' })
+check('`stoke remote` opens Phone access setup', parse('remote'), { kind: 'setup', page: 'remote' })
+for (const word of ['login', 'remote']) {
+  check(`setup ${word} refuses extra arguments`, kind(parse(word, '--token=never-accept-credentials')), 'error')
+  check(`./${word} remains an ordinary folder`, parse(`./${word}`), session(`${CWD}/${word}`))
+}
+check('forwarded setup accepts only the two existing pages', requestFrom({ kind: 'setup', page: 'remote', enabled: true, token: 'ignored' }, 'darwin'), { kind: 'setup', page: 'remote' })
+check('forwarded setup refuses arbitrary page names', requestFrom({ kind: 'setup', page: 'secrets' }, 'darwin'), null)
+
 check('`stoke ./update` is a folder called update', parse('./update'), session(`${CWD}/update`))
 check('`stoke --new update` is a folder too: a command is only ever the first word', parse('--new', 'update'), session(`${CWD}/update`, null, 'new'))
 check('`stoke update now` is refused rather than guessed at', kind(parse('update', 'now')), 'error')
@@ -390,7 +399,7 @@ console.log('\na forwarded request is rebuilt, never trusted')
  * anything that can write to the lock's pipe. Every parse result has to survive
  * the JSON trip unchanged, and anything malformed has to come back null.
  */
-const samples = [parse(), parse('.'), parse('--cli', 'codex', '--new'), parse('--continue'), parse('--open'), parse('update'), parse('-x')]
+const samples = [parse(), parse('.'), parse('--cli', 'codex', '--new'), parse('--continue'), parse('--open'), parse('update'), parse('login'), parse('remote'), parse('-x')]
 for (const r of samples) {
   check(`round-trips: ${kind(r)}`, requestFrom(JSON.parse(JSON.stringify(r)), 'darwin'), r)
 }

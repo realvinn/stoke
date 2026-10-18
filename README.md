@@ -44,18 +44,24 @@ that resolves the latest release, checks every byte against the sha512 in the
 release's own update manifest, and puts the app where it goes. run the same line
 again to upgrade. `STOKE_DRY_RUN=1` does all of it except the installing.
 
-To install a published beta, select its exact version. The plain command selects
+To install the newest published beta, add `--beta`. The plain command selects
 the latest stable release. On macOS, Linux or Git Bash:
 
 ```bash
-curl -fsSL https://stoke.vinn.dev/install.sh | STOKE_VERSION=1.0.0-beta.10 sh
+curl -fsSL https://stoke.vinn.dev/install.sh | sh -s -- --beta
 ```
 
-In Windows PowerShell:
+In Windows PowerShell, pass `-Beta` to the downloaded script:
 
 ```powershell
-$env:STOKE_VERSION='1.0.0-beta.10'; irm https://stoke.vinn.dev/install.ps1 | iex
-Remove-Item Env:STOKE_VERSION
+& ([scriptblock]::Create((irm https://stoke.vinn.dev/install.ps1))) -Beta
+```
+
+`STOKE_CHANNEL=beta` selects the same channel for scripts. `STOKE_VERSION` still
+wins when you need one exact published version, for example:
+
+```bash
+curl -fsSL https://stoke.vinn.dev/install.sh | STOKE_VERSION=1.0.0-beta.13 sh
 ```
 
 Run from a terminal outside Stoke; installing closes the existing app cleanly.
@@ -65,7 +71,9 @@ already running there forward), `stoke --new` always opens another tab,
 `stoke --cli codex` starts a different coding cli, and `stoke --help` lists the
 rest. on a mac the installer links the command into `~/.local/bin`; on linux it is
 the launcher the installer writes; on windows, settings › updates › command line
-puts it on your path (not yet run on windows).
+puts it on your path. `stoke login` opens Stoke sign-in and device sync setup;
+`stoke remote` opens Phone access setup. See [CLI and remote setup](docs/cli.md)
+for the difference between Stoke sign-in, coding-agent accounts and SSH access.
 
 the scripts are [install/install.sh](install/install.sh) and
 [install/install.ps1](install/install.ps1), and the endpoint serves those files

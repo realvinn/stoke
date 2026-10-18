@@ -48,6 +48,8 @@ Usage: stoke [options] [DIR]
   stoke --continue [DIR]  pick up the last Claude Code conversation in DIR
   stoke --open [DIR]      add DIR to the sidebar and select it; starts nothing
   stoke update            open Settings, Updates and check for a new Stoke; installs nothing
+  stoke login             open Stoke sign-in and device sync setup
+  stoke remote            open Phone access setup; starts nothing automatically
   stoke account list      the agent accounts Stoke holds, and their folders
   stoke account add AGENT NAME
                           make an account of an agent and sign it in, in a Stoke tab

@@ -63,6 +63,8 @@ export type StokeCliRequest =
   | { kind: 'open'; cwd: string }
   /** Settings → Updates, and a check. Never installs and never quits. */
   | { kind: 'update' }
+  /** Open existing desktop sign-in/remote setup. Carries no credentials or settings changes. */
+  | { kind: 'setup'; page: 'account' | 'remote' }
   /**
    * `stoke account add AGENT NAME`: make that agent's account called NAME
    * (or find the one already called that) and open its sign-in tab. Main
@@ -195,7 +197,7 @@ function usableCwd(cwd: string, platform: string): boolean {
 /* -------------------------------------------------------------- grammar */
 
 /** The first positional word that is a command rather than a folder. */
-const COMMANDS = new Set(['update', 'install-cli', 'uninstall-cli', 'account'])
+const COMMANDS = new Set(['update', 'install-cli', 'uninstall-cli', 'account', 'login', 'remote'])
 
 /**
  * `stoke account …` as the app sees it. `list` and `env` are the shim's own —
@@ -255,6 +257,7 @@ export function parseStokeArgs(argv: readonly string[], ctx: ArgContext): StokeC
     if (word === 'account') return accountRequest(typed.slice(1))
     if (typed.length > 1) return fail(`\`stoke ${word}\` takes nothing after it. ${HELP_HINT}`)
     if (word === 'update') return { kind: 'update' }
+    if (word === 'login' || word === 'remote') return { kind: 'setup', page: word === 'login' ? 'account' : 'remote' }
     return fail(
       `\`stoke ${word}\` is handled by the stoke command in a terminal on macOS. ` +
         'Here, Settings → Updates → Command line does the same.'
@@ -385,6 +388,8 @@ export function requestFrom(v: unknown, platform: string): StokeCliRequest | nul
       return { kind: 'focus' }
     case 'update':
       return { kind: 'update' }
+    case 'setup':
+      return r.page === 'account' || r.page === 'remote' ? { kind: 'setup', page: r.page } : null
     case 'error':
       return typeof r.message === 'string' ? { kind: 'error', message: shown(r.message, 400) } : null
     case 'open':
@@ -498,6 +503,8 @@ export function stokeHelp(platform: string): string {
     '  stoke --continue [DIR]  pick up the last Claude Code conversation in DIR',
     '  stoke --open [DIR]      add DIR to the sidebar and select it; starts nothing',
     '  stoke update            open Settings, Updates and check for a new Stoke; installs nothing',
+    '  stoke login             open Stoke sign-in and device sync setup',
+    '  stoke remote            open Phone access setup; starts nothing automatically',
     // The shim answers list and env itself, from ~/.stoke/accounts/index.json;
     // Linux's launcher does not, so its help does not offer them.
     ...(platform === 'darwin' || win
