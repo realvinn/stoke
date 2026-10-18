@@ -1796,6 +1796,11 @@ src/main/         Electron main process
                     the session's history then attaches its private tmux session),
                     `sshHostArgs` (refuses rather than connecting unkept), and the
                     BatchMode list/kill argv and parser. Gotchas 29, 75, 126
+  sshFallback.ts    interactive SSH PTY wrapper: one visible password/keyboard-interactive
+                    retry after MaxAuthTries rejects too many keys, never after authentication
+                    success, typed input or an existing password prompt. A lazy `ssh -G`
+                    subprocess (4 s, 256 KiB, abortable) respects auth restrictions and excludes
+                    proxies/multiplexing. Owns both native children; never queues credentials
   sshSessions.ts    runs those BatchMode list and kill calls (execFile, never a shell;
                     never throws) for the launcher's "Running on <host>" and a tab's
                     "End session". No electron import; the runner is injectable

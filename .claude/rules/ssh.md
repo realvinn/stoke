@@ -1,6 +1,7 @@
 ---
 paths:
   - "src/main/ssh.ts"
+  - "src/main/sshFallback.ts"
   - "src/main/sshSessions.ts"
   - "src/main/sshUpload.ts"
   - "src/main/sshImages.ts"
@@ -22,6 +23,7 @@ paths:
   - "src/renderer/src/lib/tabs.ts"
   - "src/renderer/src/components/HostsSettings.tsx"
   - "scripts/verify-ssh.mts"
+  - "scripts/ssh-fallback-checks.mts"
   - "scripts/verify-tabs.mts"
   - "scripts/verify-worklog-gate.mts"
   - "src/main/hub/sshKeys.ts"

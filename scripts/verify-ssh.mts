@@ -95,6 +95,7 @@ import {
 import { chmod, readFile, symlink } from 'node:fs/promises'
 import { existsSync, readFileSync } from 'node:fs'
 import type { SshHost } from '../src/shared/types.ts'
+import { runSshFallbackChecks } from './ssh-fallback-checks.mts'
 
 const execFileAsync = promisify(execFile)
 
@@ -2461,6 +2462,8 @@ console.log('\nOpenSSH run without a terminal never inherits a Windows ssh login
 }
 
 /* ------------------------------------------------------------------------ */
+
+await runSshFallbackChecks()
 
 console.log(`\nconfig read from: ${sshConfigPath()}  (home ${homedir()})`)
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)

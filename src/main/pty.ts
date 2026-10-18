@@ -1,4 +1,5 @@
 import { prepareSshRoute } from './sshRoutes.ts'
+import { spawnSshPty } from './sshFallback.ts'
 import { randomUUID } from 'node:crypto'
 import { releaseExitedPtyTransports } from './ptyTransportCleanup.ts'
 import { ownedPtyExits } from './ptyExitTracker.ts'
@@ -759,15 +760,22 @@ export class PtyManager {
       if (isPrivate) Object.assign(env, PRIVATE_ENV)
 
       if (this.stopping) throw new Error('The Stoke window is closing.')
-      proc = nodePty.spawn(spec.file, spec.args, {
+      const spawnOptions = {
         name: 'xterm-256color',
         cols: Math.max(20, opts.cols || 120),
         rows: Math.max(5, opts.rows || 30),
         cwd,
         env,
         useConpty: process.platform === 'win32' ? true : undefined
-      })
-      ownedPtyExits.track(proc)
+      }
+      proc = remote
+        ? spawnSshPty(spec.file, spec.args, spawnOptions, {
+            spawn: nodePty.spawn,
+            started: child => ownedPtyExits.track(child),
+            exited: child => releaseExitedPtyTransports(child)
+          })
+        : nodePty.spawn(spec.file, spec.args, spawnOptions)
+      if (!remote) ownedPtyExits.track(proc)
     } catch (err) {
       releaseSessionFiles(statusKey, ptyId)
       if (installFile) void rm(installFile, { force: true })
