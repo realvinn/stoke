@@ -1695,7 +1695,9 @@ src/main/         Electron main process
                     `chainChanged` ends what the chain stopped vouching for. Chat history too:
                     the host's chats question, grants and per-request checks, and the guest's
                     `searchChats`/`openRemoteChat` over one chats relay per machine. No electron
-                    import. verify:hub-relay
+                    import. Private website guest sinks own separate relays, stay out of
+                    desktop tabs and preserve host grants and capability bounds.
+                    verify:hub-relay
   hub/chatShare.ts  what another computer may read of this one's chat history: the relay
                     instance's two routes (`answerChatsRoute`) over `sharedChats`, which redacts
                     every string again (the patterns, then shared/keyShaped.ts's net, before and
@@ -2212,7 +2214,8 @@ src/remote/       mobile web UI, built separately to out/remote. Vanilla TS on o
                   340px session rail beside the session (never a stretched phone)
   main.ts           boot (key scrub, live theme, service worker in a secure context only), the
                     router and the rail/pane layout; home is Running | Recent (`homeSegmentFor`),
-                    `#/history` being Recent, so the bar carries one action, New
+                    `#/history` being Recent; Devices opens approved online computers
+                    and device-qualified terminal routes beside the existing New action
   public/sw.js      the installable shell's service worker. Network-first index.html, kept under
                     one fixed key as a URL-less copy (`keepShell`: a stored Response keeps its URL,
                     so Connect's `?k=` navigation would), cache-first for the
@@ -2237,6 +2240,11 @@ src/remote/       mobile web UI, built separately to out/remote. Vanilla TS on o
                     guarded EOF and no queued offline keys. Session gates connection state,
                     preserves toolbar focus and clears modifiers when hidden. Usage:
                     docs/remote-keyboard.md
+  devices.ts        approved online Stoke devices and shared running-session links,
+                    reached through the host's encrypted Hub relays. Device-qualified
+                    terminal routes preserve drafts and isolate local session metadata;
+                    view grants watch only, and remote submissions are never queued.
+                    Setup and scope: docs/remote-devices.md
   newSession.ts, history.ts, connect.ts, dom.ts   the new-session sheet, Recent (`mountRecent`),
                     a project's sessions and read-back, the paste-your-link screen, the
                     builder/icons/sheets. The sheet's confirm step draws what the chosen agent
@@ -2277,6 +2285,9 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     the status and refusal words the panel shows. Gotcha 124
   remotePhone.ts    the phone contract's pure pieces: status mapping and sort, the ended
                     ring, `submitFrames` (typed, never bracketed for Claude: gotcha 86)
+  remoteDevices.ts  website device summaries, private relay state and bounded terminal
+                    input/submission contract; keys and hub credentials stay in main.
+                    verify:hub-relay and verify:remote exercise the encrypted gateway
   remoteChatsView.ts  what the renderer says about chat history across computers (spec
                     2026-10-03 §4): the Settings row (`shareChatsRow`, `shareChatsBlock`, main's
                     pause read by `sharePausedOf`), the sidebar's "On <computer>" groups
@@ -2287,7 +2298,8 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     failed read is read again (`remoteReadWatch`), and when a waiting search is
                     asked again (`chatsSearchAgain`, never on an idle close). verify:hub-relay
   phoneUi.ts        the phone UI's decisions: sections, answer-option parsing, the resize
-                    policy, the queued-send state, connect input, transcript folding.
+                    policy, occupied-row scroll following, the queued-send state,
+                    connect input, transcript folding.
                     verify:phone-ui
   terminalKeys.ts   xterm-compatible F1–F12/navigation/modifier sequences, application cursor
                     mode and explicit refusals for unsupported legacy combinations.
@@ -2613,6 +2625,9 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     launch both show. Gotcha 126
   api.ts            the type of window.stoke, shared by preload and renderer
 scripts/          the verify-*.mts suites, make-icon.cjs
+  remote-device-checks.mts  actual phone router checks invoked by verify:remote:
+                    device HTTP/WS authorization, bounded commands, independent cleanup
+                    and no relay pivot. Hub relay tests cover the encrypted second hop
   ci-verify.mjs     derives CI's suite list from the `check` chain and fails on a stale
                     exclusion. A suite that starts Electron gets a display per runner
                     (xvfb-run -a on a Linux one without), never an exclusion, and

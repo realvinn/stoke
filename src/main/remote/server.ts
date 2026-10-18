@@ -42,6 +42,9 @@ import { addRemoteProject, browseRemoteFolder, resolveFolderBases } from './fold
 import type { PushOutcome } from './push.ts'
 import { isTailnetAddress, tailnetAddress } from './link.ts'
 import { sendPhoneFrame, type PhoneSocket } from './socket.ts'
+import type { RemoteDeviceConnection, RemoteDeviceSink } from '../hub/remote.ts'
+import { REMOTE_DEVICE_INPUT_MAX, REMOTE_DEVICE_SUBMIT_MAX, type RemoteDevicesResponse } from '../../shared/remoteDevices.ts'
+import { isPtyId } from '../../shared/hub/relay.ts'
 import { TerminalOutputBatch } from './outputBatch.ts'
 import { answerChatsRoute, type SharedChats } from '../hub/chatShare.ts'
 import {
@@ -228,6 +231,13 @@ export type { ConnectTarget, Reach } from './link.ts'
  *     Access and browser-origin checks apply; two operations globally and
  *     one per session are allowed. Cancellation or stopping Phone access
  *     aborts the operation. These binary routes are not hub relay routes.
+ * 16. Devices. `GET /api/machines` returns only approved online device
+ *     summaries. `/ws/machine?device=&ptyId=` owns one private Hub guest
+ *     connection and forwards its existing terminal frames plus
+ *     `remote-state` capabilities. The browser may input, submit or resize
+ *     only under that connection's full grant. Keys/Access/origin checks
+ *     still apply; neither this route nor its socket is a host relay route,
+ *     so a relay cannot pivot through it to a third computer.
  */
 
 /** What a phone is told when its push service refused its subscription for good (410; the phone drops its copy). */
@@ -252,6 +262,11 @@ export interface RemotePushDeps {
 }
 
 export interface RemoteDeps {
+  /** Phone-only gateway to approved devices; never part of the host relay API. */
+  devices?: {
+    view(): RemoteDevicesResponse
+    open(device: string, ptyId: string, sink: RemoteDeviceSink): { ok: true; connection: RemoteDeviceConnection } | { ok: false; message: string }
+  }
   /** Shared read-only file service; production uses its native SSH runner. */
   sshFiles?: SshFiles
   ptys: () => PtyManager | null
@@ -1340,6 +1355,11 @@ export class RemoteServer {
       : {}
 
     try {
+      if (url.pathname === '/api/machines') {
+        if (!this.sameOrigin(req)) return this.json(res, { error: 'Open devices from this Stoke page.' }, setCookie, 403)
+        if (req.method !== 'GET') return this.json(res, { error: 'Unsupported device operation.' }, setCookie, 405)
+        return this.json(res, this.deps.devices?.view() ?? { available: false, machines: [] }, setCookie)
+      }
       if (['/api/files/upload', '/api/files/list', '/api/files/download'].includes(url.pathname)) {
         if (!this.sameOrigin(req)) return this.json(res, { error: 'Open files from this Stoke page.' }, setCookie, 403)
         if ((url.pathname === '/api/files/upload' ? 'POST' : 'GET') !== req.method) return this.json(res, { error: 'Unsupported file operation.' }, setCookie, 405)
@@ -2128,6 +2148,12 @@ export class RemoteServer {
   }
 
   private handleSocket(ws: PhoneSocket, url: URL): void {
+    if (url.pathname === '/ws/machine') {
+      // A machine relay never becomes a gateway to a third computer.
+      if (this.relayHooks || this.relayChats) { ws.close(1008, 'Not a relayed socket.'); return }
+      this.handleMachineSocket(ws, url)
+      return
+    }
     /*
      * Phone contract point 4: a second kind of socket, gated the same way as
      * the pty one in `handleUpgrade` (this method only ever runs after that
@@ -2139,6 +2165,53 @@ export class RemoteServer {
       return
     }
     this.handlePtySocket(ws, url)
+  }
+
+  private handleMachineSocket(ws: PhoneSocket, url: URL): void {
+    this.clients.add(ws)
+    this.attachKeepalive(ws)
+    let connection: RemoteDeviceConnection | null = null
+    let closed = false
+    const drop = (): void => {
+      if (closed) return
+      closed = true
+      this.clients.delete(ws)
+      connection?.close()
+      connection = null
+    }
+    ws.on('close', drop)
+    ws.on('error', drop)
+    const refuse = (message: string): void => {
+      sendPhoneFrame(ws, JSON.stringify({ type: 'remote-state', state: 'refused', message, mode: null,
+        sizes: false, typeOnly: false, deviceLabel: '', title: '', project: '', session: null }))
+      ws.close(1008, 'Device connection refused.')
+    }
+    if (url.searchParams.getAll('device').length !== 1 || url.searchParams.getAll('ptyId').length !== 1) return refuse('Choose one device and session.')
+    const device = url.searchParams.get('device') ?? ''
+    const ptyId = url.searchParams.get('ptyId') ?? ''
+    if (!device || device.length > 100 || !isPtyId(ptyId)) return refuse('Choose a valid device and session.')
+    const opened = this.deps.devices?.open(device, ptyId, {
+      state: (state) => { sendPhoneFrame(ws, JSON.stringify(state)) },
+      frame: (frame) => { sendPhoneFrame(ws, JSON.stringify(frame)) },
+      close: () => ws.close(1000, 'Device connection closed.')
+    })
+    if (!opened?.ok) return refuse(opened?.message ?? 'Sign in to Stoke Hub and approve this computer first.')
+    connection = opened.connection
+    if (closed || ws.readyState !== 1) { connection.close(); connection = null; return }
+    ws.on('message', (raw) => {
+      if (closed || !connection) return
+      let msg: Record<string, unknown>
+      try {
+        const text = String(raw)
+        if (text.length > MAX_WS_FRAME) return
+        const parsed: unknown = JSON.parse(text)
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return
+        msg = parsed as Record<string, unknown>
+      } catch { return }
+      if (msg.type === 'input' && typeof msg.data === 'string' && msg.data.length <= REMOTE_DEVICE_INPUT_MAX) connection.input(msg.data)
+      else if (msg.type === 'submit' && typeof msg.text === 'string' && msg.text.length <= REMOTE_DEVICE_SUBMIT_MAX && (msg.enter === undefined || typeof msg.enter === 'boolean')) connection.submit(msg.text, msg.enter !== false)
+      else if (msg.type === 'resize' && msg.force === true && typeof msg.cols === 'number' && typeof msg.rows === 'number' && Number.isInteger(msg.cols) && Number.isInteger(msg.rows) && msg.cols > 0 && msg.rows > 0 && msg.cols <= MAX_TERM_DIM && msg.rows <= MAX_TERM_DIM) connection.resize(msg.cols, msg.rows)
+    })
   }
 
   private handleEventsSocket(ws: PhoneSocket): void {

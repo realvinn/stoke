@@ -12,6 +12,7 @@
  */
 import { connectTarget, lanAddresses } from '../src/main/remote/link.ts'
 import { phoneFilesChecks } from './phone-files-checks.mts'
+import { remoteDeviceChecks } from './remote-device-checks.mts'
 import { exitError, installHint } from '../src/main/remote/tunnel.ts'
 import {
   classifyHostname,
@@ -2343,6 +2344,7 @@ console.log('\na private chat never reaches the phone, in either direction')
 }
 
 await phoneFilesChecks(check)
+await remoteDeviceChecks(check)
 
 console.log(failures ? `\n${failures} FAILED` : '\nall pass')
 process.exitCode = failures ? 1 : 0

@@ -137,7 +137,7 @@ import { HubFiles, type HubDevice } from './files.ts'
 import type { AccountSync } from './accountSync.ts'
 import { syncedAccountProblem } from '../../shared/hub/accountSync.ts'
 import { hubRequest, HubRequestError } from './http.ts'
-import { HubRemote, type RelaySocket, type RemoteContext, type RemoteMachineDeps } from './remote.ts'
+import { HubRemote, type RelaySocket, type RemoteContext, type RemoteMachineDeps, type RemoteDeviceConnection, type RemoteDeviceSink } from './remote.ts'
 import { defaultSshPaths, identityFilesFor, installReceivedKey, listKeyPairs, readKeyForShare, type SshPaths } from './sshKeys.ts'
 
 type ChainOk = Extract<ChainVerdict, { ok: true }>
@@ -2914,6 +2914,12 @@ export class HubService {
   /** The "Other machines" view, for the sidebar, the remote tabs and Account & sync. */
   remoteView(): HubRemoteView {
     return this.remote?.view() ?? emptyRemoteView()
+  }
+
+  /** A phone browser owns a separate relay, under this device's existing identity and host approvals. */
+  remoteDevice(device: string, ptyId: string, sink: RemoteDeviceSink): { ok: true; connection: RemoteDeviceConnection } | { ok: false; message: string } {
+    if (!this.remote) return { ok: false, message: 'Sign in to Stoke Hub and approve this computer first.' }
+    return this.remote.openDevice(device, ptyId, sink)
   }
 
   /**

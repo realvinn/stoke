@@ -31,6 +31,7 @@ import {
   keyRowShown,
   fontToFit,
   scrollToColumn,
+  terminalFollowTop,
   isTerminalReport,
   modeFromScreen,
   parseAnswerOptions,
@@ -61,6 +62,7 @@ import { rowTitle, screenLines, sendAnswer } from './list'
 import { store } from './store'
 import { openSessionFiles } from './files'
 import { mountTerminalKeys } from './terminalKeyBar'
+import { REMOTE_DEVICE_INPUT_MAX, REMOTE_DEVICE_SUBMIT_MAX, type RemoteDeviceState } from '@shared/remoteDevices'
 
 /** Filled by whoever starts a session, so the header is right before the first push. */
 export const pendingMeta = new Map<string, { cwd: string; project: string }>()
@@ -105,15 +107,20 @@ export interface SessionScreen {
   destroy: () => void
 }
 
-export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () => void }): SessionScreen {
+export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () => void; remote?: { device: string } }): SessionScreen {
   const ac = new AbortController()
   const signal = ac.signal
   const cls = deviceClass()
   const coarse = matchMedia('(pointer: coarse)').matches
   const fine = matchMedia('(pointer: fine)').matches
 
-  let row: SessionRow | null = store.row(ptyId)
-  const pending = pendingMeta.get(ptyId)
+  // PTY ids belong to a computer. A matching local id must never replace a remote row.
+  let row: SessionRow | null = opts.remote ? null : store.row(ptyId)
+  const pending = opts.remote ? undefined : pendingMeta.get(ptyId)
+  let deviceState: RemoteDeviceState | null = null
+  const targetName = (): string => opts.remote ? deviceState?.deviceLabel || 'Other device' : machineName()
+  const mayType = (): boolean => !opts.remote || (deviceState?.state === 'open' && deviceState.mode === 'full')
+  const mayResize = (): boolean => !opts.remote || (mayType() && deviceState?.sizes === true)
   let status: PhoneSessionStatus = row?.status ?? 'unknown'
   let waitingFor: string | null = row?.waitingFor ?? null
   /** The prompt the tray answers; the server refuses any other (`answerVerdict`). */
@@ -156,9 +163,12 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
    * reason instead of reconnecting in silence (gotcha 124).
    */
   const linkText = el('span', {}, 'Reconnecting…')
-  const linkStrip = el('div', { class: 'link-strip', role: 'status', hidden: true }, el('i', { class: 'spinner' }), linkText)
+  const retryDevice = el('button', { type: 'button', class: 'btn btn-sm', hidden: true }, 'Try again')
+  const linkStrip = el('div', { class: 'link-strip', role: 'status', hidden: true }, el('i', { class: 'spinner' }), linkText, retryDevice)
   const paintLink = (): void => {
-    linkText.textContent = accessRefusalOf(store.error) ?? 'Reconnecting…'
+    linkText.textContent = opts.remote
+      ? deviceState?.message || (deviceState?.mode === 'view' ? `View only on ${targetName()}. Allow control there to type.` : 'Connecting to your other device…')
+      : accessRefusalOf(store.error) ?? 'Reconnecting…'
   }
   paintLink()
 
@@ -209,18 +219,19 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
   /* --------------------------------------------------------- header data */
 
   const paintHeader = (): void => {
-    const name = row?.project ?? pending?.project ?? 'Session'
+    const name = row?.project || pending?.project || 'Session'
     // What it is doing first, as the list reads; the project while it has no title.
     const title = row ? rowTitle(row) : 'Starting…'
     const titled = Boolean(row?.title || row?.context?.title)
     titleLine.textContent = titled || !row ? title : name
     const agent = row && row.cli !== 'claude' ? row.agentName : null
-    where.textContent = [titled || !row ? name : null, row?.host ? 'ssh' : agent].filter(Boolean).join(' · ')
+    where.textContent = [opts.remote ? targetName() : null, titled || !row ? name : null, row?.host ? 'ssh' : agent].filter(Boolean).join(' · ')
+    where.title = where.textContent
     where.hidden = !where.textContent
-    document.title = `${name} · Stoke`
-    const p = statusPill(status, waitingFor, !linkStrip.hidden)
+    document.title = `${name}${opts.remote ? ` · ${targetName()}` : ''} · Stoke`
+    const p = statusPill(status, waitingFor, opts.remote ? deviceState?.state !== 'open' : !linkStrip.hidden)
     statusSlot.dataset.tone = p.tone
-    statusSlot.replaceChildren(el('i', { 'aria-hidden': 'true' }), p.label)
+    statusSlot.replaceChildren(el('i', { 'aria-hidden': 'true' }), deviceState?.state === 'open' && deviceState.mode === 'view' ? 'View only' : p.label)
     const ctx = row?.context
     if (ctx?.ready && ctx.contextLimit > 0) {
       const pct = contextPercent(ctx.contextTokens, ctx.contextLimit)
@@ -231,7 +242,7 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
       ctxChip.dataset.level = contextLevel(pct)
       ctxChip.hidden = false
     } else ctxChip.hidden = true
-    stopBtn.hidden = ended || status !== 'busy'
+    stopBtn.hidden = ended || status !== 'busy' || !mayType()
     paintMode()
   }
 
@@ -255,7 +266,7 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
     if (changed) refreshTray()
   }
 
-  signal.addEventListener('abort', store.subscribe(() => {
+  if (!opts.remote) signal.addEventListener('abort', store.subscribe(() => {
     paintLink()
     const next = store.row(ptyId)
     if (next) {
@@ -305,7 +316,8 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
     // Only keys a person typed: xterm's automatic answers to replayed queries
     // must never reach the pty (isTerminalReport).
     if (isTerminalReport(data) || !inner.contains(document.activeElement)) return
-    if (!ended && ws?.readyState === WebSocket.OPEN && ready) ws.send(JSON.stringify({ type: 'input', data }))
+    if (opts.remote && data.length > REMOTE_DEVICE_INPUT_MAX) { toast('That paste is too large. Send it in smaller parts.', 'error'); return }
+    if (!ended && mayType() && ws?.readyState === WebSocket.OPEN && ready) ws.send(JSON.stringify({ type: 'input', data }))
   })
 
   /* ---------------------------------------------------------- the layout */
@@ -319,7 +331,7 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
     const v = localStorage.getItem(LAYOUT_KEY)
     return v === 'fit' || v === 'desktop' ? v : null
   }
-  const layout = (): TermLayout => (opts.wide ? 'native' : (storedLayout() ?? 'desktop'))
+  const layout = (): TermLayout => (opts.wide ? 'native' : (mayResize() ? storedLayout() ?? 'desktop' : 'desktop'))
 
   const cell = (): { width: number; height: number } | null => {
     const dims = (term as unknown as { _core: { _renderService: { dimensions: { css: { cell: { width: number; height: number } } } } } })
@@ -366,7 +378,7 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
       resized
     })
     deferred = decision.deferred
-    if (decision.send && ws?.readyState === WebSocket.OPEN && ready) {
+    if (decision.send && mayResize() && ws?.readyState === WebSocket.OPEN && ready) {
       ws.send(JSON.stringify({ type: 'resize', cols: decision.send.cols, rows: decision.send.rows, force: true }))
       resized = mode === 'fit'
     } else if (decision.send && mode === 'fit') {
@@ -405,7 +417,9 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
   )
 
   const showLayoutBanner = (): void => {
-    if (opts.wide || storedLayout() || ended) {
+    // The layout choice remains in Session options. On keyboard-height
+    // viewports its initial suggestion would leave no usable terminal row.
+    if (opts.wide || root.clientHeight < 500 || storedLayout() || ended || !mayResize()) {
       layoutBanner.hidden = true
       return
     }
@@ -432,24 +446,46 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
   }
 
   const chooseLayout = (next: 'fit' | 'desktop'): void => {
+    if (next === 'fit' && !mayResize()) return
     localStorage.setItem(LAYOUT_KEY, next)
     layoutBanner.hidden = true
     relayout('toggle')
-    if (next === 'fit') toast('Fitted to this screen. The desktop terminal follows until you leave.')
+    if (next === 'fit') toast(`Fitted to this screen. The terminal on ${targetName()} follows until you leave.`)
   }
 
   /* ------------------------------------------------ sticking to the bottom */
 
   let stick = true
+  let programmaticTop: number | null = null
+  const followTop = (): number => {
+    const height = cell()?.height
+    if (!height) return Math.max(0, wrap.scrollHeight - wrap.clientHeight)
+    const buffer = term.buffer.active
+    const cursor = buffer.baseY + buffer.cursorY - buffer.viewportY
+    let lastRow = cursor >= 0 && cursor < term.rows ? cursor : 0
+    for (let y = term.rows - 1; y > lastRow; y--) {
+      if (buffer.getLine(buffer.viewportY + y)?.translateToString(true).trim()) { lastRow = y; break }
+    }
+    const style = getComputedStyle(wrap)
+    return terminalFollowTop({ lastRow, rows: term.rows, cellHeight: height,
+      padding: parseFloat(style.paddingTop) + parseFloat(style.paddingBottom),
+      viewport: wrap.clientHeight, scrollHeight: wrap.scrollHeight })
+  }
   wrap.addEventListener(
     'scroll',
     () => {
-      stick = wrap.scrollTop + wrap.clientHeight >= wrap.scrollHeight - 4
+      const expected = programmaticTop
+      programmaticTop = null
+      if (expected !== null && Math.abs(wrap.scrollTop - expected) <= 1) return
+      stick = Math.abs(wrap.scrollTop - followTop()) <= 4
     },
     { passive: true, signal }
   )
   const stickToBottom = (): void => {
-    if (stick) wrap.scrollTop = wrap.scrollHeight
+    if (stick) {
+      programmaticTop = followTop()
+      wrap.scrollTop = programmaticTop
+    }
   }
 
   /* --------------------------------------------------------------- socket */
@@ -474,7 +510,9 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
       clearTimeout(retry)
       retry = null
     }
-    const socket = new WebSocket(wsUrl(`/ws?ptyId=${encodeURIComponent(ptyId)}`))
+    const socket = new WebSocket(wsUrl(opts.remote
+      ? `/ws/machine?device=${encodeURIComponent(opts.remote.device)}&ptyId=${encodeURIComponent(ptyId)}`
+      : `/ws?ptyId=${encodeURIComponent(ptyId)}`))
     ws = socket
     socket.addEventListener('message', (ev) => {
       if (ws !== socket) return
@@ -490,6 +528,12 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
       if (ws !== socket) return
       ready = false
       keyBar.setEnabled(false)
+      const refusedDevice = !!opts.remote && ev.code === 1008 && deviceState?.state === 'refused'
+      if (opts.remote) {
+        if (!ended && !refusedDevice) deviceState = null
+        paintRemoteControls()
+        paintLink()
+      }
       sendState = sendLost(sendState)
       paintQueued()
       // A normal close after an exit frame is the end, not a dropped link
@@ -497,6 +541,9 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
       if (leaving || ended || (ev.code === 1000 && ended)) return
       linkStrip.hidden = false
       paintHeader()
+      // Invalid/stale device links need a deliberate retry, not an endless
+      // stream of fresh relay requests that erases the host's refusal.
+      if (refusedDevice) return
       retry = setTimeout(connect, backoff)
       backoff = Math.min(backoff * 2, 10_000)
     })
@@ -518,13 +565,36 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
   }
 
   const onFrame = (msg: Frame): void => {
-    if (msg.type === 'attached') {
+    if (msg.type === 'remote-state' && opts.remote) {
+      const next = msg as unknown as RemoteDeviceState
+      deviceState = next
+      const context = next.session?.context
+      row = {
+        ptyId, sessionId: '', cwd: '', name: next.project || next.title, host: null, exited: next.state === 'ended',
+        startedAt: 0, cols: row?.cols ?? 100, rows: row?.rows ?? 30,
+        context: context ? { contextTokens: context.used, contextLimit: context.limit, messageCount: 0, title: next.title, ready: true, permissionMode: null } : null,
+        status, waitingFor, promptId: null, lastActivityAt: null,
+        cli: next.session?.agent ?? '', agentName: next.session?.agent || 'Agent',
+        project: next.project, title: next.title || null, endedAt: null, exitCode: null
+      }
+      if (next.state !== 'open') ready = false
+      paintLink()
+      linkStrip.hidden = next.state === 'open' && next.mode === 'full'
+      if (next.state === 'ended') {
+        ended = true
+        endReason = next.message
+        showEnded()
+      }
+      paintRemoteControls()
+      paintHeader()
+      paintKeys()
+    } else if (msg.type === 'attached') {
       const saved = everAttached ? captureTerminalViewport(term) : null
       const outerTop = wrap.scrollTop
       const wasSticking = stick
       const revision = interaction
       backoff = 1000
-      linkStrip.hidden = true
+      linkStrip.hidden = !opts.remote || mayType()
       paintHeader()
       desktop = { cols: msg.desktopCols ?? msg.cols ?? desktop.cols, rows: msg.desktopRows ?? msg.rows ?? desktop.rows }
       pty = { cols: msg.cols ?? pty.cols, rows: msg.rows ?? pty.rows }
@@ -548,12 +618,15 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
         refreshTray()
       })
       ready = true
+      paintRemoteControls()
       paintKeys()
       relayout('attach')
-      const flushed = sendReady(sendState)
-      sendState = flushed.state
-      for (const text of flushed.flush) ws?.send(JSON.stringify({ type: 'submit', text }))
-      if (flushed.flush.length) toast(flushed.flush.length === 1 ? 'Sent your queued message.' : `Sent ${flushed.flush.length} queued messages.`)
+      if (!opts.remote) {
+        const flushed = sendReady(sendState)
+        sendState = flushed.state
+        for (const text of flushed.flush) ws?.send(JSON.stringify({ type: 'submit', text }))
+        if (flushed.flush.length) toast(flushed.flush.length === 1 ? 'Sent your queued message.' : `Sent ${flushed.flush.length} queued messages.`)
+      }
       paintQueued()
       if (msg.status) setStatus(msg.status, msg.waitingFor ?? null, msg.promptId ?? null)
     } else if (msg.type === 'data' && msg.data) {
@@ -596,7 +669,9 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
   }
 
   const refreshTray = (): void => {
-    if (status !== 'waiting' || ended) {
+    // Remote terminal keys remain deliberate input; do not recreate the local
+    // HTTP answer route without its host-side prompt-id check.
+    if (opts.remote || status !== 'waiting' || ended) {
       tray.hidden = true
       lastTraySig = ''
       dock.dataset.waiting = 'false'
@@ -639,6 +714,7 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
   }
 
   const answer = async (key: string): Promise<void> => {
+    if (opts.remote) return
     for (const b of tray.querySelectorAll('button')) b.disabled = true
     let ok: boolean
     if (key === 'esc' || Number(key) <= 3) ok = await sendAnswer(ptyId, key, promptId)
@@ -657,7 +733,7 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
   /* ----------------------------------------------------------------- keys */
 
   const write = (seq: string): boolean => {
-    if (ended) return false
+    if (ended || !mayType()) return false
     if (ws?.readyState === WebSocket.OPEN && ready) {
       ws.send(JSON.stringify({ type: 'input', data: seq }))
       return true
@@ -692,11 +768,21 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
     }
     const shown = keyRowShown({ toggled: keysChoice, composerFocused, keysFocused: !keys.hidden && keyControl(document.activeElement), waiting, ended })
     keys.hidden = !shown
-    keyBar.setEnabled(ready && !ended)
+    keyBar.setEnabled(ready && !ended && mayType())
     if (!shown) keyBar.reset()
     keysToggle.setAttribute('aria-expanded', String(shown))
     requestAnimationFrame(markKeyOverflow)
   }
+  // Touch keys deliberately retain composer focus, so a tap can arrive while
+  // Send still owns focus and the composer's blur timer is counting down.
+  // Using the visible bar is an explicit choice to keep it open.
+  keys.addEventListener('pointerdown', () => {
+    if (keys.hidden) return
+    if (blurTimer) clearTimeout(blurTimer)
+    blurTimer = null
+    keysChoice = true
+    paintKeys()
+  }, { signal, capture: true })
   keysToggle.addEventListener(
     'click',
     () => {
@@ -766,7 +852,7 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
 
   /* ------------------------------------------------------------- composer */
 
-  const DRAFT = `stoke.draft.${ptyId}`
+  const DRAFT = `stoke.draft.${opts.remote ? `${opts.remote.device}.` : ''}${ptyId}`
   input.value = sessionStorage.getItem(DRAFT) ?? ''
   const grow = (): void => {
     input.style.height = 'auto'
@@ -775,7 +861,7 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
     // to measure while detached (scrollHeight 0): the CSS min-height stands.
     const border = input.offsetHeight - input.clientHeight
     if (input.scrollHeight > 0) input.style.height = `${Math.min(input.scrollHeight + border, 132)}px`
-    send.disabled = !input.value.trim()
+    send.disabled = !input.value.trim() || (!!opts.remote && (!mayType() || !ready || ended))
   }
   input.addEventListener(
     'input',
@@ -841,6 +927,13 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
   const submit = (): void => {
     const value = input.value
     if (!value.trim() || ended) return
+    if (opts.remote && value.length > REMOTE_DEVICE_SUBMIT_MAX) { toast('That message is too long. Send it in smaller parts.', 'error'); return }
+    // A relay is scoped to the current, approved connection. Keep an unsent
+    // draft in place; it must never reach a later reconnect or permission grant.
+    if (opts.remote && (!mayType() || !ready || ws?.readyState !== WebSocket.OPEN)) {
+      toast('Not sent. Wait for control of this session, then send again.', 'error')
+      return
+    }
     /*
      * /voice is answered here, never sent on: the CLI would open the
      * microphone of the computer running it — a machine nobody is sitting at
@@ -852,10 +945,13 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
       toggleVoice()
       return
     }
-    const r = submitText(sendState, value, Date.now())
-    sendState = r.state
-    // {type:'submit'} — the server writes the text and Enter apart (PX-1, gotcha 85).
-    if (r.send !== null) ws?.send(JSON.stringify({ type: 'submit', text: r.send }))
+    if (opts.remote) ws!.send(JSON.stringify({ type: 'submit', text: value }))
+    else {
+      const r = submitText(sendState, value, Date.now())
+      sendState = r.state
+      // {type:'submit'} — the server writes the text and Enter apart (PX-1, gotcha 85).
+      if (r.send !== null) ws?.send(JSON.stringify({ type: 'submit', text: r.send }))
+    }
     paintQueued()
     input.value = ''
     sessionStorage.removeItem(DRAFT)
@@ -916,9 +1012,10 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
           levelFill.style.transform = `scaleX(${level.toFixed(3)})`
         }
       })
+  let voiceGeneration = 0
   const setMic = (state: 'idle' | 'recording' | 'working'): void => {
     mic.dataset.state = state
-    mic.disabled = state === 'working'
+    mic.disabled = state === 'working' || (!!opts.remote && (!mayType() || !ready || ended))
     composer.dataset.recording = state === 'recording' ? 'true' : ''
     input.placeholder = state === 'recording' ? 'Listening…' : state === 'working' ? 'Transcribing…' : 'Message…'
   }
@@ -929,9 +1026,12 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
   /** Stop, transcribe, and add the words to the composer. Both gestures end here. */
   const stopAndInsert = async (): Promise<void> => {
     if (!recorder?.recording()) return
+    if (opts.remote && (!mayType() || !ready || ended)) { recorder.cancel(); setMic('idle'); return }
+    const generation = voiceGeneration
     setMic('working')
     try {
       const text = await recorder.finish()
+      if (opts.remote && generation !== voiceGeneration) return
       setMic('idle')
       if (text) {
         input.value = input.value ? `${input.value.replace(/\s*$/, '')} ${text}` : text
@@ -939,6 +1039,7 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
         input.dispatchEvent(new Event('input'))
       }
     } catch (err) {
+      if (opts.remote && generation !== voiceGeneration) return
       setMic('idle')
       // A toast, never the placeholder: that clipped the message at 60
       // characters and left an internal URL in the field (PX-20).
@@ -955,6 +1056,7 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
   let pressed = false
   const begin = async (e: Event): Promise<void> => {
     e.preventDefault()
+    if (opts.remote && (!mayType() || !ready || ended)) return
     if (!recorder || recorder.recording()) return
     pressed = true
     try {
@@ -1065,6 +1167,8 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
     return step
   }
   const setVoice = (on: boolean): void => {
+    if (on && opts.remote && (!mayType() || !ready || ended)) return
+    if (!on && opts.remote) voiceGeneration++
     voiceOn = on
     clearHold()
     hold = SPACE_IDLE
@@ -1123,6 +1227,25 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
   )
   signal.addEventListener('abort', () => setVoice(false))
 
+  function paintRemoteControls(): void {
+    if (!opts.remote) return
+    const writable = mayType() && ready && !ended
+    if (!writable) {
+      voiceGeneration++
+      if (voiceOn) setVoice(false)
+      pressed = false
+      recorder?.cancel()
+      if (recorder) setMic('idle')
+    }
+    input.disabled = !writable
+    send.disabled = !writable || !input.value.trim()
+    mic.disabled = !writable || mic.dataset.state === 'working'
+    term.options.disableStdin = !writable
+    retryDevice.hidden = !deviceState || !['refused', 'lost'].includes(deviceState.state)
+    linkStrip.dataset.state = deviceState?.state ?? 'connecting'
+    if (!writable) keyBar.reset()
+  }
+
   /* ---------------------------------------------------------------- stop */
 
   stopBtn.addEventListener(
@@ -1140,7 +1263,7 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
     const code = exitCode !== null && exitCode !== 0 ? ` (exit ${exitCode})` : ''
     const cwd = row?.cwd ?? pending?.cwd
     const sessionId = row?.sessionId
-    const canResume = Boolean(cwd && sessionId && (!row || row.cli === 'claude') && !row?.host)
+    const canResume = !opts.remote && Boolean(cwd && sessionId && (!row || row.cli === 'claude') && !row?.host)
     const resume = el('button', { type: 'button', class: 'btn', 'data-variant': 'primary' }, 'Resume conversation')
     const backBtn = el('button', { type: 'button', class: 'btn' }, 'Back to sessions')
     backBtn.addEventListener('click', opts.onBack)
@@ -1182,7 +1305,7 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
   moreBtn.addEventListener(
     'click',
     () => {
-      const sheet = openSheet({ title: 'Session' })
+      const sheet = openSheet({ title: opts.remote ? `Session on ${targetName()}` : 'Session' })
       const size = el('output', { class: 'font-size', 'aria-live': 'polite' }, `${userFont}px`)
       const setFont = (n: number): void => {
         userFont = Math.max(9, Math.min(20, n))
@@ -1197,7 +1320,7 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
       const items: HTMLElement[] = [
         el('div', { class: 'menu-row' }, el('span', { class: 'menu-label' }, 'Text size'), el('div', { class: 'stepper' }, smaller, size, larger))
       ]
-      if (!opts.wide) {
+      if (!opts.wide && mayResize()) {
         const current = layout()
         const seg = (id: 'fit' | 'desktop', label: string): HTMLButtonElement => {
           const b = el('button', { type: 'button', class: 'seg-btn', 'aria-pressed': String(current === id) }, label)
@@ -1217,8 +1340,8 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
               'p',
               { class: 'menu-note' },
               current === 'fit'
-                ? `Fitted: the terminal on ${machineName()} is resized to this screen while you watch, and goes back when you leave.`
-                : `Showing the desktop's own ${desktop.cols} columns. Fit to phone resizes the terminal on ${machineName()} while you watch.`
+                ? `Fitted: the terminal on ${targetName()} is resized to this screen while you watch, and goes back when you leave.`
+                : `Showing the desktop's own ${desktop.cols} columns. Fit to phone resizes the terminal on ${targetName()} while you watch.`
             )
           )
         )
@@ -1240,13 +1363,14 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
           )
         })
       )
-      if (!ended) {
-        items.push(action('Send or download files…', 'folder', () => openSessionFiles({
+      items.push(action('Devices', 'devices', () => { location.hash = '#/devices' }))
+      if (!ended && mayType()) {
+        if (!opts.remote) items.push(action('Send or download files…', 'folder', () => openSessionFiles({
           ptyId, destination: row?.host ?? machineName(), ssh: !!row?.host, signal,
           insert: (path) => { input.value += `${input.value && !/\s$/.test(input.value) ? ' ' : ''}${path}`; input.dispatchEvent(new Event('input')); input.focus() }
         })))
         items.push(action('Interrupt (ctrl-c)', 'stop', () => write('\x03')))
-        if (!row || row.cli === 'claude') {
+        if (!opts.remote && (!row || row.cli === 'claude')) {
           items.push(
             action(
               'End session…',
@@ -1280,12 +1404,19 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
     ws = null
     previous?.close()
     ready = false
+    if (opts.remote) {
+      deviceState = null
+      paintRemoteControls()
+      paintLink()
+      keyBar.setEnabled(false)
+    }
     sendState = sendLost(sendState)
     paintQueued()
     linkStrip.hidden = false
     backoff = 1000
     connect()
   }
+  retryDevice.addEventListener('click', reconnect, { signal })
   let hiddenAt: number | null = null
   window.addEventListener('online', () => {
     if (!ws || ws.readyState !== WebSocket.OPEN) reconnect()
@@ -1307,6 +1438,7 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
 
   paintHeader()
   paintKeys()
+  paintRemoteControls()
   connect()
 
   const destroy = (): void => {

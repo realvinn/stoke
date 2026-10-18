@@ -43,6 +43,7 @@ import {
   type DeviceKeys
 } from '../src/main/hub/crypto.ts'
 import { HubRemote, type RelaySocket, type RemoteContext } from '../src/main/hub/remote.ts'
+import { REMOTE_DEVICE_INPUT_MAX, REMOTE_DEVICE_SUBMIT_MAX, type RemoteDeviceState } from '../src/shared/remoteDevices.ts'
 import { answerChatsRoute, matchedOnlyInKeys, sharedChats, type ChatIndexAccess } from '../src/main/hub/chatShare.ts'
 import { keyShapedQuery, keyShapedRun, redactKeyShaped } from '../src/shared/keyShaped.ts'
 import { redactSecrets } from '../src/main/chatIndex/parse.ts'
@@ -1035,6 +1036,83 @@ async function served(hostM: Machine, guestM: Machine): Promise<string> {
   if (ask && ask !== 'open') await hostM.remote.answer(ask.id, 'once')
   await until(() => tabOf(guestM, tab)?.state === 'open' && guestM.frames.some((f) => f.tab === tab && f.frame.type === 'attached'))
   return tab
+}
+
+console.log('\nthe phone website reaches other devices through independently owned session relays')
+{
+  const hostM = machine(A)
+  const guestM = machine(B)
+  hostM.sessions = [stubRow()]
+  hostM.sharing = true
+  for (const m of [hostM, guestM]) { m.remote.onOnline([A.id, B.id]); m.remote.presenceOpened() }
+  await until(() => guestM.remote.view().machines[0]?.status?.sessions.length)
+  const states: RemoteDeviceState[] = []
+  const frames: RemoteTabFrame[] = []
+  let closed = 0
+  const sink = { state: (s: RemoteDeviceState) => states.push(s), frame: (f: RemoteTabFrame) => frames.push(f), close: () => { closed++ } }
+  check('an unknown device or unadvertised session cannot open a website relay', [guestM.remote.openDevice(X.id, 'pty-a1', sink).ok, guestM.remote.openDevice(A.id, 'pty-other', sink).ok], [false, false])
+  const desktop = await served(hostM, guestM)
+  const desktopFrames = guestM.frames.length
+  const opened = guestM.remote.openDevice(A.id, 'pty-a1', sink)
+  ok('the same session can open independently in a website', opened.ok)
+  if (opened.ok) {
+    const c = opened.connection
+    check('nothing typed while connecting is queued', [c.input('offline-input'), c.submit('offline-submit'), c.resize(90, 30)], [false, false, false])
+    await until(() => frames.some((f) => f.type === 'attached'))
+    check('website state names the device and session with the effective capabilities', states.at(-1) && [states.at(-1)?.state, states.at(-1)?.deviceLabel, states.at(-1)?.title, states.at(-1)?.mode, states.at(-1)?.sizes, states.at(-1)?.typeOnly], ['open', 'Studio', 'Stub session', 'full', true, true])
+    check('website relays never enter the desktop tab list or desktop frame stream', [guestM.remote.view().tabs.map((t) => t.id), guestM.frames.length], [[desktop], desktopFrames])
+    const canary = 'website-only-relay-canary'
+    check('raw Shift+Left and text submit use the existing phone frames', [c.input('\x1b[1;2D'), c.submit(canary), c.submit('dictation', false), c.resize(111, 37)], [true, true, true, true])
+    await until(() => hostM.submits.length === 2 && hostM.resizes.length === 1 && frames.some((f) => f.type === 'data'))
+    check('the host receives a single paced submit with its own Enter flag', hostM.submits, [{ ptyId: 'pty-a1', text: canary, enter: true }, { ptyId: 'pty-a1', text: 'dictation', enter: false }])
+    check('website raw keys and resize reach only the chosen session', [hostM.ptyInput, hostM.resizes], [['\x1b[1;2D'], [{ ptyId: 'pty-a1', cols: 111, rows: 37, force: true }]])
+    check('empty, oversized and malformed data are refused before the channel', [c.input(''), c.input('x'.repeat(REMOTE_DEVICE_INPUT_MAX + 1)), c.submit('x'.repeat(REMOTE_DEVICE_SUBMIT_MAX + 1)), c.resize(1001, 20), c.resize(80.5, 20)], [false, false, false, false, false])
+    ok('the relay carries no website prompt in cleartext', !hubBytes.some((bytes) => bytes.includes(Buffer.from(canary))))
+    // Only the browser's newest relay is dropped; the desktop remains attached.
+    const relay = relays.get(lastRelay)
+    relay?.host.close(1006, 'fixture network loss')
+    await until(() => states.at(-1)?.state === 'reconnecting')
+    check('a lost website link refuses typing until a fresh attach', c.input('must-not-arrive'), false)
+    await until(() => frames.filter((f) => f.type === 'attached').length === 2)
+    check('the website reconnects to a fresh replay, without queued keys', [states.at(-1)?.state, frames.filter((f) => f.type === 'attached').length, hostM.ptyInput.includes('must-not-arrive')], ['open', 2, false])
+    c.close()
+    await until(() => hostM.remote.view().guests.length === 1)
+    check('closing the website leaves the desktop relay and host PTY alive', [closed, tabOf(guestM, desktop)?.state, hostM.remote.view().guests.length, c.input('closed')], [1, 'open', 1, false])
+  }
+  const again = guestM.remote.openDevice(A.id, 'pty-a1', sink)
+  if (again.ok) {
+    await until(() => states.at(-1)?.state === 'open')
+    guestM.active = [B]
+    guestM.remote.chainChanged()
+    check('removing a device ends its website access immediately', [states.at(-1)?.state, again.connection.input('after-revoke')], ['lost', false])
+  }
+  guestM.remote.reset(); hostM.remote.reset()
+  check('sign-out closes every owned website socket', closed, 2)
+}
+for (const test of ['view', 'older', 'deny'] as const) {
+  const hostM = machine(A, test === 'older' ? { olderHost: true } : {})
+  const guestM = machine(B)
+  hostM.sessions = [stubRow()]; hostM.sharing = true
+  if (test !== 'deny') hostM.grants = { [B.id]: { mode: test === 'view' ? 'view' : 'full', label: 'Laptop', at: clock } }
+  for (const m of [hostM, guestM]) { m.remote.onOnline([A.id, B.id]); m.remote.presenceOpened() }
+  await until(() => guestM.remote.view().machines[0]?.status?.sessions.length)
+  const states: RemoteDeviceState[] = []
+  const opened = guestM.remote.openDevice(A.id, 'pty-a1', { state: (s) => states.push(s), frame: () => {}, close: () => {} })
+  ok(`website ${test} fixture opens`, opened.ok)
+  if (opened.ok) {
+    const c = opened.connection
+    if (test === 'deny') {
+      const ask = await until(() => hostM.remote.view().asks[0])
+      if (ask) await hostM.remote.answer(ask.id, 'deny')
+      await until(() => states.at(-1)?.state === 'refused')
+      check('host approval is still required and a denial types nothing', [states.at(-1)?.state, c.input('denied'), c.submit('denied'), hostM.ptyInput.length, hostM.submits.length], ['refused', false, false, 0, 0])
+    } else {
+      await until(() => states.at(-1)?.state === 'open')
+      if (test === 'view') check('view-only website connections cannot type, submit or resize', [states.at(-1)?.mode, c.input('view'), c.submit('view'), c.resize(80, 24)], ['view', false, false, false])
+      else check('an older host takes normal submissions but no type-only dictation or resize', [c.submit('send', true), c.submit('keep', false), c.resize(80, 24)], [true, false, false])
+    }
+  }
+  guestM.remote.reset(); hostM.remote.reset()
 }
 
 console.log('\na device removed from the chain while its relay is open')

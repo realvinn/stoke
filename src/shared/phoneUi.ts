@@ -581,6 +581,15 @@ export function desktopFont(width: number, cols: number, ratio: number, userFont
   return fontToFit(width, cols, ratio, Math.min(DESKTOP_MIN_FONT, userFont), userFont)
 }
 
+/** Follow occupied terminal rows, rather than empty rows below a short prompt. */
+export function terminalFollowTop(f: {
+  lastRow: number; rows: number; cellHeight: number; padding: number; viewport: number; scrollHeight: number
+}): number {
+  const usedRows = Math.min(f.rows, Math.max(1, f.lastRow + 1))
+  const max = Math.max(0, f.scrollHeight - f.viewport)
+  return Math.min(max, Math.max(0, Math.ceil(usedRows * f.cellHeight + f.padding - f.viewport)))
+}
+
 /**
  * The `scrollLeft` that brings a column into a sideways-scrolling view, or the
  * current one when it is already in it. `columnPx` is where the column starts,

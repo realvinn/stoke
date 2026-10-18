@@ -43,6 +43,7 @@
  * No TypeScript parameter properties (strip-only mode).
  */
 import { stableJson } from '../../shared/hub/codec.ts'
+import { REMOTE_DEVICE_INPUT_MAX, REMOTE_DEVICE_SUBMIT_MAX, type RemoteDeviceState } from '../../shared/remoteDevices.ts'
 import { isGrid } from '../../shared/sizeClaim.ts'
 import { CHAT_SEARCH_MIN_CHARS } from '../../shared/chatIndex.ts'
 import { reconnectDelayMs, sealedStatusProblem, type PresenceClientFrame, type SealedStatus } from '../../shared/hub/protocol.ts'
@@ -179,6 +180,20 @@ export interface RemoteMachineDeps {
   chatRedactOn?(): boolean
 }
 
+/** One browser owns one relay; it cannot address or close a desktop tab. */
+export interface RemoteDeviceSink {
+  state(state: RemoteDeviceState): void
+  frame(frame: RemoteTabFrame): void
+  close(): void
+}
+
+export interface RemoteDeviceConnection {
+  input(data: string): boolean
+  submit(text: string, enter?: boolean): boolean
+  resize(cols: number, rows: number): boolean
+  close(): void
+}
+
 export interface HubRemoteDeps extends RemoteMachineDeps {
   now(): number
   /** Null while this device is not signed in and in the vault. */
@@ -272,6 +287,9 @@ interface GuestTab {
   mode: RelayMode | null
   /** The host's last `ready` said `typeOnly` under a full grant: it takes dictation (`type`). */
   typeOnly: boolean
+  /** Phone browser connections are private, independently owned guest tabs. */
+  sink?: RemoteDeviceSink
+  sinkState?: string
 }
 
 /** Why a guest's search or open of one machine has nothing: its state, this machine's sentence, and the host's code if it gave one. */
@@ -403,7 +421,7 @@ export class HubRemote {
     v.available = ctx !== null
     const label = (id: string): string => ctx?.active.find((a) => a.id === id)?.label ?? this.statuses[id]?.name ?? 'another device'
     if (ctx) v.machines = otherMachines({ me: ctx.me.id, active: ctx.active, online: this.online, statuses: this.statuses })
-    v.tabs = [...this.tabs.values()].map((t) => ({
+    v.tabs = [...this.tabs.values()].filter((t) => !t.sink).map((t) => ({
       id: t.id,
       device: t.device,
       deviceLabel: ctx?.active.find((a) => a.id === t.device)?.label ?? this.statuses[t.device]?.name ?? t.label,
@@ -453,6 +471,19 @@ export class HubRemote {
   }
 
   private emit(): void {
+    for (const t of [...this.tabs.values()]) {
+      if (!t.sink || t.closed) continue
+      const state: RemoteDeviceState = {
+        type: 'remote-state', state: t.state, message: t.message, mode: t.mode,
+        sizes: t.sizes, typeOnly: t.typeOnly,
+        deviceLabel: this.nameOf(t.device) || t.label,
+        title: t.title, project: t.project, session: t.session
+      }
+      const sig = JSON.stringify(state)
+      if (sig === t.sinkState) continue
+      t.sinkState = sig
+      try { t.sink.state(state) } catch (err) { this.d.log('hub remote: browser state failed', err) }
+    }
     try {
       this.d.emit(this.view())
     } catch (err) {
@@ -617,12 +648,12 @@ export class HubRemote {
   /* ======================================================== guest: remote tabs */
 
   /** Open one of another machine's sessions in a tab here. */
-  open(device: string, ptyId: string): { ok: true; tab: string } | { ok: false; message: string } {
+  open(device: string, ptyId: string, sink?: RemoteDeviceSink): { ok: true; tab: string } | { ok: false; message: string } {
     const ctx = this.d.context()
     if (!ctx) return { ok: false, message: 'Sign in to your hub and join its vault on this computer first.' }
     if (device === ctx.me.id || !ctx.active.some((a) => a.id === device)) return { ok: false, message: 'That machine is not one of your devices.' }
     if (!isPtyId(ptyId)) return { ok: false, message: 'That is not a session.' }
-    for (const t of this.tabs.values()) if (t.device === device && t.ptyId === ptyId && !t.closed) return { ok: true, tab: t.id }
+    if (!sink) for (const t of this.tabs.values()) if (!t.sink && t.device === device && t.ptyId === ptyId && !t.closed) return { ok: true, tab: t.id }
     const summary = this.statuses[device]?.sessions.find((s) => s.ptyId === ptyId)
     const tab: GuestTab = {
       id: `rt-${randomB64u(9)}`,
@@ -645,12 +676,40 @@ export class HubRemote {
       session: null,
       sizes: false,
       mode: null,
-      typeOnly: false
+      typeOnly: false,
+      ...(sink ? { sink } : {})
     }
     this.tabs.set(tab.id, tab)
     void this.connect(tab)
     this.emit()
     return { ok: true, tab: tab.id }
+  }
+
+  /** The authenticated website may open only advertised sessions of online, approved devices. */
+  openDevice(device: string, ptyId: string, sink: RemoteDeviceSink): { ok: true; connection: RemoteDeviceConnection } | { ok: false; message: string } {
+    const machine = this.view().machines.find((m) => m.id === device)
+    if (!machine) return { ok: false, message: 'That device is not online and approved for this Stoke account.' }
+    if (!machine.status?.open) return { ok: false, message: `${machine.label} is not sharing its sessions. Enable session sharing in Stoke there.` }
+    if (!machine.status.sessions.some((s) => s.ptyId === ptyId)) return { ok: false, message: 'That session is no longer shared by this device.' }
+    if ([...this.tabs.values()].filter((t) => t.sink && !t.closed).length >= HOSTED_MAX) return { ok: false, message: 'Too many website sessions are open on this computer. Close one and try again.' }
+    const opened = this.open(device, ptyId, sink)
+    if (!opened.ok) return opened
+    const id = opened.tab
+    const send = (frame: { type: string; [key: string]: unknown }): boolean => {
+      const t = this.tabs.get(id)
+      if (!t || t.closed || t.state !== 'open' || t.mode !== 'full' || !t.channel) return false
+      return t.channel.send({ t: 'ws-msg', id: PTY_SOCKET, data: JSON.stringify(frame) })
+    }
+    return { ok: true, connection: {
+      input: (data) => typeof data === 'string' && data.length > 0 && data.length <= REMOTE_DEVICE_INPUT_MAX && send({ type: 'input', data }),
+      submit: (text, enter = true) => {
+        const t = this.tabs.get(id)
+        if (typeof text !== 'string' || text.length === 0 || text.length > REMOTE_DEVICE_SUBMIT_MAX || typeof enter !== 'boolean' || (!enter && !t?.typeOnly)) return false
+        return send({ type: 'submit', text, enter })
+      },
+      resize: (cols, rows) => this.resize(id, cols, rows),
+      close: () => this.close(id)
+    } }
   }
 
   /** Keystrokes typed into a remote tab. */
@@ -733,6 +792,7 @@ export class HubRemote {
     if (ch?.state === 'open') ch.send({ t: 'ws-close', id: PTY_SOCKET, code: 1000, reason: 'closed' })
     ch?.close('the tab was closed')
     this.tabs.delete(tabId)
+    try { t.sink?.close() } catch (err) { this.d.log('hub remote: browser close failed', err) }
     this.emit()
   }
 
@@ -844,7 +904,8 @@ export class HubRemote {
           return
         }
         if (!msg || typeof msg !== 'object' || typeof (msg as { type?: unknown }).type !== 'string') return
-        this.d.frame(t.id, msg as RemoteTabFrame)
+        if (t.sink) t.sink.frame(msg as RemoteTabFrame)
+        else this.d.frame(t.id, msg as RemoteTabFrame)
         if ((msg as { type: string }).type === 'exit') {
           t.state = 'ended'
           t.message = typeof (msg as { reason?: unknown }).reason === 'string' ? ((msg as { reason: string }).reason) : 'The session ended on the other machine.'

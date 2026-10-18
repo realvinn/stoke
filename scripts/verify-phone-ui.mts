@@ -28,6 +28,7 @@ import {
   desktopFont,
   fontToFit,
   scrollToColumn,
+  terminalFollowTop,
   BROWSE_LABEL,
   breadcrumb,
   newFolderHint,
@@ -447,6 +448,13 @@ check('a user who chose a smaller Text size keeps it', desktopFont(382, 100, 0.6
 check('the cursor already in view does not move the scroll', scrollToColumn(100, 6, 382, 0), 0)
 check('a cursor past the right edge is brought to the middle', scrollToColumn(540, 6, 382, 0), 352)
 check('never a negative scroll', scrollToColumn(0, 6, 382, 200), 0)
+const follow = (lastRow: number, viewport = 227): number => terminalFollowTop({ lastRow, rows: 24, cellHeight: 13, padding: 12, viewport, scrollHeight: 324 })
+check('short prompts stay visible when terminal controls cover unused grid rows', follow(3), 0)
+check('a real full-screen footer still follows the bottom of its terminal', follow(23), 97)
+check('a low cursor follows its row without scrolling through empty trailing rows', follow(18), 32)
+check('opening the soft keyboard keeps a four-line prompt at the top', follow(3, 144), 0)
+check('a cursor on a blank row is still kept in view', follow(10, 150), 5)
+check('an out-of-grid row cannot follow beyond the real terminal bottom', follow(99), 97)
 
 /* ------------------------------------------------------------------ */
 console.log('\na send while disconnected is queued, never lost (PX-3)')

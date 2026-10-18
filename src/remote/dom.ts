@@ -50,6 +50,7 @@ const ICONS: Record<string, string> = {
   chevron: 'M9 18l6-6-6-6',
   folder: 'M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.7-.9l-.8-1.2A2 2 0 0 0 7.9 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2z',
   terminal: 'M4 17l6-6-6-6M12 19h8',
+  devices: 'M3 4h15v11H3zM7 19h7M10.5 15v4M18 9h4v12h-7v-4',
   keyboard: 'M2 6h20v12H2zM6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10',
   copy: 'M9 9h11v11H9zM5 15H4V4h11v1',
   pin: 'M12 17v5M9 10.8V4h6v6.8l3 3.2H6z',

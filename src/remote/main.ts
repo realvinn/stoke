@@ -8,6 +8,7 @@ import { mountSessionList, type SessionList } from './list'
 import { openNewSession } from './newSession'
 import { listenForNotificationTaps, notifyButton, resyncNotifications } from './notify'
 import { mountSession } from './session'
+import { mountDevices } from './devices'
 import { store } from './store'
 
 /**
@@ -29,6 +30,8 @@ const wideQuery = matchMedia('(min-width: 1024px)')
 type Route =
   | { name: 'home' }
   | { name: 'session'; ptyId: string }
+  | { name: 'devices' }
+  | { name: 'device-session'; device: string; ptyId: string }
   | { name: 'history' }
   | { name: 'project'; cwd: string }
   | { name: 'transcript'; id: string; cwd: string }
@@ -36,6 +39,9 @@ type Route =
 function parseRoute(hash: string): Route {
   const parts = hash.replace(/^#\/?/, '').split('/').map((p) => decodeURIComponent(p))
   if (parts[0] === 's' && parts[1]) return { name: 'session', ptyId: parts[1] }
+  if (parts[0] === 'devices') return parts[1] && parts[2]
+    ? { name: 'device-session', device: parts[1], ptyId: parts[2] }
+    : { name: 'devices' }
   if (parts[0] === 'history') {
     if (parts[1] === 'p' && parts[2]) return { name: 'project', cwd: parts[2] }
     if (parts[1] === 't' && parts[2] && parts[3]) return { name: 'transcript', id: parts[2], cwd: parts[3] }
@@ -64,7 +70,8 @@ function brand(): HTMLElement {
 function topbarActions(): HTMLElement[] {
   const create = newButton('New session')
   create.addEventListener('click', () => openNewSession())
-  return [notifyButton(), create]
+  const devices = el('a', { class: 'icon-btn', href: '#/devices', 'aria-label': 'Devices', title: 'Devices' }, icon('devices', 20))
+  return [devices, notifyButton(), create]
 }
 
 /**
@@ -207,6 +214,10 @@ function mountRoute(route: Route, wide: boolean): Mounted {
   switch (route.name) {
     case 'session':
       return mountSession(route.ptyId, { wide, onBack: () => (location.hash = '#/') })
+    case 'devices':
+      return mountDevices({ wide })
+    case 'device-session':
+      return mountSession(route.ptyId, { wide, remote: { device: route.device }, onBack: () => (location.hash = '#/devices') })
     case 'history':
       return wide ? mountPlaceholder('recent') : mountHome('recent')
     case 'project':
@@ -347,7 +358,7 @@ function render(): void {
     app.replaceChildren(current.root)
   }
   currentKey = key
-  if (route.name !== 'session') document.title = 'Stoke'
+  if (route.name !== 'session' && route.name !== 'device-session') document.title = route.name === 'devices' ? 'Devices · Stoke' : 'Stoke'
 }
 
 function showConnect(): void {

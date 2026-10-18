@@ -2191,6 +2191,13 @@ const remoteState = async (): Promise<RemoteState> => {
  */
 function remoteDeps(): RemoteDeps {
   return {
+    devices: {
+      view: () => {
+        const view = hubClient?.remoteView()
+        return { available: view?.available ?? false, machines: view?.machines ?? [] }
+      },
+      open: (device, ptyId, sink) => hubClient?.remoteDevice(device, ptyId, sink) ?? { ok: false, message: 'Sign in to Stoke Hub and approve this computer first.' }
+    },
     ptys: () => ptys,
     watcher: () => watcher,
     listProjects: () => listProjects(getSettings()),
