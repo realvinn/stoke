@@ -197,12 +197,14 @@ export function keyRowShown(s: {
   /** The toggle's state: null while untouched, else what it was set to. */
   toggled: boolean | null
   composerFocused: boolean
+  /** Keyboard navigation may move focus from the composer into its key bar. */
+  keysFocused?: boolean
   waiting: boolean
   ended: boolean
 }): boolean {
   if (s.ended) return false
   if (s.toggled !== null) return s.toggled
-  return !s.waiting && s.composerFocused
+  return !s.waiting && (s.composerFocused || s.keysFocused === true)
 }
 
 export type PillTone = 'waiting' | 'busy' | 'idle' | 'ended' | 'unknown'

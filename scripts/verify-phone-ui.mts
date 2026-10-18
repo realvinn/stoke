@@ -67,6 +67,7 @@ import {
   type ResizeInput
 } from '../src/shared/phoneUi.ts'
 import type { PhoneAgentChoices } from '../src/shared/remotePhone.ts'
+import { TERMINAL_FUNCTION_KEYS, terminalKeySequence, type TerminalKeyModifiers } from '../src/shared/terminalKeys.ts'
 
 let failures = 0
 
@@ -213,6 +214,8 @@ const dock = (over: Partial<Parameters<typeof keyRowShown>[0]> = {}): boolean =>
   keyRowShown({ toggled: null, composerFocused: false, waiting: false, ended: false, ...over })
 check('at rest the key row is in: the composer alone', dock(), false)
 check('typing brings it out: a soft keyboard has no esc, arrows or shift-tab', dock({ composerFocused: true }), true)
+check('keyboard focus moving from composer to its key bar keeps controls available', dock({ keysFocused: true }), true)
+check('an ended session has no keyboard controls even while a key had focus', dock({ ended: true, keysFocused: true }), false)
 check(
   'a waiting prompt leaves it in: the answer tray replaced it (0d17f6b), and both is a band too many',
   [dock({ waiting: true }), dock({ waiting: true, composerFocused: true })],
@@ -878,6 +881,46 @@ check('never past 21:1', phoneTermContrast(99), 21)
     ['user:write three files', 'Ran 1 tool · 1 declined', 'Stopped — tool declined']
   )
   await rm(dir, { recursive: true, force: true })
+}
+
+/*
+ * On-screen controls must reach byobu and Codex as terminal keys. These are
+ * wire vectors, not labels or a second implementation of the encoder.
+ */
+console.log('\nremote terminal keys: function keys and modifiers')
+{
+  const plain = ['\x1bOP', '\x1bOQ', '\x1bOR', '\x1bOS', '\x1b[15~', '\x1b[17~', '\x1b[18~', '\x1b[19~', '\x1b[20~', '\x1b[21~', '\x1b[23~', '\x1b[24~']
+  const shifted = ['\x1b[1;2P', '\x1b[1;2Q', '\x1b[1;2R', '\x1b[1;2S', '\x1b[15;2~', '\x1b[17;2~', '\x1b[18;2~', '\x1b[19;2~', '\x1b[20;2~', '\x1b[21;2~', '\x1b[23;2~', '\x1b[24;2~']
+  check('all twelve function keys keep their terminal identities', TERMINAL_FUNCTION_KEYS.map((key) => terminalKeySequence(key)), plain)
+  check('Shift+F1 through Shift+F12 use XTerm modifier parameters', TERMINAL_FUNCTION_KEYS.map((key) => terminalKeySequence(key, { shift: true })), shifted)
+  check('byobu F2, F3, F4, F6 and F9 arrive as function keys', ['F2', 'F3', 'F4', 'F6', 'F9'].map((key) => terminalKeySequence(key)), ['\x1bOQ', '\x1bOR', '\x1bOS', '\x1b[17~', '\x1b[20~'])
+  check('Codex Shift+Left is CSI 1;2D, including in cursor application mode', [terminalKeySequence('ArrowLeft', { shift: true }), terminalKeySequence('ArrowLeft', { shift: true }, true)], ['\x1b[1;2D', '\x1b[1;2D'])
+
+  const modifierCases: ReadonlyArray<readonly [TerminalKeyModifiers, string]> = [
+    [{ shift: true }, '\x1b[1;2D'],
+    [{ alt: true }, '\x1b[1;3D'],
+    [{ shift: true, alt: true }, '\x1b[1;4D'],
+    [{ ctrl: true }, '\x1b[1;5D'],
+    [{ shift: true, ctrl: true }, '\x1b[1;6D'],
+    [{ alt: true, ctrl: true }, '\x1b[1;7D'],
+    [{ shift: true, alt: true, ctrl: true }, '\x1b[1;8D']
+  ]
+  check('every Shift/Ctrl/Alt chord has a distinct XTerm parameter', modifierCases.map(([modifiers]) => terminalKeySequence('ArrowLeft', modifiers)), modifierCases.map(([, sequence]) => sequence))
+  check('function-key parameters use the same combinations in both families', [terminalKeySequence('F2', { alt: true, ctrl: true }), terminalKeySequence('F6', { shift: true, ctrl: true }), terminalKeySequence('F12', { shift: true, alt: true, ctrl: true })], ['\x1b[1;7Q', '\x1b[17;6~', '\x1b[24;8~'])
+
+  const cursorKeys = ['ArrowUp', 'ArrowDown', 'ArrowRight', 'ArrowLeft', 'Home', 'End']
+  check('normal arrows and Home/End use CSI', cursorKeys.map((key) => terminalKeySequence(key)), ['\x1b[A', '\x1b[B', '\x1b[C', '\x1b[D', '\x1b[H', '\x1b[F'])
+  check('DECCKM switches only unmodified cursor keys to SS3', cursorKeys.map((key) => terminalKeySequence(key, {}, true)), ['\x1bOA', '\x1bOB', '\x1bOC', '\x1bOD', '\x1bOH', '\x1bOF'])
+  check('modified cursor keys keep CSI under DECCKM', cursorKeys.map((key) => terminalKeySequence(key, { ctrl: true }, true)), ['\x1b[1;5A', '\x1b[1;5B', '\x1b[1;5C', '\x1b[1;5D', '\x1b[1;5H', '\x1b[1;5F'])
+  check('editing keys keep their tilde family', ['Insert', 'Delete', 'PageUp', 'PageDown'].map((key) => terminalKeySequence(key)), ['\x1b[2~', '\x1b[3~', '\x1b[5~', '\x1b[6~'])
+  check('the on-screen editing keys can send Shift to the application', ['Insert', 'Delete', 'PageUp', 'PageDown'].map((key) => terminalKeySequence(key, { shift: true }, true)), ['\x1b[2;2~', '\x1b[3;2~', '\x1b[5;2~', '\x1b[6;2~'])
+
+  check('Tab and Shift+Tab retain completion and backward tab', [terminalKeySequence('Tab'), terminalKeySequence('Tab', { shift: true })], ['\t', '\x1b[Z'])
+  check('Enter, Escape and Backspace are one raw control each', ['Enter', 'Escape', 'Backspace'].map((key) => terminalKeySequence(key)), ['\r', '\x1b', '\x7f'])
+  check('Alt prefixes raw controls with Escape', ['Enter', 'Escape', 'Backspace'].map((key) => terminalKeySequence(key, { alt: true })), ['\x1b\r', '\x1b\x1b', '\x1b\x7f'])
+  check('unsupported Tab combinations are refused', [terminalKeySequence('Tab', { ctrl: true }), terminalKeySequence('Tab', { alt: true }), terminalKeySequence('Tab', { shift: true, ctrl: true, alt: true })], [null, null, null])
+  check('ambiguous Shift/Ctrl raw controls are refused', ['Enter', 'Escape', 'Backspace'].flatMap((key) => [terminalKeySequence(key, { shift: true }), terminalKeySequence(key, { ctrl: true }), terminalKeySequence(key, { shift: true, alt: true })]), Array(9).fill(null))
+  check('unknown keys cannot become malformed escape sequences', ['F0', 'F13', 'Left', '', 'constructor', 'toString'].map((key) => terminalKeySequence(key, { shift: true })), Array(6).fill(null))
 }
 
 console.log(failures ? `\n${failures} FAILED` : '\nall pass')

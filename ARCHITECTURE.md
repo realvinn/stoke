@@ -2232,6 +2232,11 @@ src/remote/       mobile web UI, built separately to out/remote. Vanilla TS on o
   session.ts        terminal, a two-line header (title; place, state, context), answer tray,
                     keys behind one toggle (`keyRowShown`), composer with the mic in its field
                     (queued sends), Fit to phone via decideResize (gotcha 87), ended banner
+  terminalKeyBar.ts  touch terminal controls: one-shot/locked/held Shift, Ctrl and Alt;
+                    visible arrows, F1–F12 and editing groups; bounded arrow repeat,
+                    guarded EOF and no queued offline keys. Session gates connection state,
+                    preserves toolbar focus and clears modifiers when hidden. Usage:
+                    docs/remote-keyboard.md
   newSession.ts, history.ts, connect.ts, dom.ts   the new-session sheet, Recent (`mountRecent`),
                     a project's sessions and read-back, the paste-your-link screen, the
                     builder/icons/sheets. The sheet's confirm step draws what the chosen agent
@@ -2284,6 +2289,9 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
   phoneUi.ts        the phone UI's decisions: sections, answer-option parsing, the resize
                     policy, the queued-send state, connect input, transcript folding.
                     verify:phone-ui
+  terminalKeys.ts   xterm-compatible F1–F12/navigation/modifier sequences, application cursor
+                    mode and explicit refusals for unsupported legacy combinations.
+                    verify:phone-ui covers concrete Byobu and Shift+Left sequences
   replayModes.ts    the DEC private modes in force at a point of a pty's output (alternate
                     screen, mouse protocol and encoding, cursor, focus, bracketed paste, 2031),
                     read as xterm reads them, so a replay that lost its front can set them

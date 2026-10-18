@@ -60,6 +60,7 @@ import { confirmSheet, el, explain, icon, iconButton, openSheet, toast } from '.
 import { rowTitle, screenLines, sendAnswer } from './list'
 import { store } from './store'
 import { openSessionFiles } from './files'
+import { mountTerminalKeys } from './terminalKeyBar'
 
 /** Filled by whoever starts a session, so the header is right before the first push. */
 export const pendingMeta = new Map<string, { cwd: string; project: string }>()
@@ -90,37 +91,6 @@ function cellRatio(fontFamily: string): number {
   ctx.font = `100px ${fontFamily}`
   return ctx.measureText('MMMMMMMMMM').width / 1000 || 0.6
 }
-
-/** A key the TUI needs and a phone keyboard lacks. */
-interface KeyDef {
-  label: string
-  aria: string
-  seq: string
-  wide?: boolean
-}
-
-/*
- * The first row is the whole vocabulary of answering a prompt and cycling the
- * permission mode; the rest sit behind "more" on a phone rather than off the
- * edge of a sideways scroller where nobody found them. esc and enter are
- * reject and accept on a permission prompt, so the arrows sit between them:
- * one mistap must not invert the answer.
- */
-const PRIMARY_KEYS: KeyDef[] = [
-  { label: 'esc', aria: 'Escape', seq: '\x1b' },
-  { label: '↑', aria: 'Up arrow', seq: '\x1b[A' },
-  { label: '↓', aria: 'Down arrow', seq: '\x1b[B' },
-  { label: 'enter', aria: 'Enter', seq: '\r' },
-  { label: '⇧tab', aria: 'Shift-Tab: cycle permission mode', seq: '\x1b[Z', wide: true }
-]
-const MORE_KEYS: KeyDef[] = [
-  { label: 'tab', aria: 'Tab', seq: '\t' },
-  { label: '←', aria: 'Left arrow', seq: '\x1b[D' },
-  { label: '→', aria: 'Right arrow', seq: '\x1b[C' },
-  { label: 'ctrl-c', aria: 'Control-C: interrupt', seq: '\x03' },
-  { label: 'ctrl-r', aria: 'Control-R: search history', seq: '\x12' },
-  { label: 'ctrl-l', aria: 'Control-L: clear screen', seq: '\x0c' }
-]
 
 const MODE_LABEL: Record<string, string> = {
   default: 'Ask',
@@ -223,7 +193,7 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
   const send = el('button', { type: 'button', class: 'send', 'aria-label': 'Send' }, icon('send', 20))
   // The mic sits inside the field, as a keyboard's own does: one control less on the row.
   const composer = el('div', { class: 'composer' }, keysToggle, el('div', { class: 'composer-field' }, input, mic), send)
-  const dockRow = el('div', { class: 'dock-row' }, keys, composer)
+  const dockRow = el('div', { class: 'dock-row has-terminal-keys' }, keys, composer)
   const dock = el('div', { class: 'dock' }, tray, queued, endedBox, dockRow)
 
   const root = el(
@@ -519,6 +489,7 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
     socket.addEventListener('close', (ev) => {
       if (ws !== socket) return
       ready = false
+      keyBar.setEnabled(false)
       sendState = sendLost(sendState)
       paintQueued()
       // A normal close after an exit frame is the end, not a dropped link
@@ -577,6 +548,7 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
         refreshTray()
       })
       ready = true
+      paintKeys()
       relayout('attach')
       const flushed = sendReady(sendState)
       sendState = flushed.state
@@ -684,70 +656,21 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
 
   /* ----------------------------------------------------------------- keys */
 
-  const write = (seq: string): void => {
-    if (ended) return
-    if (ws?.readyState === WebSocket.OPEN && ready) ws.send(JSON.stringify({ type: 'input', data: seq }))
-    else toast('Reconnecting — that key was not sent.', 'error')
-  }
-
-  const keyButton = (k: KeyDef): HTMLButtonElement =>
-    el(
-      'button',
-      {
-        type: 'button',
-        class: 'key',
-        'data-key': k.label,
-        'data-wide': k.wide ? 'true' : undefined,
-        'aria-label': k.aria,
-        onclick: () => write(k.seq),
-        // Keep the composer's focus (and the soft keyboard): the row is out because of it.
-        onmousedown: (e: Event) => e.preventDefault()
-      },
-      el('span', { class: 'key-main' }, k.label),
-      k.wide ? el('span', { class: 'key-sub' }, 'mode') : null
-    )
-
-  /*
-   * ctrl-d sends EOF, which on an empty prompt ends the session. It arms on the
-   * first tap and fires on the second (not a double-tap: that is a mistap).
-   */
-  const eof = el('button', { type: 'button', class: 'key key-eof', 'aria-label': 'Control-D: end of input. Tap twice.' }, 'ctrl-d')
-  let armed: ReturnType<typeof setTimeout> | null = null
-  let armedAt = 0
-  const disarm = (): void => {
-    if (armed) clearTimeout(armed)
-    armed = null
-    eof.classList.remove('armed')
-    eof.textContent = 'ctrl-d'
-  }
-  eof.addEventListener('click', () => {
-    if (armed) {
-      if (Date.now() - armedAt < 350) return
-      disarm()
-      write('\x04')
-      return
+  const write = (seq: string): boolean => {
+    if (ended) return false
+    if (ws?.readyState === WebSocket.OPEN && ready) {
+      ws.send(JSON.stringify({ type: 'input', data: seq }))
+      return true
     }
-    eof.classList.add('armed')
-    eof.textContent = 'ctrl-d?'
-    armedAt = Date.now()
-    armed = setTimeout(disarm, 3000)
+    toast('Reconnecting — that key was not sent.', 'error')
+    return false
+  }
+  const keyBar = mountTerminalKeys(keys, {
+    write,
+    applicationCursorMode: () => term.modes.applicationCursorKeysMode,
+    signal
   })
-  signal.addEventListener('abort', disarm)
-
-  const moreKeys = el('div', { class: 'keys-more', id: `more-${ptyId}` }, ...MORE_KEYS.map(keyButton), eof)
-  const moreToggle = el(
-    'button',
-    { type: 'button', class: 'key key-toggle', 'aria-expanded': 'false', 'aria-controls': moreKeys.id, 'aria-label': 'More keys' },
-    // Not the keyboard glyph: that is the composer's own toggle for this whole row now.
-    icon('more', 18)
-  )
-  moreToggle.addEventListener('click', () => {
-    const open = moreToggle.getAttribute('aria-expanded') !== 'true'
-    moreToggle.setAttribute('aria-expanded', String(open))
-    keys.dataset.more = String(open)
-  })
-  keys.append(el('div', { class: 'keys-main' }, ...PRIMARY_KEYS.map(keyButton), moreToggle), moreKeys)
-  for (const b of [moreToggle, eof, keysToggle]) b.addEventListener('mousedown', (e) => e.preventDefault(), { signal })
+  paintMode()
 
   /*
    * The key row: behind `keysToggle`, and out on its own while the composer has
@@ -759,6 +682,7 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
   let composerFocused = false
   let wasWaiting = false
   let blurTimer: ReturnType<typeof setTimeout> | null = null
+  const keyControl = (target: EventTarget | null): boolean => target instanceof Node && (keys.contains(target) || target === keysToggle)
   const paintKeys = (): void => {
     const waiting = dock.dataset.waiting === 'true'
     if (waiting !== wasWaiting) {
@@ -766,8 +690,10 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
       wasWaiting = waiting
       keysChoice = null
     }
-    const shown = keyRowShown({ toggled: keysChoice, composerFocused, waiting, ended })
+    const shown = keyRowShown({ toggled: keysChoice, composerFocused, keysFocused: !keys.hidden && keyControl(document.activeElement), waiting, ended })
     keys.hidden = !shown
+    keyBar.setEnabled(ready && !ended)
+    if (!shown) keyBar.reset()
     keysToggle.setAttribute('aria-expanded', String(shown))
     requestAnimationFrame(markKeyOverflow)
   }
@@ -779,6 +705,7 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
     },
     { signal }
   )
+  keysToggle.addEventListener('pointerdown', event => event.preventDefault(), { signal })
   input.addEventListener(
     'focus',
     () => {
@@ -789,6 +716,22 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
     },
     { signal }
   )
+  for (const control of [keys, keysToggle]) {
+    control.addEventListener('focusin', () => {
+      if (blurTimer) clearTimeout(blurTimer)
+      blurTimer = null
+      composerFocused = false
+      paintKeys()
+    }, { signal })
+    control.addEventListener('focusout', () => {
+      if (blurTimer) clearTimeout(blurTimer)
+      blurTimer = setTimeout(() => {
+        blurTimer = null
+        composerFocused = document.activeElement === input
+        paintKeys()
+      }, 300)
+    }, { signal })
+  }
   input.addEventListener(
     'blur',
     () => {
@@ -1160,6 +1103,7 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
     'keydown',
     (e) => {
       if (!voiceOn) return
+      if (e.code === 'Space' && keyControl(e.target)) return
       if (e.key === 'Escape') {
         setVoice(false)
         return
@@ -1172,6 +1116,7 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
     'keyup',
     (e) => {
       if (!voiceOn) return
+      if (hold.phase === 'idle' && e.code === 'Space' && keyControl(e.target)) return
       if (dispatch(spaceKey(e, 'keyup')).take) take(e)
     },
     { signal, capture: true }

@@ -79,6 +79,7 @@
   color-scheme: dark;
 }
 
+
 * {
   box-sizing: border-box;
 }
@@ -2804,4 +2805,106 @@ button.crumb:hover {
   .mic-level-fill {
     transition: none;
   }
+}
+
+/* Terminal controls: modifiers stay within reach; function/editing keys open
+ * in explicit groups rather than disappearing beyond a sideways scroller. */
+.dock-row.has-terminal-keys {
+  flex-direction: column;
+  align-items: stretch;
+}
+.keys.terminal-keyboard {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  width: 100%;
+  min-width: 0;
+  gap: 6px;
+  max-height: min(290px, 48dvh);
+  overflow-y: auto;
+  scrollbar-width: thin;
+  mask-image: none;
+  -webkit-mask-image: none;
+}
+.terminal-keyboard .keys-modifiers {
+  display: grid;
+  grid-template-columns: minmax(54px, 1.2fr) repeat(2, minmax(44px, 1fr)) minmax(70px, 1.4fr) minmax(44px, .9fr);
+  gap: 4px;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg);
+}
+.terminal-keyboard .keys-navigation {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  grid-template-areas: 'escape tab left up down right enter';
+  gap: 4px;
+}
+.terminal-keyboard .keys-navigation [data-key='Escape'] { grid-area: escape; }
+.terminal-keyboard .keys-navigation [data-key='Tab'] { grid-area: tab; }
+.terminal-keyboard .keys-navigation [data-key='ArrowLeft'] { grid-area: left; }
+.terminal-keyboard .keys-navigation [data-key='ArrowUp'] { grid-area: up; }
+.terminal-keyboard .keys-navigation [data-key='ArrowDown'] { grid-area: down; }
+.terminal-keyboard .keys-navigation [data-key='ArrowRight'] { grid-area: right; }
+.terminal-keyboard .keys-navigation [data-key='Enter'] { grid-area: enter; }
+.terminal-keyboard .keys-functions,
+.terminal-keyboard .keys-more {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 4px;
+}
+.terminal-keyboard .keys-more { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.terminal-keyboard .key {
+  flex: initial;
+  min-width: 0;
+  min-height: 44px;
+  height: 44px;
+  padding: 0 4px;
+  font-size: 13px;
+}
+.terminal-keyboard .key:disabled { opacity: .45; }
+.terminal-keyboard .key-modifier {
+  gap: 2px;
+  border-color: var(--border);
+}
+.terminal-keyboard .key-modifier[aria-pressed='true'] {
+  color: var(--accent-ink);
+  border-color: var(--accent-ink);
+  background: var(--accent-soft);
+}
+.terminal-keyboard .key-modifier[data-state='locked'] {
+  box-shadow: inset 0 -3px 0 var(--accent-ink);
+}
+.terminal-keyboard .key-sub { display: block; color: inherit; min-height: 10px; font-size: 10px; }
+.terminal-keyboard .key-group-toggle { color: var(--text-muted); font-family: var(--sans); }
+.terminal-keyboard .key-group-toggle[aria-expanded='true'] { color: var(--text); background: var(--surface-active); }
+.terminal-keyboard .keys-hint { color: var(--text-faint); font: 11px/1.35 var(--sans); text-align: center; }
+@media (max-width: 359px) {
+  .terminal-keyboard .keys-navigation {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-areas: 'escape tab enter enter' 'left up down right';
+  }
+}
+@media (pointer: fine) {
+  .terminal-keyboard .key { min-height: 34px; height: 34px; }
+}
+@media (orientation: landscape) and (max-height: 500px) {
+  .keys.terminal-keyboard { max-height: 170px; overflow-y: auto; scrollbar-width: thin; }
+  .terminal-keyboard .keys-modifiers { position: sticky; top: 0; z-index: 1; background: var(--bg); }
+  .terminal-keyboard[data-layer='functions'] .keys-navigation,
+  .terminal-keyboard[data-layer='more'] .keys-navigation { display: none; }
+}
+@media (min-width: 1024px) {
+  .keys.terminal-keyboard {
+    display: grid;
+    grid-template-columns: minmax(280px, .9fr) minmax(300px, 1.1fr);
+    align-items: start;
+    gap: 6px 8px;
+  }
+  .terminal-keyboard .keys-functions,
+  .terminal-keyboard .keys-more,
+  .terminal-keyboard .keys-hint { grid-column: 1 / -1; }
+  .terminal-keyboard .keys-functions { grid-template-columns: repeat(12, minmax(0, 1fr)); }
+  .terminal-keyboard .keys-more { grid-template-columns: repeat(6, minmax(0, 1fr)); }
 }
