@@ -1308,7 +1308,7 @@ export function SettingsSheet({
             )}
 
             {loc.page === 'profiles' && (
-              <ProfilesSettings settings={settings} onPatch={onPatch} onCreated={onProfileCreated} />
+              <ProfilesSettings settings={settings} onPatch={onPatch} onCreated={onProfileCreated} section={jump?.row.id} sectionRevision={jump?.seq} />
             )}
 
             {loc.page === 'plugins' && <PluginsSettings defaultProject={defaultCwd} initialPlugin={pluginSelection} />}

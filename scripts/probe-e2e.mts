@@ -875,7 +875,7 @@ await step('native plugin lifecycle and Grok Bot account isolation', async () =>
   const openPlugins = async () => {
     await ev(`document.querySelector('[data-testid="stoke-account"]').click(), true`)
     await waitFor('owned account menu for plugin navigation', () => ev<boolean>('!!document.querySelector(".account-panel")'))
-    await ev(`[...document.querySelectorAll('.account-panel button')].find(button => button.textContent === 'Manage accounts').click(), true`)
+    await ev(`[...document.querySelectorAll('.account-panel button')].find(button => button.textContent === 'Agent accounts').click(), true`)
     await waitFor('settings navigation mounted', () => ev<boolean>(`!!document.querySelector('[data-node="plugins"]')`))
     await ev(`document.querySelector('[data-node="plugins"]').click(), true`)
     await waitFor('native plugin manager', () => ev<boolean>(`!!document.querySelector('[data-setting="plugins.manager"]')`))
@@ -1055,7 +1055,7 @@ await step('native plugin lifecycle and Grok Bot account isolation', async () =>
       check('native manager supports five separately sealed account sessions', view.accounts.length === 5)
       await ev(`document.querySelector('[data-testid="stoke-account"]').click(), true`)
       await waitFor('shared account menu with Grok Bot enabled', () => ev<boolean>('!!document.querySelector(".account-panel")'))
-      await ev(`[...document.querySelectorAll('.account-panel button')].find(b => b.textContent === 'Manage accounts').click(), true`)
+      await ev(`[...document.querySelectorAll('.account-panel button')].find(b => b.textContent === 'Agent accounts').click(), true`)
       await waitFor('Grok Bot saved accounts in the shared directory', () => ev<boolean>(`document.querySelector('[data-setting="accounts.grok-bot"]')?.textContent.includes('5 saved')`))
       check('enabled Grok Bot has one account directory row with its saved count', await ev<boolean>(`document.querySelectorAll('[data-setting="accounts.grok-bot"]').length === 1`) === true)
       await shot('04-accounts-with-grok-bot')
@@ -1211,7 +1211,7 @@ await step('native plugin lifecycle and Grok Bot account isolation', async () =>
     check('disabled Grok Bot cannot run through preload IPC', await ev<boolean>(`window.stoke.grokBot.read().then(() => false, () => true)`) === true)
     await ev(`document.querySelector('[data-testid="stoke-account"]').click(), true`)
     await waitFor('shared account menu with Grok Bot disabled', () => ev<boolean>('!!document.querySelector(".account-panel")'))
-    await ev(`[...document.querySelectorAll('.account-panel button')].find(b => b.textContent === 'Manage accounts').click(), true`)
+    await ev(`[...document.querySelectorAll('.account-panel button')].find(b => b.textContent === 'Agent accounts').click(), true`)
     await waitFor('shared account directory without plugin', () => ev<boolean>(`!!document.querySelector('[data-testid="accounts-overview"]')`))
     check('disabled Grok Bot is hidden from the shared account directory', await ev<boolean>(`!document.querySelector('[data-setting="accounts.grok-bot"]')`) === true)
   } finally {
@@ -1262,7 +1262,7 @@ await step('Work discovers shared Notion tables through its API connection', asy
     await ev(`window.stoke.plugins.toggle('work', true)`)
     await ev(`document.querySelector('[data-testid="stoke-account"]').click(), true`)
     await waitFor('account menu for Work settings', () => ev<boolean>('!!document.querySelector(".account-panel")'))
-    await ev(`[...document.querySelectorAll('.account-panel button')].find(b => b.textContent === 'Manage accounts').click(), true`)
+    await ev(`[...document.querySelectorAll('.account-panel button')].find(b => b.textContent === 'Agent accounts').click(), true`)
     await waitFor('Work settings navigation', () => ev<boolean>(`!!document.querySelector('[data-node="worklog"]')`))
     await ev(`document.querySelector('[data-node="worklog"]').click(), true`)
     await waitFor('Notion connection setup', () => ev<boolean>(`!!document.querySelector('[data-setting="worklog.connection"]')`))
@@ -1354,7 +1354,7 @@ await step('the sidebar account menu follows the agent and leaves the title bar 
 
 async function manageAgentAccountsFromMenu(cli?: string): Promise<void> {
   const selected = cli ?? await ev<string>(`document.querySelector('[data-testid="stoke-account"]').dataset.cli`)
-  await ev(`[...document.querySelectorAll('.account-panel button')].find(button => button.textContent === 'Manage accounts').click(), true`)
+  await ev(`[...document.querySelectorAll('.account-panel button')].find(button => button.textContent === 'Agent accounts').click(), true`)
   await waitFor('the shared Accounts directory', () => ev<boolean>(`!!document.querySelector('[data-testid="accounts-overview"]')`))
   await ev(`document.querySelector('.accounts-agent[data-cli="${selected}"]').click(), true`)
   await waitFor('the scoped agent account page', () => ev<boolean>(`document.querySelector('[data-testid="agent-account-page"]')?.dataset.cli === '${selected}'`))
@@ -1390,7 +1390,7 @@ await step('sidebar accounts, repository details and bottom-left terminal are di
   const overview = async () => {
     await ev(`document.querySelector('[data-testid="stoke-account"]').click(), true`)
     await waitFor('the sidebar account menu', () => ev<boolean>('!!document.querySelector(".account-panel")'))
-    await ev(`[...document.querySelectorAll('.account-panel button')].find(button => button.textContent === 'Manage accounts').click(), true`)
+    await ev(`[...document.querySelectorAll('.account-panel button')].find(button => button.textContent === 'Agent accounts').click(), true`)
     await waitFor('the shared Accounts overview', () => ev<boolean>('!!document.querySelector(\'[data-testid="accounts-overview"]\')'))
   }
   try {
@@ -1531,7 +1531,7 @@ await step('completed sign-ins close with the verified email; failed and unknown
     }
 
     await ev('document.querySelector(\'button[title^="New session"]\').click(), true')
-    await waitFor('Stoke account access on a New tab', () => ev<boolean>(`document.querySelector('[data-testid="stoke-account"] .account-chip-label')?.textContent === 'Accounts'`))
+    await waitFor('Stoke account access on a New tab', () => ev<boolean>(`document.querySelector('[data-testid="stoke-account"] .account-chip-label')?.textContent === 'Sign in to Stoke'`))
     check('a New tab shows Stoke sign-in without borrowing a local agent account', await ev<boolean>(`!document.querySelector('[data-testid="stoke-account"]').hasAttribute('data-account')`) === true)
     await ev(`document.querySelector('[data-testid="stoke-account"]').click(), true`)
     await waitFor('Stoke-only account details', () => ev<boolean>(`!!document.querySelector('.account-panel-sync') && !document.querySelector('[data-testid="account-identity"]')`))
@@ -1640,7 +1640,7 @@ await step('named API profiles save in Settings and launch with their own creden
     }
     await ev(`document.querySelector('[data-testid="stoke-account"]').click(), true`)
     await waitFor('account directory menu for OpenCode', () => ev<boolean>('!!document.querySelector(".account-panel")'))
-    await ev(`[...document.querySelectorAll('.account-panel button')].find(button => button.textContent === 'Manage accounts').click(), true`)
+    await ev(`[...document.querySelectorAll('.account-panel button')].find(button => button.textContent === 'Agent accounts').click(), true`)
     await waitFor('account directory for OpenCode', () => ev<boolean>(`!!document.querySelector('.accounts-agent[data-cli=opencode]')`))
     await ev(`document.querySelector('.accounts-agent[data-cli="opencode"]').click(), true`)
     await waitFor('focused OpenCode accounts page', () => ev<boolean>(`document.querySelector('[data-testid=agent-account-page]')?.dataset.cli === 'opencode'`))

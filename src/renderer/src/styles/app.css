@@ -7618,6 +7618,28 @@ button.color-field-swatch[aria-expanded='true'] {
   box-shadow: inset 0 -2px 0 0 var(--chip-second, transparent);
 }
 
+.sidebar-profile { display: inline-flex; align-items: center; min-width: 0; }
+.sidebar-profile > .profile-chip { max-width: 10rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.profile-edit { border: none; border-radius: var(--r-sm); background: transparent; color: var(--text-muted); padding: 0 var(--space-4); min-width: 1.25rem; min-height: 1.5rem; cursor: pointer; }
+.profile-edit:hover { background: var(--surface-hover); color: var(--text); }
+.profile-create { display: grid; place-items: center; min-width: 1.5rem; }
+.profile-create > svg { width: 0.75rem; height: 0.75rem; }
+.profile-folder-list { display: grid; min-width: 0; gap: var(--space-4); }
+.profile-folder { display: flex; align-items: center; gap: var(--space-4); min-width: 0; padding: var(--space-4); border: none; border-radius: var(--r-sm); background: transparent; color: var(--text-muted); font-size: var(--fs-xs); text-align: left; cursor: pointer; }
+.profile-folder:hover { color: var(--text); background: var(--surface-hover); }
+.profile-folder > svg { width: 0.875rem; height: 0.875rem; flex-shrink: 0; }
+.profile-folders-editor { display: grid; gap: var(--space-8); min-width: 0; }
+.profile-folders-editor > summary { color: var(--text-muted); cursor: pointer; }
+.profile-folders-editor > summary:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 2px; }
+.profile-folder-row { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-8); min-width: 0; }
+.profile-folder-row .mono { min-width: 0; overflow-wrap: anywhere; flex: 1; }
+@media (hover: hover) and (pointer: fine) {
+  .sidebar-profiles .profile-create, .sidebar-profile .profile-edit { opacity: 0; }
+  .sidebar-profiles:hover .profile-create, .sidebar-profiles:focus-within .profile-create,
+  .sidebar-profile:hover .profile-edit, .sidebar-profile:focus-within .profile-edit { opacity: 1; }
+  .sidebar-profiles[data-empty='true'] .profile-create { opacity: 1; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .profile-chip {
     transition: none;
@@ -7777,10 +7799,10 @@ button.color-field-swatch[aria-expanded='true'] {
 
 .account-chip-wrap[data-surface='sidebar'] .account-chip {
   width: 100%;
-  min-height: 2.75rem;
-  padding: var(--space-8);
+  min-height: 2rem;
+  padding: var(--space-4) var(--space-8);
 }
-.account-chip-wrap[data-surface='sidebar'] .account-chip-avatar { width: 2rem; height: 2rem; }
+.account-chip-wrap[data-surface='sidebar'] .account-chip-avatar { width: 1.25rem; height: 1.25rem; flex-shrink: 0; }
 .account-chip-wrap[data-surface='sidebar'] .account-panel {
   top: auto;
   bottom: calc(100% + var(--space-8));
@@ -7789,13 +7811,6 @@ button.color-field-swatch[aria-expanded='true'] {
   max-height: calc(100vh - 9rem);
 }
 .account-chip-wrap[data-surface='sidebar'] .account-chip > svg { margin-left: auto; flex-shrink: 0; }
-.account-chip-stoke { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); font-size: var(--fs-xs); }
-
-.account-chip-copy {
-  display: grid;
-  min-width: 0;
-  gap: 0.1875rem;
-}
 .account-chip > svg { width: 0.625rem; height: 0.625rem; flex-shrink: 0; }
 .account-chip-avatar { display: grid; place-items: center; width: 1.25rem; height: 1.25rem; border-radius: var(--r-sm); background: var(--bg-elevated); color: var(--text-muted); font-size: var(--fs-xs); font-weight: 600; }
 
@@ -7803,7 +7818,7 @@ button.color-field-swatch[aria-expanded='true'] {
   flex-shrink: 0;
   display: grid;
   gap: var(--space-8);
-  padding: var(--space-8);
+  padding: var(--space-4) var(--space-8);
   border-top: 1px solid var(--border-subtle);
 }
 

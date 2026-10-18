@@ -20,7 +20,7 @@
  *
  * `resolveProfiles` merges the two. Everything else reads its output.
  */
-import type { ProfileConfig } from './types'
+import type { ProfileConfig, Project } from './types'
 /*
  * Relative with an explicit `.ts`, even though this is a shared module and the
  * rest of them import extensionlessly. Extensionless works only for type-only
@@ -29,7 +29,7 @@ import type { ProfileConfig } from './types'
  * --experimental-strip-types, where './paths' resolves to nothing. Both
  * tsconfigs allow the extension after Steps 5a and 5b.
  */
-import { foldGroup } from './paths.ts'
+import { foldGroup, pathKey, pathRulesFor } from './paths.ts'
 import { deriveAccent } from './accent.ts'
 import { contrastRatio, fitToSrgb, parseColor, toHex, toOklch } from './color.ts'
 import { EMBER } from './themes.ts'
@@ -486,6 +486,36 @@ export function visibleProfiles(
     if (name) present.add(foldGroup(name))
   }
   return profiles.filter((p) => p.groups.some((g) => present.has(foldGroup(g))))
+}
+
+/** Real local folders behind a profile, including empty scan roots. Group
+ * names alone are not paths: two different parents can both be called Work. */
+export function profileFolders(
+  profile: Pick<ProfileConfig, 'groups'>,
+  projects: Pick<Project, 'path' | 'group'>[],
+  roots: readonly string[],
+  platform: string
+): string[] {
+  const groups = new Set(profile.groups.map(foldGroup))
+  const rules = pathRulesFor(platform)
+  const found = new Map<string, string>()
+  const add = (folder: string): void => {
+    const key = pathKey(folder, rules)
+    if (key && !found.has(key)) found.set(key, folder)
+  }
+  for (const root of roots) if (groups.has(foldGroup(folderName(root)))) add(root)
+  for (const project of projects) {
+    if (!groups.has(foldGroup(project.group))) continue
+    const path = project.path.replace(/[\\/]+$/, '')
+    const cut = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'))
+    if (cut > 0) add(path.slice(0, cut))
+  }
+  return [...found.values()]
+}
+
+/** Stable target shared by the sidebar's Edit action and the settings card. */
+export function profileSettingId(id: string): string {
+  return `profiles.profile.${encodeURIComponent(id)}`
 }
 
 /**

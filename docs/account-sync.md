@@ -2,11 +2,11 @@
 
 This feature requires Stoke **1.0.0-beta.8 or later on both computers**. Beta.7 does not include it.
 
-In Stoke **1.0.0-beta.10**, **Accounts** has one entry at the bottom of the sidebar. Its menu separates your Stoke sign-in from the account used by the current local agent session. **Manage accounts** opens the directory; choose an agent for its saved logins and API profiles, or **Devices & sync** for Stoke. Grok Bot appears there only while its plugin is enabled. When the sidebar is hidden, use Settings → Accounts. Account choices marked **New sessions** do not change an already running session.
+The bottom of the sidebar has one compact **Stoke account** entry showing your email, or **Sign in to Stoke**. Its menu separates Stoke device sync from the current agent session. **Agent accounts** opens the directory of saved agent logins and API profiles; **Devices & sync** opens your Stoke setup. Grok Bot appears in the directory only while its plugin is enabled. When the sidebar is hidden, use Settings → Accounts. Account choices marked **New sessions** do not change an already running session.
 
 1. Sign in to the same Stoke account on both computers.
 2. Create the encrypted vault on one computer if you have not already. Approve the other device, comparing the six-digit code on both screens, or join using your Recovery Kit.
-3. Open Settings → Accounts → Stoke account → Manage account & sync.
+3. Open the Stoke account menu → Devices & sync, or Settings → Accounts → Stoke account.
 4. Enable **Sync agent accounts across devices**. This is an account-wide opt-in and starts off.
 5. Leave **Accounts on this computer** enabled on each participating device, then press **Sync now** on both.
 6. Select the received profile under Settings → Accounts → Codex, or in the launcher. Existing sessions keep their original account.

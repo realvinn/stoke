@@ -7,7 +7,7 @@ import type { RemoteChatHit } from '@shared/hub/remote'
 import type { RemoteChatGroup } from '@shared/remoteChatsView'
 import { ContextBar } from './ContextMeter'
 import type { ResolvedProfile } from '@shared/profiles'
-import { foldGroup } from '@shared/profiles'
+import { foldGroup, profileFolders } from '@shared/profiles'
 import { Highlight } from './Highlight'
 import { IconChevron, IconFolder, IconGhost, IconPin, IconPlus, IconSearch } from './Icons'
 import { PRIVATE_BUTTON_TITLE } from '@shared/privateChat'
@@ -110,7 +110,9 @@ interface Props {
   profileTabs?: (profileId: string) => { close: string[]; busy: string[]; starting: string[] }
   onCloseProfileTabs?: (profileId: string) => void
   /** Settings › Profiles, from the chip menu. */
-  onEditProfiles?: () => void
+  onEditProfiles?: (profileId?: string) => void
+  onCreateProfile?: () => void
+  profileRoots?: string[]
   /**
    * The parent folder that tells a project apart from another with the same
    * name, keyed by path (QA L14). Absent for a name no other project shares.
@@ -178,6 +180,8 @@ export function Sidebar({
   profileTabs,
   onCloseProfileTabs,
   onEditProfiles,
+  onCreateProfile,
+  profileRoots = [],
   projectHints = {},
   chatSearch,
   chatFilters,
@@ -205,6 +209,9 @@ export function Sidebar({
   useEffect(() => { if (projectMenu && !menuProject) setProjectMenu(null) }, [projectMenu, menuProject])
   const menuProfile = profileMenu ? profiles.find((p) => foldGroup(p.id) === foldGroup(profileMenu.id)) : undefined
   const menuPlan = menuProfile && profileTabs ? profileTabs(menuProfile.id) : null
+  const menuFolders = menuProfile ? profileFolders(menuProfile, projects, profileRoots, window.stoke.platform) : []
+  const selectedProfile = profiles.find(p => foldGroup(p.id) === foldGroup(activeProfile ?? ''))
+  const selectedFolders = selectedProfile ? profileFolders(selectedProfile, projects, profileRoots, window.stoke.platform) : []
   /*
    * A profile that leaves the row while its menu is up (its last folder gone
    * from the scan, settings changed from the phone or the hub) unmounts the
@@ -640,8 +647,8 @@ export function Sidebar({
       <div className="sidebar-head">
         {/* One profile plus All is still a useful choice; hiding the row below
             two meant a machine with a single work folder saw nothing at all. */}
-        {available.length > 0 && (
-          <div className="profiles" role="group" aria-label="Profile">
+        {(available.length > 0 || onCreateProfile) && (
+          <div className="profiles sidebar-profiles" role="group" aria-label="Profile" data-empty={available.length === 0 || undefined}>
             <button
               className="profile-chip"
               aria-pressed={activeProfile === null}
@@ -653,8 +660,8 @@ export function Sidebar({
             {available.map((p) => {
               const on = activeProfile !== null && foldGroup(activeProfile) === foldGroup(p.id)
               return (
+                <span className="sidebar-profile" key={p.id}>
                 <button
-                  key={p.id}
                   className="profile-chip"
                   aria-pressed={on}
                   onClick={() => onSelectProfile(on ? null : p.id)}
@@ -672,7 +679,7 @@ export function Sidebar({
                         }
                       : undefined
                   }
-                  title={`${p.label} — ${p.groups.join(', ')}`}
+                  title={`${p.label} — ${profileFolders(p, projects, profileRoots, window.stoke.platform).join(', ') || p.groups.join(', ')}`}
                   style={
                     {
                       '--chip': p.accent,
@@ -683,10 +690,16 @@ export function Sidebar({
                 >
                   {p.label}
                 </button>
+                {onEditProfiles && <button className="profile-edit" title={`Edit ${p.label} profile`} aria-label={`Edit ${p.label} profile`} onClick={() => onEditProfiles(p.id)}><span aria-hidden="true">···</span></button>}
+                </span>
               )
             })}
+            {onCreateProfile && <button className="profile-chip profile-create" title="New profile" aria-label="New profile" onClick={onCreateProfile}><IconPlus /></button>}
           </div>
         )}
+        {selectedFolders.length > 0 && <div className="profile-folder-list" aria-label="Profile folders">
+          {selectedFolders.map(folder => <button key={folder} className="profile-folder" title={`Open profile folder: ${folder}`} onClick={() => onRevealProject(folder)}><IconFolder /><span className="truncate">{folder}</span></button>)}
+        </div>}
 
         <label className="sr-only" htmlFor="project-search">
           Search projects and sessions
@@ -989,14 +1002,16 @@ export function Sidebar({
         <ContextMenu
           x={profileMenu.x}
           y={profileMenu.y}
-          header={{ title: menuProfile.label, subtitle: menuProfile.groups.join(', ') || undefined }}
+          header={{ title: menuProfile.label, subtitle: menuFolders.join(', ') || menuProfile.groups.join(', ') || undefined }}
           items={[
             {
               label: profileCloseLabel(menuPlan.close.length),
               disabled: menuPlan.close.length === 0,
               onSelect: () => onCloseProfileTabs?.(menuProfile.id)
             },
-            ...(onEditProfiles ? [{ label: 'Edit profiles…', separated: true, onSelect: onEditProfiles }] : [])
+            ...menuFolders.map(folder => ({ label: `Open ${folder}`, onSelect: () => onRevealProject(folder) })),
+            ...(onEditProfiles ? [{ label: 'Edit profile…', separated: true, onSelect: () => onEditProfiles(menuProfile.id) }] : []),
+            ...(onCreateProfile ? [{ label: 'New profile…', onSelect: onCreateProfile }] : [])
           ]}
           footer={profileCloseNote(menuPlan, menuProfile.label) ?? undefined}
           onClose={() => setProfileMenu(null)}

@@ -157,10 +157,11 @@ console.log('every row the sheet marks is in the index, and every row in the ind
     'components/ClaudeCodeSettings.tsx: claudeSettingRowId(spec.key)',
     'components/ClaudeCodeSettings.tsx: claudeSettingRowId(WORKFLOW_SIZE_KEY)',
     'components/AgentsSettings.tsx: agentRowId(cli.id)',
-    'components/ProvidersSettings.tsx: settingId'
+    'components/ProvidersSettings.tsx: settingId',
+    'components/ProfilesSettings.tsx: profileSettingId(p.id)'
   ])
   check(
-    'every computed mark is one of the four known families',
+    'every computed mark is one of the known families',
     expressions.map((e) => `${e.file}: ${e.expr}`).filter((e) => !allowed.has(e)),
     []
   )

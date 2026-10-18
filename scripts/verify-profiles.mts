@@ -35,6 +35,7 @@ import {
   PROFILE_LABEL_WCAG,
   profileAccentFor,
   profileFor,
+  profileFolders,
   resolveProfiles,
   visibleProfiles
 } from '../src/shared/profiles.ts'
@@ -55,6 +56,18 @@ import { fileURLToPath } from 'node:url'
 import { createProfile, planProfile } from '../src/main/profiles.ts'
 
 let failures = 0
+
+check('profile folders include empty roots and distinct parents sharing a name', profileFolders(
+  { groups: ['WORK'] }, [{ path: '/a/Work/repo', group: 'work' }, { path: '/b/Work/other', group: 'Work' }, { path: '/b/Personal/private', group: 'personal' }], ['/a/Work', '/empty/Work'], 'darwin'
+), ['/a/Work', '/empty/Work', '/b/Work'])
+check('Windows profile paths deduplicate separator and case variants', profileFolders(
+  { groups: ['work'] }, [{ path: 'c:\\code\\WORK\\repo', group: 'Work' }], ['C:/Code/Work/'], 'win32'
+), ['C:/Code/Work/'])
+check('Linux profile folders keep distinct case-sensitive paths', profileFolders(
+  { groups: ['work'] }, [{ path: '/code/work/repo', group: 'work' }], ['/code/Work'], 'linux'
+), ['/code/Work', '/code/work'])
+check('a removed profile has no openable folders', profileFolders({ groups: [] }, [{ path: '/code/work/repo', group: 'work' }], ['/code/work'], 'darwin'), [])
+check('profile folder lookup never guesses a local path from a group name', profileFolders({ groups: ['other-computer'] }, [], [], 'darwin'), [])
 
 /** Key order is not meaning, so compare with keys sorted. */
 function canon(v: unknown): string {

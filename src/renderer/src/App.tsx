@@ -39,7 +39,7 @@ import type {
   WorklogWatchState
 } from '@shared/types'
 import type { PrivateTabState, UpdateInfo } from '@shared/api'
-import { foldGroup, profileFor, resolveProfiles, visibleProfiles } from '@shared/profiles'
+import { foldGroup, profileFor, profileSettingId, resolveProfiles, visibleProfiles } from '@shared/profiles'
 import { pathKey, pathRulesFor } from '@shared/paths'
 import {
   NO_CLAUDE_DEFAULTS,
@@ -6157,7 +6157,9 @@ export function App(): React.JSX.Element {
                 projectTabs={projectTabsNow}
                 onCloseProjectTabs={closeProjectTabs}
                 onRevealProject={revealFolder}
-                onEditProfiles={() => openSettings('profiles')}
+                onEditProfiles={id => openSettings('profiles', id ? { id: profileSettingId(id), fallback: 'profiles.list' } : null)}
+                onCreateProfile={() => openSettings('profiles', { id: 'profiles.new', fallback: 'profiles.list' })}
+                profileRoots={settings?.projectRoots ?? []}
                 projectHints={query.trim() ? allProjectHints : projectHints}
                 chatSearch={chatSearch}
                 chatFilters={advancedChatSearch ? chatFilters : undefined}

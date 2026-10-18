@@ -486,7 +486,8 @@ export const SETTING_ROWS: readonly SettingRow[] = [
   { id: 'terminal.padding', page: 'terminal', label: 'Inner padding', keywords: ['padding', 'margin', 'inset'] },
 
   // Profiles
-  { id: 'profiles.list', page: 'profiles', label: 'Your profiles', keywords: ['accent', 'colour', 'folder', 'scan root', 'new profile', 'workspace'] },
+  { id: 'profiles.list', page: 'profiles', label: 'Your profiles', keywords: ['accent', 'colour', 'folder', 'scan root', 'workspace', 'edit folders', 'folder groups', 'open folder', 'copy path', 'add folder'] },
+  { id: 'profiles.new', page: 'profiles', label: 'New profile', keywords: ['create profile', 'profile name', 'profile folder'], fallback: 'profiles.list' },
 
   // Sessions
   { id: 'sessions.default-folder', page: 'sessions', label: 'Default folder', keywords: ['working directory', 'cwd', 'start here', 'home folder'] },

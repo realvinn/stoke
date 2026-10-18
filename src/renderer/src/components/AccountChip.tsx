@@ -38,16 +38,16 @@ export function AccountChip({ target, label, settingsOpen, onSyncSettings, onAcc
   const stoke = stokeAccountSummary(hub)
   return (
     <div className="account-chip-wrap" data-surface="sidebar" onKeyDown={event => { if (!event.metaKey && !event.ctrlKey && !event.altKey) event.stopPropagation() }}>
-      <button className="account-chip" ref={buttonRef} data-testid="stoke-account" data-account={target?.accountId} data-cli={target?.cli} aria-expanded={open} aria-haspopup="dialog" title={target ? `Accounts — ${vendor} · ${nickname} — ${text}. Stoke: ${stoke.identity}` : `Accounts — Stoke: ${stoke.identity}`} onClick={() => setOpen(v => !v)}>
+      <button className="account-chip" ref={buttonRef} data-testid="stoke-account" data-account={target?.accountId} data-cli={target?.cli} aria-label={`Stoke account — ${stoke.identity}`} aria-expanded={open} aria-haspopup="dialog" title={`Stoke account — ${stoke.identity}. ${stoke.status}`} onClick={() => setOpen(v => !v)}>
         <span className="account-chip-avatar" aria-hidden="true">{stoke.signedIn ? stoke.identity.slice(0, 1).toUpperCase() : 'S'}</span>
-        <span className="account-chip-copy"><span className="account-chip-label">Accounts</span><span className="account-chip-stoke">{stoke.identity}</span></span>
+        <span className="account-chip-label">{stoke.signedIn ? stoke.identity : 'Sign in to Stoke'}</span>
         {target && <span className="sr-only">{vendor} · {nickname}. </span>}
         <span className="sr-only account-chip-identity">{target ? text : stoke.identity}</span>
         <IconChevron />
       </button>
       {open && <>
         <div className="popover-backdrop" onClick={() => setOpen(false)} />
-        <div className="popover account-panel" role="dialog" aria-label="Accounts" ref={panelRef} tabIndex={-1}>
+        <div className="popover account-panel" role="dialog" aria-label="Stoke account" ref={panelRef} tabIndex={-1}>
           <div className="account-panel-sync">
             <div className="account-panel-heading">
               <span className="account-avatar" aria-hidden="true">{stoke.signedIn ? stoke.identity.slice(0, 1).toUpperCase() : 'S'}</span>
@@ -67,8 +67,8 @@ export function AccountChip({ target, label, settingsOpen, onSyncSettings, onAcc
             <div className="account-panel-session-note"><span className="field-hint">Running sessions keep the account they started with.</span><button className="btn" data-variant="ghost" onClick={refresh}>Refresh identity</button></div>
           </div>}
           <div className="account-panel-actions">
-            <button className="btn" data-variant="primary" onClick={() => { setOpen(false); onAccounts() }}>Manage accounts</button>
-            <button className="btn" data-variant="ghost" onClick={() => { setOpen(false); onSyncSettings() }}>{stoke.signedIn ? 'Devices & sync' : 'Sign in to Stoke'}</button>
+            <button className="btn" data-variant="primary" onClick={() => { setOpen(false); onSyncSettings() }}>{stoke.signedIn ? 'Devices & sync' : 'Sign in to Stoke'}</button>
+            <button className="btn" data-variant="ghost" onClick={() => { setOpen(false); onAccounts() }}>Agent accounts</button>
           </div>
         </div>
       </>}

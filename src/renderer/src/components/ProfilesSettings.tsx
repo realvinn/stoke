@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
-import type { ProfileConfig, Settings } from '@shared/types'
+import type { ProfileConfig, Project, Settings } from '@shared/types'
 import type { CreateProfileInput, ProfileAccent, ProfilePlan, ResolvedProfile } from '@shared/profiles'
 import {
   PROFILE_SWATCHES,
@@ -7,6 +7,8 @@ import {
   foldGroup,
   folderName,
   profileAccentFor,
+  profileFolders,
+  profileSettingId,
   resolveProfiles,
   visibleProfiles
 } from '@shared/profiles'
@@ -46,6 +48,8 @@ interface Props {
    * `App.tsx`.
    */
   onCreated: () => void | Promise<void>
+  section?: string
+  sectionRevision?: number
 }
 
 interface Draft {
@@ -145,7 +149,7 @@ function Swatches({
   )
 }
 
-export function ProfilesSettings({ settings, onPatch, onCreated }: Props): React.JSX.Element {
+export function ProfilesSettings({ settings, onPatch, onCreated, section, sectionRevision }: Props): React.JSX.Element {
   /*
    * Counts come from the same project list the sidebar uses, fetched here rather
    * than passed in: this component is dropped into the settings sheet, which
@@ -153,6 +157,7 @@ export function ProfilesSettings({ settings, onPatch, onCreated }: Props): React
    * through two components that have no other use for them.
    */
   const [counts, setCounts] = useState<Map<string, number>>(new Map())
+  const [projects, setProjects] = useState<Project[]>([])
   const [creating, setCreating] = useState(false)
   const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT)
   const [plan, setPlan] = useState<ProfilePlan | null>(null)
@@ -161,13 +166,23 @@ export function ProfilesSettings({ settings, onPatch, onCreated }: Props): React
   const [confirming, setConfirming] = useState<string | null>(null)
   /** Renaming is a local draft, committed on blur — see the comment on rename. */
   const [labels, setLabels] = useState<Record<string, string>>({})
+  const folderGuard = useRef(false)
+  const [folderBusy, setFolderBusy] = useState<string | null>(null)
 
   useEffect(() => {
+    if (section === 'profiles.new') setCreating(true)
+  }, [section, sectionRevision])
+
+  useEffect(() => {
+    let live = true
     void window.stoke.projects.list().then((list) => {
+      if (!live) return
+      setProjects(list)
       const next = new Map<string, number>()
       for (const p of list) next.set(p.group, (next.get(p.group) ?? 0) + 1)
       setCounts(next)
-    })
+    }).catch(e => { if (live) setError(e instanceof Error ? e.message : String(e)) })
+    return () => { live = false }
   }, [settings.projectRoots, settings.profiles])
 
   const resolved = useMemo(
@@ -237,6 +252,45 @@ export function ProfilesSettings({ settings, onPatch, onCreated }: Props): React
     },
     [settings.profiles, onPatch, withProfile]
   )
+
+  const folderChoices = [...new Map([
+    ...counts.keys(), ...settings.projectRoots.map(folderName), ...resolved.flatMap(p => p.groups)
+  ].filter(Boolean).map(group => [foldGroup(group), group])).values()].sort((a, b) => a.localeCompare(b))
+
+  const changeFolder = async (profile: ResolvedProfile, group?: string, checked = true): Promise<void> => {
+    if (folderGuard.current) return
+    folderGuard.current = true
+    setFolderBusy(profile.id)
+    setError(null)
+    try {
+      const folder = group === undefined ? await window.stoke.projects.addRoot() : null
+      if (group === undefined && !folder) return
+      const nextGroup = group ?? folderName(folder!)
+      if (!nextGroup) throw new Error('Choose a named folder for this profile.')
+      // addRoot writes settings while its dialog is open. Read the current
+      // records so a delayed dialog cannot overwrite a rename or sync update.
+      const fresh = await window.stoke.settings.get()
+      const current = resolveProfiles(counts, fresh.profiles).find(p => foldGroup(p.id) === foldGroup(profile.id))
+      if (!current) throw new Error('This profile was removed while the folder picker was open.')
+      const groups = current.groups.filter(g => foldGroup(g) !== foldGroup(nextGroup))
+      if (checked) groups.push(nextGroup)
+      if (!groups.length) throw new Error('Keep at least one folder, or delete the profile.')
+      await window.stoke.settings.set({ profiles: withProfile(fresh.profiles, current, { groups }) })
+      await onCreated()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      folderGuard.current = false
+      setFolderBusy(null)
+    }
+  }
+
+  const openFolder = async (folder: string): Promise<void> => {
+    try {
+      const problem = await window.stoke.projects.reveal(folder)
+      if (problem) setError(`Could not open the folder: ${problem}`)
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
+  }
 
   /*
    * Commit a rename that is still being typed when this panel goes away.
@@ -369,9 +423,8 @@ export function ProfilesSettings({ settings, onPatch, onCreated }: Props): React
     <div className="field" data-setting="profiles.list">
       <span className="field-label">Profiles</span>
       <span className="field-hint">
-        A profile is a colour and a folder. Picking one in the sidebar shows the projects
-        inside that folder and repaints the accent — it never hides anything from Claude, and
-        you can still open any directory or resume any chat from any profile.
+        Group project folders under one name and colour. Picking a profile filters the
+        sidebar; each running session keeps its own working folder.
       </span>
 
       {visible.length === 0 && (
@@ -391,7 +444,7 @@ export function ProfilesSettings({ settings, onPatch, onCreated }: Props): React
              measure 105px each against a host's 281px, so the disclosure the
              hosts needed does not pay for itself here yet. When they grow past
              about six, swap this for <details className="settings-item">. */
-          <div key={p.id} className="field settings-item-card">
+          <div key={p.id} className="field settings-item-card" data-setting={profileSettingId(p.id)}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-8)' }}>
               {/* The colour, shown the way the tab strip and the theme picker
                   already show one: a dot, not a stripe down the card. */}
@@ -472,6 +525,22 @@ export function ProfilesSettings({ settings, onPatch, onCreated }: Props): React
               {n === 1 ? '1 project' : `${n} projects`}
               {p.createdByUser ? ' · yours' : ''}
             </span>
+            <div className="profile-folder-list" aria-label={`Folders for ${p.label}`}>
+              {profileFolders(p, projects, settings.projectRoots, window.stoke.platform).map(folder => <div key={folder} className="profile-folder-row">
+                <span className="mono">{folder}</span>
+                <button className="btn" data-variant="ghost" onClick={() => void openFolder(folder)}>Open folder</button>
+                <button className="btn" data-variant="ghost" onClick={() => void window.stoke.clipboard.writeText(folder)}>Copy path</button>
+              </div>)}
+            </div>
+            <details className="profile-folders-editor">
+              <summary>Edit folders for {p.label}</summary>
+              <span className="field-hint">Choose which folder groups appear in this profile. Folders with the same name share a group. Files stay where they are.</span>
+              {folderChoices.map(group => {
+                const checked = p.groups.some(g => foldGroup(g) === foldGroup(group))
+                return <label className="check-row" key={group}><input type="checkbox" checked={checked} disabled={folderBusy !== null || (checked && p.groups.length === 1)} onChange={e => void changeFolder(p, group, e.target.checked)} /><span>{group}</span></label>
+              })}
+              <button className="btn" disabled={folderBusy !== null} onClick={() => void changeFolder(p)}><IconFolder />{folderBusy === p.id ? 'Saving folders…' : 'Add folder…'}</button>
+            </details>
           </div>
         )
       })}
@@ -519,7 +588,7 @@ export function ProfilesSettings({ settings, onPatch, onCreated }: Props): React
       )}
 
       {creating && (
-        <div className="field settings-item-card">
+        <div className="field settings-item-card" data-setting="profiles.new">
           <input
             className="input"
             placeholder="Name, e.g. Task"
