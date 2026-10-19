@@ -50,6 +50,7 @@ import { fileURLToPath } from 'node:url'
 import { CANVAS, HEARTH, STAGES, paint, type ColorMode } from '../src/shared/campfire.ts'
 import {
   CACHE_CONTROL,
+  betaInstaller,
   contentTypeFor,
   httpsRedirect,
   redirectBody,
@@ -87,6 +88,24 @@ function check(name: string, got: unknown, want: unknown): void {
 const shText = readFileSync(SH, 'utf8')
 const ps1Text = readFileSync(PS1, 'utf8')
 const htmlText = readFileSync(HTML, 'utf8')
+const betaShText = betaInstaller('sh', shText)
+const betaPs1Text = betaInstaller('ps1', ps1Text)
+
+for (const [path, body] of [['install-beta.sh', 'sh'], ['install-beta.ps1', 'ps1']] as const) {
+  for (const headers of [{}, { 'user-agent': 'Mozilla/5.0', accept: 'text/html' }, { 'user-agent': 'curl/8' }]) {
+    check(`${path} explicitly selects ${body} beta regardless of client`, routeFor(`https://stoke.vinn.dev/${path}`, headers), { body, channel: 'beta', why: 'explicit path' })
+  }
+}
+check('a beta URL keeps its channel with an explicit body override', routeFor('https://stoke.vinn.dev/install-beta.sh?ps1', {}), { body: 'ps1', why: 'query override', channel: 'beta' })
+check('the stable script path does not opt into beta', routeFor('https://stoke.vinn.dev/install.sh', {}), { body: 'sh', why: 'explicit path' })
+check('shell beta changes only the entry point and Windows hint', betaShText, shText.replace(/^main "\$@"$/m, 'main --beta "$@"').replace(`STOKE_PS1_LINE='powershell -ExecutionPolicy Bypass -c "irm https://stoke.vinn.dev | iex"'`, `STOKE_PS1_LINE='powershell -ExecutionPolicy Bypass -c "irm https://stoke.vinn.dev/install-beta.ps1 | iex"'`))
+check('PowerShell beta changes only the switch default and shell hint', betaPs1Text, ps1Text.replace('param([switch]$Beta)', 'param([switch]$Beta = $true)').replace(`$StokeShLine = 'curl -fsSL https://stoke.vinn.dev | sh'`, `$StokeShLine = 'curl -fsSL https://stoke.vinn.dev/install-beta.sh | sh'`))
+for (const [body, text] of [['sh', shText], ['ps1', ps1Text]] as const) {
+  check(`${body} beta body supports Windows line endings`, betaInstaller(body, text.replace(/\n/g, '\r\n')), betaInstaller(body, text).replace(/\n/g, '\r\n'))
+  let refused = false
+  try { betaInstaller(body, 'changed installer entry point\n') } catch { refused = true }
+  ok(`${body} changed entry point cannot silently serve stable at a beta URL`, refused)
+}
 
 /*
  * The executable half of a script, with whole-line `#` comments dropped.
@@ -264,7 +283,7 @@ ok('the Worker sets no Vary header either', !/['"]vary['"]/i.test(workerCode))
  * no audit trail. The only `fetch` in the file is the handler's own name.
  */
 ok('and it fetches nothing at request time', !/\bfetch\s*\(/.test(workerCode.replace(/\bfetch\(request: Request\)/g, '')))
-ok('it serves only the three embedded bodies', /BODIES\[route\.body\]/.test(workerCode))
+ok('it serves only the canonical embedded bodies or their beta variants', /route\.channel === 'beta' \? BETA_BODIES : BODIES/.test(workerCode) && /betaInstaller\('sh', sh\)/.test(workerCode) && /betaInstaller\('ps1', ps1\)/.test(workerCode))
 ok(
   'and asks httpsRedirect BEFORE routing, answering 301 with a location',
   workerCode.indexOf('httpsRedirect(request.url') !== -1 &&
@@ -457,6 +476,8 @@ const lastLine = (text: string): string => {
 }
 check('install.sh ends by calling main, and nothing follows it', lastLine(shText), 'main "$@"')
 check('install.ps1 ends by calling Install-Stoke', lastLine(ps1Text), 'Install-Stoke')
+check('beta shell also keeps its install call last', lastLine(betaShText), 'main --beta "$@"')
+check('beta PowerShell also keeps its install call last', lastLine(betaPs1Text), 'Install-Stoke')
 ok('install.sh defines main as a function', /^main\(\)\s*\{/m.test(shText))
 ok('install.ps1 defines Install-Stoke as a function', /^function Install-Stoke\s*\{/m.test(ps1Text))
 ok('install.sh sets -eu', /^set -eu$/m.test(shText))
@@ -698,6 +719,8 @@ const betaReleases = [
 const invalidVersions = ['v1.0.0-beta.6', '../beta', '1.0.0?x=1', '1.0.0\nother', '1.0.0-beta..6']
 const betaTmp = mkdtempSync(join(tmpdir(), 'stoke-beta-install-'))
 try {
+  const betaSh = join(betaTmp, 'install-beta.sh')
+  writeFileSync(betaSh, betaShText)
   const payload = Buffer.from('owned beta installer fixture\n')
   const digest = createHash('sha512').update(payload).digest('base64')
   const manifest = (extension: string, version = '1.0.0-beta.6'): string =>
@@ -737,6 +760,8 @@ esac
       const requests = join(betaTmp, 'requests'); writeFileSync(requests, '')
       const fixtureEnv = { ...env, PATH: `${bin}:${process.env.PATH}`, STOKE_VERSION: '1.0.0-beta.6', STOKE_DRY_RUN: '1', STOKE_NO_ANIMATION: '1', STOKE_TEST_ROOT: betaTmp, STOKE_TEST_REQUESTS: requests }
       check(`${shell}: --beta selects a published beta, ignoring drafts, stable, rc and nested text`, execFileSync(shell, [SH, '--beta', '--print-release'], { env: { ...fixtureEnv, STOKE_VERSION: '' }, encoding: 'utf8' }).trim(), betaBase)
+      check(`${shell}: beta URL body selects beta without any install flags`, execFileSync(shell, [betaSh, '--print-release'], { env: { ...fixtureEnv, STOKE_VERSION: '', STOKE_CHANNEL: 'stable' }, encoding: 'utf8' }).trim(), betaBase)
+      check(`${shell}: an exact version still overrides the beta URL body`, execFileSync(shell, [betaSh, '--print-release'], { env: fixtureEnv, encoding: 'utf8' }).trim(), betaBase)
       check(`${shell}: environment beta channel selects the same release`, execFileSync(shell, [SH, '--print-release'], { env: { ...fixtureEnv, STOKE_VERSION: '', STOKE_CHANNEL: 'beta' }, encoding: 'utf8' }).trim(), betaBase)
       writeFileSync(join(betaTmp, 'releases'), JSON.stringify([...betaReleases, { tag_name: 'v1.0.0-beta.10', draft: false, prerelease: true }]))
       check(`${shell}: beta.10 outranks beta.6 even when listed last in compact JSON`, execFileSync(shell, [SH, '--beta', '--print-release'], { env: { ...fixtureEnv, STOKE_VERSION: '' }, encoding: 'utf8' }).trim(), betaBase.replace('beta.6', 'beta.10'))
@@ -750,6 +775,8 @@ esac
       const channelInstall = spawnSync(shell, [SH, '--beta'], { env: { ...fixtureEnv, STOKE_VERSION: '' }, encoding: 'utf8' })
       ok(`${shell}: --beta downloads and verifies the resolved tag in dry run`, channelInstall.status === 0 && channelInstall.stdout.includes('sha512 matches') && channelInstall.stdout.includes('STOKE_DRY_RUN'), channelInstall.stdout + channelInstall.stderr)
       check(`${shell}: beta lookup, manifest and asset use one selected version`, readFileSync(requests, 'utf8').trim().split('\n'), [betaApi, `${betaBase}/latest-linux.yml`, `${betaBase}/Stoke-1.0.0-beta.6.AppImage`])
+      const simpleInstall = spawnSync(shell, [betaSh], { env: { ...fixtureEnv, STOKE_VERSION: '' }, encoding: 'utf8' })
+      ok(`${shell}: the beta URL installs through the ordinary verified dry run without arguments`, simpleInstall.status === 0 && simpleInstall.stdout.includes('sha512 matches') && simpleInstall.stdout.includes('STOKE_DRY_RUN'), simpleInstall.stdout + simpleInstall.stderr)
       writeFileSync(requests, '')
       const result = spawnSync(shell, [SH], { env: fixtureEnv, encoding: 'utf8' })
       ok(`${shell}: beta.5 upgrades through beta.6 download and digest verification`, result.status === 0 && result.stdout.includes('sha512 matches') && result.stdout.includes('STOKE_DRY_RUN'), result.stdout + result.stderr)
@@ -790,6 +817,16 @@ Get-StokeRequestedVersion '' $(if ($Beta) { 'beta' } else { 'stable' })
     ok('PowerShell -Beta binds from a saved script and selects the beta', flagFile.status === 0 && flagFile.stdout.trim() === '1.0.0-beta.6', flagFile.stdout + flagFile.stderr)
     const flagBlock = spawnSync(powershell, ['-NoProfile', '-Command', '& ([scriptblock]::Create([IO.File]::ReadAllText($env:STOKE_TEST_SCRIPT))) -Beta'], { env: { ...process.env, STOKE_TEST_SCRIPT: flagHarness }, encoding: 'utf8' })
     ok('documented PowerShell script-block -Beta syntax binds and selects the beta', flagBlock.status === 0 && flagBlock.stdout.trim() === '1.0.0-beta.6', flagBlock.stdout + flagBlock.stderr)
+    const simpleHarness = join(betaTmp, 'install-beta.ps1')
+    writeFileSync(simpleHarness, betaInstaller('ps1', readFileSync(flagHarness, 'utf8')))
+    const simplePipe = spawnSync(powershell, ['-NoProfile', '-Command', 'Get-Content -Raw $env:STOKE_TEST_SCRIPT | iex'], { env: { ...process.env, STOKE_TEST_SCRIPT: simpleHarness }, encoding: 'utf8' })
+    ok('simple PowerShell beta URL body selects beta through iex with no arguments', simplePipe.status === 0 && simplePipe.stdout.trim() === '1.0.0-beta.6', simplePipe.stdout + simplePipe.stderr)
+    if (process.platform !== 'win32') {
+      const wrongPlatformScript = join(betaTmp, 'beta-wrong-platform.ps1')
+      writeFileSync(wrongPlatformScript, betaPs1Text)
+      const wrongPlatform = spawnSync(powershell, ['-NoProfile', '-File', wrongPlatformScript], { encoding: 'utf8' })
+      ok('PowerShell on a non-Windows host stops with the beta shell URL', wrongPlatform.status === 0 && (wrongPlatform.stdout + wrongPlatform.stderr).includes('https://stoke.vinn.dev/install-beta.sh | sh'))
+    }
     if (process.platform === 'win32') {
       // Exercise Install-Stoke itself, with no vendor requests or user app access.
       writeFileSync(psHarness, ps1Text.replace(/\nInstall-Stoke\s*$/, '\n') + `
@@ -1134,7 +1171,10 @@ ok('the page still offers the short form, for somebody already in PowerShell', h
  * that is the exact instruction that failed in cmd.exe. It may appear only in
  * prose, inside a <code>, never as the <pre> a reader copies.
  */
-ok('and never as the line to copy', !/<pre>[^<]*<span class="prompt">[^<]*<\/span>irm /.test(htmlText))
+const defaultWindowsBlock = htmlText.match(/<h2>Windows<\/h2>([\s\S]*?)(?=<h2>)/)?.[1] ?? ''
+ok('the primary Windows line to copy also works from cmd.exe', defaultWindowsBlock.includes(PS1_LINE) && !/<pre>[^<]*<span class="prompt">[^<]*<\/span>irm /.test(defaultWindowsBlock))
+ok('the page gives PowerShell users a simple beta pipe', htmlText.includes('irm https://stoke.vinn.dev/install-beta.ps1 | iex'))
+ok('the page gives shell users a simple beta pipe', htmlText.includes('curl -fsSL https://stoke.vinn.dev/install-beta.sh | sh'))
 ok('install.sh sends a Windows user to exactly that ps1 line', shText.includes(`STOKE_PS1_LINE='${PS1_LINE}'`))
 ok('install.ps1 sends a macOS user to exactly that sh line', ps1Text.includes(`$StokeShLine = '${SH_LINE}'`))
 /*

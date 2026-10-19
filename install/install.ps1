@@ -16,10 +16,10 @@
 # anything. $env:STOKE_DRY_RUN = '1' does all of that and stops before running
 # the installer.
 # For the newest published beta, run:
-#     & ([scriptblock]::Create((irm https://stoke.vinn.dev/install.ps1))) -Beta
-# Or set $env:STOKE_CHANNEL='beta' before the usual one-liner.
+#     irm https://stoke.vinn.dev/install-beta.ps1 | iex
+# The ordinary install.ps1 also accepts -Beta or $env:STOKE_CHANNEL='beta'.
 # For an exact published version, set $env:STOKE_VERSION = '1.0.0-beta.6' before running
-# the one-liner. With no version selected, it installs the latest stable release.
+# the one-liner. The ordinary URL defaults to stable; the beta URL selects beta.
 #
 # ---------------------------------------------------------------------------
 # Everything is inside Install-Stoke, which is called on the LAST line. `iex`

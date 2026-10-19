@@ -35,7 +35,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 // Node strips the types itself (22.18+ by default; the repo runs every suite
 // this way). Relative with the extension, because nothing here resolves aliases.
-import { contentTypeFor, routeFor } from '../worker/route.ts'
+import { contentTypeFor, routeFor, betaInstaller } from '../worker/route.ts'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const FILES = { sh: 'install/install.sh', ps1: 'install/install.ps1', html: 'install/index.html' }
@@ -64,7 +64,9 @@ const server = createServer((req, res) => {
   }
   const route = routeFor(`http://127.0.0.1:${port}${req.url ?? '/'}`, headers)
   const raw = readFileSync(join(root, FILES[route.body]))
-  const body = route.body === 'sh' ? localSh(raw) : raw
+  const local = route.body === 'sh' ? localSh(raw) : raw
+  const body = route.channel === 'beta' && route.body !== 'html'
+    ? Buffer.from(betaInstaller(route.body, local.toString('utf8')), 'utf8') : local
   // One line per request, so a CI log shows which body each shell was handed
   // and why — the question every "the installer printed HTML" report starts with.
   console.log(`${req.method} ${req.url} -> ${route.body} (${route.why}) ua=${JSON.stringify(headers['user-agent'] ?? '')}`)

@@ -32,6 +32,8 @@ export type InstallerBody = 'sh' | 'ps1' | 'html'
 /** A body, plus why it was chosen. The reason is asserted, not decorative. */
 export interface Route {
   body: InstallerBody
+  /** The explicit beta URLs select the same installers with beta as default. */
+  channel?: 'beta'
   /**
    * Which rule fired. `verify:install` asserts this as well as the body, so a
    * case that starts passing for the wrong reason — a browser served HTML by
@@ -72,10 +74,12 @@ function queryOverride(search: string): InstallerBody | null {
  * anything to a shell — and so a machine behind a User-Agent-rewriting proxy
  * has a route that does not depend on sniffing at all.
  */
-function pathOverride(pathname: string): InstallerBody | null {
-  if (pathname === '/install.sh') return 'sh'
-  if (pathname === '/install.ps1') return 'ps1'
-  if (pathname === '/index.html') return 'html'
+function pathOverride(pathname: string): Pick<Route, 'body' | 'channel'> | null {
+  if (pathname === '/install.sh') return { body: 'sh' }
+  if (pathname === '/install.ps1') return { body: 'ps1' }
+  if (pathname === '/install-beta.sh') return { body: 'sh', channel: 'beta' }
+  if (pathname === '/install-beta.ps1') return { body: 'ps1', channel: 'beta' }
+  if (pathname === '/index.html') return { body: 'html' }
   return null
 }
 
@@ -96,9 +100,9 @@ export function routeFor(url: string, headers: RouteHeaders): Route {
   //    and both are the escape hatch for every failure mode below — a corporate
   //    MITM proxy rewriting User-Agent being the one with no other answer.
   const forcedByQuery = queryOverride(parsed.search)
-  if (forcedByQuery) return { body: forcedByQuery, why: 'query override' }
   const forcedByPath = pathOverride(parsed.pathname)
-  if (forcedByPath) return { body: forcedByPath, why: 'explicit path' }
+  if (forcedByQuery) return { body: forcedByQuery, why: 'query override', ...(forcedByPath?.channel ? { channel: forcedByPath.channel } : {}) }
+  if (forcedByPath) return { ...forcedByPath, why: 'explicit path' }
 
   const ua = headers['user-agent'] ?? ''
 
@@ -131,6 +135,22 @@ export function routeFor(url: string, headers: RouteHeaders): Route {
 
   // 5. Anything unidentified: the page, never a script.
   return { body: 'html', why: 'fallback' }
+}
+
+/** Reuse the complete installer; change its default channel and platform hint.
+ * The final install call stays last, preserving truncated-pipe safety. Refuse
+ * a changed entry point rather than silently serving stable at a beta URL. */
+export function betaInstaller(body: 'sh' | 'ps1', text: string): string {
+  const marker = body === 'sh' ? /^main "\$@"\r?$/gm : /^param\(\[switch\]\$Beta\)\r?$/gm
+  if ([...text.matchAll(marker)].length !== 1) throw new Error(`Missing unique ${body} beta installer entry point`)
+  const hint = body === 'sh'
+    ? `STOKE_PS1_LINE='powershell -ExecutionPolicy Bypass -c "irm https://stoke.vinn.dev | iex"'`
+    : `$StokeShLine = 'curl -fsSL https://stoke.vinn.dev | sh'`
+  if (text.split(hint).length !== 2) throw new Error(`Missing unique ${body} installer platform hint`)
+  return text.replace(marker, line => body === 'sh'
+    ? line.replace('main "', 'main --beta "')
+    : line.replace('[switch]$Beta)', '[switch]$Beta = $true)'))
+    .replace(hint, hint.replace('https://stoke.vinn.dev', `https://stoke.vinn.dev/install-beta.${body === 'sh' ? 'ps1' : 'sh'}`))
 }
 
 /**

@@ -4,6 +4,8 @@ The `stoke` command controls the desktop app. `stoke .` opens your working folde
 
 ## Sign in and connect your devices
 
+The `stoke login` and `stoke remote` shortcuts below arrive in the next desktop beta. In beta.13, open the same settings from Stoke's sidebar and Settings.
+
 Run `stoke login` to open the existing **Stoke sign-in and device sync** settings. Sign in there, then approve this computer from an existing device or use your Recovery Kit. On a first computer, create your vault and save its Recovery Kit. The command never takes your password or access keys on the command line.
 
 Stoke sign-in connects your computers. Coding-agent sign-ins are separate: use the agent account manager, or `stoke account add codex work` / `stoke account add claude personal` to create a named agent account and open its sign-in tab. `stoke account list` and `stoke account env NAME` are available in the macOS and Windows command shims. They refer to coding-agent accounts, not your Stoke account.
@@ -21,23 +23,17 @@ For a VPS you use through SSH, add the VPS under Stoke's **SSH hosts** settings 
 macOS, Linux and Git Bash:
 
 ```sh
-curl -fsSL https://stoke.vinn.dev/install.sh | sh -s -- --beta
+curl -fsSL https://stoke.vinn.dev/install-beta.sh | sh
 ```
 
 Windows PowerShell:
 
 ```powershell
-& ([scriptblock]::Create((irm https://stoke.vinn.dev/install.ps1))) -Beta
+irm https://stoke.vinn.dev/install-beta.ps1 | iex
 ```
 
-For an automation using the ordinary PowerShell pipe, select the channel explicitly and remove it afterwards:
+These URLs reuse the ordinary installers with beta selected. For existing automation, `install.sh --beta`, `install.ps1 -Beta` and `STOKE_CHANNEL=beta` remain supported.
 
-```powershell
-$env:STOKE_CHANNEL='beta'
-irm https://stoke.vinn.dev/install.ps1 | iex
-Remove-Item Env:STOKE_CHANNEL
-```
-
-The stable installer remains the default. Beta selection checks the latest 100 published GitHub releases, picks the highest supported beta version, then verifies its ordinary platform manifest and SHA-512 before installing. If lookup fails, it stops instead of changing to stable. An exact `STOKE_VERSION` overrides beta selection. These flags select an installer release; `stoke --beta` is not a desktop launch option. To receive future betas through the app updater, enable beta releases under **Settings → Updates**.
+The ordinary installer URLs still select stable. Beta selection checks the latest 100 published GitHub releases, picks the highest supported beta version, then verifies its ordinary platform manifest and SHA-512 before installing. If lookup fails, it stops instead of changing to stable. An exact `STOKE_VERSION` overrides beta selection. The beta URLs select an installer release; `stoke --beta` is not a desktop launch option. To receive future betas through the app updater, enable beta releases under **Settings → Updates**.
 
 Run installers in a terminal outside Stoke because a macOS or Windows replacement may close the installed app and its sessions. Selecting beta does not change your agent's release channel.

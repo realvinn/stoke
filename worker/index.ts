@@ -25,6 +25,7 @@
  */
 import {
   CACHE_CONTROL,
+  betaInstaller,
   contentTypeFor,
   httpsRedirect,
   redirectBody,
@@ -37,6 +38,9 @@ import ps1 from '../install/install.ps1'
 import html from '../install/index.html'
 
 const BODIES: Record<InstallerBody, string> = { sh, ps1, html }
+const BETA_BODIES: Record<InstallerBody, string> = {
+  sh: betaInstaller('sh', sh), ps1: betaInstaller('ps1', ps1), html
+}
 
 export default {
   fetch(request: Request): Response {
@@ -72,16 +76,14 @@ export default {
 
     const route = routeFor(request.url, headers)
 
-    return new Response(BODIES[route.body], {
+    return new Response((route.channel === 'beta' ? BETA_BODIES : BODIES)[route.body], {
       headers: {
         'content-type': contentTypeFor(route.body),
         'cache-control': CACHE_CONTROL,
         // Which rule fired, for anyone debugging why they got the wrong body.
-        // A header rather than a comment inside the body, because the body has
-        // to stay byte-identical to the file in the repo — that equality is
-        // what makes `curl https://stoke.vinn.dev/install.sh` auditable against
-        // `install/install.sh` on GitHub.
-        'x-stoke-route': `${route.body} (${route.why})`,
+        // Standard URLs match their source file; beta URLs change only the
+        // channel entry point and platform hint, with no extra download.
+        'x-stoke-route': `${route.body} (${route.why}${route.channel ? '; beta' : ''})`,
         'referrer-policy': 'no-referrer',
         'x-content-type-options': 'nosniff'
       }

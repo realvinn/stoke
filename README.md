@@ -44,21 +44,22 @@ that resolves the latest release, checks every byte against the sha512 in the
 release's own update manifest, and puts the app where it goes. run the same line
 again to upgrade. `STOKE_DRY_RUN=1` does all of it except the installing.
 
-To install the newest published beta, add `--beta`. The plain command selects
-the latest stable release. On macOS, Linux or Git Bash:
+To install the newest published beta, use the beta URL. The plain command above
+selects the latest stable release. On macOS, Linux or Git Bash:
 
 ```bash
-curl -fsSL https://stoke.vinn.dev/install.sh | sh -s -- --beta
+curl -fsSL https://stoke.vinn.dev/install-beta.sh | sh
 ```
 
-In Windows PowerShell, pass `-Beta` to the downloaded script:
+In Windows PowerShell:
 
 ```powershell
-& ([scriptblock]::Create((irm https://stoke.vinn.dev/install.ps1))) -Beta
+irm https://stoke.vinn.dev/install-beta.ps1 | iex
 ```
 
-`STOKE_CHANNEL=beta` selects the same channel for scripts. `STOKE_VERSION` still
-wins when you need one exact published version, for example:
+For automation, the ordinary installers still accept `--beta` / `-Beta` or
+`STOKE_CHANNEL=beta`. `STOKE_VERSION` wins when you need one exact published
+version, for example:
 
 ```bash
 curl -fsSL https://stoke.vinn.dev/install.sh | STOKE_VERSION=1.0.0-beta.13 sh
@@ -71,14 +72,17 @@ already running there forward), `stoke --new` always opens another tab,
 `stoke --cli codex` starts a different coding cli, and `stoke --help` lists the
 rest. on a mac the installer links the command into `~/.local/bin`; on linux it is
 the launcher the installer writes; on windows, settings › updates › command line
-puts it on your path. `stoke login` opens Stoke sign-in and device sync setup;
-`stoke remote` opens Phone access setup. See [CLI and remote setup](docs/cli.md)
+puts it on your path. In the next desktop beta, `stoke login` opens Stoke sign-in
+and device sync setup, and `stoke remote` opens Phone access setup. See [CLI and remote setup](docs/cli.md)
 for the difference between Stoke sign-in, coding-agent accounts and SSH access.
 
-the scripts are [install/install.sh](install/install.sh) and
-[install/install.ps1](install/install.ps1), and the endpoint serves those files
-byte for byte — <https://stoke.vinn.dev/install.sh> is worth reading before you
-pipe anything into a shell.
+the canonical scripts are [install/install.sh](install/install.sh) and
+[install/install.ps1](install/install.ps1). You can read the exact served scripts
+at [install.sh](https://stoke.vinn.dev/install.sh),
+[install.ps1](https://stoke.vinn.dev/install.ps1),
+[install-beta.sh](https://stoke.vinn.dev/install-beta.sh) and
+[install-beta.ps1](https://stoke.vinn.dev/install-beta.ps1) before running them.
+The beta URLs reuse the same installers with the beta channel selected.
 
 ## run it from source
 

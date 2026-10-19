@@ -2,6 +2,7 @@
 # Stoke, in one line:
 #
 #     curl -fsSL https://stoke.vinn.dev | sh
+#     curl -fsSL https://stoke.vinn.dev/install-beta.sh | sh   # newest beta
 #
 # Installs or upgrades Stoke on macOS and Linux. Windows is install.ps1; this
 # script detects a Windows shell and says so rather than half-working.
@@ -391,7 +392,7 @@ stoke installer
   curl -fsSL https://stoke.vinn.dev | sh
   curl -fsSL https://stoke.vinn.dev | sh -s -- --beta
 
-  --beta              install the newest published beta; stable is the default.
+  --beta              select beta when using the standard installer URL.
   STOKE_CHANNEL=beta  the same selection through an environment variable.
   STOKE_DRY_RUN=1     resolve, download and verify, then stop. Installs nothing.
   STOKE_FORCE=1       install even when the installed copy is the same or newer.

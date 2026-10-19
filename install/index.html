@@ -137,10 +137,10 @@
 
       <h2>Want the beta?</h2>
       <p>The plain commands install the latest stable release. To select the newest published beta on macOS, Linux or Git Bash:</p>
-      <pre><span class="prompt">$ </span>curl -fsSL https://stoke.vinn.dev/install.sh | sh -s -- --beta</pre>
+      <pre><span class="prompt">$ </span>curl -fsSL https://stoke.vinn.dev/install-beta.sh | sh</pre>
       <p>In Windows PowerShell:</p>
-      <pre><span class="prompt">&gt; </span>&amp; ([scriptblock]::Create((irm https://stoke.vinn.dev/install.ps1))) -Beta</pre>
-      <p><code>STOKE_CHANNEL=beta</code> selects the same channel. An exact <code>STOKE_VERSION</code> overrides it. Run installers from a terminal outside Stoke.</p>
+      <pre><span class="prompt">&gt; </span>irm https://stoke.vinn.dev/install-beta.ps1 | iex</pre>
+      <p>No flags needed. For automation, the ordinary installers still accept <code>--beta</code> / <code>-Beta</code> or <code>STOKE_CHANNEL=beta</code>. An exact <code>STOKE_VERSION</code> overrides beta selection. Run installers from a terminal outside Stoke.</p>
 
       <h2>What it does</h2>
       <ul>
@@ -168,7 +168,9 @@
         running there. <code>stoke --new</code> always opens another tab, <code>stoke --cli
         codex</code> starts a different coding CLI, <code>stoke --open</code> only adds the
         folder to the sidebar, and <code>stoke --help</code> lists the rest. A running Stoke takes
-        the request; one that is not running starts. <code>stoke login</code> opens Stoke sign-in and device sync setup; <code>stoke remote</code> opens Phone access setup.
+        the request; one that is not running starts. In the next desktop beta,
+        <code>stoke login</code> opens Stoke sign-in and device sync setup, and
+        <code>stoke remote</code> opens Phone access setup.
       </p>
       <p>
         The command is a link in <code>~/.local/bin</code> on macOS, made by the installer (or by
@@ -188,10 +190,11 @@
       <p>
         Piping anything to a shell runs it as you. These are the exact bytes this page serves, at
         stable URLs, so you can read them before you run them:
-        <a href="/install.sh">install.sh</a> · <a href="/install.ps1">install.ps1</a>.
-        They are the files in
-        <a href="https://github.com/realvinn/stoke/tree/main/install">install/</a> in the repo, byte
-        for byte.
+        <a href="/install.sh">install.sh</a> · <a href="/install.ps1">install.ps1</a> ·
+        <a href="/install-beta.sh">install-beta.sh</a> · <a href="/install-beta.ps1">install-beta.ps1</a>.
+        The canonical scripts live in
+        <a href="https://github.com/realvinn/stoke/tree/main/install">install/</a> in the repo.
+        The beta URLs reuse them with the beta channel selected.
       </p>
       <p>
         If something between you and here rewrites your User-Agent and you get the wrong one,
