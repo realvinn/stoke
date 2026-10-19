@@ -10,6 +10,7 @@ import { SshFallbackScan, passwordFallbackArgs, resolvePasswordFallback, spawnSs
 import { sshChildEnv, sshExecutable } from '../src/main/ssh.ts'
 import { PtyExitTracker } from '../src/main/ptyExitTracker.ts'
 import { releaseExitedPtyTransports } from '../src/main/ptyTransportCleanup.ts'
+import { conptyScrub } from '../src/shared/sshAuth.ts'
 
 const failure = 'Received disconnect from 127.0.0.1 port 2222:2: Too many authentication failures\r\nDisconnected from 127.0.0.1 port 2222\r\n'
 const config = 'batchmode no\npubkeyauthentication true\npasswordauthentication yes\nkbdinteractiveauthentication yes\nnumberofpasswordprompts 3\npreferredauthentications publickey,keyboard-interactive,password\n'
@@ -82,6 +83,14 @@ export async function runSshFallbackChecks(): Promise<void> {
   check('password-only permission does not enable keyboard-interactive', passwordFallbackArgs(config.replace('kbdinteractiveauthentication yes', 'kbdinteractiveauthentication no'), args)?.[3], 'PreferredAuthentications=password')
   check('keyboard-interactive-only permission does not enable password', passwordFallbackArgs(config.replace('passwordauthentication yes', 'passwordauthentication no'), args)?.[3], 'PreferredAuthentications=keyboard-interactive')
 
+  // ConPTY paints cells and may omit a trailing blank or insert cursor moves
+  // inside a prompt. The fixture is ready at the colon, not at a space that
+  // may never be emitted (the same rendering rule as the real SSH detector).
+  const fixturePrompt = (text: string): boolean => conptyScrub(text).text.includes('fixture password:')
+  check('native fixture handshake accepts a prompt without a trailing blank', fixturePrompt('fixture password:'), true)
+  check('native fixture handshake accepts ConPTY cursor repainting', fixturePrompt('\u001b[Hfixture pass\u001b[1;13Hword:\u001b[1;18H'), true)
+  check('native fixture handshake waits until the complete prompt is ready', fixturePrompt('fixture pass'), false)
+
   const root = await mkdtemp(join(tmpdir(), 'stoke-ssh-fallback-'))
   try {
     const path = join(root, 'config')
@@ -148,23 +157,42 @@ export async function runSshFallbackChecks(): Promise<void> {
     // Actual native terminals exercise output drain, echo and exit ownership;
     // this fixture is its own process and never contacts a real SSH account.
     const script = join(root, 'fixture.cjs')
-    await writeFile(script, `if(process.argv.includes('PubkeyAuthentication=no')){process.stdin.setRawMode(true);process.stdout.write("fixture password: ");process.stdin.on('data',()=>{process.stdout.write('\\r\\nfixture command ran once\\r\\n');process.exit(0)});}else{process.stdout.write(${JSON.stringify(failure)});process.exit(255);}`)
+    await writeFile(script, `if(process.argv.includes('PubkeyAuthentication=no')){process.stdin.setRawMode(true);process.stdout.write("fixture password:");process.stdin.on('data',()=>{process.stdout.write('\\r\\nfixture command ran once\\r\\n');process.exit(0)});}else{process.stdout.write(${JSON.stringify(failure)});process.exit(255);}`)
     const nativeTracker = new PtyExitTracker(), nativeChildren: IPty[] = []
     const nativeEnv = { ...env, ELECTRON_RUN_AS_NODE: '1' }
     let nativeOutput = '', nativeStarts = 0
+    let replacementStarted!: () => void
+    const replacement = new Promise<void>(done => { replacementStarted = done })
     const real = spawnSshPty(process.execPath, [], { cwd: root, env: nativeEnv, cols: 80, rows: 24 }, {
-      spawn(file, nextArgs, options) { nativeStarts++; return spawn(file, [script, ...nextArgs], options) },
+      spawn(file, nextArgs, options) {
+        nativeStarts++
+        const child = spawn(file, [script, ...nextArgs], options)
+        if (nativeStarts === 2) replacementStarted()
+        return child
+      },
       started(child) { nativeChildren.push(child); nativeTracker.track(child) }, exited: releaseExitedPtyTransports, conpty: process.platform === 'win32',
       fallback: async (_file, nextArgs) => passwordFallbackArgs(config, nextArgs)
     })
-    let answered = false
+    let answered = false, childrenAtPrompt = 0
     const final = new Promise<number>(done => real.onExit(event => done(event.exitCode)))
-    real.onData(text => { nativeOutput += text; if (!answered && nativeOutput.includes('fixture password: ')) { answered = true; real.write('fixture-secret\r') } })
+    real.onData(text => {
+      nativeOutput += text
+      if (!answered && fixturePrompt(nativeOutput)) {
+        childrenAtPrompt = nativeChildren.length
+        answered = true
+        real.write('fixture-secret\r')
+      }
+    })
     let timer: ReturnType<typeof setTimeout> | undefined
     try {
-      const code = await Promise.race([final, new Promise<never>((_done, reject) => { timer = setTimeout(() => reject(new Error('SSH fallback native fixture timed out')), 7000) })])
-      check('actual native PTYs retry once and finish through the same logical tab', [nativeStarts, code, nativeOutput.includes('fixture command ran once')], [2, 0, true])
-      check('the replacement receives echo-off credentials without leaking them into output', nativeOutput.includes('fixture-secret'), false)
+      const diagnostic = (): string => JSON.stringify({ starts: nativeStarts, answered, raw: nativeOutput.slice(-2048), normalized: conptyScrub(nativeOutput).text.slice(-2048) })
+      const timeout = new Promise<never>((_done, reject) => { timer = setTimeout(() => reject(new Error(`SSH fallback native fixture timed out: ${diagnostic()}`)), 7000) })
+      await Promise.race([replacement, final.then(code => { throw new Error(`SSH fallback native fixture exited before replacement (code ${code}): ${diagnostic()}`) }), timeout])
+      check('the native key failure starts exactly one replacement before prompt completion', [nativeStarts, nativeChildren.length], [2, 2])
+      const code = await Promise.race([final, timeout])
+      const normalized = conptyScrub(nativeOutput).text
+      check('actual native PTYs retry once and finish through the same logical tab', [nativeStarts, code, normalized.includes('fixture command ran once'), childrenAtPrompt], [2, 0, true, 2])
+      check('the replacement receives echo-off credentials without leaking them into output', normalized.includes('fixture-secret'), false)
       check('both exact native children deliver their exit/transport cleanup', await nativeTracker.wait(), 0)
     } finally {
       clearTimeout(timer)
