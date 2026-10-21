@@ -1,6 +1,19 @@
 import type { ContextSnapshot, StoredTab, StoredTabs } from '@shared/types'
 import type { Tab } from '../types'
 
+/** In-memory undo for a user close. Never keep private, install, enrollment or login tabs. */
+export function closedTabFor(tab: Tab): Tab | null {
+  if (tab.private || tab.installing?.length || tab.enrollHostId || tab.accountLogin) return null
+  return {
+    ...tab,
+    ptyId: '',
+    status: tab.kind === 'session' ? 'paused' : 'running',
+    exitCode: null,
+    reconnect: undefined,
+    quickTerminalContextId: undefined
+  }
+}
+
 /**
  * Between the live tab list and the snapshot that outlives the process.
  *

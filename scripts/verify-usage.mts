@@ -37,7 +37,7 @@ import {
   readCredentials
 } from '../src/main/usage.ts'
 import { toSnapshot } from '../src/main/statusLine.ts'
-import { boundUsageReading, UsageBindings, usageCacheKey } from '../src/main/usageBindings.ts'
+import { boundUsageReading, readRemoteUsage, UsageBindings, usageCacheKey } from '../src/main/usageBindings.ts'
 import { keepUsage, mergeUsageWindows, statusLineWindows } from '../src/shared/statusLine.ts'
 import {
   codexCredits,
@@ -524,6 +524,37 @@ console.log('\neach Claude account reads its own token, from its own two stores'
   check('account B reads account B’s', (await readCredentials(homeB))?.token, 'sk-ant-oat-B')
   check('and from the file, never the Keychain, while the file holds a live one', (await readCredentials(homeA))?.source, 'file')
   check('a captured credential location survives a later home selection', (await readCredentials(homeB, credentialSources(homeA)))?.token, 'sk-ant-oat-A')
+}
+
+console.log('\nremote-only sessions actively read usage on the slower shared schedule')
+{
+  const scheduler = new UsageScheduler()
+  const plan = planUsageSources({ accounts: {}, claudeAuth: 'default', endpointModes: {}, openrouterKey: '' }, {}, '/fixture')[0]
+  let calls = 0
+  let at = 1_000_000
+  let fail = false
+  const read = async (): Promise<UsageSnapshot> => {
+    calls++
+    return { windows: fail ? [] : [{ kind: 'session', label: '5 hours', percent: calls * 10, severity: 'normal', resetsAt: null, elapsed: null, active: true }], extraCredits: null, fetchedAt: at, error: fail ? '429' : null, ...(fail ? { retryAfter: 900_000 } : {}) }
+  }
+  const remote = () => readRemoteUsage(scheduler, plan, at, read)
+  check('cold host cache is populated without a local usage chip', (await remote()).windows[0]?.percent, 10)
+  at += 30_000
+  await remote()
+  check('remote polls slower than the local 30-second chip', calls, 1)
+  at += 30_000
+  check('remote-only use refreshes after a minute', (await remote()).windows[0]?.percent, 20)
+  await scheduler.read(usageCacheKey(plan), 'poll', at, read, USAGE_FLOORS.anthropic)
+  check('local readers share the remote account request', calls, 2)
+  fail = true
+  at += 60_000
+  check('a remote 429 retains the account’s last good reading', (await remote()).windows[0]?.percent, 20)
+  at += 60_000
+  await remote()
+  check('remote polling respects Retry-After beyond its own cadence', calls, 3)
+  const another = { ...plan, key: 'anthropic:other', accountId: 'other' }
+  await readRemoteUsage(scheduler, another, at, read)
+  check('one remote account’s backoff does not block another', calls, 4)
 }
 
 console.log('\neach account keeps its own backoff and its own last good reading')

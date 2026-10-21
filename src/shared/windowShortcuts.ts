@@ -1,5 +1,5 @@
 /** Native input interception also covers the embedded browser's separate WebContents. */
-export type TabShortcut = { type: 'newTab' } | { type: 'closeTab' } | { type: 'cycleTab'; delta: -1 | 1 } | { type: 'tab'; index: number }
+export type TabShortcut = { type: 'newTab' } | { type: 'reopenTab' } | { type: 'closeTab' } | { type: 'cycleTab'; delta: -1 | 1 } | { type: 'tab'; index: number }
 
 /** Tab controls are caught before xterm can send Ctrl+T/W/Tab to the PTY. */
 export function tabShortcut(input: { type: string; key: string; code?: string; control: boolean; meta: boolean; shift: boolean; alt: boolean; isAutoRepeat?: boolean; isComposing?: boolean }, isMac: boolean): TabShortcut | null {
@@ -10,6 +10,7 @@ export function tabShortcut(input: { type: string; key: string; code?: string; c
   const digit = /^Digit([1-9])$/.exec(code)
   if (digit && !input.shift) return { type: 'tab', index: Number(digit[1]) }
   if (input.shift && (code === 'BracketLeft' || code === 'BracketRight')) return { type: 'cycleTab', delta: code === 'BracketLeft' ? -1 : 1 }
+  if (code === 'KeyT' && input.shift) return { type: 'reopenTab' }
   if (isMac && input.shift) return null
   return code === 'KeyT' ? { type: 'newTab' } : code === 'KeyW' ? { type: 'closeTab' } : null
 }

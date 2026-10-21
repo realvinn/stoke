@@ -26,7 +26,7 @@ import { CH } from '@shared/ipc'
 import { AgentLifecycleGate } from '../shared/agentLifecycle.ts'
 import { QuickTerminal } from './quickTerminal.ts'
 import { ownedPtyExits } from './ptyExitTracker.ts'
-import { boundUsageReading, UsageBindings, usageCacheKey } from './usageBindings.ts'
+import { boundUsageReading, readRemoteUsage, UsageBindings, usageCacheKey } from './usageBindings.ts'
 import { AccountIdentities, planAccountIdentity, probeAccountIdentity } from './accountIdentity.ts'
 import { configureWindowsAccountIdentityLibrary } from './accountIdentityWindows.ts'
 import { accountIdentityTarget } from '../shared/accountIdentity.ts'
@@ -487,7 +487,7 @@ function chatIndexForGuests(): ChatIndexAccess {
  * session's usage is the far machine's sign-in, so it has none here, as on
  * the chip.
  */
-function remoteSessionStatusFor(ptyId: string): RemoteSessionStatus | null {
+async function remoteSessionStatusFor(ptyId: string): Promise<RemoteSessionStatus | null> {
   const facts = ptys?.launchFacts(ptyId)
   if (!facts) return null
   const ctx = watcher?.snapshot(facts.sessionId) ?? null
@@ -497,7 +497,9 @@ function remoteSessionStatusFor(ptyId: string): RemoteSessionStatus | null {
   if (!facts.hostId && isCodingCliId(facts.cli)) {
     const plan = usageBindings.for({ cli: facts.cli, accountId: facts.accountId || DEFAULT_ACCOUNT_ID, ptyId })
     if (plan) {
-      const snap = usageScheduler.peek(usageCacheKey(plan))
+      const snap = await readRemoteUsage(usageScheduler, plan, Date.now(), () => readUsageSource(plan, Date.now(), process.env.STOKE_FAKE_USAGE || undefined))
+      // The session may have closed while its account endpoint was answering.
+      if (!ptys?.launchFacts(ptyId)) return null
       const now = Date.now()
       if (plan.source === 'anthropic') {
         const m = claudeWindowsFor(plan.accountId, lastStatusLines.get(plan.accountId) ?? line, snap, now)

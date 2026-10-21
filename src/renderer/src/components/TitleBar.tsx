@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { capsFor, cliFor, cliIdOf, type CodingCliId } from '@shared/codingClis'
 import type { ContextSnapshot } from '@shared/types'
 import type { WorklogButtonState } from '@shared/worklog'
-import { UsageChip } from './UsageMeter'
+import type { RemoteTabView } from '@shared/hub/remote'
+import { RemoteUsageChip, UsageChip } from './UsageMeter'
 import { PhonePopover } from './PhonePopover'
 import { ContextMenu, type MenuItem } from './ContextMenu'
 import { RemoteArrows, TabIndicator } from './TabIndicator'
@@ -119,6 +120,7 @@ interface Props {
    * machine, by ptyId. Such a tab carries the remote tab's two arrows too, so
    * the session being watched or typed into from elsewhere is marked here.
    */
+  remoteView?: RemoteTabView | null
   hostedBy?: Record<string, string[]>
 }
 
@@ -157,6 +159,7 @@ export function TitleBar({
   onToggleAgentTags,
   settingsOpen,
   toolbar,
+  remoteView = null,
   hostedBy = {}
 }: Props): React.JSX.Element {
   const isMac = platform === 'darwin'
@@ -165,8 +168,8 @@ export function TitleBar({
    * The usage chip follows the tab in front: its agent, on its account. Not a
    * New tab, an install, a key enrollment or a sign-in tab (none runs a
    * session), and not an SSH tab, whose agent spends the far machine's own
-   * sign-in. Remote/SSH tabs show no local quota chip; their own readings
-   * belong in the remote status bar. Other non-session tabs show Default.
+   * sign-in. Remote tabs display only their host's relayed readings.
+   * Other non-session tabs show Default.
    */
   const activeTab = tabs.find((t) => t.id === activeTabId)
   const usageTarget = useMemo(
@@ -597,6 +600,7 @@ export function TitleBar({
           <span className="sr-only">Toggle worklog review</span>
         </button>
         <PhonePopover onOpenSettings={onOpenPhoneSettings} settingsOpen={settingsOpen} />
+        {activeTab?.kind === 'remote' && <RemoteUsageChip key={activeTab.id} view={remoteView} />}
         {activeTab?.kind !== 'remote' && activeTab?.kind !== 'grok-bot' && !activeTab?.hostId && <UsageChip target={usageTarget} accountLabel={activeTab ? labelFor?.(activeTab).account?.text : undefined} />}
 
         <button

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import type { UsageSnapshot, UsageTarget } from '../shared/types.ts'
 import { usageKey, usageRouteFor, usageTargetKey } from '../shared/usageSources.ts'
-import { planUsageSources, toReading, type UsagePlanInput, type UsageSourcePlan } from './usageBoard.ts'
+import { planUsageSources, toReading, USAGE_FLOORS, type UsageScheduler, type UsagePlanInput, type UsageSourcePlan } from './usageBoard.ts'
 import { accountEnv } from '../shared/accounts.ts'
 import { applyClaudeAccountEnv } from '../shared/claudeAccountEnv.ts'
 
@@ -14,6 +14,12 @@ export function usageCacheKey(plan: UsageSourcePlan): string {
 
 export function boundUsageReading(plan: UsageSourcePlan, snapshot: UsageSnapshot) {
   return { ...toReading(plan, snapshot), key: usageCacheKey(plan) }
+}
+
+/** A serving host polls even when its own usage chip is idle. Share its cache and backoff. */
+export function readRemoteUsage(scheduler: UsageScheduler, plan: UsageSourcePlan, now: number, read: () => Promise<UsageSnapshot>): Promise<UsageSnapshot> {
+  const floors = USAGE_FLOORS[plan.source]
+  return scheduler.read(usageCacheKey(plan), 'poll', now, read, { ...floors, poll: Math.max(60_000, floors.poll) })
 }
 
 /** No tokens are written to disk or sent across IPC. Bindings end with the PTY. */

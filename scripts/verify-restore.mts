@@ -23,7 +23,7 @@ import {
   writeUpdateRestart
 } from '../src/main/tabStore.ts'
 import type { ContextSnapshot, StoredTab, StoredTabs } from '../src/shared/types.ts'
-import { fromStored, screensFrom, toStored } from '../src/renderer/src/lib/restore.ts'
+import { closedTabFor, fromStored, screensFrom, toStored } from '../src/renderer/src/lib/restore.ts'
 import { dropPrivateStoredTabs } from '../src/shared/privateChat.ts'
 import type { Tab } from '../src/renderer/src/types.ts'
 
@@ -581,6 +581,20 @@ console.log('\nthe update-restart marker')
   check('but is still cleared, so it cannot resurface', consumeUpdateRestart(file, NOW), false)
   check('and nothing else in the directory was touched', readFileSync(join(dir, 'tabs.json'), 'utf8'), 'bystander')
   rmSync(dir, { recursive: true, force: true })
+}
+
+console.log('\nundo close keeps conversation identity and discards dead process state')
+{
+  const original: Tab = { ...fromStored(state()).tabs[0], status: 'running', ptyId: 'dead-pty', accountId: 'work', customTitle: 'My task', agentResumeId: 'thread', quickTerminalContextId: 'old-shell', reconnect: { attempt: 1, at: NOW } }
+  const back = closedTabFor(original)!
+  check('reopen resumes on the original account and conversation', [back.sessionId, back.accountId, back.agentResumeId, back.customTitle], ['sess-1', 'work', 'thread', 'My task'])
+  check('reopen never reuses the killed PTY or its reconnect timer/shell', [back.ptyId, back.status, back.reconnect, back.quickTerminalContextId], ['', 'paused', undefined, undefined])
+  check('capturing undo does not mutate the live tab', original.ptyId, 'dead-pty')
+  for (const fields of [{ private: true as const }, { installing: ['claude'] as Tab['installing'] }, { enrollHostId: 'host' }, { accountLogin: 'work' }]) {
+    check(`never retain ${Object.keys(fields)[0]} in undo history`, closedTabFor({ ...original, ...fields }), null)
+  }
+  const remote = { ...original, kind: 'remote' as const, remote: { tabId: 'old-relay', device: 'other', deviceLabel: 'Other', platform: 'darwin', ptyId: 'host-pty' } }
+  check('remote undo retains the host session to request a fresh relay', closedTabFor(remote)?.remote?.ptyId, 'host-pty')
 }
 
 console.log(failures ? `\n${failures} failed` : '\nall pass')

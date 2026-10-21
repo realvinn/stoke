@@ -132,7 +132,7 @@ import { welcomePlan, type WelcomeReason } from '@shared/welcome'
 import { matchShortcut, typeThroughKey } from './lib/shortcuts'
 import { newTab } from './lib/newTab'
 import { profileIdForCwd } from './lib/projectProfile'
-import { fromStored, screensFrom, toStored, restorableTabs } from './lib/restore'
+import { closedTabFor, fromStored, screensFrom, toStored, restorableTabs } from './lib/restore'
 import { focusTerm, hasActiveFinder, openActiveFinder, screenOf, termSizeHint } from './lib/termRegistry'
 import { findConversation, findOwner, findTargetOf, paletteFindHint } from './lib/terminalFind'
 import {
@@ -3410,11 +3410,21 @@ export function App(): React.JSX.Element {
     setSessionLine(without)
   }, [])
 
+  const closedTabsRef = useRef<{ tab: Tab; screen: string }[]>([])
+  const reopenRemoteRef = useRef<(tab: Tab) => void>(() => {})
+  const restoredScreensRef = useRef(restoredScreens)
+  restoredScreensRef.current = restoredScreens
+
   const closeTab = useCallback(
-    (id: string): void => {
+    (id: string, remember = false): void => {
       const list = tabsRef.current
       const tab = list.find((t) => t.id === id)
       if (!tab) return
+      const closed = remember ? closedTabFor(tab) : null
+      if (closed) {
+        const screen = tab.status === 'paused' ? restoredScreensRef.current[id] ?? '' : screenOf(tab.ptyId)
+        closedTabsRef.current = [...closedTabsRef.current.slice(-19), { tab: closed, screen }]
+      }
       // A paused tab has no process — `ptyId` is '' — so there is nothing for
       // `pty.kill` to do. `PtySessions.kill('')` is already a harmless no-op
       // today (pty.ts:331-333); this guard is defensive, not a fix for a
@@ -3471,6 +3481,26 @@ export function App(): React.JSX.Element {
     },
     [dropRestoredScreen, dropSessionState, syncPending, cancelReconnect]
   )
+
+  const reopenTab = useCallback((): void => {
+    const closed = closedTabsRef.current.pop()
+    if (!closed) return
+    if (closed.tab.kind === 'remote') {
+      reopenRemoteRef.current(closed.tab)
+      return
+    }
+    // A fresh tab identity and PTY; resumption keeps the original conversation/account.
+    const tab = { ...closed.tab, id: newTab().id }
+    const next = [...tabsRef.current, tab]
+    tabsRef.current = next
+    setTabs(next)
+    activeTabIdRef.current = tab.id
+    setActiveTabId(tab.id)
+    if (tab.kind === 'session') {
+      setRestoredScreens(cur => ({ ...cur, [tab.id]: closed.screen }))
+      void resumeTabForRef.current(tab)?.()
+    }
+  }, [])
 
   const openGrokBot = useCallback(() => {
     if (!grokBotEnabled) return
@@ -3552,7 +3582,7 @@ export function App(): React.JSX.Element {
           .then(({ files }) => {
             if (!tabsRef.current.some((t) => t.id === id)) return
             if (!privateCloseAsks({ files, busy })) {
-              closeTab(id)
+              closeTab(id, true)
               return
             }
             const prompt: BusyPrompt = { kind: 'closePrivate', tabId: id, files, busy: busy === true }
@@ -3570,7 +3600,7 @@ export function App(): React.JSX.Element {
         setBusyPrompt({ kind: 'close', tabId: id })
         return
       }
-      closeTab(id)
+      closeTab(id, true)
     },
     [closeTab]
   )
@@ -3954,7 +3984,7 @@ export function App(): React.JSX.Element {
         // A running private chat is deleted by its close, so only its own
         // Close does that, after its own question (`requestCloseTab`).
         if (tab.kind === 'session' && tab.private && tab.status === 'running') continue
-        closeTab(id)
+        closeTab(id, true)
       }
     },
     [closeTab]
@@ -3983,14 +4013,14 @@ export function App(): React.JSX.Element {
     (profileId: string): void => {
       const inFlight = new Set([...startingRef.current, ...relaunchingRef.current])
       const plan = profileClosePlan(tabsRef.current, profileId, profileOwner, liveRef.current, inFlight)
-      for (const id of plan.close) closeTab(id)
+      for (const id of plan.close) closeTab(id, true)
     },
     [closeTab, profileOwner]
   )
   const projectTabsNow = useCallback((path: string) => profileClosePlan(tabs, 'project', cwd => cwd === path ? 'project' : null, live, new Set([...starting, ...relaunching, ...movingTabs.current])), [tabs, live, starting, relaunching])
   const closeProjectTabs = useCallback((path: string): void => {
     const plan = profileClosePlan(tabsRef.current, 'project', cwd => cwd === path ? 'project' : null, liveRef.current, new Set([...startingRef.current, ...relaunchingRef.current, ...movingTabs.current]))
-    for (const id of plan.close) closeTab(id)
+    for (const id of plan.close) closeTab(id, true)
   }, [closeTab])
 
   /*
@@ -4424,13 +4454,13 @@ export function App(): React.JSX.Element {
     }
     // 'wait' is "Detach, keep running": only the local ssh goes.
     if (answer === 'wait') {
-      closeTab(tab.id)
+      closeTab(tab.id, true)
       return
     }
     // 'force' is "End session": the tab goes at once, and the shell on the
     // machine is ended by name over a BatchMode connection of its own.
     const hostId = tab.hostId
-    closeTab(tab.id)
+    closeTab(tab.id, true)
     if (!hostId) return
     void window.stoke.ssh.endRemoteSession(hostId, name).then((r) => {
       if (!r.ok) {
@@ -4473,7 +4503,7 @@ export function App(): React.JSX.Element {
         // No Wait here (only 'force' or the 'cancel' handled above): closing
         // has nowhere to come back to the way a relaunch or a restart does,
         // and the session stays on the sidebar to resume later regardless.
-        if (answer === 'force') closeTab(prompt.tabId)
+        if (answer === 'force') closeTab(prompt.tabId, true)
         return
       }
       const tab = tabsRef.current.find((t) => t.id === prompt.tabId)
@@ -5194,6 +5224,9 @@ export function App(): React.JSX.Element {
         case 'newTab':
           openNewTab()
           break
+        case 'reopenTab':
+          reopenTab()
+          break
         case 'closeTab':
           if (activeTabId) requestCloseTab(activeTabId)
           break
@@ -5275,12 +5308,13 @@ export function App(): React.JSX.Element {
     window.addEventListener('keydown', onKey)
     const offNativeTabs = window.stoke.window.onTabShortcut(action => {
       if (action.type === 'newTab') openNewTab()
+      else if (action.type === 'reopenTab') reopenTab()
       else if (action.type === 'closeTab') { const id = activeTabIdRef.current; if (id) requestCloseTab(id) }
       else if (action.type === 'tab') { const target = tabsRef.current[action.index - 1]; if (target) setActiveTabId(target.id) }
       else if (action.type === 'cycleTab') setActiveTabId(current => cycleTab(tabsRef.current.map(tab => tab.id), current, action.delta) ?? current)
     })
     return () => { window.removeEventListener('keydown', onKey); offNativeTabs() }
-  }, [isMac, tabs, activeTabId, requestCloseTab, openNewTab])
+  }, [isMac, tabs, activeTabId, requestCloseTab, openNewTab, reopenTab])
 
   /* ------------------------------------------------- first-run campfire */
 
@@ -5558,7 +5592,7 @@ export function App(): React.JSX.Element {
    * a double click must not make two tabs on one relay.
    */
   const remoteOpening = useRef(new Set<string>())
-  const openRemoteSession = useCallback((m: OtherMachineView, s: RemoteSessionSummary): void => {
+  const openRemoteSession = useCallback((m: Pick<OtherMachineView, 'id' | 'label' | 'platform'>, s: Pick<RemoteSessionSummary, 'ptyId' | 'title' | 'project'>): void => {
     const key = `${m.id}\n${s.ptyId}`
     if (remoteOpening.current.has(key)) return
     remoteOpening.current.add(key)
@@ -5590,6 +5624,11 @@ export function App(): React.JSX.Element {
       .catch((e) => setError(ipcErrorMessage(e)))
       .finally(() => remoteOpening.current.delete(key))
   }, [])
+
+  reopenRemoteRef.current = (tab) => {
+    const r = tab.remote
+    if (r) openRemoteSession({ id: r.device, label: r.deviceLabel, platform: r.platform }, { ptyId: r.ptyId, title: tab.customTitle || tab.title, project: '' })
+  }
 
   /** A hit from another computer: always the read-only viewer. Continuing it there is v2, never a copy here. */
   const openRemoteChat = useCallback(
@@ -6010,6 +6049,7 @@ export function App(): React.JSX.Element {
     >
       <TitleBar
         hostedBy={hostedBy}
+        remoteView={hubRemote.tabs.find(v => v.id === activeTab?.remote?.tabId) ?? null}
         platform={platform}
         showBrand={settings?.showBrand !== false}
         maximized={maximized}

@@ -15,6 +15,7 @@ import {
   windowResetLabel,
   worstTone
 } from '@shared/usageView'
+import type { RemoteTabView } from '@shared/hub/remote'
 import { agentMark } from '../lib/agentColor'
 
 /**
@@ -421,24 +422,7 @@ export function UsageChip({ target, accountLabel }: { target: UsageTarget | null
         title={`${who} — ${label}${asOf ? ` — as of ${asOf}` : ''}. Click for every account.`}
       >
         {rows.length ? (
-          rows.map((w) => (
-            <span className="usage-mini" data-tone={tone(w)} key={`${w.kind}-${w.label}`} aria-hidden="true">
-              <span className="usage-mini-label">{shortLabel(w)}</span>
-              <span
-                className="usage-track usage-mini-track"
-                style={{ '--usage-fill': w.percent / 100 } as React.CSSProperties}
-              >
-                <span className="usage-fill" />
-                {w.elapsed !== null && (
-                  <span className="usage-pace" style={{ left: `${w.elapsed * 100}%` }} />
-                )}
-              </span>
-              <span className="usage-mini-left">{remainingLabel(w)}</span>
-              <span className="usage-mini-reset">
-                {w.kind === 'session' ? countdown(w.resetsAt, w.percent, now) : ''}
-              </span>
-            </span>
-          ))
+          <MiniRows rows={rows} now={now} />
         ) : balance ? (
           <span className="usage-mini usage-mini-balance" aria-hidden="true">
             <span className="usage-mini-label">{balance.unit === 'usd' ? 'credit' : 'cr'}</span>
@@ -492,6 +476,62 @@ export function UsageChip({ target, accountLabel }: { target: UsageTarget | null
           </div>
         </>
       )}
+    </div>
+  )
+}
+
+function MiniRows({ rows, now }: { rows: UsageWindow[]; now: number }): React.JSX.Element {
+  return <>{rows.map(w => (
+    <span className="usage-mini" data-tone={tone(w)} key={`${w.kind}-${w.label}`} aria-hidden="true">
+      <span className="usage-mini-label">{shortLabel(w)}</span>
+      <span className="usage-track usage-mini-track" style={{ '--usage-fill': w.percent / 100 } as React.CSSProperties}>
+        <span className="usage-fill" />
+        {w.elapsed !== null && <span className="usage-pace" style={{ left: `${w.elapsed * 100}%` }} />}
+      </span>
+      <span className="usage-mini-left">{remainingLabel(w)}</span>
+      <span className="usage-mini-reset">{w.kind === 'session' ? countdown(w.resetsAt, w.percent, now) : ''}</span>
+    </span>
+  ))}</>
+}
+
+/** Read-only host readings: never substitute this computer's account or poll it here. */
+export function RemoteUsageChip({ view }: { view: RemoteTabView | null }): React.JSX.Element {
+  const [open, setOpen] = useState(false)
+  const [now, setNow] = useState(() => Date.now())
+  const panelRef = useRef<HTMLDivElement>(null)
+  const chipRef = useRef<HTMLButtonElement>(null)
+  useFloatingLayer(panelRef, open)
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), TICK_MS)
+    return () => clearInterval(timer)
+  }, [])
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent): void => { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('keydown', onKey)
+    panelRef.current?.querySelector<HTMLElement>('button')?.focus()
+    return () => { document.removeEventListener('keydown', onKey); chipRef.current?.focus() }
+  }, [open])
+  const status = view?.session
+  const rows = status?.usage ?? []
+  const at = status?.usageAt
+  const stale = view?.state !== 'open' || (at != null && isStale(at, now))
+  const device = view?.deviceLabel || 'remote computer'
+  const label = rows.length ? rows.map(w => `${w.label}: ${remainingLabel(w)}`).join('; ') : 'Waiting for the host’s usage reading'
+  return (
+    <div className="usage-chip-wrap">
+      <button ref={chipRef} className="usage-chip" {...agentMark(status?.agent ?? null)} data-remote-usage data-stale={stale || undefined} data-tone={worstTone(rows)} aria-expanded={open} aria-label={`Usage on ${device}. ${label}`} title={`${device} — ${label}${at != null ? ` — as of ${clock(at)}` : ''}`} onClick={() => setOpen(v => !v)}>
+        {rows.length ? <MiniRows rows={rows} now={now} /> : <span className="usage-mini"><span className="usage-mini-label">usage</span><span className="usage-mini-left">—</span></span>}
+      </button>
+      {open && <>
+        <div className="popover-backdrop" onClick={() => setOpen(false)} />
+        <div ref={panelRef} className="popover usage-panel" role="dialog" aria-label={`Usage on ${device}`}>
+          <div className="usage-head"><span className="popover-title">Usage on {device}</span><button className="status-btn" onClick={() => setOpen(false)} aria-label="Close usage">×</button></div>
+          {rows.map(w => <Bar key={`${w.kind}-${w.label}`} window={w} now={now} />)}
+          <p className="popover-text">{rows.length ? (at != null ? `As of ${clock(at)}. ` : '') : `${label}. `}The host refreshes usage about once a minute while connected; provider backoff can delay it.</p>
+          {view?.state !== 'open' && <p className="popover-text" role="status">Disconnected. Waiting for the host to reconnect.</p>}
+        </div>
+      </>}
     </div>
   )
 }

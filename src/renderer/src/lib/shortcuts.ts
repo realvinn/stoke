@@ -3,6 +3,7 @@ import { tabShortcut } from '../../../shared/windowShortcuts.ts'
 export type ShortcutAction =
   | { type: 'palette' }
   | { type: 'newTab' }
+  | { type: 'reopenTab' }
   | { type: 'closeTab' }
   | { type: 'toggleBrowser' }
   | { type: 'settings' }
@@ -17,7 +18,7 @@ export type ShortcutAction =
  * needs.
  *
  * macOS uses Cmd. Tab controls on Windows/Linux reserve Ctrl+T/W and
- * Ctrl+Tab, with the existing Shift aliases retained. Main intercepts these
+ * Ctrl+Tab. Ctrl+Shift+T reopens a closed tab; Ctrl+Shift+W closes one. Main intercepts these
  * before xterm or a browser page can consume them. Other letter controls keep
  * Shift so readline bindings such as Ctrl+K/F remain available to the CLI.
  *
@@ -126,6 +127,7 @@ export function matchShortcut(
 export type ChordName =
   | 'palette'
   | 'newTab'
+  | 'reopenTab'
   | 'closeTab'
   | 'toggleBrowser'
   | 'settings'
@@ -137,6 +139,7 @@ export type ChordName =
 const CHORD_KEY: Record<ChordName, string> = {
   palette: 'K',
   newTab: 'T',
+  reopenTab: 'T',
   closeTab: 'W',
   toggleBrowser: 'B',
   settings: ',',
@@ -159,7 +162,7 @@ export function chordLabel(name: ChordName, isMac: boolean): string {
   const cycles = name === 'nextTab' || name === 'prevTab'
   // Non-tab letter chords retain Shift off macOS; cycle aliases and private
   // chat use Shift everywhere.
-  const shift = cycles || name === 'newPrivate' || (!isMac && name !== 'newTab' && name !== 'closeTab')
+  const shift = cycles || name === 'reopenTab' || name === 'newPrivate' || (!isMac && name !== 'newTab' && name !== 'closeTab')
   return isMac ? `${shift ? '\u21e7' : ''}\u2318${CHORD_KEY[name]}` : `Ctrl+${shift ? 'Shift+' : ''}${CHORD_KEY[name]}`
 }
 

@@ -42,7 +42,8 @@ first, because it is the assertion that protects something rather than adding so
 
 > **Superseded on 2026-10-18 by the owner's standard Windows shortcuts.** Tab
 > controls reserve Ctrl+T/W and Ctrl+Tab/Shift+Tab on Windows/Linux, retaining the
-> Shift aliases. Shared `tabShortcut` matching runs in Electron's
+> Shift+W alias. Ctrl+Shift+T (Cmd+Shift+T on Mac) now reopens the last
+> closed tab. Shared `tabShortcut` matching runs in Electron's
 > `before-input-event` for app and embedded-page WebContents, and in the DOM/xterm
 > custom handler fallback. Bound controls are withheld before PTY input; they
 > must never be handled only by a bubbling window listener. Mac uses Cmd+T/W
