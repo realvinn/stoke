@@ -632,7 +632,7 @@ interface Box {
 const json = (body: unknown, status = 200): Response => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
 const v1 = (url: URL): string => url.pathname.replace(/^.*?\/v1\//, '/v1/')
 
-function device(name: string, initial: Partial<Settings>, remote?: RemoteMachineDeps): Box {
+function device(name: string, initial: Partial<Settings>, remote?: RemoteMachineDeps, exec: ExecRun = fakeSshG()): Box {
   const userData = join(TMP, `ud-${name}`)
   mkdirSync(userData, { recursive: true })
   const ssh = { dir: join(TMP, `home-${name}`, '.ssh'), config: join(TMP, `home-${name}`, '.ssh', 'config'), home: join(TMP, `home-${name}`) }
@@ -664,7 +664,7 @@ function device(name: string, initial: Partial<Settings>, remote?: RemoteMachine
     },
     emit: () => undefined,
     ssh,
-    exec: fakeSshG(),
+    exec,
     presence: null,
     remote,
     accounts: box.accounts,
@@ -747,6 +747,40 @@ const B = device('win', {
 const extras: Box[] = []
 
 try {
+  // The picker must identify one key used by several servers without testing logins.
+  let configReads = 0
+  let unavailable = false
+  const pickerExec: ExecRun = async (file, args, timeout) => {
+    configReads++
+    if (unavailable && args.at(-1) === 'vps') return { ok: false, stdout: '', stderr: 'bad config', error: 'bad config' }
+    return fakeSshG()(file, args, timeout)
+  }
+  const picker = device('key-picker', { hosts: [
+    { id: 'host-1', label: 'NUC', alias: 'nuc', command: '', persist: 'off' },
+    { id: 'host-2', label: 'PT-VPS-2', alias: 'vps', command: '', persist: 'off' },
+    { id: 'host-3', label: 'Git server', alias: 'git', command: '', persist: 'off' }
+  ] }, undefined, pickerExec)
+  extras.push(picker)
+  for (const name of ['id_ed25519', 'work', 'unused']) {
+    const k = syntheticKey(name, 'none')
+    writeFileSync(join(picker.ssh.dir, name), k.priv, { mode: 0o600 })
+    writeFileSync(join(picker.ssh.dir, `${name}.pub`), k.pub)
+  }
+  writeFileSync(picker.ssh.config, 'Host nuc vps\n  IdentityFile ~/.ssh/id_ed25519\nHost git\n  IdentityFile ~/.ssh/work\n')
+  const pickerKeys = await picker.svc.localKeys()
+  check('the picker names every saved server configured for each key, including a reused default', pickerKeys.map(k => [k.name, k.hosts, k.hostsIncomplete]), [
+    ['id_ed25519', ['NUC', 'PT-VPS-2'], false], ['unused', [], false], ['work', ['Git server'], false]
+  ])
+  check('server configurations are read once per server, rather than once per key', configReads, 3)
+  picker.set({ hosts: [...picker.settings().hosts, { id: 'host-4', label: 'Invalid alias', alias: '-oProxyCommand=unexpected', command: '', persist: 'off' }] })
+  configReads = 0
+  const invalidAlias = await picker.svc.localKeys()
+  check('an alias that looks like an SSH option is never executed while listing keys', [configReads, invalidAlias.every(k => k.hostsIncomplete), invalidAlias[0].hosts], [3, true, ['NUC', 'PT-VPS-2']])
+  unavailable = true
+  check('an unreadable configuration preserves known server names and marks the list incomplete', (await picker.svc.localKeys()).map(k => [k.name, k.hosts, k.hostsIncomplete]), [
+    ['id_ed25519', ['NUC'], true], ['unused', [], true], ['work', ['Git server'], true]
+  ])
+
   await A.svc.start()
   await B.svc.start()
   check('before an address, the panel is off', A.svc.view().phase, 'off')

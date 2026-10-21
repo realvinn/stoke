@@ -167,7 +167,7 @@ export function AccountSyncSettings({ onBack, remoteBar, onRemoteBar, chatIndexO
           {view.pairs.length > 0 && <Requests view={view} />}
           <Syncing view={view} now={now} />
           {view.notes.length > 0 && <Conflicts view={view} />}
-          <SshKeys view={view} />
+          <div data-setting="account.ssh-keys"><SshKeys view={view} /></div>
           <Devices view={view} />
           <OtherMachinesSettings
             remoteBar={remoteBar}
@@ -1224,7 +1224,7 @@ function Conflicts({ view }: { view: HubView }): React.JSX.Element {
   )
 }
 
-function SshKeys({ view }: { view: HubView }): React.JSX.Element {
+export function SshKeys({ view }: { view: HubView }): React.JSX.Element {
   const [picking, setPicking] = useState(false)
   const [local, setLocal] = useState<HubLocalKeyView[] | null>(null)
   const { busy, note, run } = useRun()
@@ -1239,7 +1239,7 @@ function SshKeys({ view }: { view: HubView }): React.JSX.Element {
     }
   }, [picking, view.sshKeys.length])
   return (
-    <div className="field" data-hub="ssh-keys" data-setting="account.ssh-keys">
+    <div className="field" data-hub="ssh-keys">
       <span className="field-label">SSH keys</span>
       <FieldHint
         more="A shared private key travels exactly as it is — a passphrase on it stays on it — sealed in the vault. It is written to another computer only when you press Install there: into ~/.ssh, owner-only, never over a file that is already there, and with an IdentityFile line added for each synced host that uses it. Stoke never deletes a key file; stopping sharing only stops new devices getting it."
@@ -1291,20 +1291,24 @@ function SshKeys({ view }: { view: HubView }): React.JSX.Element {
       {picking && (
         <div className="settings-item-card" data-hub="key-picker" style={{ display: 'flex', flexDirection: 'column' }}>
           {local === null ? (
-            <span className="field-hint">Looking in ~/.ssh…</span>
+            <span className="field-hint">Reading keys and server configuration…</span>
           ) : local.length === 0 ? (
             <span className="field-hint">No key pairs in ~/.ssh (a key is listed by the .pub beside it).</span>
           ) : (
             local.map((k) => (
-              <div key={k.name} className="btn-row" data-hub="local-key" data-key={k.name}>
-                <span className="mono">{k.name}</span>
-                <span className="field-hint">
-                  {k.type}
-                  {k.comment ? ` · ${k.comment}` : ''}
-                </span>
+              <div key={k.name} className="ssh-key-picker-row" data-hub="local-key" data-key={k.name}>
+                <div className="ssh-key-picker-details">
+                  <strong className={k.name === 'id_ed25519' ? undefined : 'mono'}>{k.name === 'id_ed25519' ? 'Default SSH key' : k.name}</strong>
+                  {k.name === 'id_ed25519' && <span className="field-hint mono">{k.name}</span>}
+                  <span className="field-hint" data-hub="key-hosts">
+                    {k.hosts.length ? `Configured for: ${k.hosts.join(', ')}` : k.hostsIncomplete ? 'Server configuration unavailable' : 'No saved servers configured for this key'}
+                    {k.hosts.length > 0 && k.hostsIncomplete ? ' · Some server configurations unavailable' : ''}
+                  </span>
+                  <span className="field-hint">{k.type}{k.comment ? ` · ${k.comment}` : ''}</span>
+                </div>
                 {k.shared ? (
                   <span className="pill" data-tone="success">
-                    shared
+                    Shared
                   </span>
                 ) : (
                   <button
@@ -1320,7 +1324,7 @@ function SshKeys({ view }: { view: HubView }): React.JSX.Element {
               </div>
             ))
           )}
-          <span className="field-hint">The private key is read only when you press Share. Listing reads the .pub files.</span>
+          <span className="field-hint">Server names come from this computer’s SSH configuration. One key can be offered to several servers. Key files are in ~/.ssh; their comments may have older names.</span>
         </div>
       )}
       <Status note={note} />

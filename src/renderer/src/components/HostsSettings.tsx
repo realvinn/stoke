@@ -8,6 +8,8 @@ import { sshDownloadFolder } from '@shared/remoteFiles'
 import { FieldHint } from './FieldHint'
 import { IconClose, IconCopy, IconPlus } from './Icons'
 import { SshFilesPanel } from './SshFilesPanel'
+import { SshKeys } from './AccountSyncSettings'
+import { useStokeAccount } from '../lib/useStokeAccount'
 
 interface Props {
   hosts: SshHost[]
@@ -24,6 +26,7 @@ interface Props {
   onSetUpKey: (hostId: string) => void
   /** The host an enrollment is running for, or null. One at a time. */
   enrollingHostId: string | null
+  onOpenAccount: () => void
 }
 
 /**
@@ -162,7 +165,8 @@ export function HostsSettings({
   keyEnroll,
   onChangeKeyEnroll,
   onSetUpKey,
-  enrollingHostId
+  enrollingHostId,
+  onOpenAccount
 }: Props): React.JSX.Element {
   /*
    * Text fields are local drafts, committed on blur or Enter.
@@ -173,6 +177,7 @@ export function HostsSettings({
    * panel, where a status poll landing mid-edit parks the caret at the end.
    */
   const remoteMachines = useHubRemote()
+  const stokeAccount = useStokeAccount()
   const [mergeGroups, setMergeGroups] = useState<SshMergeGroup[]>([])
   const [mergeError, setMergeError] = useState('')
   const [merging, setMerging] = useState(false)
@@ -307,9 +312,9 @@ export function HostsSettings({
         more={
           <>
             <p>
-              Stoke stores no keys, ports, usernames or jump hosts — ssh reads those from the
-              config every other tool on this machine already uses, so there is nothing here that
-              can quietly drift out of step with it. Passphrase and host-key prompts appear in the
+              SSH reads keys, ports, usernames and jump hosts from this computer’s SSH configuration.
+              Key files live in <span className="mono">~/.ssh</span>. Share and install keys in the SSH keys section below.
+              Passphrase and host-key prompts appear in the
               terminal and behave as they would in any shell.
             </p>
             <p>
@@ -796,6 +801,15 @@ export function HostsSettings({
         <IconPlus />
         Add machine
       </button>
+      <div data-setting="hosts.ssh-keys">
+        {stokeAccount?.phase === 'active' ? <SshKeys view={stokeAccount} /> : (
+          <div className="field">
+            <span className="field-label">SSH keys</span>
+            <span className="field-hint">Share keys with your other computers and install keys they share with you.</span>
+            <button className="btn" onClick={onOpenAccount}>{stokeAccount ? 'Set up device sync' : 'Checking device sync…'}</button>
+          </div>
+        )}
+      </div>
     </div>
   )
 }

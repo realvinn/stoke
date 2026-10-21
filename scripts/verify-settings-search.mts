@@ -353,7 +353,7 @@ console.log('\nsearch: what ranks first, synonyms, spellings and highlights')
   check('...the Provider & keys page is found by it', has('api key', 'page:providers', 24), true)
   check('...so are the speech service key and where keys live', [has('api key', 'row:voice.key', 12), has('api key', 'row:backup.storage', 30)], [true, true])
   check('...and "API key" is what is highlighted in "Anthropic API key"', marked(searchSettings(entries, 'api key')[0]), ['API key'])
-  check('"ssh": SSH hosts and its key login', [has('ssh', 'page:hosts', 3), has('ssh', 'row:hosts.key-enroll', 5)], [true, true])
+  check('"ssh": SSH hosts and its key sharing', [has('ssh', 'page:hosts', 3), has('ssh', 'row:hosts.ssh-keys', 5)], [true, true])
   check('"mic" (a synonym): the microphone rows', [has('mic', 'row:voice.microphone', 4), has('mic', 'row:voice.mic-access', 4)], [true, true])
   check('"microphone": its rows lead', top('microphone', 2).sort(), ['row:voice.mic-access', 'row:voice.microphone'])
   check('"voice": the Voice page first', top('voice'), ['page:voice'])
@@ -372,13 +372,11 @@ console.log('\nsearch: what ranks first, synonyms, spellings and highlights')
   check('"themes": the theme cards first', top('themes'), ['row:appearance.theme'])
   check('"wallpapers": Wallpaper first', top('wallpapers'), ['row:appearance.wallpaper'])
   check('"microphones": the microphone rows lead', top('microphones', 2).sort(), ['row:voice.mic-access', 'row:voice.microphone'])
-  // Two rows answer "ssh keys": the hub's sharing of your own keys between devices (Account & sync),
-  // whose label it is, and setting up key login to a host, which has it as a keyword. They are not
-  // tied (100 and 75), so the order is pinned, not sorted away: a change to it is a decision.
+  // Sharing and installing SSH keys is available on both SSH hosts and Account & sync.
   check(
-    '"ssh keys": the hub\'s SSH keys (its label), then key login for SSH hosts',
+    '"ssh keys": SSH hosts first, then the same controls in Account & sync',
     top('ssh keys', 2),
-    ['row:account.ssh-keys', 'row:hosts.key-enroll']
+    ['row:hosts.ssh-keys', 'row:account.ssh-keys']
   )
   // The agent pages' own button says "Add account"; "add" used to prefix-match the hub's "address".
   check('"add account" and "new account": an agent\'s Accounts, not the hub address', [top('add account'), top('new account')], [['row:agent-accounts.list@claude'], ['row:agent-accounts.list@claude']])

@@ -370,8 +370,12 @@ offers, the pass plan, conflict notes, where a received key lands, the panel's v
 `files.ts` keeps `hub-device.json` and `hub-state.json` (0600, every secret sealed by safeStorage,
 no vault key where the key store protects nothing); `sshKeys.ts` lists key pairs by their `.pub`,
 reads one private key when it is shared, and writes a received one with `wx` at 0600, appending
-an IdentityFile block (checked with `ssh -G -F` when the config is not the passwd home's). The
-session never reaches Settings or the renderer; `settings.hub` has one writer, the service, and
+an IdentityFile block (checked with `ssh -G -F` when the config is not the passwd home's).
+SSH key picker is available in both SSH hosts and Account & sync. It labels `id_ed25519` as
+the default SSH key and lists saved servers whose local SSH configuration offers each key;
+these configuration lookups do not attempt server logins or read private keys. The picker
+reads each server's configuration once, with at most four lookups running at a time.
+The session never reaches Settings or the renderer; `settings.hub` has one writer, the service, and
 `commitSettings` drops a renderer patch's copy. Revoking needs the Recovery Kit (or makes a new
 one): the hub demands the Kit's wrap of every new epoch, and a device that kept the Kit's wrap key
 could open every later key from a pending session with the password (gotcha 141) — so a device that

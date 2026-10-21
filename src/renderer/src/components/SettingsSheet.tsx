@@ -1337,6 +1337,7 @@ export function SettingsSheet({
                 onChangeKeyEnroll={(sshKeyEnroll) => onPatch({ sshKeyEnroll })}
                 onSetUpKey={sshKeys.onSetUpKey}
                 enrollingHostId={sshKeys.enrollingHostId}
+                onOpenAccount={() => go({ page: 'account' })}
               />
             )}
 

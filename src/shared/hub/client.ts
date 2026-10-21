@@ -877,6 +877,10 @@ export interface HubLocalKeyView {
   type: string
   comment: string
   fingerprint: string
+  /** Saved server labels whose local SSH configuration offers this key. Not a login check. */
+  hosts: string[]
+  /** At least one saved server's SSH configuration could not be read. */
+  hostsIncomplete: boolean
   /** The T4 key id when shared from this device. */
   shared: string | null
 }

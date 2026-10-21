@@ -647,7 +647,8 @@ export const SETTING_ROWS: readonly SettingRow[] = [
   { id: 'account.sign-in', page: 'account', label: 'Sign in to Stoke Hub', keywords: ['log in', 'login', 'create account', 'invite', 'password', 'email'], fallback: 'account.overview' },
   { id: 'account.syncing', page: 'account', label: 'What syncs', keywords: ['sync settings', 'sync api keys', 'ssh hosts', 'sync now', 'api keys, for the whole account', 'api keys on this computer'], fallback: 'account.overview' },
   { id: 'account.agent-sync', page: 'account', label: 'Sync agent accounts across devices', keywords: ['sync codex accounts', 'sync claude accounts', 'named accounts', 'account credentials', 'sync logins', 'account profiles'], fallback: 'account.overview' },
-  { id: 'account.ssh-keys', page: 'account', label: 'SSH keys', keywords: ['share ssh key', 'private key', 'transfer ssh', 'id_ed25519'], fallback: 'account.overview' },
+  { id: 'account.ssh-keys', page: 'account', label: 'SSH keys', keywords: ['share ssh key', 'private key', 'transfer ssh', 'id_ed25519', 'default ssh key'], fallback: 'account.overview' },
+  { id: 'hosts.ssh-keys', page: 'hosts', label: 'SSH keys', keywords: ['share ssh key', 'private key', 'transfer ssh', 'id_ed25519', 'default ssh key', 'install key', 'configured servers'] },
   { id: 'account.devices', page: 'account', label: 'Your devices', keywords: ['remove device', 'revoke', 'rename device', 'computers'], fallback: 'account.overview' },
   { id: 'account.other-machines', page: 'account', label: 'Other machines', keywords: ['remote sessions', 'open sessions elsewhere', 'share sessions', 'relay', 'let my other devices see and open my sessions'], fallback: 'account.overview' },
   {

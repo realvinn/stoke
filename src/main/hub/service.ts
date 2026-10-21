@@ -42,6 +42,8 @@
  * TypeScript parameter properties (strip-only mode rejects them).
  */
 import { join } from 'node:path'
+import { pathKey, pathRulesFor } from '../../shared/paths.ts'
+import { isEnrollableAlias } from '../../shared/sshAuth.ts'
 import type { Settings, SshHost } from '../../shared/types.ts'
 import { normalizeEmail, passwordProblem, parseInvite } from '../../shared/hub/auth.ts'
 import {
@@ -2597,11 +2599,37 @@ export class HubService {
   async localKeys(): Promise<HubLocalKeyView[]> {
     const pairs = await listKeyPairs(this.ssh.dir)
     const shared = this.state?.shared ?? {}
+    const hosts = this.settings().hosts.filter((host) => host.alias.trim())
+    const rules = pathRulesFor(this.deps.platform)
+    const configured = new Map<string, Set<string>>()
+    let hostsIncomplete = false
+    // Read each server's config once, with at most four OpenSSH processes at a time.
+    // This inspects local configuration only; it never logs in to a server.
+    for (let i = 0; pairs.length && i < hosts.length; i += 4) {
+      const batch = hosts.slice(i, i + 4)
+      const identities = await Promise.all(batch.map((host) => isEnrollableAlias(host.alias.trim())
+        ? identityFilesFor(host.alias.trim(), this.ssh, this.deps.exec)
+        : null))
+      for (const [index, files] of identities.entries()) {
+        if (!files) {
+          hostsIncomplete = true
+          continue
+        }
+        for (const file of files) {
+          const key = pathKey(file, rules)
+          const labels = configured.get(key) ?? new Set<string>()
+          labels.add(batch[index].label || batch[index].alias)
+          configured.set(key, labels)
+        }
+      }
+    }
     return pairs.map((p) => ({
       name: p.name,
       type: p.type,
       comment: p.comment,
       fingerprint: p.fingerprint,
+      hosts: [...(configured.get(pathKey(join(this.ssh.dir, p.name), rules)) ?? [])],
+      hostsIncomplete,
       shared: Object.entries(shared).find(([, s]) => s.fingerprint === p.fingerprint)?.[0] ?? null
     }))
   }

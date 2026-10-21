@@ -7864,6 +7864,10 @@ button.color-field-swatch[aria-expanded='true'] {
 .accounts-stoke-meta { display: flex; flex-wrap: wrap; justify-content: space-between; gap: var(--space-8); }
 .account-plugin-mark { display: grid; place-items: center; width: 0.875rem; flex-shrink: 0; color: var(--text-muted); font-size: var(--fs-xs); font-weight: 600; }
 .account-connection-settings { border-top: 1px solid var(--border-subtle); padding-top: var(--space-12); }
+.ssh-key-picker-row { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-16); padding-block: var(--space-12); }
+.ssh-key-picker-row + .ssh-key-picker-row { border-top: 1px solid var(--border-subtle); }
+.ssh-key-picker-details { display: flex; flex-direction: column; gap: var(--space-4); min-width: 0; overflow-wrap: anywhere; }
+.ssh-key-picker-row > .btn, .ssh-key-picker-row > .pill { flex-shrink: 0; }
 .account-connection-settings > summary { cursor: pointer; color: var(--text-muted); font-size: var(--fs-sm); }
 .account-connection-settings[open] > summary { margin-bottom: var(--space-12); }
 .account-connection-settings > summary:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 2px; }
