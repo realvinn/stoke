@@ -27,7 +27,7 @@ function Fixture(){return <><div className="fixture-top"><span>Stoke · remote w
 createRoot(document.getElementById('root')).render(<Fixture/>);`)
     await build({ configFile: false, logLevel: 'error', define: { 'process.env.NODE_ENV': '"production"' }, resolve: { alias: { '@shared': resolve('src/shared') } }, esbuild: { jsx: 'automatic' }, build: { outDir: join(temp, 'bundle'), emptyOutDir: true, lib: { entry, name: 'fixture', formats: ['iife'], fileName: () => 'fixture.js', cssFileName: 'fixture' } } })
     writeFileSync(join(temp, 'index.html'), '<meta charset="utf-8"><link rel="stylesheet" href="bundle/fixture.css"><style>.fixture-top{height:3rem;display:flex;align-items:center;justify-content:space-between;padding:0 1rem;border-bottom:1px solid var(--border-subtle)}.fixture-body{display:flex;height:calc(100vh - 3rem)}.fixture-main{flex:1;min-width:0;position:relative}.fixture-dock{display:flex;width:400px;border-left:1px solid var(--border-subtle)}.fixture-output{margin:0;padding:16px;font:13px/1.8 monospace;color:var(--text)}</style><div id="root"></div><script src="bundle/fixture.js"></script>')
-    win = new BrowserWindow({ width: 1100, height: 640, show: false, webPreferences: { backgroundThrottling: false } })
+    win = new BrowserWindow({ width: 1100, height: 640, show: process.platform === 'linux', webPreferences: { backgroundThrottling: false } })
     const errors: string[] = []
     win.webContents.on('console-message', event => { if (event.level === 'error') errors.push(event.message) })
     await win.loadFile(join(temp, 'index.html'))

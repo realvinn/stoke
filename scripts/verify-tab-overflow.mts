@@ -31,7 +31,7 @@ applyTheme(EMBER);
     await build({ configFile: false, logLevel: 'error', define: { 'process.env.NODE_ENV': '"production"' }, resolve: { alias: { '@shared': resolve('src/shared') } }, esbuild: { jsx: 'automatic' }, build: { outDir: join(temp, 'bundle'), emptyOutDir: true, lib: { entry, name: 'fixture', formats: ['iife'], fileName: () => 'fixture.js', cssFileName: 'fixture' } } })
     writeFileSync(join(temp, 'index.html'), '<link rel="stylesheet" href="bundle/fixture.css"><style>.titlebar{height:var(--titlebar-h)}.titlebar[data-platform="win32"]{padding-right:148px}</style><div id="root"></div><script src="bundle/fixture.js"></script>')
     await app.whenReady()
-    win = new BrowserWindow({ width: 940, height: 300, show: false, webPreferences: { backgroundThrottling: false } })
+    win = new BrowserWindow({ width: 940, height: 300, show: process.platform === 'linux', webPreferences: { backgroundThrottling: false } })
     const errors: string[] = []
     win.webContents.on('console-message', (event) => { if (event.level === 'error') errors.push(event.message) })
     await win.loadFile(join(temp, 'index.html'))

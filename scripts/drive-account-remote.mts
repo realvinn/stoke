@@ -10,7 +10,7 @@ app.whenReady().then(async () => {
   let failed = false
   try {
     assert(process.env.STOKE_TEST_ACCOUNT_URL?.startsWith('http://127.0.0.1:'))
-    win = new BrowserWindow({ width: 390, height: 844, show: false, webPreferences: { backgroundThrottling: false } })
+    win = new BrowserWindow({ width: 390, height: 844, show: process.platform === 'linux', webPreferences: { backgroundThrottling: false } })
     const errors: string[] = []
     win.webContents.on('console-message', event => { if (event.level === 'error') errors.push(event.message) })
     const run = (code: string) => win!.webContents.executeJavaScript(code)

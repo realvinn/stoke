@@ -69,7 +69,7 @@ window.test = {sent, keyboard, input, get cache(){return cache}, get state(){ret
     await build({ configFile: false, logLevel: 'error', resolve: { alias: { '@shared': resolve('src/shared') } }, build: { outDir: join(temp, 'bundle'), emptyOutDir: true, lib: { entry, name: 'fixture', formats: ['iife'], fileName: () => 'fixture.js', cssFileName: 'fixture' } } })
     writeFileSync(join(temp, 'index.html'), '<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="bundle/fixture.css"><div style="padding:8px"><div class="keys" id="keys"></div><textarea id="composer" style="width:100%;margin-top:12px"></textarea><span id="status"></span></div><script src="bundle/fixture.js"></script>')
     const partition = session.fromPartition(`composer-${Date.now()}`)
-    win = new BrowserWindow({ width: 390, height: 844, show: false, webPreferences: { backgroundThrottling: false, session: partition } })
+    win = new BrowserWindow({ width: 390, height: 844, show: process.platform === 'linux', webPreferences: { backgroundThrottling: false, session: partition } })
     const errors: string[] = []
     win.webContents.on('console-message', (event) => { if (event.level === 'error') errors.push(event.message) })
     await win.loadFile(join(temp, 'index.html'))
