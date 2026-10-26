@@ -11,7 +11,7 @@ export class AgentInput {
 
   get hasPending(): boolean { return !!this.pending }
 
-  /** A lone Escape still belongs to the agent; the caller flushes after 35ms. */
+  /** A lone Escape still belongs to the agent after the caller's sequence timeout. */
   flush(): string { const value = this.pending; this.pending = ''; return value }
 
   take(data: string): { forward: string; detach: boolean; menu?: boolean } {
@@ -19,7 +19,7 @@ export class AgentInput {
     this.pending = ''
     let forward = ''
     const start = '\x1b[200~', end = '\x1b[201~'
-    const shortcuts = ['\x1b[15~', '\x1b[[E', ...(this.menuKey === 'f6' ? ['\x1b[17~'] : [])]
+    const shortcuts = ['\x1b[15~', '\x1b[15;1~', '\x1b[[E', ...(this.menuKey === 'f6' ? ['\x1b[17~', '\x1b[17;1~'] : [])]
     for (let i = 0; i < data.length; i++) {
       const char = data[i]
       if (!this.pasting && char === '\x1c' && this.menuKey === 'ctrl-backslash') return { forward, detach: true, menu: true }

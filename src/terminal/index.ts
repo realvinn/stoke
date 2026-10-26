@@ -630,7 +630,7 @@ async function main(): Promise<void> {
       escapeTimer = setTimeout(() => {
         escapeTimer = null
         if (attached === target) target.pty.write(agentInput.flush())
-      }, 35)
+      }, process.platform === 'win32' ? 500 : 35)
     }
   })
   out(SHELL_MODES)

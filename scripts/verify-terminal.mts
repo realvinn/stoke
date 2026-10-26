@@ -63,6 +63,7 @@ try {
     assert.deepEqual(input.take('\x1b[200~\x1b[15~\x1b[201~'), { forward: '\x1b[200~\x1b[15~\x1b[201~', detach: false })
     assert.deepEqual(input.take('\x1b'), { forward: '', detach: false })
     assert.equal(input.flush(), '\x1b')
+    assert.equal(input.take('\x1b[15;1~').menu, true, 'unmodified CSI modifier notation opens the menu')
   })
   check('the menu searches titles and details and fits narrow terminals', () => {
     const view = { section: 'chats' as const, query: 'project alpha', selected: 0, notice: '', active: 'Claude', items: [
