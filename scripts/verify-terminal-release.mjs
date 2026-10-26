@@ -54,6 +54,12 @@ try {
   })
   console.log(`PASS extracted ${target} release: bundled runtime, PTY, doctor, F5 and clean UI detach.`)
 } finally {
+  let owner = 0
+  try { owner = JSON.parse(readFileSync(join(env.STOKE_TERMINAL_HOME, 'server.json'), 'utf8')).pid } catch { /* no service */ }
   if (node && entry && existsSync(node)) try { execFileSync(node, [entry, 'server', 'stop'], { env, timeout: 5000 }) } catch { /* already stopped */ }
-  rmSync(temp, { recursive: true, force: true })
+  const alive = () => { if (!owner) return false; try { process.kill(owner, 0); return true } catch { return false } }
+  const end = Date.now() + (process.platform === 'win32' ? 8000 : 3000)
+  while (alive() && Date.now() < end) await new Promise(done => setTimeout(done, 30))
+  assert.equal(alive(), false, 'the extracted session service exits after stop')
+  rmSync(temp, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 })
 }

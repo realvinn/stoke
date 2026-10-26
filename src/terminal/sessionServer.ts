@@ -69,6 +69,7 @@ export async function runSessionServer(home = terminalHome()): Promise<void> {
   }
   const scheduleIdle = (): void => {
     if (idleTimer) clearTimeout(idleTimer)
+    if (stopping) return
     if (!clients.size && ![...sessions.live.values()].some((session) => !session.exited)) idleTimer = setTimeout(shutdown, 30_000)
   }
   const server = createServer((socket) => {

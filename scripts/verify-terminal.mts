@@ -357,7 +357,8 @@ process.stdout.on('resize', () => console.log('AGENT_SIZE:' + process.stdout.col
   const cleanup = new Sessions(() => {}, () => {}, join(temp, 'state'))
   try { if (await cleanup.ready(false)) await cleanup.shutdown() } finally { cleanup.close() }
   console.log('Synthetic session shutdown acknowledged.')
-  const deadline = Date.now() + 3000
+  // node-pty's Win32 console-list helper has its own five-second teardown timer.
+  const deadline = Date.now() + (process.platform === 'win32' ? 8000 : 3000)
   while (info && processAlive(info.pid) && Date.now() < deadline) await new Promise(done => setTimeout(done, 30))
   assert(!info || !processAlive(info.pid), 'the synthetic session owner must exit after shutdown')
   console.log(`Synthetic session owner exited: ${!info || !processAlive(info.pid)}.`)
