@@ -751,6 +751,40 @@ body {
   border-radius: var(--r-full);
 }
 
+/* Agent identity lives on the tab's top edge, for the default agent too.
+ * Mixing with the theme's muted ink softens vendor colours in each palette. */
+.tab[data-agent]::before {
+  content: '';
+  position: absolute;
+  inset: -1px -1px auto -1px;
+  height: 2px;
+  border-radius: var(--r-full);
+  background: color-mix(in oklab, var(--agent-ink) 80%, var(--text-muted));
+  pointer-events: none;
+}
+.tab[data-agent][aria-selected='true']::before { height: 3px; }
+
+.tab-remote { display: grid; place-items: center; flex: none; }
+.tab-remote-dot {
+  display: block;
+  width: 0.375rem;
+  height: 0.375rem;
+  border-radius: var(--r-full);
+  background: var(--text-muted);
+}
+.tab-remote-dot[data-connected] {
+  background: var(--danger);
+  animation: remote-connection-pulse 3.2s ease-in-out infinite;
+}
+@keyframes remote-connection-pulse { 50% { opacity: 0.4; } }
+@media (prefers-reduced-motion: reduce) {
+  .tab-remote-dot[data-connected] { animation: none; }
+}
+/* Track style is appearance, independent of agent permission mode. */
+.ring[data-context-ring] .ring-bead { display: none; }
+.app[data-context-ring-style='dotted'] .ring[data-context-ring] .ring-track { stroke: none; }
+.app[data-context-ring-style='dotted'] .ring[data-context-ring] .ring-bead { display: initial; }
+
 /*
  * Dragging a tab, Chrome's way (`useTabDrag`).
  *
@@ -808,20 +842,6 @@ body {
 }
 
 /*
- * The agent a tab runs when it is not the default one, so `proj-a` and `proj-a`
- * are not one label twice (QA L16).
- */
-.tab-agent {
-  flex-shrink: 0;
-  padding: 0 var(--space-4);
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  font-family: var(--mono);
-  font-size: var(--fs-xs);
-  color: var(--text-muted);
-}
-
-/*
  * Agent colour (shared/agentColors.ts). `agentMark` points `--agent-ink`,
  * `--agent-text` and `--agent-fill` at the marked agent's tokens inline; these
  * are what a marked surface falls back to without that mapping, so a read never
@@ -831,17 +851,6 @@ body {
   --agent-ink: var(--text-muted);
   --agent-text: var(--text-muted);
   --agent-fill: var(--text-faint);
-}
-
-/*
- * Painted only while more than one agent is in view. The border is a graphic
- * (3:1), so the ink; the label is text on the title bar's sunken chrome or a
- * hovered tab, where the ink — solved against the page — measured 3.87:1 on
- * every light theme, so the text token, held to 4.5:1 on all three grounds.
- */
-:root[data-agent-paint] .tab-agent[data-agent] {
-  border-color: var(--agent-ink);
-  color: var(--agent-text);
 }
 
 /*
@@ -888,27 +897,6 @@ body {
 
 .tab[data-private='true'][aria-selected='true'] .tab-private {
   color: var(--text);
-}
-
-/*
- * With tags off, the agent stays on the tab as a rule along its foot, in the
- * same ink — the top rule is the selection's and the profile's, so the agent
- * takes the other edge. Nothing at all while only one agent is in view.
- */
-.tab-agent-rule {
-  display: none;
-}
-
-:root[data-agent-paint] .tab-agent-rule[data-agent] {
-  display: block;
-  position: absolute;
-  left: var(--space-8);
-  right: var(--space-8);
-  bottom: 0;
-  height: 2px;
-  border-radius: var(--r-full);
-  background: var(--agent-ink);
-  pointer-events: none;
 }
 
 /*
@@ -1159,32 +1147,8 @@ body {
   }
 }
 
-/*
- * Bypass mode: beads in place of the ring's track, in the theme's slate.
- *
- * Twice moved and the same mistake both times until now. Bypass used to own
- * --danger, which put a red dot on every tab on a machine whose default mode is
- * bypassPermissions — an alert that was only ever a setting. Then it became a
- * dashed --warning track, which changed the colour and kept the permanence: an
- * amber at C 0.13 against a navy page, 10:1 on an unselected tab (three times
- * the plain track), drawn as eleven square 1.4px teeth — a cog, and as light as
- * the context arc drawn over it, so from 70% the arc and the track were the
- * same colour. It was the loudest thing on screen and it was on every tab.
- *
- * Now it is --ring-bypass (step 9 of the theme's own neutral ladder; see
- * :root), so the SHAPE says "the guard rails are off" and the colour stays
- * quiet: eight round beads in place of the track, one at 12 o'clock. Two cues
- * keep them apart from the arc in every theme: they have next to no chroma
- * (C ~0.007 on Ink) where the arc is a saturated colour, and they are dots where
- * the arc is one solid stroke from 12 o'clock. Lightness is NOT one of them —
- * on a light theme the two sit close — which is why the shape changed and not
- * only the colour. And the arc's alarm colours stay live alerts, not a setting's.
- *
- * Each bead is its own <circle> (ContextMeter.tsx), not a dash of one dashed
- * track: a dash pattern cannot skip the bead the arc half-covers, which stuck
- * out past the arc's round end as a grey nub. shared/ring.ts leaves those out
- * whole. (0,2,0) beats `.ring circle`'s `fill: none`, as `.ring .tab-watch` does.
- */
+/* The optional dotted track uses theme-neutral beads. ContextRing omits
+ * beads touched by the coloured arc, keeping progress readable at every level. */
 .ring .ring-bead {
   fill: var(--ring-bypass);
   stroke: none;
@@ -4562,15 +4526,6 @@ mark.hit {
   overflow: auto;
 }
 
-/* The tab strip's mark for another machine's session: two arrows in the ring. */
-.ring-remote {
-  fill: none;
-  stroke: var(--accent-ink);
-  stroke-width: 1.2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
 /*
  * On the host: someone is attached from another machine. A steady ring that
  * breathes; under reduced motion it rests as the solid dot, which still says
@@ -4871,7 +4826,7 @@ mark.hit {
   color: var(--danger);
 }
 
-/* On the host: a local tab another machine is attached to carries the remote tab's two arrows. */
+/* On the host: the same connection dot marks an attached guest. */
 .tab-hosted {
   flex-shrink: 0;
 }
@@ -6901,7 +6856,7 @@ button.color-field-swatch[aria-expanded='true'] {
   color: var(--text-muted);
 }
 
-/* Drawn as `.tab-agent` is, in the tokens it would get: border ink, text text. */
+/* Agent colour preview: border ink and readable text on the current theme. */
 .cp-tag-sample {
   --cp-ink: var(--border);
   --cp-text: var(--text-muted);

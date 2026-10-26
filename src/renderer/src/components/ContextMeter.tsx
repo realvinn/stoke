@@ -117,7 +117,7 @@ const WATCH_R = 2.86
 const CORE_R = RING_R - 0.6
 
 /*
- * The bypass mark's beads: `RING_BEADS` discs as wide as the track, evenly round
+ * The optional dotted track: `RING_BEADS` discs as wide as the track, evenly round
  * it from 12 o'clock -- 2.19px beads with 1.66px gaps at Interface scale 1,
  * dotted rather than the 11 square teeth the old 1.6/1.6 dash drew.
  *
@@ -154,14 +154,14 @@ export function ContextRing({
   watched?: boolean
   /** Restored from the last run: draw the reading, but say it is not live. */
   paused?: boolean
-  /** Permissions bypassed: beads in place of the plain track. See BEAD_R. */
+  /** Permission information stays available in the tooltip, independent of track style. */
   bypass?: boolean
 }): React.JSX.Element {
   const ratio = ready ? ratioOf(used, limit) : 0
   const pct = ready ? contextPercent(used, limit) : 0
   // The beads make room for the arc, so they need to know how much of the
   // ring it covers -- none at all when it is not drawn (paused, not ready).
-  const beads = bypass ? ringBeads(paused ? 0 : ratio) : []
+  const beads = ringBeads(paused ? 0 : ratio)
   /*
    * `paused` gets its own data-level rather than falling through to the
    * reading's tier. That reading is from the last run, not a live one — if it
@@ -176,15 +176,15 @@ export function ContextRing({
    */
   const dataLevel = paused ? 'paused' : ready ? contextLevel(pct) : 'empty'
   return (
-    <svg className="ring" viewBox="0 0 16 16" data-level={dataLevel}>
+    <svg className="ring" viewBox="0 0 16 16" data-level={dataLevel} data-context-ring="true">
       <title>
         {paused
           ? `Paused — ${pct}% used when last active`
           : ready
             ? `Context ${pct}% used`
-            : 'Context not read yet'}
+            : 'Context not read yet'}{bypass ? ' · Permissions bypassed' : ''}
       </title>
-      {!bypass && <circle className="ring-track" cx="8" cy="8" r={RING_R} />}
+      <circle className="ring-track" cx="8" cy="8" r={RING_R} />
       {dataLevel === 'full' && <circle className="ring-core" cx="8" cy="8" r={CORE_R} />}
       {beads.map((k) => {
         const { cx, cy } = beadCentre(k)

@@ -9,8 +9,6 @@ import {
   type CodingCliId
 } from '@shared/codingClis'
 import {
-  AGENT_TAG_MAX,
-  cleanTagLabel,
   DEFAULT_ENDPOINT,
   endpointProblem,
   installedAgents,
@@ -261,7 +259,7 @@ export function AgentManager(props: AgentPagesProps): React.JSX.Element {
       <div className="field" data-setting="agents.list">
         <span className="field-label">Your agents</span>
         <span className="field-hint">
-          Each one&rsquo;s colour marks its tabs and its usage once more than one agent is in use.
+          Each one&rsquo;s colour marks the top of its tabs.
           Its own page — where it sends requests, its model, accounts and tools — is under Agents in
           the menu.
         </span>
@@ -307,30 +305,6 @@ export function AgentManager(props: AgentPagesProps): React.JSX.Element {
           </div>
         </details>
       )}
-
-      <label className="check-row" data-setting="agents.tags">
-        <input
-          type="checkbox"
-          checked={agents.tag.show}
-          onChange={(e) =>
-            patchAgents({ ...agentsRef.current, tag: { ...agentsRef.current.tag, show: e.target.checked } })
-          }
-        />
-        <span>
-          <span className="field-label">Show agent tags on tabs</span>
-          <FieldHint
-            more={
-              <>
-                Each agent&rsquo;s page names its tag. Off, the tab keeps a rule in the agent&rsquo;s
-                colour and its tooltip still names it. Colours show once more than one agent is in
-                use.
-              </>
-            }
-          >
-            A tab running an agent other than the default says which, in a small tag.
-          </FieldHint>
-        </span>
-      </label>
 
       <SkillsReport
         agents={CODING_CLIS.map((x) => x.id).filter((id) => c.shown(id) && c.found.has(id))}
@@ -442,15 +416,6 @@ export function AgentSettingsPage(props: AgentPagesProps & { agent: CodingCliId 
   const platform = window.stoke.platform
   const current = cliFor(agent)
 
-  /** An agent's tab tag; blank, or its executable's own name, clears it. */
-  const setTagLabel = (id: CodingCliId, raw: string): void => {
-    const label = cleanTagLabel(raw)
-    const labels = { ...agentsRef.current.tag.labels }
-    if (!label || label === cliFor(id).bins.posix[0]) delete labels[id]
-    else labels[id] = label
-    patchAgents({ ...agentsRef.current, tag: { ...agentsRef.current.tag, labels } })
-  }
-
   const setEndpoint = (id: CodingCliId, ep: AgentEndpoint): void => {
     const endpoints = { ...agentsRef.current.endpoints }
     if (ep.mode === 'default' && !ep.model && !ep.baseUrl && !ep.apiKey) delete endpoints[id]
@@ -507,7 +472,6 @@ export function AgentSettingsPage(props: AgentPagesProps & { agent: CodingCliId 
         onColor={(hex) => c.setColor(current.id, hex)}
         onPreviewColor={props.onPreviewColor ? (hex) => props.onPreviewColor?.(current.id, hex) : undefined}
         tagLabel={agents.tag.labels[current.id] ?? ''}
-        onTagLabel={(label) => setTagLabel(current.id, label)}
         openrouterKey={settings.providers.openrouterApiKey}
         installCommand={installSteps([current.id], platform)[0]?.command ?? null}
         onInstall={() => c.install(current.id)}
@@ -692,7 +656,6 @@ function AgentPage({
   onColor,
   onPreviewColor,
   tagLabel,
-  onTagLabel,
   accounts,
   access,
   tools,
@@ -722,7 +685,6 @@ function AgentPage({
   onPreviewColor?: (hex: string | null) => void
   /** The stored tab tag, '' for the executable's name. */
   tagLabel: string
-  onTagLabel: (label: string) => void
   /** Its Tools (MCP) list (`AgentTools`). */
   tools: React.ReactNode
   /** Claude Code's own section, drawn in place of an endpoint. */
@@ -783,7 +745,6 @@ function AgentPage({
         onColor={onColor}
         onPreviewColor={onPreviewColor}
         tagLabel={tagLabel}
-        onTagLabel={onTagLabel}
       />
     </>
   )
@@ -1364,21 +1325,14 @@ function AgentBrief({
  */
 const AGENT_PRESETS = CODING_CLIS.map((c) => ({ name: c.label, hex: AGENT_SEEDS[c.id] }))
 
-/*
- * How an agent looks in the strip: its colour and its tab tag.
- *
- * The tag commits on blur and Enter, and is flushed on unmount through a ref,
- * because Escape closes the sheet by unmounting it and delivers no blur
- * (gotcha 63); the colour field does the same through `commitOnUnmount`.
- */
+/** Theme-derived agent colour, used by its tab edge and other agent surfaces. */
 function AgentLook({
   cli,
   color,
   colorOverridden,
   onColor,
   onPreviewColor,
-  tagLabel,
-  onTagLabel
+  tagLabel
 }: {
   cli: CodingCli
   color: string
@@ -1386,22 +1340,7 @@ function AgentLook({
   onColor: (hex: string | null) => void
   onPreviewColor?: (hex: string | null) => void
   tagLabel: string
-  onTagLabel: (label: string) => void
 }): React.JSX.Element {
-  const [draft, setDraft] = useState(tagLabel)
-  const editing = useRef(false)
-  const latest = useRef({ draft, tagLabel, onTagLabel })
-  latest.current = { draft, tagLabel, onTagLabel }
-  useEffect(() => {
-    if (!editing.current) setDraft(tagLabel)
-  }, [tagLabel])
-  const commit = (): void => {
-    editing.current = false
-    const { draft: d, tagLabel: stored, onTagLabel: set } = latest.current
-    if (d.trim() !== stored) set(d)
-  }
-  useEffect(() => () => commit(), [])
-
   return (
     <div className="field" data-setting="agent.look">
       <span className="field-label">In the tab strip</span>
@@ -1416,7 +1355,7 @@ function AgentLook({
             commitOnUnmount
             presets={AGENT_PRESETS}
             defaultValue={AGENT_SEEDS[cli.id]}
-            ink={{ kind: 'agent', key: cli.id, tag: draft.trim() || cli.bins.posix[0] }}
+            ink={{ kind: 'agent', key: cli.id, tag: tagLabel.trim() || cli.bins.posix[0] }}
             onPreview={onPreviewColor}
           />
           {colorOverridden && (
@@ -1425,23 +1364,7 @@ function AgentLook({
             </button>
           )}
         </span>
-        <label className="agent-look-row">
-          <span className="agent-look-label">Tab tag</span>
-          <input
-            className="input mono"
-            value={draft}
-            placeholder={cli.bins.posix[0]}
-            maxLength={AGENT_TAG_MAX}
-            spellCheck={false}
-            aria-label={`${cli.label} tab tag`}
-            onChange={(e) => {
-              editing.current = true
-              setDraft(e.target.value)
-            }}
-            onBlur={commit}
-            onKeyDown={(e) => e.key === 'Enter' && commit()}
-          />
-        </label>
+
       </div>
     </div>
   )

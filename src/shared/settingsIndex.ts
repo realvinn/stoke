@@ -467,6 +467,7 @@ export const SETTING_ROWS: readonly SettingRow[] = [
   { id: 'appearance.make-theme', page: 'appearance', label: 'Make your own theme', keywords: ['custom theme', 'theme editor', 'duplicate theme', 'accent colour', 'theme name', 'hue', 'page colour', 'tint', 'colour notation', 'true black', 'oled'] },
   { id: 'appearance.claude-theme', page: 'appearance', label: 'Draw Claude Code in this theme’s colours', keywords: ['ansi', 'claude theme', 'terminal colours'] },
   { id: 'appearance.wallpaper', page: 'appearance', label: 'Wallpaper', keywords: ['background image', 'blur', 'dim', 'panel opacity', 'picture', 'photo'] },
+  { id: 'appearance.context-ring', page: 'appearance', label: 'Context rings', keywords: ['solid', 'dotted', 'circle', 'indicator', 'context meter'] },
   { id: 'appearance.brand', page: 'appearance', label: 'Show the Stoke mark in the title bar', keywords: ['logo', 'brand', 'title bar'] },
   { id: 'appearance.title-bar', page: 'appearance', label: 'Title bar', keywords: ['show text shortcuts and tools in the title bar', 'customise on the title bar', 'reset to an empty title bar', 'text shortcuts', 'snippets', 'quick prompts', 'saved prompts', 'folder', 'toolbar', 'top bar', 'terminal'] },
   { id: 'appearance.interface-scale', page: 'appearance', label: 'Interface scale', keywords: ['zoom', 'ui size', 'bigger', 'smaller', 'text size'] },
@@ -502,7 +503,6 @@ export const SETTING_ROWS: readonly SettingRow[] = [
   { id: 'agents.list', page: 'agents', label: 'Your agents', keywords: ['installed', 'colour', 'agent colours', 'show in launcher', 'hide agent', 'launcher'] },
   // Drawn only while some agent is not installed.
   { id: 'agents.more', page: 'agents', label: 'More agents', keywords: ['install', 'download', 'not installed', 'add agent', 'get'], fallback: 'agents.list' },
-  { id: 'agents.tags', page: 'agents', label: 'Show agent tags on tabs', keywords: ['tab tag', 'tabs', 'label'] },
   { id: 'agents.skills', page: 'agents', label: 'Skills', keywords: ['skill.md', 'shared skills', 'plugins', 'lend claude code the shared skills'] },
 
   // Agents › <an agent>
@@ -523,7 +523,7 @@ export const SETTING_ROWS: readonly SettingRow[] = [
   { id: 'agent.update', page: 'agent', label: 'Installed version and updates', keywords: ['update agent', 'upgrade', 'version', 'npm', 'homebrew', 'native updater', 'updater output'], agents: notClaude, fallback: 'agent.access' },
   { id: 'agent.tools', page: 'agent', label: 'Tools (MCP)', keywords: ['mcp', 'servers', 'tools', 'browser tools', 'add mcp server', 'api keys', 'tokens', 'headers', 'environment variables', 'test connection'] },
   // Drawn as "In the tab strip".
-  { id: 'agent.look', page: 'agent', label: 'Colour and tab tag', keywords: ['colour', 'tab tag', 'tag', 'label', 'tab strip'] },
+  { id: 'agent.look', page: 'agent', label: 'Tab colour', keywords: ['colour', 'agent', 'tab strip', 'purple', 'orange'] },
 
   // Agents › Claude Code › Launch defaults
   { id: 'claude-launch.permissions', page: 'claude-launch', label: 'Default permissions', keywords: ['permission mode', 'bypass', 'plan mode', 'accept edits', 'yolo', 'dangerously skip'] },

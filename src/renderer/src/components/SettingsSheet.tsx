@@ -842,6 +842,15 @@ export function SettingsSheet({
 
                 <WallpaperField settings={settings} onPatch={onPatch} />
 
+                <label className="field" data-setting="appearance.context-ring">
+                  <span className="field-label">Context rings</span>
+                  <select className="input" value={settings.contextRingStyle} onChange={e => onPatch({ contextRingStyle: e.target.value === 'dotted' ? 'dotted' : 'solid' })}>
+                    <option value="solid">Solid</option>
+                    <option value="dotted">Dotted</option>
+                  </select>
+                  <FieldHint>The same track style for every agent. The coloured arc shows context used.</FieldHint>
+                </label>
+
                 {/*
                   Offered on macOS too, where it does nothing, and that is
                   deliberate: the brand is never drawn beside the traffic

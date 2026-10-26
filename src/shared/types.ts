@@ -1195,6 +1195,8 @@ export interface Settings {
    * hit sunset.
    */
   followSystemTheme: boolean
+  /** One context-ring track style for every agent and connection. */
+  contextRingStyle: 'solid' | 'dotted'
   customThemes: Theme[]
   /** The image behind the window, if any. See WallpaperSettings. */
   wallpaper: WallpaperSettings

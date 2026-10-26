@@ -12,8 +12,8 @@ import { agentTokenNames, type AgentColorKey } from '@shared/agentColors'
  * `applyAppearance` writes its tokens. Only `var()` references travel here; the
  * colours themselves are written once, on `:root`, by `applyAppearance`.
  *
- * Nothing shows until `:root[data-agent-paint]` is set (more than one agent in
- * view): every rule that reads these tokens is scoped under it.
+ * Tab edges always use these tokens. Other agent surfaces paint while
+ * `:root[data-agent-paint]` is set (more than one agent in view).
  */
 export function agentMark(key: AgentColorKey | null | undefined): { 'data-agent'?: string; style?: CSSProperties } {
   if (!key) return {}

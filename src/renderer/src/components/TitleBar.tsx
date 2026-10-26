@@ -6,7 +6,7 @@ import type { RemoteTabView } from '@shared/hub/remote'
 import { RemoteUsageChip, UsageChip } from './UsageMeter'
 import { PhonePopover } from './PhonePopover'
 import { ContextMenu, type MenuItem } from './ContextMenu'
-import { RemoteArrows, TabIndicator } from './TabIndicator'
+import { RemoteConnectionDot, TabIndicator } from './TabIndicator'
 import {
   BrandMark,
   IconChevron,
@@ -98,9 +98,6 @@ interface Props {
     /** The account the tab runs on, when it is not the agent's own sign-in (`tabLabel`). */
     account?: { key: string; text: string } | null
   }
-  /** Settings › Agents › Show agent tags on tabs, for the tab menu's toggle. */
-  agentTagsShown?: boolean
-  onToggleAgentTags?: () => void
   /**
    * The Settings sheet is open right now.
    *
@@ -119,9 +116,10 @@ interface Props {
   toolbar?: React.ReactNode
   /**
    * On the host: the devices attached to each local session from another
-   * machine, by ptyId. Such a tab carries the remote tab's two arrows too, so
+   * machine, by ptyId. Such a tab carries the remote connection dot too, so
    * the session being watched or typed into from elsewhere is marked here.
    */
+  remoteViews?: readonly RemoteTabView[]
   remoteView?: RemoteTabView | null
   hostedBy?: Record<string, string[]>
 }
@@ -157,10 +155,9 @@ export function TitleBar({
   onOpenSettings,
   onOpenPhoneSettings,
   labelFor,
-  agentTagsShown = true,
-  onToggleAgentTags,
   settingsOpen,
   toolbar,
+  remoteViews = [],
   remoteView = null,
   hostedBy = {}
 }: Props): React.JSX.Element {
@@ -330,16 +327,22 @@ export function TitleBar({
       <div className="tabs" data-overflow={overflow.overflowing || undefined}>
         <div className="tablist" role="tablist" aria-label="Sessions" ref={listRef}>
           {tabs.map((tab) => {
-            const ctx = contexts[tab.sessionId]
+            const remote = tab.kind === 'remote' ? remoteViews.find(v => v.id === tab.remote?.tabId) : null
+            const reading = remote?.session?.context
+            const ctx = tab.kind === 'remote'
+              ? reading ? { ready: true, contextTokens: reading.used, contextLimit: reading.limit } : undefined
+              : contexts[tab.sessionId]
             const act = activity[tab.id]
             const dot = act?.dot ?? null
             const label = labelFor?.(tab) ?? { text: tab.title, agentTag: null, agent: null, account: null }
-            const agentName = tab.kind === 'grok-bot' ? 'Grok Bot' : label.agent ? cliFor(label.agent).label : null
+            const agent = tab.kind === 'new' || tab.installing?.length || tab.enrollHostId ? null : tab.kind === 'grok-bot' ? 'grok' : tab.kind === 'remote' ? label.agent : cliIdOf(tab.cliId)
+            const agentName = agent ? cliFor(agent).label : null
             const account = label.account ?? null
             return (
               <div
                 key={tab.id}
                 className="tab"
+                {...agentMark(agent)}
                 role="tab"
                 aria-selected={tab.id === activeTabId}
                 data-activity={dot ?? undefined}
@@ -418,10 +421,16 @@ export function TitleBar({
                     <span className="sr-only">Private chat. </span>
                   </span>
                 )}
+                {tab.kind === 'remote' && (
+                  <span className="tab-remote" title={remote?.state === 'open' ? 'Connected to another computer' : remote?.message || 'Remote connection is not live'}>
+                    <RemoteConnectionDot connected={remote?.state === 'open'} />
+                    <span className="sr-only">{remote?.state === 'open' ? 'Remote connected. ' : 'Remote disconnected. '}</span>
+                  </span>
+                )}
                 <TabIndicator
                   kind={tab.kind}
                   context={ctx}
-                  status={tab.status}
+                  status={remote ? remote.state === 'open' ? 'running' : remote.state === 'ended' ? 'exited' : 'paused' : tab.status}
                   /*
                    * Only a CLI that takes Claude's flags is in a permission
                    * mode (the status bar's pill reads the same `capsFor`).
@@ -441,7 +450,7 @@ export function TitleBar({
                     data-hosted="true"
                     title={`Open on ${hostedBy[tab.ptyId].join(', ')}, from another machine`}
                   >
-                    <RemoteArrows />
+                    <RemoteConnectionDot />
                     <span className="sr-only">Open on {hostedBy[tab.ptyId].join(', ')}, from another machine. </span>
                   </span>
                 ) : null}
@@ -480,21 +489,7 @@ export function TitleBar({
                 ) : (
                   <span className="tab-label">{label.text}</span>
                 )}
-                {/*
-                  The tab's agent, when it is not the default one: the tag, or
-                  with tags off a rule along the tab's foot in the agent's
-                  colour — so a Codex tab and a Claude tab in one folder still
-                  differ at a glance (QA L16), as they do in the tooltip. The
-                  colour shows only while more than one agent is in view.
-                */}
-                {label.agent &&
-                  (label.agentTag ? (
-                    <span className="tab-agent" {...agentMark(label.agent)} title={`Running ${agentName}`}>
-                      {label.agentTag}
-                    </span>
-                  ) : (
-                    <span className="tab-agent-rule" {...agentMark(label.agent)} aria-hidden="true" />
-                  ))}
+                {agentName && <span className="sr-only">Running {agentName}. </span>}
                 {/*
                   The account, when it is not the agent's own sign-in: which
                   plan this session spends is not decoration, so it is drawn
@@ -699,11 +694,7 @@ export function TitleBar({
                   onReveal: onRevealFolder
                 }
               : null,
-          // Only on a tab that has an agent tag to hide or show.
-          agentTags:
-            onToggleAgentTags && labelFor?.(menuTab).agent
-              ? { shown: agentTagsShown, onToggle: onToggleAgentTags }
-              : null
+
         })}
         onClose={() => setMenu(null)}
       />
@@ -713,7 +704,7 @@ export function TitleBar({
 }
 
 /**
- * The tab context menu's items — Rename, the folder item, the agent-tag toggle
+ * The tab context menu's items — Rename, the folder item
  * on a tab that has an agent to tag, then Chrome's four close actions.
  */
 function buildTabMenu(
@@ -727,7 +718,6 @@ function buildTabMenu(
     onCloseSide: (anchorId: string, side: CloseSide) => void
     /** Reveal the tab's folder; `path` null draws the item disabled. Null: no item. */
     folder: { label: string; path: string | null; onReveal: (path: string) => void } | null
-    agentTags: { shown: boolean; onToggle: () => void } | null
   }
 ): MenuItem[] {
   const folder = on.folder
@@ -742,7 +732,7 @@ function buildTabMenu(
       disabled: tab.kind !== 'session' && tab.kind !== 'grok-bot',
       onSelect: () => on.onRename(tab)
     },
-    // After Rename and before the tag toggle, so the Close group stays together.
+    // After Rename, so the Close group stays together.
     // No chord: none was asked for, and a new one must clear gotcha 56.
     ...(folder
       ? [
@@ -752,14 +742,6 @@ function buildTabMenu(
             onSelect: () => {
               if (folder.path) folder.onReveal(folder.path)
             }
-          }
-        ]
-      : []),
-    ...(on.agentTags
-      ? [
-          {
-            label: on.agentTags.shown ? 'Hide agent tags' : 'Show agent tags',
-            onSelect: on.agentTags.onToggle
           }
         ]
       : []),

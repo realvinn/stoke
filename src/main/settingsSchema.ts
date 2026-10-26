@@ -60,6 +60,7 @@ export const DEFAULT_SETTINGS: Settings = {
   themeId: DEFAULT_THEME_ID,
   themeIdLight: DEFAULT_LIGHT_THEME_ID,
   followSystemTheme: false,
+  contextRingStyle: 'solid',
   customThemes: [],
   wallpaper: { ...WALLPAPER_DEFAULTS },
   fontFamily:
@@ -463,6 +464,7 @@ export function hydrateSettings(raw: unknown): Settings {
     // must read as on, which is what an untouched machine gets.
     hideStatusLine: r.hideStatusLine !== false,
     showBrand: r.showBrand !== false,
+    contextRingStyle: r.contextRingStyle === 'dotted' ? 'dotted' : 'solid',
     // Rebuilt from named keys (shared/topBar.ts): unknown kinds, bad ids and
     // over-long text go; a file from before the key reads as the default.
     topBar: clampTopBar(r.topBar),

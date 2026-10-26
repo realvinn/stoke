@@ -5,7 +5,7 @@ import type { TabKind } from '../types'
 interface Props {
   kind: TabKind
   /** Undefined until the context watcher has reported for this session. */
-  context: ContextSnapshot | undefined
+  context: Pick<ContextSnapshot, 'ready' | 'contextTokens' | 'contextLimit'> | undefined
   status: 'running' | 'exited' | 'paused'
   /**
    * The mode the transcript last recorded, not the one the tab launched with.
@@ -16,46 +16,9 @@ interface Props {
   watched: boolean
 }
 
-/**
- * Everything one tab has to say about its session, in a slot of fixed width.
- *
- * The slot is fixed because the strip used to swap a 7px dot for a 14px ring
- * the moment the context watcher became ready, and the label and the close
- * button jumped 7px with it. It is also the reason the ring is drawn even with
- * no reading: an empty circle occupies the slot honestly, where a blank space
- * would read as a rendering failure.
- *
- * Three things share the slot, and each says itself with a different shape:
- *
- *  - The ARC is context used, in traffic-light colours — green to 30%, orange
- *    to 60%, red from 61%, and from 81% a solid red disc (ContextMeter.tsx,
- *    shared/contextLevel.ts). So red in the strip is context pressure again:
- *    it used to be kept off the ring, amber at 90%, so that red could mean
- *    only the worklog dot. The arc is solid with round ends from 12 o'clock.
- *  - The DOT in the middle is the worklog agent watching this session. Still
- *    --danger, and a filled centre rather than an arc, so the two reds cannot
- *    be read for each other; over a full ring's red disc it is inverted to the
- *    page colour rather than lost.
- *  - In bypass mode the TRACK is a ring of slate beads — a setting, not an
- *    alarm. It was a red dot once, then an amber dashed track, and on a machine
- *    whose default mode is bypass that put the loudest colour on screen on every
- *    tab all the time. It is the theme's own neutral now (--ring-bypass), and
- *    the beads rather than the colour carry "the guard rails are off". They
- *    are drawn by ContextRing, which leaves out any bead the arc would touch.
- *
- * The dot is drawn by ContextRing, inside the ring's own <svg>, rather than
- * laid over it as a second child of this slot. Two boxes centred in one grid
- * cell agree in layout and disagree by half a pixel once painted; one circle
- * sharing the ring's coordinate system cannot. See WATCH_R in ContextMeter.tsx.
- */
-/** The two arrows in the ring: a session another machine is on, from either end of the link. */
-export function RemoteArrows(): React.JSX.Element {
-  return (
-    <svg className="ring" viewBox="0 0 16 16" data-level="empty" aria-hidden="true">
-      <circle className="ring-track" cx="8" cy="8" r={RING_R} />
-      <path className="ring-remote" d="M5.2 6.2h5.6M8.8 4.4l2 1.8-2 1.8M10.8 9.8H5.2M7.2 8l-2 1.8 2 1.8" />
-    </svg>
-  )
+/** A live remote link gets its own dot, leaving the context meter intact. */
+export function RemoteConnectionDot({ connected = true }: { connected?: boolean }): React.JSX.Element {
+  return <span className="tab-remote-dot" data-connected={connected || undefined} aria-hidden="true" />
 }
 
 export function TabIndicator({
@@ -94,16 +57,6 @@ export function TabIndicator({
           <path className="ring-plus" d="M8 5.4v5.2M5.4 8h5.2" />
         </svg>
         <span className="sr-only">New session, not started</span>
-      </span>
-    )
-  }
-
-  if (kind === 'remote') {
-    // Another machine's session: no context reading here, and a mark that says whose it is not.
-    return (
-      <span className="tab-indicator" data-kind="remote" data-status={status}>
-        <RemoteArrows />
-        <span className="sr-only">Another machine’s session</span>
       </span>
     )
   }

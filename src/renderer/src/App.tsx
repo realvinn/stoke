@@ -4862,13 +4862,6 @@ export function App(): React.JSX.Element {
     [patchSettings]
   )
 
-  /** The tab menu's "Hide/Show agent tags" — the same setting as Settings › Agents. */
-  const toggleAgentTags = useCallback((): void => {
-    const cur = settingsRef.current
-    if (!cur) return
-    void patchSettings({ agents: { ...cur.agents, tag: { ...cur.agents.tag, show: !cur.agents.tag.show } } })
-  }, [patchSettings])
-
   /** What `tabLabel` needs to decide a tab's agent tag. */
   const agentTagShown = settings?.agents.tag.show ?? true
   const agentTagLabels = settings?.agents.tag.labels
@@ -6048,6 +6041,7 @@ export function App(): React.JSX.Element {
   return (
     <div
       className="app"
+      data-context-ring-style={settings?.contextRingStyle ?? 'solid'}
       ref={appRef}
       data-reveal={revealLayout}
       data-shifted={revealShifted || undefined}
@@ -6055,6 +6049,7 @@ export function App(): React.JSX.Element {
     >
       <TitleBar
         hostedBy={hostedBy}
+        remoteViews={hubRemote.tabs}
         remoteView={hubRemote.tabs.find(v => v.id === activeTab?.remote?.tabId) ?? null}
         platform={platform}
         showBrand={settings?.showBrand !== false}
@@ -6100,8 +6095,6 @@ export function App(): React.JSX.Element {
           const aimed = at ? projects.find((p) => p.path === at) : null
           return tabLabel(t, at ? (aimed ? (aimed.label ?? aimed.name) : baseName(at)) : null, tagOptions)
         }}
-        agentTagsShown={agentTagShown}
-        onToggleAgentTags={toggleAgentTags}
         settingsOpen={settingsOpen}
         toolbar={
           settings?.topBar.enabled ? (

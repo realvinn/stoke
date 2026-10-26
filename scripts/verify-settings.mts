@@ -106,6 +106,10 @@ check(
   []
 )
 
+check('old settings use a solid context track', hydrateSettings({}).contextRingStyle, 'solid')
+check('dotted context tracks survive hydration', hydrateSettings({ contextRingStyle: 'dotted' }).contextRingStyle, 'dotted')
+check('invalid context styles fall back to solid', hydrateSettings({ contextRingStyle: 'other' }).contextRingStyle, 'solid')
+
 console.log('\ninterface scale, which a number input will not clamp for you')
 check('a hand-typed 40 is clamped', hydrateSettings({ uiScale: 40 }).uiScale, 1.6)
 check('so is 0', hydrateSettings({ uiScale: 0 }).uiScale, 0.8)
