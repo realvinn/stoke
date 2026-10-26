@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process'
 import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { spawn } from '@lydell/node-pty'
 import { configSchema, readConfig, updateConfig } from '../src/terminal/config.ts'
 import { AgentInput, composerView, nextCursor, previousCursor } from '../src/terminal/input.ts'
@@ -139,7 +139,11 @@ process.stdout.on('resize', () => console.log('AGENT_SIZE:' + process.stdout.col
   }, remotes: { lab: { kind: 'opencode', url: 'http://127.0.0.1:4096' } } }
   writeFileSync(file, JSON.stringify(config))
   const env = { ...process.env, STOKE_CONFIG: file, STOKE_TERMINAL_HOME: join(temp, 'state'), ELECTRON_RUN_AS_NODE: '1' }
-  const terminal = spawn(process.execPath, ['--experimental-strip-types', join(root, 'src/terminal/index.ts'), temp],
+  // Observe the real Win32 console chunks in this synthetic fixture only.
+  const trace = join(temp, 'input-trace.jsonl'), observer = join(temp, 'observe-input.mjs')
+  writeFileSync(observer, `import {appendFileSync} from 'node:fs';import {AgentInput} from ${JSON.stringify(pathToFileURL(join(root, 'src/terminal/input.ts')).href)};const take=AgentInput.prototype.take;AgentInput.prototype.take=function(data){const result=take.call(this,data);appendFileSync(${JSON.stringify(trace)},JSON.stringify({data,result})+'\\n');return result}`)
+  const observed = process.platform === 'win32' ? ['--import', pathToFileURL(observer).href] : []
+  const terminal = spawn(process.execPath, [...observed, '--experimental-strip-types', join(root, 'src/terminal/index.ts'), temp],
     { cwd: root, cols: 120, rows: 36, env, name: 'xterm-256color' })
   let output = '', exited = false
   terminal.onData((data) => { output += data })
@@ -147,7 +151,7 @@ process.stdout.on('resize', () => console.log('AGENT_SIZE:' + process.stdout.col
   const until = async (predicate: () => boolean, description: string): Promise<void> => {
     const deadline = Date.now() + 8000
     while (!predicate()) {
-      if (Date.now() > deadline || exited) throw new Error(`${description}\n${output.slice(-5000)}`)
+      if (Date.now() > deadline || exited) throw new Error(`${description}\n${output.slice(-5000)}\n${process.platform === 'win32' ? readFileSync(trace, 'utf8') : ''}`)
       await new Promise((r) => setTimeout(r, 20))
     }
   }
