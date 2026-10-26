@@ -3,10 +3,10 @@ import { spawnSync } from 'node:child_process'
 import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { fileURLToPath } from 'node:url'
 import { spawn } from '@lydell/node-pty'
 import { configSchema, readConfig, updateConfig } from '../src/terminal/config.ts'
-import { AgentInput, composerView, nextCursor, previousCursor } from '../src/terminal/input.ts'
+import { AgentInput, ConsoleInput, composerView, nextCursor, previousCursor } from '../src/terminal/input.ts'
 import stringWidth from 'string-width'
 import { MENU_SECTIONS, menuItems, renderMenu } from '../src/terminal/menu.ts'
 import { stripVTControlCharacters } from 'node:util'
@@ -20,6 +20,32 @@ let checks = 0
 function check(name: string, fn: () => void): void { fn(); checks++; console.log(`PASS ${name}`) }
 
 try {
+  check('Win32 input records open Stoke without losing native modifiers, Unicode or paste', () => {
+    const packet = (uc: number, vk = 0, down = 1, control = 0, repeat = 1) => `\x1b[${vk};0;${uc};${down};${control};${repeat}_`
+    const wrappedF5 = [...'\x1b[15~'].map(char => packet(char.charCodeAt(0))).join('')
+    for (let split = 1; split < wrappedF5.length; split++) {
+      const console = new ConsoleInput(), agent = new AgentInput()
+      const first = agent.take(console.take(wrappedF5.slice(0, split), true))
+      const last = agent.take(console.take(wrappedF5.slice(split), true))
+      assert(first.menu || last.menu)
+      assert.equal(first.forward + last.forward, '')
+    }
+    const console = new ConsoleInput(), agent = new AgentInput()
+    assert.equal(agent.take(console.take(packet(0, 116), true)).menu, true, 'a physical F5 opens Stoke')
+    assert.equal(console.take(packet(0, 116, 0), true), '', 'its key-up is consumed too')
+    const modified = packet(0, 37, 1, 8)
+    assert.equal(console.take(modified, true), modified, 'native agent key records retain their exact metadata')
+    assert.equal(console.take(modified), '\x1b[1;5D', 'Stoke menus understand Ctrl+Left')
+    assert.equal(console.take(packet(65, 65, 0)), '', 'menus ignore key-up events')
+    assert.equal(console.take(packet(65, 65, 1, 0, 3)), 'AAA')
+    assert.equal(console.take(packet(0xd83d) + packet(0xdc4b)), '👋')
+    assert.equal(console.take('\x1b[0;0;'), '')
+    assert.equal(console.flush(), '\x1b[0;0;')
+    assert.equal(console.take('\x1b[1;5A'), '\x1b[1;5A', 'ordinary VT stays unchanged')
+    const wrapped = (text: string) => [...text].map(char => packet(char.charCodeAt(0))).join('')
+    const paste = agent.take(console.take(wrapped('\x1b[200~\x1b[15~\x1d\x1b[201~'), true))
+    assert.equal(paste.detach, false, 'pasting shortcut text does not navigate')
+  })
   const cfg = configSchema.parse({ agent: 'opencode', agents: { opencode: { models: ['provider/model'] } } })
   check('config validates defaults, agent IDs, models, URLs and SSH destinations', () => {
     assert.equal(cfg.agents.opencode.model, '')
@@ -139,11 +165,7 @@ process.stdout.on('resize', () => console.log('AGENT_SIZE:' + process.stdout.col
   }, remotes: { lab: { kind: 'opencode', url: 'http://127.0.0.1:4096' } } }
   writeFileSync(file, JSON.stringify(config))
   const env = { ...process.env, STOKE_CONFIG: file, STOKE_TERMINAL_HOME: join(temp, 'state'), ELECTRON_RUN_AS_NODE: '1' }
-  // Observe the real Win32 console chunks in this synthetic fixture only.
-  const trace = join(temp, 'input-trace.jsonl'), observer = join(temp, 'observe-input.mjs')
-  writeFileSync(observer, `import {appendFileSync} from 'node:fs';import {AgentInput} from ${JSON.stringify(pathToFileURL(join(root, 'src/terminal/input.ts')).href)};const take=AgentInput.prototype.take;AgentInput.prototype.take=function(data){const result=take.call(this,data);appendFileSync(${JSON.stringify(trace)},JSON.stringify({data,result})+'\\n');return result}`)
-  const observed = process.platform === 'win32' ? ['--import', pathToFileURL(observer).href] : []
-  const terminal = spawn(process.execPath, [...observed, '--experimental-strip-types', join(root, 'src/terminal/index.ts'), temp],
+  const terminal = spawn(process.execPath, ['--experimental-strip-types', join(root, 'src/terminal/index.ts'), temp],
     { cwd: root, cols: 120, rows: 36, env, name: 'xterm-256color' })
   let output = '', exited = false
   terminal.onData((data) => { output += data })
@@ -151,7 +173,7 @@ process.stdout.on('resize', () => console.log('AGENT_SIZE:' + process.stdout.col
   const until = async (predicate: () => boolean, description: string): Promise<void> => {
     const deadline = Date.now() + 8000
     while (!predicate()) {
-      if (Date.now() > deadline || exited) throw new Error(`${description}\n${output.slice(-5000)}\n${process.platform === 'win32' ? readFileSync(trace, 'utf8') : ''}`)
+      if (Date.now() > deadline || exited) throw new Error(`${description}\n${output.slice(-5000)}`)
       await new Promise((r) => setTimeout(r, 20))
     }
   }

@@ -6,7 +6,7 @@ import { CODING_CLIS, cliFor, isCodingCliId, isSafeResumeId, type CodingCliId } 
 import { isModelId } from '../shared/modelId.ts'
 import { configPath, configSchema, exampleConfig, readConfig, selectedAgent, updateConfig, type TerminalConfig } from './config.ts'
 import { executableFor, history, Sessions, type Chat, type LiveChat } from './sessions.ts'
-import { AgentInput, composerView, nextCursor, previousCursor } from './input.ts'
+import { AgentInput, ConsoleInput, composerView, nextCursor, previousCursor } from './input.ts'
 import { MENU_SECTIONS, menuItems, renderMenu, renderWelcome, type MenuItem, type MenuSection, type MenuView } from './menu.ts'
 import { formKey, insertFormText, type FormField } from './forms.ts'
 import { z } from 'zod'
@@ -48,7 +48,7 @@ Vendor login, permissions, MCP and settings remain in the real agent CLI.
 declare const STOKE_TERMINAL_VERSION: string
 
 // Disable modes a child may have enabled before giving the Stoke composer focus.
-const SHELL_MODES = '\x1b[?2026l\x1b[?1049l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1004l\x1b[?1006l\x1b[?1007l\x1b[?1l\x1b>\x1b[?25h\x1b[0m\x1b[?2004h'
+const SHELL_MODES = '\x1b[?9001l\x1b[?2026l\x1b[?1049l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1004l\x1b[?1006l\x1b[?1007l\x1b[?1l\x1b>\x1b[?25h\x1b[0m\x1b[?2004h'
 const clean = (s: string): string => s.replace(/[\x00-\x1f\x7f-\x9f]/g, ' ')
 
 async function main(): Promise<void> {
@@ -136,6 +136,7 @@ async function main(): Promise<void> {
   let visibleChats: Chat[] = [], commandHistory: string[] = [], historyIndex = 0
   const keys = new PassThrough()
   let agentInput = new AgentInput()
+  const consoleInput = new ConsoleInput()
   const out = (value: string): void => { process.stdout.write(value) }
   const say = (value: string): void => out(`\r\x1b[2K${value}\r\n`)
   const prompt = (): void => {
@@ -175,6 +176,7 @@ async function main(): Promise<void> {
     session.screen.resize(process.stdout.columns || 80, process.stdout.rows || 24)
     session.pty.resize(process.stdout.columns || 80, process.stdout.rows || 24)
     out('\x1b[?2004l\x1b[2J\x1b[H' + (session.screen.snapshot() ?? 'Screen unavailable. Return to Stoke and restart this chat.\r\n'))
+    if (process.platform === 'win32') out('\x1b[?9001h')
   }
   const listChats = (filter = ''): void => {
     visibleChats = history().filter((chat) => `${chat.title} ${chat.agent} ${chat.cwd}`.toLowerCase().includes(filter.toLowerCase()))
@@ -615,8 +617,13 @@ async function main(): Promise<void> {
     prompt()
   })
   process.stdin.on('data', (data: string) => {
-    if (!attached) { keys.write(data); return }
     if (escapeTimer) { clearTimeout(escapeTimer); escapeTimer = null }
+    data = consoleInput.take(data, !!attached)
+    if (!attached) {
+      keys.write(data)
+      if (consoleInput.hasPending) escapeTimer = setTimeout(() => { escapeTimer = null; keys.write(consoleInput.flush()) }, 35)
+      return
+    }
     const target = attached
     const input = agentInput.take(data)
     if (input.forward) attached.pty.write(input.forward)
@@ -626,11 +633,11 @@ async function main(): Promise<void> {
       out(SHELL_MODES)
       say('Returned to Stoke. Your chat is still running. /chats to switch; /agent to choose another agent.')
       prompt()
-    } else if (agentInput.hasPending) {
+    } else if (agentInput.hasPending || consoleInput.hasPending) {
       escapeTimer = setTimeout(() => {
         escapeTimer = null
-        if (attached === target) target.pty.write(agentInput.flush())
-      }, process.platform === 'win32' ? 500 : 35)
+        if (attached === target) target.pty.write(agentInput.flush() + consoleInput.flush())
+      }, 35)
     }
   })
   out(SHELL_MODES)
