@@ -45,6 +45,8 @@ try {
     const wrapped = (text: string) => [...text].map(char => packet(char.charCodeAt(0))).join('')
     const paste = agent.take(console.take(wrapped('\x1b[200~\x1b[15~\x1d\x1b[201~'), true))
     assert.equal(paste.detach, false, 'pasting shortcut text does not navigate')
+    const literal = `\x1b[200~${packet(65)}\x1b[201~`
+    assert.equal(new ConsoleInput().take(literal, true), literal, 'ordinary bracketed paste retains literal Win32-looking text')
   })
   const cfg = configSchema.parse({ agent: 'opencode', agents: { opencode: { models: ['provider/model'] } } })
   check('config validates defaults, agent IDs, models, URLs and SSH destinations', () => {
@@ -350,10 +352,14 @@ process.stdout.on('resize', () => console.log('AGENT_SIZE:' + process.stdout.col
   console.error(error) // Preserve the original failure if a Windows handle delays cleanup.
   throw error
 } finally {
+  console.log('Cleaning up the synthetic session service…')
   const info = readServerInfo(join(temp, 'state'))
   const cleanup = new Sessions(() => {}, () => {}, join(temp, 'state'))
   try { if (await cleanup.ready(false)) await cleanup.shutdown() } finally { cleanup.close() }
+  console.log('Synthetic session shutdown acknowledged.')
   const deadline = Date.now() + 3000
   while (info && processAlive(info.pid) && Date.now() < deadline) await new Promise(done => setTimeout(done, 30))
+  console.log(`Synthetic session owner exited: ${!info || !processAlive(info.pid)}.`)
   rmSync(temp, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 })
+  console.log('Synthetic fixture removed; active resource kinds:', process.getActiveResourcesInfo().join(', '))
 }

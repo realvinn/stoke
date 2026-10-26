@@ -2711,6 +2711,8 @@ scripts/          the verify-*.mts suites, make-icon.cjs
                     checksums must exist and match before joining the release assets
   drive-account-remote.mts  Chromium driver for verify-account-remote's synthetic Hub:
                     pairing scrub, independent discovery, terminal input, wake and drafts
+  capture-test-window.mts  software rendering on Linux and frame-ready screenshots for
+                    browser fixtures; empty captures and persistent Viz errors fail the suite
   check-release-assets.mjs  the publish gate: for every target in targets.mjs, the feed
                     its updater fetches must list a file its updater will accept, and that
                     file must be on disk. Derived from the matrix, so a new platform

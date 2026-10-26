@@ -5,6 +5,7 @@ import stringWidth from 'string-width'
  * native agent. See https://github.com/microsoft/terminal/issues/4999. */
 export class ConsoleInput {
   private pending = ''
+  private rawPaste = false
   get hasPending(): boolean { return !!this.pending }
   flush(): string { const value = this.pending; this.pending = ''; return value }
   take(chunk: string, preservePhysical = false): string {
@@ -14,6 +15,12 @@ export class ConsoleInput {
     for (let i = 0; i < data.length;) {
       if (data[i] !== '\x1b') { result += data[i++]; continue }
       const rest = data.slice(i)
+      if (this.rawPaste) {
+        if (rest.startsWith('\x1b[201~')) { this.rawPaste = false; result += '\x1b[201~'; i += 6; continue }
+        if ('\x1b[201~'.startsWith(rest)) { this.pending = rest; break }
+        result += data[i++]; continue
+      }
+      if (rest.startsWith('\x1b[200~')) { this.rawPaste = true; result += '\x1b[200~'; i += 6; continue }
       const record = /^\x1b\[(\d*(?:;\d*){1,5})_/.exec(rest)
       if (!record) {
         if (rest.length < 90 && (rest === '\x1b' || /^\x1b\[\d*(?:;\d*){0,5}$/.test(rest))) { this.pending = rest; break }
