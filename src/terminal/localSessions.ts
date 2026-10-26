@@ -17,6 +17,7 @@ export interface LiveChat {
 
 export class LocalSessions {
   readonly live = new Map<string, LiveChat>()
+  private readonly released = new WeakSet<IPty>()
   private readonly onOutput: (session: LiveChat, data: string) => void
   private readonly onExit: (session: LiveChat) => void
   private readonly home: string
@@ -53,14 +54,26 @@ export class LocalSessions {
       session.screen.write(data)
       this.onOutput(session, data)
     })
-    pty.onExit(({ exitCode }) => { session.exited = true; session.exitCode = exitCode; this.onExit(session) })
+    pty.onExit(({ exitCode }) => {
+      session.exited = true; session.exitCode = exitCode
+      // The Win32 backend retains its reader worker after a natural exit.
+      // kill() releases that worker even though the child itself is gone.
+      if (process.platform === 'win32') this.release(pty)
+      this.onExit(session)
+    })
     return session
   }
 
   close(): void {
     for (const session of this.live.values()) {
-      if (!session.exited) try { session.pty.kill() } catch { /* already exited */ }
+      if (!session.exited || process.platform === 'win32') this.release(session.pty)
       session.screen.dispose()
     }
+  }
+
+  private release(pty: IPty): void {
+    if (this.released.has(pty)) return
+    this.released.add(pty)
+    try { pty.kill() } catch { /* already released by an explicit stop */ }
   }
 }

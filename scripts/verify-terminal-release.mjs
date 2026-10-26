@@ -50,7 +50,7 @@ try {
       if (menu && !quit && data.includes('Search chats:')) { quit = true; child.write('\x1b[15~') }
       else if (quit && data.includes('Search chats:') && text.includes('stoke ·')) child.write('/quit\r')
     })
-    child.onExit(({ exitCode }) => { clearTimeout(timer); if (exitCode === 0 && quit) resolve(); else reject(new Error(`Extracted CLI exit ${exitCode}: ${data.slice(-1000)}`)) })
+    child.onExit(({ exitCode }) => { clearTimeout(timer); if (process.platform === 'win32') try { child.kill() } catch { /* already released */ }; if (exitCode === 0 && quit) resolve(); else reject(new Error(`Extracted CLI exit ${exitCode}: ${data.slice(-1000)}`)) })
   })
   console.log(`PASS extracted ${target} release: bundled runtime, PTY, doctor, F5 and clean UI detach.`)
 } finally {

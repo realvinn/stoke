@@ -48,6 +48,7 @@ try {
     child.onData((text) => { data += text })
     child.onExit(({ exitCode }) => {
       clearTimeout(timer)
+      if (process.platform === 'win32') try { child.kill() } catch { /* already released */ }
       try { assert.equal(exitCode, 0); assert.deepEqual(JSON.parse(stripVTControlCharacters(data).match(/STOKE_ARGS:(\[[^\r\n]*\])/)![1]), args); resolve() } catch (error) { reject(error) }
     })
   })
@@ -62,6 +63,7 @@ try {
       child.onData((text) => { data += text })
       child.onExit(({ exitCode }) => {
         clearTimeout(timer)
+        try { child.kill() } catch { /* already released */ }
         try { assert.equal(exitCode, 0); assert.deepEqual(JSON.parse(stripVTControlCharacters(data).match(/STOKE_ARGS:(\[[^\r\n]*\])/)![1]), ['hello world', 'x&y']); resolve() } catch (error) { reject(error) }
       })
     })

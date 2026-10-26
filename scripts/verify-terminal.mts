@@ -171,7 +171,7 @@ process.stdout.on('resize', () => console.log('AGENT_SIZE:' + process.stdout.col
     { cwd: root, cols: 120, rows: 36, env, name: 'xterm-256color' })
   let output = '', exited = false
   terminal.onData((data) => { output += data })
-  terminal.onExit(() => { exited = true })
+  terminal.onExit(() => { exited = true; if (process.platform === 'win32') try { terminal.kill() } catch { /* already released */ } })
   const until = async (predicate: () => boolean, description: string): Promise<void> => {
     const deadline = Date.now() + 8000
     while (!predicate()) {
@@ -315,7 +315,7 @@ process.stdout.on('resize', () => console.log('AGENT_SIZE:' + process.stdout.col
         if (!detached && text.includes('AGENT_INPUT:"reattached after quit\\r"')) { detached = true; other.write('\x1d') }
         if (detached && !quitting && text.includes('Returned to Stoke')) { quitting = true; other.write('/quit\r') }
       })
-      other.onExit(({ exitCode }) => { clearTimeout(timer); if (exitCode === 0 && detached) resolve(); else reject(new Error(`Reattach failed: ${text.slice(-1000)}`)) })
+      other.onExit(({ exitCode }) => { clearTimeout(timer); if (process.platform === 'win32') try { other.kill() } catch { /* already released */ }; if (exitCode === 0 && detached) resolve(); else reject(new Error(`Reattach failed: ${text.slice(-1000)}`)) })
     })
     check('a second UI reattaches the original process without creating a duplicate chat', () => assert.equal(history(join(temp, 'state')).length, count))
   } finally { if (!exited) terminal.kill() }
@@ -359,6 +359,7 @@ process.stdout.on('resize', () => console.log('AGENT_SIZE:' + process.stdout.col
   console.log('Synthetic session shutdown acknowledged.')
   const deadline = Date.now() + 3000
   while (info && processAlive(info.pid) && Date.now() < deadline) await new Promise(done => setTimeout(done, 30))
+  assert(!info || !processAlive(info.pid), 'the synthetic session owner must exit after shutdown')
   console.log(`Synthetic session owner exited: ${!info || !processAlive(info.pid)}.`)
   rmSync(temp, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 })
   console.log('Synthetic fixture removed; active resource kinds:', process.getActiveResourcesInfo().join(', '))
