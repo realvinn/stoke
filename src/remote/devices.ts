@@ -71,7 +71,7 @@ function deviceCard(): DeviceCard {
   }
 }
 
-export function mountDevices(opts: { wide?: boolean } = {}): { root: HTMLElement; destroy: () => void } {
+export function mountDevices(opts: { wide?: boolean; account?: boolean } = {}): { root: HTMLElement; destroy: () => void } {
   const abort = new AbortController()
   const signal = abort.signal
   const back = el('a', { class: 'icon-btn', href: '#/', 'aria-label': 'Back to sessions' }, icon('back'))
@@ -83,10 +83,10 @@ export function mountDevices(opts: { wide?: boolean } = {}): { root: HTMLElement
     el('a', { class: 'device-session', href: '#/' }, el('span', { class: 'device-session-title' }, 'Open its sessions'), icon('chevron', 16)))
   const message = el('p', { class: 'device-note', role: 'status' }, 'Finding your other devices…')
   const devices = el('div')
-  const body = el('main', { class: 'scroll' }, el('div', { class: 'devices-content' }, local,
-    el('h2', { class: 'section-head' }, 'Other devices'), message, devices))
+  const body = el('main', { class: 'scroll' }, el('div', { class: 'devices-content' }, ...(opts.account ? [] : [local]),
+    el('h2', { class: 'section-head' }, opts.account ? 'Online computers' : 'Other devices'), message, devices))
   const root = el('section', { class: 'page devices-page', 'data-wide': opts.wide ? 'true' : undefined },
-    el('header', { class: 'topbar' }, back, el('h1', { class: 'topbar-title' }, 'Devices'), el('span', { class: 'spacer' }), refresh), body)
+    el('header', { class: 'topbar' }, back, el('h1', { class: 'topbar-title' }, opts.account ? 'Stoke account' : 'Devices'), el('span', { class: 'spacer' }), refresh), body)
   const cards = new Map<string, DeviceCard>()
   let pending = false
   let received = false
@@ -116,7 +116,7 @@ export function mountDevices(opts: { wide?: boolean } = {}): { root: HTMLElement
       })
       received = true
       showMessage(!reply.available
-        ? `Sign in to Stoke Hub and join your vault on ${localName} to reach your other approved devices.`
+        ? opts.account ? 'Reconnecting to your Stoke account…' : `Sign in to Stoke Hub and join your vault on ${localName} to reach your other approved devices.`
         : rows.length === 0
           ? 'None of your other devices is online. Open Stoke on another device signed in to the same Hub account and vault.' : '')
     } catch (error) {
@@ -130,6 +130,7 @@ export function mountDevices(opts: { wide?: boolean } = {}): { root: HTMLElement
       if (!signal.aborted) { refresh.removeAttribute('aria-disabled'); refresh.removeAttribute('aria-busy') }
     }
   }
+  if (opts.account) window.addEventListener('stoke:devices-change', () => void load(), { signal })
   refresh.addEventListener('click', () => void load(), { signal })
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') void load() }, { signal })
   const poll = setInterval(() => void load(), 5000)

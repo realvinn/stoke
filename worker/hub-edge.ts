@@ -52,6 +52,8 @@ import { EDGE_MOUNT, edgeForwardHeaders, edgeTarget, MIN_EDGE_SECRET_CHARS } fro
 import { HUB_LIMITS, type HubErrorBody, type HubErrorCode } from '../src/shared/hub/protocol.ts'
 
 export interface HubEdgeEnv {
+  /** Stable account remote application; independent of desktop tunnels. */
+  REMOTE_ASSETS?: { fetch(request: Request): Promise<Response> }
   /** `https://hub-origin.vinn.dev` — the tunnel hostname (a var in wrangler.hub-edge.jsonc). */
   HUB_ORIGIN?: string
   /** The shared secret the hub's edge listener requires (`wrangler secret put`). */
@@ -266,7 +268,20 @@ export async function forwardSocket(request: Request, env: HubEdgeEnv): Promise<
 }
 
 export default {
-  fetch(request: Request, env: HubEdgeEnv): Promise<Response> {
+  async fetch(request: Request, env: HubEdgeEnv): Promise<Response> {
+    const url = new URL(request.url)
+    if (url.pathname === '/remote') return Response.redirect(url.origin + '/remote/', 308)
+    if (url.pathname.startsWith('/remote/')) {
+      if (url.protocol !== 'https:' && !isLoopback(url.hostname)) return edgeError('edge-refused', 'Use the secure account remote link.', 403)
+      if (!env.REMOTE_ASSETS) return edgeError('server-error', 'The account remote website has not been deployed yet.', 503)
+      const asset = await env.REMOTE_ASSETS.fetch(request)
+      const headers = new Headers(asset.headers)
+      headers.set('referrer-policy', 'no-referrer')
+      headers.set('x-content-type-options', 'nosniff')
+      headers.set('content-security-policy', "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' " + (url.protocol === 'https:' ? 'wss://' : 'ws://') + url.host + "; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; worker-src 'self' blob:; base-uri 'none'; object-src 'none'; frame-ancestors 'none'")
+      if (url.pathname.endsWith('/') || url.pathname.endsWith('.html')) headers.set('cache-control', 'no-store')
+      return new Response(asset.body, { status: asset.status, headers })
+    }
     return (request.headers.get('upgrade') ?? '').toLowerCase() === 'websocket' ? forwardSocket(request, env) : forwardHttp(request, env)
   }
 }

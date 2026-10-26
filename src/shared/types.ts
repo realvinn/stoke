@@ -242,6 +242,8 @@ export type SessionIndexEntry = Pick<
 
 /** Live context-window reading for one session, derived from its JSONL. */
 export interface ContextSnapshot {
+  /** Native lifecycle, independent of whether a context meter is ready. */
+  activity?: import('./agentActivity.ts').AgentActivity
   /** An unavailable native reading can say why; unknown is never represented as 0% used. */
   readingNote?: string
   /** Confirmed native agent thread to reopen the same conversation. */

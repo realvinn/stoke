@@ -1,5 +1,7 @@
 #!/bin/sh
-# stoke: open a folder in Stoke from a terminal.
+# stoke: enter the terminal shell; --desktop opens the graphical app.
+# New bundles carry Resources/terminal/stoke.cjs. Bundles without that resource
+# retain the legacy desktop launch behavior described below.
 #
 # This file ships inside the app, at Stoke.app/Contents/Resources/bin/stoke,
 # and reaches PATH as a symlink: ~/.local/bin/stoke, made by `stoke
@@ -72,13 +74,10 @@ die() {
   exit 1
 }
 
-# --help needs nothing else, not even a bundle, so it is answered first.
-case "${1:-}" in
-  --help | -h)
-    stoke_help
-    exit 0
-    ;;
-esac
+# Explicit opt-in to the desktop launch grammar. New bundles default to the
+# terminal; older bundles without the terminal resource retain their behavior.
+stoke_desktop=0
+if [ "${1:-}" = --desktop ]; then stoke_desktop=1; shift; fi
 
 # `stoke account list` and `stoke account env NAME` are answered here, from
 # the index Stoke writes at ~/.stoke/accounts/index.json (src/shared/
@@ -238,6 +237,20 @@ STOKE_BIN_DIR=$(cd "$(dirname "$stoke_self")" && pwd -P)
 STOKE_SHIM=$STOKE_BIN_DIR/$(basename "$stoke_self")
 # bin -> Resources -> Contents -> Stoke.app
 STOKE_APP=$(dirname "$(dirname "$(dirname "$STOKE_BIN_DIR")")")
+
+stoke_terminal=$STOKE_BIN_DIR/../terminal/stoke.cjs
+case "${1:-}" in
+  install-cli | uninstall-cli | --version | -v) : ;;
+  *)
+    if [ "$stoke_desktop" = 0 ] && [ -f "$stoke_terminal" ]; then
+      ELECTRON_RUN_AS_NODE=1 NODE_PATH="$STOKE_BIN_DIR/../app.asar/node_modules" \
+        exec "$STOKE_APP/Contents/MacOS/Stoke" "$stoke_terminal" "$@"
+    fi
+    ;;
+esac
+case "${1:-}" in
+  --help | -h) stoke_help; exit 0 ;;
+esac
 
 # The one rule for "is this link Stoke's", shared with the installer and with
 # src/shared/stokeCommand.ts (isStokeShimTarget). A link to ANY Stoke bundle's

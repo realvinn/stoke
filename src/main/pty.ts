@@ -1221,6 +1221,13 @@ export class PtyManager {
     return out
   }
 
+  /** A parsed viewport for agent activity on sessions without a local registry. */
+  activityScreen(ptyId: string): string | null {
+    const s = this.sessions.get(ptyId)
+    if (!s || s.exited || !s.ordinary || s.private || s.instrumented) return null
+    return s.mirror.inspectComposer()?.text ?? null
+  }
+
   /**
    * Context window stated by the banner of the session with this id, or null
    * when none was seen. Keyed on the Claude session id rather than the pty id,

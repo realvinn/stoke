@@ -1,3 +1,4 @@
+import { screenActivity } from '../src/shared/agentActivity.ts'
 import assert from 'node:assert/strict'
 import { mkdtemp, mkdir, writeFile, appendFile, rm, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -26,6 +27,34 @@ assert.equal(codexContextSnapshot(state, 't', 0).ready, false)
 foldCodexContext(state, line('event_msg', { type: 'token_count', info: { total_token_usage: { total_tokens: 9_000_000 }, model_context_window: 258400 } }))
 assert.equal(state.used, null, 'missing last-response usage has no cumulative fallback')
 assert.equal(codexRolloutMeta(line('session_meta', { id: 'x', cwd: '/x', timestamp: 'bad' })), null)
+
+assert.equal(screenActivity('✻ Thinking… (esc to interrupt)'), 'busy', 'SSH agent footer indicates active work')
+assert.equal(screenActivity('Do you want to proceed?\n  1. Yes\n  2. No'), 'waiting', 'SSH permission prompt waits')
+assert.equal(screenActivity('Enter to submit\nEsc to cancel\nesc to interrupt'), 'busy', 'SSH follow-up panel does not override active work')
+assert.equal(screenActivity('ordinary tool output\n› ask anything'), null, 'output alone never implies thinking')
+assert.equal(screenActivity('esc to interrupt\n' + 'old output\n'.repeat(20)), null, 'old scrollback cannot keep a session working')
+
+// Lifecycle is independent of token usage and nonblocking follow-ups.
+const activity = emptyCodexContext()
+const event = (type: string, payload: unknown) => JSON.stringify({ timestamp: '2026-10-23T10:00:00Z', type, payload })
+foldCodexContext(activity, event('event_msg', { type: 'task_started' }))
+assert.equal(activity.activity?.status, 'busy')
+foldCodexContext(activity, event('response_item', { type: 'function_call', name: 'request_user_input', call_id: 'async', arguments: JSON.stringify({ isBlocking: false }) }))
+assert.equal(activity.activity?.status, 'busy', 'a nonblocking follow-up does not stop thinking')
+foldCodexContext(activity, event('response_item', { type: 'function_call_output', call_id: 'async', output: 'pending' }))
+assert.equal(activity.activity?.status, 'busy')
+foldCodexContext(activity, event('response_item', { type: 'function_call', name: 'tools.request_user_input', call_id: 'question', arguments: JSON.stringify({ isBlocking: true }) }))
+assert.equal(activity.activity?.status, 'waiting', 'a blocking question waits even on the active tab')
+foldCodexContext(activity, event('response_item', { type: 'function_call_output', call_id: 'unrelated' }))
+assert.equal(activity.activity?.status, 'waiting')
+foldCodexContext(activity, event('response_item', { type: 'function_call_output', call_id: 'question' }))
+assert.equal(activity.activity?.status, 'busy', 'answer resumes work')
+foldCodexContext(activity, event('event_msg', { type: 'task_complete' }))
+assert.equal(activity.activity?.status, 'idle')
+foldCodexContext(activity, event('event_msg', { type: 'turn_started' }))
+assert.equal(activity.activity?.status, 'busy', 'v2 lifecycle alias')
+foldCodexContext(activity, event('event_msg', { type: 'turn_aborted' }))
+assert.equal(activity.activity?.status, 'idle', 'cancelled turns stop pulsing')
 
 const root = await mkdtemp(join(tmpdir(), 'stoke-codex-context-'))
 const snapshots = new Map<string, ContextSnapshot>()
@@ -60,9 +89,13 @@ try {
   assert.equal(snapshots.get('one')?.contextTokens, 22000, 'an unfinished append cannot replace a valid reading')
   await appendFile(file, partial.slice(-3)); watcher.refresh('one')
   await until(() => snapshots.get('one')?.contextTokens === 5000)
+  await appendFile(file, JSON.stringify({ timestamp: new Date(now).toISOString(), type: 'event_msg', payload: { type: 'task_started' } }) + '\n')
+  watcher.refresh('one')
+  await until(() => snapshots.get('one')?.activity?.status === 'busy')
   watcher.unwatch('one')
   watcher.watch({ sessionId: 'resumed', home, cwd: '/different', startedAt: now + 60_000, resumeId: id })
   await until(() => snapshots.get('resumed')?.contextTokens === 5000)
+  assert.equal(snapshots.get('resumed')?.activity, undefined, 'resuming an old thread never replays its old working indicator')
   watcher.watch({ sessionId: 'ambiguous', home: other, cwd, startedAt: now })
   await new Promise(r => setTimeout(r, 150))
   assert.equal(snapshots.get('ambiguous')?.ready, false, 'overlapping same-account launches cannot steal the existing rollout')
@@ -70,5 +103,5 @@ try {
   watcher.refresh('resumed')
   await until(() => snapshots.get('resumed')?.model === 'new-model' && snapshots.get('resumed')?.contextTokens === 3000)
   assert.equal(await readFile(bystander, 'utf8'), 'keep')
-  console.log('PASS Codex context: native last-response tokens, model changes, compaction, partial appends, resume, account isolation and ambiguous launch refusal')
+  console.log('PASS Codex lifecycle, blocking/nonblocking questions and stale-resume suppression; context: native last-response tokens, model changes, compaction, partial appends, resume, account isolation and ambiguous launch refusal')
 } finally { watcher.disposeAll(); await rm(root, { recursive: true, force: true }) }

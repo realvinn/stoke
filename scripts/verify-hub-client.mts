@@ -1052,7 +1052,22 @@ try {
     [(await A.svc.setUrl(URL_.replace(/\/hub$/, ''))).ok, (await A.svc.setUrl(`${URL_}/`)).ok, A.svc.view().url],
     [true, true, URL_]
   )
+  let releaseRole!: () => void
+  const roleGate = new Promise<void>((resolve) => { releaseRole = resolve })
+  let rolePending = false, concurrentChain = false
+  A.intercept = async (url) => {
+    if (v1(url) === '/v1/account') {
+      rolePending = true
+      await Promise.race([roleGate, sleep(1000)])
+      rolePending = false
+    } else if (v1(url) === '/v1/chain' && rolePending) {
+      concurrentChain = true; releaseRole()
+    }
+    return null
+  }
   check('signing in again finds the same vault: anchor and pin were kept', [(await A.svc.signIn({ email: EMAIL, password: PASSWORD })).ok, A.svc.view().phase, A.svc.view().alarm], [true, 'active', null])
+  A.intercept = null
+  ok('a slow account-role lookup does not delay the device-chain request at sign-in', concurrentChain)
   check('(a clean pass first, so no error is left over from one)', (await A.svc.syncNow()).ok, true)
   A.intercept = (url) => (/^\/v1\/pair\/[^/]+\/nonce$/.test(v1(url)) ? json({ error: 'unauthorized', message: 'Your hub session ended. Sign in again.' }, 401) : null)
   const endedElsewhere = await A.svc.approveStart('p0000000000000000')

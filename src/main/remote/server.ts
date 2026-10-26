@@ -1943,7 +1943,7 @@ export class RemoteServer {
     const reg = this.deps.registryStates().find((s) => s.ptyId === ptyId) ?? null
     const status = phoneStatusFor({
       exited: info.exited,
-      instrumented: info.instrumented,
+      instrumented: info.instrumented || !!reg?.status,
       registryStatus: reg?.status ?? null
     })
     return { status, waitingFor: reg?.waitingFor ?? null, promptId: this.promptFor(ptyId, status, reg)?.id ?? null }
@@ -1991,7 +1991,7 @@ export class RemoteServer {
       // An SSH session's cwd is a local folder that has nothing to do with
       // where it runs (gotcha 18), so the host is the honest name.
       const projectName = s.cwd.split(/[\\/]/).filter(Boolean).pop() ?? s.cwd
-      const status = phoneStatusFor({ exited: s.exited, instrumented: s.instrumented, registryStatus: reg?.status ?? null })
+      const status = phoneStatusFor({ exited: s.exited, instrumented: s.instrumented || !!reg?.status, registryStatus: reg?.status ?? null })
       return {
         ptyId: s.ptyId,
         sessionId: s.sessionId,

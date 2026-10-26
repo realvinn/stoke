@@ -44,7 +44,7 @@
 
   /* What a status means, in one place (proposal §3). */
   --status-waiting: var(--warning);
-  --status-busy: var(--accent-ink);
+  --status-busy: var(--status-waiting);
   --status-idle: var(--text-muted);
   --status-ended: var(--text-faint);
   --status-unknown: var(--info);
@@ -2807,79 +2807,41 @@ button.crumb:hover {
   }
 }
 
-/* Terminal controls: modifiers stay within reach; function/editing keys open
- * in explicit groups rather than disappearing beyond a sideways scroller. */
-.dock-row.has-terminal-keys {
-  flex-direction: column;
-  align-items: stretch;
-}
+/* Phone keyboard dock: one quick row, one bounded panel, no stacked pages. */
+.dock-row.has-terminal-keys { flex-direction: column; align-items: stretch; }
 .keys.terminal-keyboard {
-  display: flex;
-  flex: 1 1 auto;
-  flex-direction: column;
-  width: 100%;
-  min-width: 0;
-  gap: 6px;
-  max-height: min(290px, 48dvh);
-  overflow-y: auto;
-  scrollbar-width: thin;
-  mask-image: none;
-  -webkit-mask-image: none;
+  display: flex; flex-direction: column; width: 100%; min-width: 0;
+  gap: 6px; max-height: min(300px, 48dvh); overflow: hidden;
+  mask-image: none; -webkit-mask-image: none;
 }
-.terminal-keyboard .keys-modifiers {
-  display: grid;
-  grid-template-columns: minmax(54px, 1.2fr) repeat(2, minmax(44px, 1fr)) minmax(70px, 1.4fr) minmax(44px, .9fr);
-  gap: 4px;
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  background: var(--bg);
-}
-.terminal-keyboard .keys-navigation {
-  display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
-  grid-template-areas: 'escape tab left up down right enter';
-  gap: 4px;
-}
-.terminal-keyboard .keys-navigation [data-key='Escape'] { grid-area: escape; }
-.terminal-keyboard .keys-navigation [data-key='Tab'] { grid-area: tab; }
-.terminal-keyboard .keys-navigation [data-key='ArrowLeft'] { grid-area: left; }
-.terminal-keyboard .keys-navigation [data-key='ArrowUp'] { grid-area: up; }
-.terminal-keyboard .keys-navigation [data-key='ArrowDown'] { grid-area: down; }
-.terminal-keyboard .keys-navigation [data-key='ArrowRight'] { grid-area: right; }
-.terminal-keyboard .keys-navigation [data-key='Enter'] { grid-area: enter; }
-.terminal-keyboard .keys-functions,
-.terminal-keyboard .keys-more {
-  display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 4px;
-}
-.terminal-keyboard .keys-more { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-.terminal-keyboard .key {
-  flex: initial;
-  min-width: 0;
-  min-height: 44px;
-  height: 44px;
-  padding: 0 4px;
-  font-size: 13px;
-}
+.terminal-keyboard .keys-quick { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 4px; flex: none; }
+.terminal-keyboard .key { flex: initial; min-width: 0; min-height: 44px; height: 44px; padding: 0 4px; font-size: 13px; }
 .terminal-keyboard .key:disabled { opacity: .45; }
-.terminal-keyboard .key-modifier {
-  gap: 2px;
-  border-color: var(--border);
+.terminal-keyboard [data-key^='Arrow'] .key-main { font-size: 18px; }
+.terminal-keyboard .keys-panel {
+  display: flex; flex-direction: column; gap: 6px; min-height: 0;
+  padding: 8px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface);
 }
-.terminal-keyboard .key-modifier[aria-pressed='true'] {
-  color: var(--accent-ink);
-  border-color: var(--accent-ink);
-  background: var(--accent-soft);
-}
-.terminal-keyboard .key-modifier[data-state='locked'] {
-  box-shadow: inset 0 -3px 0 var(--accent-ink);
-}
+.terminal-keyboard .keys-modifiers { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; flex: none; }
+.terminal-keyboard .key-modifier { gap: 2px; border-color: var(--border); }
+.terminal-keyboard .key-modifier[aria-pressed='true'] { color: var(--accent-ink); border-color: var(--accent-ink); background: var(--accent-soft); }
+.terminal-keyboard .key-modifier[data-state='locked'] { box-shadow: inset 0 -3px 0 var(--accent-ink); }
 .terminal-keyboard .key-sub { display: block; color: inherit; min-height: 10px; font-size: 10px; }
-.terminal-keyboard .key-group-toggle { color: var(--text-muted); font-family: var(--sans); }
-.terminal-keyboard .key-group-toggle[aria-expanded='true'] { color: var(--text); background: var(--surface-active); }
+.terminal-keyboard .keys-tabs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 2px; flex: none; }
+.terminal-keyboard .key-group-toggle { color: var(--text-muted); font: 12px var(--sans); border-color: transparent; background: transparent; }
+.terminal-keyboard .key-group-toggle[aria-selected='true'],
+.terminal-keyboard .key-more-toggle[aria-expanded='true'] { color: var(--text); background: var(--surface-active); border-color: var(--border); }
+.terminal-keyboard .keys-panel-body { height: 92px; min-height: 44px; flex: 0 1 92px; overflow-y: auto; overscroll-behavior: contain; }
+.terminal-keyboard .keys-page { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; }
+.terminal-keyboard .keys-shortcuts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.terminal-keyboard .keys-functions { grid-template-columns: repeat(6, minmax(0, 1fr)); }
 .terminal-keyboard .keys-hint { color: var(--text-faint); font: 11px/1.35 var(--sans); text-align: center; }
+.draft-note { display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--text-faint); font: 11px/1.35 var(--sans); }
+.draft-note span { flex: 1; min-width: 0; }
+.draft-note button { flex: none; background: transparent; border: 0; color: var(--accent-ink); font: inherit; min-height: 28px; padding: 0 4px; }
+.draft-note[data-error='true'] { color: var(--warning); }
+.draft-recovery { display: flex; flex-direction: column; gap: 8px; }
+.draft-recovery button { text-align: left; padding: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .devices-content { width: 100%; max-width: 760px; margin: 0 auto; padding: 20px 16px 40px; }
 .devices-content > .section-head { margin: 26px 0 12px; }
 .device-card { border: 1px solid var(--border); border-radius: 14px; background: var(--surface); overflow: hidden; margin-bottom: 16px; }
@@ -2902,31 +2864,14 @@ button.crumb:hover {
 .session .link-strip[data-state='refused'] .spinner,
 .session .link-strip[data-state='lost'] .spinner { display: none; }
 .session .link-strip .btn { margin-left: auto; flex-shrink: 0; }
-@media (max-width: 359px) {
-  .terminal-keyboard .keys-navigation {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    grid-template-areas: 'escape tab enter enter' 'left up down right';
-  }
-}
 @media (pointer: fine) {
   .terminal-keyboard .key { min-height: 34px; height: 34px; }
+  .terminal-keyboard .keys-panel-body { height: 72px; flex-basis: 72px; min-height: 34px; }
 }
 @media (orientation: landscape) and (max-height: 500px) {
-  .keys.terminal-keyboard { max-height: 170px; overflow-y: auto; scrollbar-width: thin; }
-  .terminal-keyboard .keys-modifiers { position: sticky; top: 0; z-index: 1; background: var(--bg); }
-  .terminal-keyboard[data-layer='functions'] .keys-navigation,
-  .terminal-keyboard[data-layer='more'] .keys-navigation { display: none; }
-}
-@media (min-width: 1024px) {
-  .keys.terminal-keyboard {
-    display: grid;
-    grid-template-columns: minmax(280px, .9fr) minmax(300px, 1.1fr);
-    align-items: start;
-    gap: 6px 8px;
-  }
-  .terminal-keyboard .keys-functions,
-  .terminal-keyboard .keys-more,
-  .terminal-keyboard .keys-hint { grid-column: 1 / -1; }
-  .terminal-keyboard .keys-functions { grid-template-columns: repeat(12, minmax(0, 1fr)); }
-  .terminal-keyboard .keys-more { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+  .keys.terminal-keyboard { max-height: 190px; }
+  .terminal-keyboard .keys-panel { display: grid; grid-template-columns: minmax(150px, 1fr) minmax(0, 2fr); align-items: start; }
+  .terminal-keyboard .keys-modifiers { grid-column: 1; grid-row: 1 / span 2; }
+  .terminal-keyboard .keys-tabs, .terminal-keyboard .keys-panel-body { grid-column: 2; }
+  .terminal-keyboard .keys-hint { display: none; }
 }

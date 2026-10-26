@@ -310,6 +310,7 @@ const api: StokeApi = {
     verifyPassword: (password) => ipcRenderer.invoke(CH.hubVerifyPassword, password),
     cancelVerify: () => ipcRenderer.invoke(CH.hubCancelVerify),
     remote: {
+      createLink: () => ipcRenderer.invoke(CH.hubRemoteBrowserLink),
       view: () => ipcRenderer.invoke(CH.hubRemoteView),
       onChange: (cb) => on<[Parameters<typeof cb>[0]]>(CH.hubRemoteChanged, cb),
       onFrame: (cb) => on<Parameters<typeof cb>>(CH.hubRemoteFrame, cb),

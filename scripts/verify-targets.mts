@@ -28,6 +28,7 @@
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
+import { execFileSync } from 'node:child_process'
 
 import {
   DEBIAN_LEGS,
@@ -44,6 +45,7 @@ import {
 } from './targets.mjs'
 import { auditPty, findPtyDirs } from './assert-packaged-pty.mjs'
 import { assertWindowsIdentityImage } from './build-windows-identity.mjs'
+import { TERMINAL_TARGETS } from '../src/terminal/targets.ts'
 
 const require = createRequire(import.meta.url)
 const root = new URL('../', import.meta.url)
@@ -203,7 +205,11 @@ check(
 
 console.log('\nthe dist:* scripts and the matrix cannot drift apart')
 
-const distScripts = Object.keys(pkg.scripts).filter((name) => name.startsWith('dist:'))
+// The standalone CLI has its own six-target native matrix and runtime packager.
+// Keep the Electron flag contract scoped to desktop distribution scripts.
+const distScripts = Object.keys(pkg.scripts).filter((name) => name.startsWith('dist:') && name !== 'dist:terminal')
+check('terminal runners also match their native platform and architecture', TERMINAL_TARGETS.filter((t) => RUNNERS[t.runner]?.platform !== t.platform || RUNNERS[t.runner]?.arch !== t.arch).map((t) => t.id), [])
+ok('terminal distribution uses its own runtime packager', pkg.scripts['dist:terminal'].includes('node scripts/dist-terminal.mjs'))
 check(
   'every target has a dist script',
   TARGETS.filter((t) => !distScripts.includes(t.script)).map((t) => t.script),
@@ -253,9 +259,11 @@ const triggers = wf.on ?? wf[true as unknown as string] ?? {}
 const stepsOf = (id: string) => (jobs[id]?.steps ?? []) as any[]
 const runsOf = (id: string) => stepsOf(id).map((s) => String(s.run ?? '')).join('\n')
 
-check('the five jobs are there and named', Object.keys(jobs), ['verify', 'prepare', 'build', 'publish', 'winget'])
+check('the desktop, terminal and publishing jobs are there and named', Object.keys(jobs), ['verify', 'prepare', 'build', 'terminal', 'publish', 'winget'])
 check('build waits for both the gate and the matrix', jobs.build?.needs, ['verify', 'prepare'])
-check('publish waits for every build leg', jobs.publish?.needs, 'build')
+check('publish waits for every desktop and terminal build leg', jobs.publish?.needs, ['build', 'terminal'])
+check('terminal builds reuse the native CLI workflow', jobs.terminal?.uses, './.github/workflows/terminal.yml')
+check('terminal builds wait for verification too', jobs.terminal?.needs, 'verify')
 check('prepare publishes the matrix as an output', jobs.prepare?.outputs?.matrix, '${{ steps.targets.outputs.matrix }}')
 check('and computes it by running targets.mjs', /targets\.mjs --matrix/.test(runsOf('prepare')), true)
 check('build consumes that output', jobs.build?.strategy?.matrix, '${{ fromJSON(needs.prepare.outputs.matrix) }}')
@@ -321,6 +329,11 @@ check('the merge runs before the gate, which has nothing to read otherwise', mer
 check('the portable zips are listed after the merge', mergeAt < portableAt, true)
 check('and before the gate, which requires them', portableAt < gateAt, true)
 check('and the gate runs BEFORE the release is created, or it is a post-mortem', gateAt < createAt, true)
+const cliGateAt = stepWith(/check-terminal-assets\.mjs cli-assets/)
+check('all CLI archives pass their checksum gate before publication', cliGateAt > gateAt && cliGateAt < createAt, true)
+const cliDownload = stepsOf('publish').find(s => s.with?.pattern === 'stoke-cli-*')
+check('the CLI artifacts are downloaded into their own directory', cliDownload?.with?.path, 'cli-assets')
+check('verified CLI archives join the final release directory', /cp cli-assets\/\* release-assets\//.test(publishRuns[cliGateAt] ?? ''), true)
 
 console.log('\nthe winget job')
 
@@ -457,6 +470,12 @@ check(
   true
 )
 check('it names no single suite — the list comes from `check` (gotcha 62)', gateRuns.filter(namesASuite), [])
+const linuxPlan = execFileSync(process.execPath, ['scripts/ci-verify.mjs', '--list', '--platform', 'linux'], {
+  cwd: fileURLToPath(root), encoding: 'utf8', env: { ...process.env, DISPLAY: '', WAYLAND_DISPLAY: '' }
+})
+const routeFor = (suite: string): string | undefined => linuxPlan.split('\n').find(line => line.trim().endsWith(suite))?.trim().split(/\s+/)[0]
+check('the Node-orchestrated browser suite gets the same Linux display routing as an Electron suite', routeFor('verify:account-remote'), routeFor('verify:selection'))
+ok('and its route is explicitly run, xvfb or skipped', ['run', 'xvfb', 'skip'].includes(routeFor('verify:account-remote') ?? ''))
 
 /*
  * The mirror, asserted step for step rather than promised in a comment.

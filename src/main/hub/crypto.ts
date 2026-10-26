@@ -40,6 +40,7 @@ import {
   type KeyObject
 } from 'node:crypto'
 import { formatPasswordHash, parsePasswordHash, PASSWORD_KDF } from '../../shared/hub/auth.ts'
+import { browserKeyText, browserWrapInfo, type BrowserPresenceKey } from '../../shared/hub/browser.ts'
 import type { ChainCrypto } from '../../shared/hub/chain.ts'
 import { b64uDecode, b64uEncode, fromUtf8, isB64u, utf8 } from '../../shared/hub/codec.ts'
 import {
@@ -657,3 +658,15 @@ export const UNMATCHABLE_PASSWORD_HASH = formatPasswordHash({
   salt: b64uEncode(new Uint8Array(PASSWORD_KDF.saltBytes)),
   hash: b64uEncode(new Uint8Array(PASSWORD_KDF.keyBytes))
 })
+
+/** A signed, per-phone wrap of the derived presence key; never the vault key. */
+export function wrapBrowserPresence(key: Uint8Array, f: { account: string; epoch: number; device: string; boxPub: string; author: string; signPriv: string }): BrowserPresenceKey {
+  const eph = xPrivate(randomU8(32))
+  const shared = agree(eph, f.boxPub)
+  if (!shared) throw new Error('The browser key did not agree.')
+  const info = browserWrapInfo(f.account, f.epoch, f.device)
+  const wrapping = hkdf(shared, new Uint8Array(), info, 32)
+  const nonce = randomU8(12)
+  const bare = { v: 1 as const, account: f.account, epoch: f.epoch, device: f.device, author: f.author, wrap: { v: 1 as const, eph: publicOf(eph), nonce: b64uEncode(nonce), ct: b64uEncode(gcmSeal(wrapping, nonce, key, utf8(info))) } }
+  return { ...bare, sig: signText(f.signPriv, browserKeyText(bare)) }
+}

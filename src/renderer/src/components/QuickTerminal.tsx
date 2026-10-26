@@ -85,28 +85,23 @@ export function QuickTerminalPanel({ api, state, appearance, surface, focusReque
     }
   }
   return (
-    <section className="quick-terminal" data-quick-terminal data-context={state.contextId} data-pinned={state.pinned} aria-label="Quick terminal" onKeyDown={event => event.stopPropagation()} onKeyDownCapture={event => {
+    <section className="quick-terminal" data-quick-terminal data-context={state.contextId} data-pinned={state.pinned} data-phase={state.phase} aria-label="Quick terminal" onKeyDown={event => event.stopPropagation()} onKeyDownCapture={event => {
       // This whole panel owns its keys, including buttons and the find field.
       if ((api.platform === 'darwin' ? event.metaKey : event.ctrlKey) && event.key.toLowerCase() === 'f') { event.preventDefault(); event.stopPropagation(); if (query === null) setQuery(''); else closeFind() }
     }}>
       <header className="quick-terminal-header">
-        <div className="quick-terminal-heading"><strong>Quick terminal</strong><span>Local shell</span></div>
+        <strong className="quick-terminal-title">Terminal</strong>
+        <select aria-label="Terminal shell" value={state.shellId} disabled={busy || !shells.length || state.phase === 'starting' || state.phase === 'stopping'} onChange={event => { const id = event.target.value; void run(() => api.selectShell(id)) }} title={shells.find(shell => shell.id === state.shellId)?.path}>
+          {!shells.length && <option value={state.shellId}>Loading installed shells…</option>}
+          {shells.map(shell => <option key={shell.id} value={shell.id}>{shell.label}{state.sessions.some(session => session.shellId === shell.id && session.phase === 'running') ? ' · Running' : ''}</option>)}
+        </select>
+        <button className="btn quick-terminal-pin" data-variant="ghost" aria-label="Keep terminal across tabs" aria-pressed={state.pinned} disabled={busy || !state.id || state.phase === 'starting' || state.phase === 'stopping'} title={state.pinned ? 'Unpin to use each tab’s own terminal' : 'Pin this terminal to keep it when you switch tabs'} onClick={() => void run(() => api.pin(!state.pinned))}><IconPin /></button>
         <div className="quick-terminal-actions">
           <button className="btn" data-variant="ghost" disabled={busy || state.phase === 'starting'} onClick={() => void run(() => api.move(surface === 'panel' ? 'popout' : 'panel'))}>{surface === 'panel' ? 'Pop out' : 'Dock'}</button>
           <button className="btn" data-variant="ghost" disabled={busy} onClick={() => void run(() => api.move('hidden'))} title="Hide the view; commands keep running">Hide</button>
         </div>
       </header>
-      <div className="quick-terminal-shell">
-        <label>
-          <span>Shell</span>
-          <select aria-label="Terminal shell" value={state.shellId} disabled={busy || !shells.length || state.phase === 'starting' || state.phase === 'stopping'} onChange={event => { const id = event.target.value; void run(() => api.selectShell(id)) }} title={shells.find(shell => shell.id === state.shellId)?.path}>
-            {!shells.length && <option value={state.shellId}>Loading installed shells…</option>}
-            {shells.map(shell => <option key={shell.id} value={shell.id}>{shell.label}{state.sessions.some(session => session.shellId === shell.id && session.phase === 'running') ? ' · Running' : ''}</option>)}
-          </select>
-        </label>
-        <button className="btn quick-terminal-pin" data-variant="ghost" aria-label="Keep terminal across tabs" aria-pressed={state.pinned} disabled={busy || !state.id || state.phase === 'starting' || state.phase === 'stopping'} title={state.pinned ? 'Unpin to use each tab’s own terminal' : 'Pin this terminal to keep it when you switch tabs'} onClick={() => void run(() => api.pin(!state.pinned))}><IconPin /><span>{state.pinned ? 'Pinned across tabs' : 'This tab'}</span></button>
-      </div>
-      <div className="quick-terminal-folder" title={state.cwd}>{state.cwd || (state.phase === 'starting' ? 'Opening local shell…' : 'Local home folder')}</div>
+      <div className="quick-terminal-folder" title={state.cwd}><span className="quick-terminal-location">Local</span><span>{state.cwd || (state.phase === 'starting' ? 'Opening shell…' : 'Home folder')}</span></div>
       {query !== null && <form className="quick-terminal-find" onSubmit={event => { event.preventDefault(); find.current?.findNext(query) }}>
         <input aria-label="Find in quick terminal" autoFocus value={query} onChange={event => { setQuery(event.target.value); find.current?.findNext(event.target.value) }} onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); closeFind() } }} />
         <button className="btn" type="submit">Next</button><button className="btn" type="button" onClick={closeFind}>Close</button>
@@ -115,7 +110,7 @@ export function QuickTerminalPanel({ api, state, appearance, surface, focusReque
       {state.id && <QuickTerminalScreen key={state.id} api={api} id={state.id} appearance={appearance} phase={state.phase} find={find} focusTerminal={focusTerminal} focusKey={focusKey} claimFocusRequest={claimFocusRequest} onOpenUrl={onOpenUrl} />}
       {!state.id && <div className="quick-terminal-empty">{state.phase === 'starting' ? 'Opening shell…' : 'Open a shell for this tab to run quick commands.'}</div>}
       <footer className="quick-terminal-footer">
-        <span role="status">{state.phase === 'running' ? state.pinned ? 'Pinned; commands keep running across tabs' : 'This tab’s shell; commands keep running while hidden' : state.phase === 'exited' ? `Shell ended${state.exitCode === null ? '' : ` · Exit ${state.exitCode}`}` : state.phase === 'stopping' ? 'Stopping shell…' : state.phase === 'starting' ? 'Opening shell…' : 'No shell open for this tab'}</span>
+        <span role="status" title="Hiding this terminal keeps commands running. Pin it to follow you across tabs.">{state.phase === 'running' ? state.pinned ? 'Running · Pinned across tabs' : 'Running · This tab' : state.phase === 'exited' ? `Shell ended${state.exitCode === null ? '' : ` · Exit ${state.exitCode}`}` : state.phase === 'stopping' ? 'Stopping shell…' : state.phase === 'starting' ? 'Opening shell…' : 'No shell open for this tab'}</span>
         {state.phase === 'exited' || state.phase === 'idle'
           ? <button className="btn" disabled={busy || !state.enabled} onClick={() => void run(() => api.restart())}>{state.phase === 'idle' ? 'Open shell' : 'New shell'}</button>
           : <button className="btn" data-variant="ghost" disabled={busy || state.phase === 'stopping'} onClick={() => void run(() => api.end())}>End shell</button>}

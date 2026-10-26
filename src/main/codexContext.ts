@@ -111,9 +111,14 @@ export class CodexContextWatcher {
       } finally { await fh.close() }
       if (w.stopped) return
       const snap = codexContextSnapshot(w.state, w.target.sessionId, mtime)
+      if (snap.activity && snap.activity.at < w.target.startedAt - 1000) delete snap.activity
       if (w.nativeId) snap.agentResumeId = w.nativeId
       this.publish(w, snap)
-    } catch { /* A temporarily unavailable account folder leaves its last reading intact. */ }
+    } catch {
+      // Keep the last context meter, but never advertise stale work while its source is unreadable.
+      const previous = this.latest.get(w.target.sessionId)
+      if (previous?.activity) { const snap = { ...previous }; delete snap.activity; this.publish(w, snap) }
+    }
     finally { w.busy = false; if (!w.stopped) w.timer = setTimeout(() => void this.tick(w), delay) }
   }
   private publish(w: Watch, snap: ContextSnapshot): void {

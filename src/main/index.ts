@@ -1,3 +1,4 @@
+import { screenActivity } from '../shared/agentActivity.ts'
 import { sshChildEnv, sshExecutable } from './ssh.ts'
 import './threadPool.ts'
 import { PLUGIN_CATALOG, SAMPLE_PLUGIN, isPluginId, pluginInstallLink, parsePluginPackage } from '../shared/pluginPackages.ts'
@@ -476,6 +477,36 @@ function chatIndexForGuests(): ChatIndexAccess {
   }
 }
 
+// Fallback readings use the existing activity/phone channel, so every viewer
+// gets the same answer. Local Claude's native registry remains authoritative.
+const portableActivity = new Map<string, LiveSessionState>()
+function liveSessionStates(): LiveSessionState[] {
+  const native = registry?.states() ?? []
+  const ids = new Set(native.map(s => s.ptyId))
+  const alive = new Set<string>()
+  for (const info of ptys?.list() ?? []) {
+    if (info.exited || info.instrumented || ids.has(info.ptyId)) continue
+    const facts = ptys?.launchFacts(info.ptyId)
+    if (!facts) continue
+    alive.add(info.ptyId)
+    const event = facts.cli === 'codex' && !facts.hostId ? codexWatcher.snapshot(facts.sessionId)?.activity : undefined
+    const screen = ptys?.activityScreen(info.ptyId)
+    const footer = screen ? screenActivity(screen) : null
+    const status = event?.status ?? footer
+    const before = portableActivity.get(info.ptyId)
+    const waitingFor = status === 'waiting' ? 'input needed' : null
+    const changed = before?.status !== status || before?.waitingFor !== waitingFor
+    portableActivity.set(info.ptyId, {
+      ptyId: info.ptyId, sessionId: facts.sessionId, status,
+      busy: status === null ? null : status !== 'idle', waitingFor, version: null,
+      statusUpdatedAt: changed ? event?.at ?? Date.now() : before?.statusUpdatedAt,
+      readAt: Date.now()
+    })
+  }
+  for (const id of portableActivity.keys()) if (!alive.has(id)) portableActivity.delete(id)
+  return [...native, ...portableActivity.values()]
+}
+
 /**
  * What this computer's own status bar and usage chip say about ONE session,
  * for another machine attached to it ("Other machines", hub/remote.ts sends
@@ -490,7 +521,7 @@ function chatIndexForGuests(): ChatIndexAccess {
 async function remoteSessionStatusFor(ptyId: string): Promise<RemoteSessionStatus | null> {
   const facts = ptys?.launchFacts(ptyId)
   if (!facts) return null
-  const ctx = watcher?.snapshot(facts.sessionId) ?? null
+  const ctx = (facts.cli === 'codex' ? codexWatcher.snapshot(facts.sessionId) : watcher?.snapshot(facts.sessionId)) ?? null
   const line = facts.hostId ? null : readAccountStatusLine(payloadKeyFor(facts.sessionId))
   let usage: UsageWindow[] = []
   let usageAt: number | null = null
@@ -516,6 +547,7 @@ async function remoteSessionStatusFor(ptyId: string): Promise<RemoteSessionStatu
     model: line?.modelId ?? ctx?.model ?? (facts.model || null),
     effort: facts.effort || null,
     agent: facts.cli,
+    activity: liveSessionStates().find(s => s.ptyId === ptyId)?.status ?? null,
     context: ctx?.ready && ctx.contextLimit > 0 ? { used: ctx.contextTokens, limit: ctx.contextLimit } : null,
     usage,
     usageAt
@@ -2219,7 +2251,7 @@ function remoteDeps(): RemoteDeps {
       const s = getSettings()
       return { theme: effectiveTheme(s), fontFamily: s.fontFamily, contrastBoost: s.terminal.contrastBoost }
     },
-    registryStates: () => registry?.states() ?? [],
+    registryStates: () => liveSessionStates(),
     recordedContextLimit: (sessionId) => lastContextLimit.get(sessionId) ?? null,
     /**
      * The picker's own list, filtered to installed + chosen — the same
@@ -3359,7 +3391,21 @@ function createWindow(): void {
       }
     }
   )
-  timers.push(setInterval(() => void registry?.pass(), REGISTRY_POLL_MS))
+  const fallbackStamps = new Map<string, string>()
+  timers.push(setInterval(() => {
+    void registry?.pass()
+    for (const st of liveSessionStates()) {
+      if (!portableActivity.has(st.ptyId)) continue
+      const stamp = JSON.stringify([st.status, st.waitingFor])
+      if (fallbackStamps.get(st.ptyId) === stamp) continue
+      fallbackStamps.set(st.ptyId, stamp)
+      send(CH.sessionState, st)
+      remote?.onRegistryState(st.ptyId)
+      relayServer?.onRegistryState(st.ptyId)
+      hubClient?.remoteSessionsChanged()
+    }
+    for (const id of fallbackStamps.keys()) if (!portableActivity.has(id)) fallbackStamps.delete(id)
+  }, REGISTRY_POLL_MS))
 
   /*
    * The worklog's automatic trigger.
@@ -4142,7 +4188,7 @@ function registerIpc(): void {
     }
     return await stopped
   })
-  ipcMain.handle(CH.sessionState, () => registry?.states() ?? [])
+  ipcMain.handle(CH.sessionState, () => liveSessionStates())
 
   /* --------------------------------------------------------------- context */
   ipcMain.on(CH.ctxWatch, (_e, sessionId: string) => {
@@ -5176,6 +5222,14 @@ function registerIpc(): void {
   ipcMain.handle(CH.hubCancelVerify, () => hubClient?.cancelVerify())
   // "Other machines" (hub/remote.ts). Every argument is re-checked there.
   // Read by the window at boot: never STARTS the hub client (a Stoke with no hub set up loads none of it).
+  ipcMain.handle(CH.hubRemoteBrowserLink, async event => {
+    if (!appFrame(event)) throw new Error('Create the account link from Stoke’s phone menu.')
+    const result = await (await hubService()).createBrowserLink()
+    if (!result.ok) return result
+    const { default: QRCode } = await import('qrcode')
+    const qr = await QRCode.toDataURL(result.url, { width: 400, margin: 2, errorCorrectionLevel: 'M' })
+    return { ...result, qr }
+  })
   ipcMain.handle(CH.hubRemoteView, () => hubClient?.remoteView() ?? emptyRemoteView())
   ipcMain.handle(CH.hubRemoteOpen, async (_e, device: unknown, ptyId: unknown) => (await hubService()).remoteOpen(str(device), str(ptyId)))
   ipcMain.on(CH.hubRemoteInput, (_e, tab: unknown, data: unknown) => hubClient?.remoteInput(str(tab), str(data)))

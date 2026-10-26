@@ -1,3 +1,4 @@
+import { type BrowserLink } from '../../shared/hub/browser.ts'
 /*
  * Stoke Hub, the desktop client: signing in, the vault and its Recovery Kit,
  * joining a device (by approval with the six digits, or by the Kit), sync of
@@ -92,7 +93,7 @@ import {
   type SyncScope,
   syncLabel
 } from '../../shared/hub/client.ts'
-import { b64uDecode, idFromBytes, isId, isRecord } from '../../shared/hub/codec.ts'
+import { b64uDecode, b64uEncode, utf8, idFromBytes, isId, isRecord } from '../../shared/hub/codec.ts'
 import { hubSocketUrl, hubUrlVerdict, sameHubUrl } from '../../shared/hub/edge.ts'
 import { decideConflict, conflictNote, itemLabel, nextEditedAt, parseItemPath, versionRegression, type ItemEnvelope, type StoredItem } from '../../shared/hub/items.ts'
 import { formatRecoverySecret, isPairRecord, parseRecoverySecret, type PairRecord } from '../../shared/hub/pairing.ts'
@@ -100,12 +101,12 @@ import {
   HUB_LIMITS,
   HUB_PROTOCOL,
   parsePresenceServerFrame,
-  reconnectDelayMs,
   type PresenceClientFrame,
   type RecoveryWrap,
   type VaultWrap
 } from '../../shared/hub/protocol.ts'
 import { keyFingerprint, RELAY_MAX_FRAME_BYTES, type HubGrant } from '../../shared/hub/relay.ts'
+import { HubPresence, type PresenceSocket } from './presence.ts'
 import { CHATS_REDACTION_BLOCK, emptyRemoteView, isAttachAnswer, type HubRemoteView, type RemoteChatOpen, type RemoteChatsResult } from '../../shared/hub/remote.ts'
 import { applySyncedSettings, heldChangesFor, runsCode, sshKeyPayloadProblem, type SshKeyPayload, type SyncableHost } from '../../shared/hub/settings.ts'
 import type { SecretBackend } from '../secrets.ts'
@@ -133,6 +134,7 @@ import {
   vaultKeyCommit,
   vaultKeyMatches,
   wrapVaultKey,
+  wrapBrowserPresence,
   type ItemKeys
 } from './crypto.ts'
 import { HubFiles, type HubDevice } from './files.ts'
@@ -146,14 +148,7 @@ type ChainOk = Extract<ChainVerdict, { ok: true }>
 export type { HubResult }
 
 /** The presence socket, as much of `ws`'s WebSocket as this uses. */
-export interface PresenceSocket {
-  send(text: string): void
-  close(code?: number, reason?: string): void
-  on(event: 'open', fn: () => void): unknown
-  on(event: 'message', fn: (data: unknown) => void): unknown
-  on(event: 'close', fn: (code: number) => void): unknown
-  on(event: 'error', fn: (err: Error) => void): unknown
-}
+export type { PresenceSocket } from './presence.ts'
 
 export interface HubServiceDeps {
   userData: string
@@ -322,10 +317,7 @@ export class HubService {
   private pairs: PairRecord[]
   private online: string[]
   private socket: PresenceSocket | null
-  private socketAttempts: number
-  private socketTimer: ReturnType<typeof setTimeout> | null
-  private socketPing: ReturnType<typeof setInterval> | null
-  private socketOpening: boolean
+  private presenceConnection: HubPresence | null
   /** The presence socket answered `open` and has not closed. */
   private socketOpen: boolean
   private revokeReport: HubView['revokeReport']
@@ -335,6 +327,7 @@ export class HubService {
   private offSettings: (() => void) | null
   private started: boolean
   private readonly remote: HubRemote | null
+  private browserKeysPublished = new Set<string>()
   private presenceKeys: Map<number, Uint8Array>
   /** Looks for a vault since this device was last signed in or started (`WAIT_POLL_MS`). */
   private waitPolls: number
@@ -392,10 +385,7 @@ export class HubService {
     this.pairs = []
     this.online = []
     this.socket = null
-    this.socketAttempts = 0
-    this.socketTimer = null
-    this.socketPing = null
-    this.socketOpening = false
+    this.presenceConnection = null
     this.socketOpen = false
     this.revokeReport = null
     this.vkCache = new Map()
@@ -601,10 +591,11 @@ export class HubService {
 
   /** Quit: timers and the socket go; the files are already written. */
   stop(): void {
+    this.started = false
     this.offSettings?.()
     this.offSettings = null
-    for (const t of [this.syncTimer, this.stampTimer, this.pairTimer, this.socketTimer]) if (t) clearTimeout(t)
-    this.syncTimer = this.stampTimer = this.pairTimer = this.socketTimer = null
+    for (const t of [this.syncTimer, this.stampTimer, this.pairTimer]) if (t) clearTimeout(t)
+    this.syncTimer = this.stampTimer = this.pairTimer = null
     this.stopPresence()
     this.saveState()
   }
@@ -915,19 +906,22 @@ export class HubService {
       if (this.state.account !== account) this.state = emptyHubState(account)
       this.saveState()
       await this.commitHub({ email, deviceId: dev.id, deviceLabel: dev.label, token: '' })
-      try {
-        const acct = await this.req('GET', '/v1/account')
-        this.role = acct.role === 'owner' || acct.role === 'member' ? acct.role : null
-      } catch {
-        this.role = null
-      }
-      if (this.loginState !== 'new-account') {
+      // The role is display metadata; it does not gate verification of the
+      // device chain. Fetch them together instead of adding two network waits
+      // (up to two full request timeouts) to a successful password check.
+      await Promise.all([ (async () => {
+        try {
+          const acct = await this.req('GET', '/v1/account')
+          this.role = acct.role === 'owner' || acct.role === 'member' ? acct.role : null
+        } catch { this.role = null }
+      })(), (async () => {
+        if (this.loginState === 'new-account') return
         try {
           await this.refreshChain()
         } catch (err) {
           this.lastError = { message: messageOf(err), at: this.now(), retryAt: null }
         }
-      }
+      })() ])
       this.waitPolls = 0
       this.autoJoined = false
       // A fresh sign-in starts the looking over: an old backoff would put the first look minutes away.
@@ -1608,6 +1602,31 @@ export class HubService {
     const me = this.me()
     a.reveal = reveal
     a.code = pairCode({ account, pair, device: reveal.device, approver: { id: me.id, sign: me.keys.signPub, box: me.keys.boxPub }, nonceN: reveal.nonce, nonceE: a.nonce })
+  }
+
+  createBrowserLink(label = 'Phone'): Promise<HubResult<{ url: string; device: string }>> {
+    return this.action<{ url: string; device: string }>('Pairing an account remote…', async () => {
+      const v = await this.refreshChain()
+      if (!v || !this.isActiveIn(v)) return { ok: false, message: 'Sign in and approve this computer in your Stoke account first.' }
+      // Probe support before adding an identity to an older hub.
+      const health = await this.req('GET', '/v1/health')
+      if (health.accountRemote !== true) return { ok: false, message: 'Update the Stoke Hub server and remote website before creating an account link.' }
+      const me = this.me(), keys = generateDeviceKeys()
+      const d: DeviceRecord = { id: idFromBytes('device', randomU8(10)), label: cleanLabel(label, 'Phone').slice(0, 64), platform: 'web', sign: keys.signPub, box: keys.boxPub, caps: ['remote-guest'], addedAt: this.now() }
+      const add = this.entry(v, null, { kind: 'add', epoch: v.epoch, signer: me.id, device: d }, me.keys.signPriv)
+      await this.req('POST', '/v1/chain', { entries: [add] })
+      const after = await this.refreshChain()
+      if (!after) throw new Error('The new browser identity could not be verified.')
+      const session = await this.req('POST', '/v1/remote/browser', { device: d.id })
+      if (typeof session.token !== 'string') throw new Error('The hub returned no browser session.')
+      const key = await this.presenceKeyFor(after.epoch)
+      if (!key) throw new Error('The presence key is not available yet.')
+      const link: BrowserLink = { v: 1, hub: this.base(), account: this.account(), device: d.id, token: session.token, signPriv: keys.signPriv, boxPriv: keys.boxPriv, anchor: { seq: after.seq, link: after.head } }
+      const url = new URL(this.base())
+      url.pathname = url.pathname.replace(/\/hub\/?$/, '') + '/remote/'
+      url.search = ''; url.hash = 'connect=' + b64uEncode(utf8(JSON.stringify(link)))
+      return { ok: true, url: url.toString(), device: d.id }
+    })
   }
 
   /** The codes matched: add the device and hand it the vault key (one request, spec §4.4 step 4). */
@@ -2740,82 +2759,46 @@ export class HubService {
 
   /** One socket while this device is in the vault: hints that something moved, and who is online. */
   private startPresence(): void {
-    if (this.socket || this.socketTimer || this.socketOpening || this.deps.presence === null || !this.isActiveIn(this.verdict)) return
-    const dev = this.dev
-    if (!dev?.token) return
-    let url: string
-    try {
-      url = hubSocketUrl(this.base(), '/v1/ws/presence')
-    } catch {
-      return
-    }
-    const headers = signRequest({ method: 'GET', pathFromV1: '/v1/ws/presence', device: dev.id, signPriv: dev.keys.signPriv, token: dev.token, body: '', now: this.now() })
-    const open = this.deps.presence ?? (async (u: string, h: Record<string, string>): Promise<PresenceSocket> => {
-      const { WebSocket } = await import('ws')
-      return new WebSocket(u, { headers: h, maxPayload: HUB_LIMITS.presenceFrameBytes }) as unknown as PresenceSocket
+    if (this.deps.presence === null || !this.started || !this.isActiveIn(this.verdict)) return
+    this.presenceConnection ??= new HubPresence({
+      enabled: () => this.started && this.signedIn() && !this.revoked && this.isActiveIn(this.verdict),
+      now: this.now,
+      open: async () => {
+        const dev = this.me()
+        const url = hubSocketUrl(this.base(), '/v1/ws/presence')
+        const headers = signRequest({ method: 'GET', pathFromV1: '/v1/ws/presence', device: dev.id, signPriv: dev.keys.signPriv, token: dev.token, body: '', now: this.now() })
+        if (this.deps.presence) return this.deps.presence(url, headers)
+        const { WebSocket } = await import('ws')
+        return new WebSocket(url, { headers, maxPayload: HUB_LIMITS.presenceFrameBytes, handshakeTimeout: 20_000, perMessageDeflate: false }) as unknown as PresenceSocket
+      },
+      opened: (socket) => {
+        socket.send(JSON.stringify({ t: 'hello', protocol: HUB_PROTOCOL, app: this.deps.appVersion }))
+        this.socket = socket
+        this.socketOpen = true
+        this.remote?.presenceOpened()
+        this.emit()
+      },
+      message: (text) => this.onPresence(text),
+      closed: () => {
+        const wasOpen = this.socketOpen
+        this.socket = null
+        this.socketOpen = false
+        this.online = []
+        if (wasOpen) this.remote?.presenceClosed()
+        this.emit()
+      },
+      error: (error) => this.log('hub: presence interrupted; reconnecting', error)
     })
-    this.socketOpening = true
-    void open(url, headers)
-      .then((ws) => {
-        this.socketOpening = false
-        if (!this.signedIn() || this.revoked) {
-          ws.close()
-          return
-        }
-        this.socket = ws
-        ws.on('open', () => {
-          this.socketAttempts = 0
-          ws.send(JSON.stringify({ t: 'hello', protocol: HUB_PROTOCOL, app: this.deps.appVersion }))
-          this.socketOpen = true
-          this.remote?.presenceOpened()
-          this.socketPing = setInterval(() => {
-            try {
-              ws.send(JSON.stringify({ t: 'ping' }))
-            } catch {
-              /* close follows */
-            }
-          }, HUB_LIMITS.pingMs)
-        })
-        ws.on('message', (data) => this.onPresence(String(data)))
-        ws.on('error', () => undefined)
-        ws.on('close', () => {
-          if (this.socketPing) clearInterval(this.socketPing)
-          this.socketPing = null
-          if (this.socket === ws) {
-            this.socket = null
-            this.socketOpen = false
-            this.remote?.presenceClosed()
-          }
-          this.online = []
-          if (!this.signedIn() || this.revoked) return
-          const delay = reconnectDelayMs(this.socketAttempts++, Math.random())
-          this.socketTimer = setTimeout(() => {
-            this.socketTimer = null
-            this.startPresence()
-          }, delay)
-        })
-      })
-      .catch((err) => {
-        this.socketOpening = false
-        this.log('hub: presence did not open', err)
-      })
+    this.presenceConnection.start()
   }
 
   private stopPresence(): void {
     this.remote?.reset()
     this.presenceKeys.clear()
-    if (this.socketTimer) clearTimeout(this.socketTimer)
-    this.socketTimer = null
-    if (this.socketPing) clearInterval(this.socketPing)
-    this.socketPing = null
-    const ws = this.socket
+    this.presenceConnection?.stop()
     this.socket = null
     this.socketOpen = false
-    try {
-      ws?.close(1000, 'bye')
-    } catch {
-      /* already closed */
-    }
+    this.online = []
   }
 
   private onPresence(text: string): void {
@@ -2873,7 +2856,7 @@ export class HubService {
       account: d.account,
       epoch: v.epoch,
       me: { id: d.id, label: this.deviceName(d.id, d.label), platform: d.platform, signPriv: d.keys.signPriv },
-      active: v.active.map((a) => ({ id: a.id, label: this.deviceName(a.id, a.label), platform: a.platform, sign: a.sign }))
+      active: v.active.map((a) => ({ id: a.id, label: this.deviceName(a.id, a.label), platform: a.platform, sign: a.sign, caps: a.caps }))
     }
   }
 
@@ -2887,7 +2870,7 @@ export class HubService {
     const account = this.dev?.account
     if (!v || !account || !this.state) return null
     const hit = this.presenceKeys.get(epoch)
-    if (hit) return hit
+    if (hit) { await this.provideBrowserKeys(hit, epoch); return hit }
     const commit = v.vkCommits[epoch]
     if (!commit) return null
     const f = { account, epoch }
@@ -2899,7 +2882,22 @@ export class HubService {
     }
     const key = presenceKey(vk, account, epoch)
     this.presenceKeys.set(epoch, key)
+    await this.provideBrowserKeys(key, epoch)
     return key
+  }
+
+  private async provideBrowserKeys(key: Uint8Array, epoch: number): Promise<void> {
+    const me = this.me(), v = this.verdict
+    if (!v || epoch !== v.epoch) return
+    await Promise.all(v.active.filter(d => d.caps.includes('remote-guest') && !d.caps.includes('vault')).map(async d => {
+      const mark = `${this.account()}:${epoch}:${d.id}`
+      if (this.browserKeysPublished.has(mark)) return
+      try {
+        const offer = wrapBrowserPresence(key, { account: this.account(), epoch, device: d.id, boxPub: d.box, author: me.id, signPriv: me.keys.signPriv })
+        await this.req('POST', '/v1/remote/key', { key: offer })
+        this.browserKeysPublished.add(mark)
+      } catch { /* The next presence pass retries; older hubs need an update. */ }
+    }))
   }
 
   private sendPresence(frame: PresenceClientFrame): boolean {

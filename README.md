@@ -11,7 +11,8 @@ been run on linux — treat it as experimental.
 ## what you get
 
 - all your projects in a sidebar, and old chats you can pick back up
-- several sessions open at once, as tabs
+- several sessions open at once, as tabs; use the mouse wheel over the tabs or
+  the left/right scroll buttons when they overflow
 - an optional [Codex usage-reset watcher](docs/codex-resume.md), with a custom resume message and follow-up timer
 - a browser built in that claude can read and click
 - how full the context window is, on every tab
@@ -67,13 +68,24 @@ curl -fsSL https://stoke.vinn.dev/install.sh | STOKE_VERSION=1.0.0-beta.13 sh
 
 Run from a terminal outside Stoke; installing closes the existing app cleanly.
 
-then, from any terminal, `stoke .` opens the folder you are in (or brings the tab
+The terminal unifier is now available as a [development preview](docs/terminal.md):
+run `npm run terminal -- --cli opencode .` from this checkout. It includes agent
+and model selection, live chat switching, native session resume, config files,
+OpenCode server attachment and SSH connections. `npm run pack:terminal` builds
+a standalone CLI package without Electron. `npm run dist:terminal` builds a
+portable archive with its own Node runtime. Live chats survive closing the UI;
+`stoke sessions`, `stoke attach ID` and `stoke doctor` work from the shell.
+Native CI targets macOS, Windows and Linux on x64 and ARM64; macOS ARM64 is
+locally validated. New macOS builds default the `stoke`
+command to this terminal; use `stoke --desktop .` for the graphical app.
+
+In the currently published desktop builds, `stoke .` opens the folder you are in (or brings the tab
 already running there forward), `stoke --new` always opens another tab,
 `stoke --cli codex` starts a different coding cli, and `stoke --help` lists the
 rest. on a mac the installer links the command into `~/.local/bin`; on linux it is
 the launcher the installer writes; on windows, settings › updates › command line
-puts it on your path. In the next desktop beta, `stoke login` opens Stoke sign-in
-and device sync setup, and `stoke remote` opens Phone access setup. See [CLI and remote setup](docs/cli.md)
+puts it on your path. In new macOS builds use `stoke --desktop login` for Stoke sign-in
+and device sync setup, and `stoke --desktop remote` for Phone access setup. See [CLI and remote setup](docs/cli.md)
 for the difference between Stoke sign-in, coding-agent accounts and SSH access.
 
 the canonical scripts are [install/install.sh](install/install.sh) and
@@ -147,7 +159,11 @@ they draw — none of it needs a deploy or a token.
 
 ## phone access
 
-press the phone button in the title bar, then **open on phone**. you get a code
+press the phone button in the title bar. **Account → Pair phone to account** creates
+a link to all your online computers, independent of the laptop that made the QR.
+this needs the updated hub and remote website deployed; see [account remote availability](docs/remote-resilience.md).
+
+for a computer-specific link, choose **This computer**, then **open on phone**. you get a code
 to scan. same thing lives in settings -> phone access, with the knobs.
 
 it picks a route a phone can actually use: tailscale if it's running on this
@@ -162,8 +178,9 @@ that link is a password. anyone with it can run commands on your machine, so
 don't paste it anywhere. **replace the key** under advanced logs every phone
 out.
 
-your desktop has to be awake and running stoke — nothing is hosted anywhere.
-add the page to your home screen and it opens like an app.
+the target desktop has to be awake and running stoke. the account website is
+hosted independently; a **This computer** link also needs its issuing desktop
+awake. add the computer-specific page to your home screen and it opens like an app.
 
 ## the worklog
 

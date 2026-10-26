@@ -1,0 +1,59 @@
+name: Terminal CLI
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+permissions:
+  contents: read
+concurrency:
+  group: terminal-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  matrix:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.targets.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - id: targets
+        run: node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON src/terminal/targets.ts --github-matrix
+  native:
+    needs: matrix
+    name: CLI ${{ matrix.id }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.matrix.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - name: Assert native architecture
+        env:
+          STOKE_EXPECTED_TARGET: ${{ matrix.id }}
+        run: node -e 'if (process.platform + "-" + process.arch !== process.env.STOKE_EXPECTED_TARGET) throw new Error("CLI must build on its native architecture")'
+      - run: npm run typecheck
+      - run: npm run verify:terminal
+      - run: npm run verify:terminal-platform
+      - run: npm run dist:terminal
+      - name: Verify the extracted release, not the checkout
+        run: npm run verify:terminal-release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stoke-cli-${{ matrix.id }}
+          path: |
+            out/cli-release/stoke-cli-*.tar.gz*
+            out/cli-release/stoke-cli-*.zip*
+          if-no-files-found: error

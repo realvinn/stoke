@@ -1,3 +1,4 @@
+import { openRemoteSocket } from './api'
 /*
  * One session: the terminal, its status, the answer tray, the key row and the
  * composer.
@@ -62,6 +63,8 @@ import { rowTitle, screenLines, sendAnswer } from './list'
 import { store } from './store'
 import { openSessionFiles } from './files'
 import { mountTerminalKeys } from './terminalKeyBar'
+import { mountTerminalTouchScroll } from './terminalTouchScroll'
+import { DraftJournal, mountDraftCache } from './draftCache'
 import { REMOTE_DEVICE_INPUT_MAX, REMOTE_DEVICE_SUBMIT_MAX, type RemoteDeviceState } from '@shared/remoteDevices'
 
 /** Filled by whoever starts a session, so the header is right before the first push. */
@@ -204,7 +207,10 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
   // The mic sits inside the field, as a keyboard's own does: one control less on the row.
   const composer = el('div', { class: 'composer' }, keysToggle, el('div', { class: 'composer-field' }, input, mic), send)
   const dockRow = el('div', { class: 'dock-row has-terminal-keys' }, keys, composer)
-  const dock = el('div', { class: 'dock' }, tray, queued, endedBox, dockRow)
+  const draftLabel = el('span', {})
+  const recoverDrafts = el('button', { type: 'button', hidden: true }, 'Recover draft')
+  const draftNote = el('div', { class: 'draft-note', hidden: true }, draftLabel, recoverDrafts)
+  const dock = el('div', { class: 'dock' }, tray, queued, endedBox, dockRow, draftNote)
 
   const root = el(
     'section',
@@ -312,10 +318,11 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
    * Keys typed into the terminal itself go straight through — the laptop
    * case; on a phone the terminal is not focusable in any useful way.
    */
+  let touchScrolling = false
   term.onData((data) => {
-    // Only keys a person typed: xterm's automatic answers to replayed queries
-    // must never reach the pty (isTerminalReport).
-    if (isTerminalReport(data) || !inner.contains(document.activeElement)) return
+    // Touch-generated wheel reports may pass while the composer owns focus.
+    // Automatic answers to replayed queries must never reach the pty.
+    if (isTerminalReport(data) || (!touchScrolling && !inner.contains(document.activeElement))) return
     if (opts.remote && data.length > REMOTE_DEVICE_INPUT_MAX) { toast('That paste is too large. Send it in smaller parts.', 'error'); return }
     if (!ended && mayType() && ws?.readyState === WebSocket.OPEN && ready) ws.send(JSON.stringify({ type: 'input', data }))
   })
@@ -503,6 +510,12 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
   let retry: ReturnType<typeof setTimeout> | null = null
   let leaving = false
   let sendState: SendState = INITIAL_SEND_STATE
+  const queuedDrafts = new Map<number, string>()
+  const forgetQueuedDraft = (id: number): void => {
+    const key = queuedDrafts.get(id)
+    if (!key) return
+    try { localStorage.removeItem(key); queuedDrafts.delete(id); draftCache.refresh() } catch { /* Keep recovery when storage is unavailable. */ }
+  }
 
   const connect = (): void => {
     if (leaving || ended) return
@@ -510,7 +523,7 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
       clearTimeout(retry)
       retry = null
     }
-    const socket = new WebSocket(wsUrl(opts.remote
+    const socket = openRemoteSocket(wsUrl(opts.remote
       ? `/ws/machine?device=${encodeURIComponent(opts.remote.device)}&ptyId=${encodeURIComponent(ptyId)}`
       : `/ws?ptyId=${encodeURIComponent(ptyId)}`))
     ws = socket
@@ -568,6 +581,8 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
     if (msg.type === 'remote-state' && opts.remote) {
       const next = msg as unknown as RemoteDeviceState
       deviceState = next
+      const activity = next.state === 'open' ? next.session?.activity : null
+      setStatus(activity === 'busy' || activity === 'shell' ? 'busy' : activity === 'waiting' ? 'waiting' : activity === 'idle' ? 'idle' : 'unknown', activity === 'waiting' ? 'input needed' : null, null)
       const context = next.session?.context
       row = {
         ptyId, sessionId: '', cwd: '', name: next.project || next.title, host: null, exited: next.state === 'ended',
@@ -622,10 +637,19 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
       paintKeys()
       relayout('attach')
       if (!opts.remote) {
+        const previousQueue = sendState.queue
         const flushed = sendReady(sendState)
-        sendState = flushed.state
-        for (const text of flushed.flush) ws?.send(JSON.stringify({ type: 'submit', text }))
-        if (flushed.flush.length) toast(flushed.flush.length === 1 ? 'Sent your queued message.' : `Sent ${flushed.flush.length} queued messages.`)
+        let handed = 0
+        for (const text of flushed.flush) {
+          try {
+            if (ws?.readyState !== WebSocket.OPEN) break
+            ws.send(JSON.stringify({ type: 'submit', text }))
+            forgetQueuedDraft(previousQueue[handed].id)
+            handed++
+          } catch { break }
+        }
+        sendState = { ...flushed.state, ready: handed === flushed.flush.length, queue: previousQueue.slice(handed) }
+        if (handed) toast(handed === 1 ? 'Sent your queued message.' : `Sent ${handed} queued messages.`)
       }
       paintQueued()
       if (msg.status) setStatus(msg.status, msg.waitingFor ?? null, msg.promptId ?? null)
@@ -741,6 +765,24 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
     toast('Reconnecting — that key was not sent.', 'error')
     return false
   }
+  mountTerminalTouchScroll(wrap, {
+    enabled: () => ready && !ended && mayType() && term.modes.mouseTrackingMode !== 'none' && term.modes.mouseTrackingMode !== 'x10',
+    lineHeight: () => cell()?.height ?? userFont * 1.2,
+    wheel: (x, y, delta) => {
+      const screen = inner.querySelector('.xterm-screen')
+      if (!screen) return
+      const box = screen.getBoundingClientRect()
+      touchScrolling = true
+      try {
+        screen.dispatchEvent(new WheelEvent('wheel', {
+          bubbles: true, cancelable: true, deltaMode: WheelEvent.DOM_DELTA_LINE, deltaY: Math.sign(delta),
+          clientX: Math.max(box.left + 1, Math.min(box.right - 1, x)),
+          clientY: Math.max(box.top + 1, Math.min(box.bottom - 1, y))
+        }))
+      } finally { touchScrolling = false }
+    },
+    signal
+  })
   const keyBar = mountTerminalKeys(keys, {
     write,
     applicationCursorMode: () => term.modes.applicationCursorKeysMode,
@@ -853,7 +895,31 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
   /* ------------------------------------------------------------- composer */
 
   const DRAFT = `stoke.draft.${opts.remote ? `${opts.remote.device}.` : ''}${ptyId}`
-  input.value = sessionStorage.getItem(DRAFT) ?? ''
+  let journal: DraftJournal | null = null
+  const draftScope = opts.remote ? ['remote', opts.remote.device, ptyId]
+    : row?.sessionId ? ['local', row.cli, row.cwd, row.sessionId] : ['local-pty', ptyId]
+  try { journal = new DraftJournal(localStorage, JSON.stringify(draftScope), Date.now, undefined, `${targetName()} · ${row?.title || row?.project || pending?.project || ptyId}`) } catch { /* Storage blocked. Editing still works. */ }
+  const draftCache = mountDraftCache(input, journal, {
+    signal,
+    notify: (state, records) => {
+      draftNote.hidden = !input.value && !records.length && state !== 'error'
+      draftNote.dataset.error = String(state === 'error')
+      draftLabel.textContent = state === 'error' ? 'Draft could not be saved here. Copy it before leaving.'
+        : state === 'restored' ? 'Draft recovered. Check the chat before sending.'
+        : state === 'editing' ? 'Saving draft…' : 'Draft saved on this device'
+      recoverDrafts.hidden = !records.length
+      recoverDrafts.textContent = `Recovery (${records.length})`
+    }
+  })
+  // One-time migration of the old per-tab cache, only when no newer journal
+  // history (including an intentional clear) exists.
+  try {
+    const old = sessionStorage.getItem(DRAFT)
+    if (old && journal && !journal.records().length && !input.value) {
+      input.value = old
+      if (draftCache.flush()) sessionStorage.removeItem(DRAFT)
+    } else if (old && journal?.records().length) sessionStorage.removeItem(DRAFT)
+  } catch { /* Private mode must not prevent opening the session. */ }
   const grow = (): void => {
     input.style.height = 'auto'
     // border-box: the height carries the border, which scrollHeight leaves out,
@@ -867,15 +933,25 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
     'input',
     () => {
       grow()
-      try {
-        if (input.value) sessionStorage.setItem(DRAFT, input.value)
-        else sessionStorage.removeItem(DRAFT)
-      } catch {
-        /* storage full or private */
-      }
     },
     { signal }
   )
+  recoverDrafts.addEventListener('click', () => {
+    const sheet = openSheet({ title: 'Recover a draft' })
+    sheet.body.append(el('p', { class: 'sheet-note' }, 'Saved only in this browser for 14 days. Restoring never sends. Check the chat first: a queued message may already have been delivered.'))
+    const list = el('div', { class: 'draft-recovery' })
+    for (const record of draftCache.recoveries()) {
+      const button = el('button', { type: 'button', class: 'btn' }, `${record.context || 'Saved session'} · ${record.kind === 'queued' ? 'Previously queued' : 'Unsent draft'} · ${new Date(record.at).toLocaleString()}\n${record.text.slice(0, 160)}${record.text.length > 160 ? '…' : ''}`)
+      button.addEventListener('click', async () => {
+        const otherSession = !record.key.startsWith(journal?.prefix ?? '\0')
+        if ((otherSession || (input.value && input.value !== record.text)) && !await confirmSheet({ title: 'Restore into this session?', message: `${otherSession ? 'This draft belongs to another saved session. Check the target conversation before sending. ' : ''}${input.value ? 'Your current text will be kept as another recovery draft.' : 'Restoring only fills the composer.'}`, confirm: 'Restore' })) return
+        if (signal.aborted) return
+        if (draftCache.restore(record)) { grow(); sheet.close(); input.focus() }
+      }, { signal })
+      list.append(button)
+    }
+    sheet.body.append(list)
+  }, { signal })
   /*
    * On a laptop Enter sends and Shift+Enter is a newline (PX-16); on a touch
    * keyboard Return stays a newline and the send button sends, since there is
@@ -908,11 +984,17 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
               class: 'queued-x',
               'aria-label': 'Take back this queued message',
               onclick: () => {
+                if (input.value && !queuedDrafts.has(q.id)) {
+                  const key = draftCache.queued(q.text)
+                  if (!key) { toast('Finish your current draft before taking this message back; recovery storage is unavailable.', 'error'); return }
+                  queuedDrafts.set(q.id, key)
+                }
                 sendState = cancelQueued(sendState, q.id)
                 if (!input.value) {
                   input.value = q.text
                   grow()
-                }
+                  if (draftCache.flush()) forgetQueuedDraft(q.id)
+                } else toast('Removed from the queue. Its text is available in Recovery.')
                 paintQueued()
               }
             },
@@ -940,21 +1022,29 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
      * (PX-6). Intercepted whether or not the phone's own voice is available.
      */
     if (value.trim() === '/voice') {
-      input.value = ''
+      draftCache.clear()
       grow()
       toggleVoice()
       return
     }
-    if (opts.remote) ws!.send(JSON.stringify({ type: 'submit', text: value }))
-    else {
-      const r = submitText(sendState, value, Date.now())
-      sendState = r.state
-      // {type:'submit'} — the server writes the text and Enter apart (PX-1, gotcha 85).
-      if (r.send !== null) ws?.send(JSON.stringify({ type: 'submit', text: r.send }))
-    }
+    draftCache.flush()
+    try {
+      if (opts.remote) ws!.send(JSON.stringify({ type: 'submit', text: value }))
+      else {
+        const r = submitText(ready && ws?.readyState === WebSocket.OPEN ? sendState : sendLost(sendState), value, Date.now())
+        // {type:'submit'} — the server writes text and Enter apart.
+        if (r.send !== null) ws!.send(JSON.stringify({ type: 'submit', text: r.send }))
+        else {
+          const queued = r.state.queue.at(-1)
+          const key = draftCache.queued(value)
+          if (queued && key) queuedDrafts.set(queued.id, key)
+        }
+        sendState = r.state
+      }
+    } catch { toast('Not sent. Your text is still here; check the connection before sending again.', 'error'); return }
     paintQueued()
-    input.value = ''
-    sessionStorage.removeItem(DRAFT)
+    draftCache.clear()
+    try { sessionStorage.removeItem(DRAFT) } catch { /* Storage may be blocked. */ }
     grow()
     stick = true
     term.scrollToBottom()

@@ -574,7 +574,7 @@ function activityTable(): void {
     'background'
   )
   check('the workflow ends and the registry goes idle: done, and looking clears it', [dot(at(workflow, reg('idle', null, after))), dot(looked(at(workflow, reg('idle', null, after))))], ['done', null])
-  check('the notification turn (a task-notification prompt) is plain working', show(at(working, reg('busy'))), ['working', 'Claude is working…'])
+  check('the notification turn (a task-notification prompt) is plain working', show(at(working, reg('busy'))), ['working', 'Agent is working…'])
 
   // What notifies.
   check('a Stop with nothing in flight notifies', activityView(at(done, reg('idle'))).notify, true)
@@ -683,7 +683,7 @@ function activityTable(): void {
   )
 
   // No registry reading: the hooks alone, exactly as before.
-  check('no reading, prompt: working', show(at(working, null)), ['working', 'Claude is working…'])
+  check('no reading, prompt: working', show(at(working, null)), ['working', 'Agent is working…'])
   check('no reading, Stop: done', show(at(done, null)), ['done', 'Finished — your move'])
   check('no reading, Stop with a running workflow: still done, as before (nothing could say when it ends)', dot(at(workflow, null)), 'done')
   check('no reading, permission prompt: the warning dot, labelled with the CLI\'s message', show(at(attention, null)), ['waiting', 'Claude needs your permission to use Bash'])

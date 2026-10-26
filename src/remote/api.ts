@@ -6,6 +6,7 @@
  */
 import { deriveAccent } from '@shared/accent'
 import { meterScale } from '@shared/meter'
+import { requestDeadline } from '@shared/requestDeadline'
 import { accessRefusalMessage, type PhoneAgentChoices, type PhoneSessionStatus } from '@shared/remotePhone'
 
 export interface ContextInfo {
@@ -180,33 +181,49 @@ export async function resumeSession(cwd: string, sessionId: string): Promise<{ p
   }
 }
 
+export interface RemoteBackend {
+  api<T>(path: string, init?: RequestInit & { key?: string }): Promise<T>
+  socket(url: string): WebSocket
+}
+let remoteBackend: RemoteBackend | null = null
+export function setRemoteBackend(backend: RemoteBackend): void { remoteBackend = backend }
+export function openRemoteSocket(url: string): WebSocket { return remoteBackend ? remoteBackend.socket(url) : new WebSocket(url) }
+
 export async function api<T>(path: string, init?: RequestInit & { key?: string }): Promise<T> {
-  const headers: Record<string, string> = { 'content-type': 'application/json' }
-  if (init?.key) headers.authorization = `Bearer ${init.key}`
-  const res = await fetch(path, { ...init, headers })
-  if (res.status === 401) {
-    if (!init?.key) onAuthFailure()
-    throw new AuthError()
-  }
-  let body: unknown = null
+  if (remoteBackend) return remoteBackend.api<T>(path, init)
+  // Reads can stall indefinitely when a sleeping host leaves its tunnel open.
+  // Mutations keep their existing semantics: a timeout cannot prove they failed.
+  const read = !init?.method || init.method.toUpperCase() === 'GET'
+  const deadline = read ? requestDeadline(init?.signal, 12_000) : null
   try {
-    body = await res.json()
-  } catch {
-    /* not JSON: judged by the status below */
-  }
-  if (!res.ok) {
-    const message = (body as { error?: string } | null)?.error
-    const err = new Error(message || `Stoke answered ${res.status}.`) as ApiError
-    err.status = res.status
-    err.body = body
-    throw err
-  }
-  try {
-    localStorage.setItem(CONNECTED_KEY, '1')
-  } catch {
-    /* private mode */
-  }
-  return body as T
+    const headers: Record<string, string> = { 'content-type': 'application/json' }
+    if (init?.key) headers.authorization = `Bearer ${init.key}`
+    const res = await fetch(path, { ...init, headers, ...(deadline ? { signal: deadline.signal } : {}) })
+    if (res.status === 401) {
+      if (!init?.key) onAuthFailure()
+      throw new AuthError()
+    }
+    let body: unknown = null
+    try {
+      body = await res.json()
+    } catch {
+      if (deadline?.signal.aborted) throw deadline.signal.reason
+      /* not JSON: judged by the status below */
+    }
+    if (!res.ok) {
+      const message = (body as { error?: string } | null)?.error
+      const err = new Error(message || `Stoke answered ${res.status}.`) as ApiError
+      err.status = res.status
+      err.body = body
+      throw err
+    }
+    try {
+      localStorage.setItem(CONNECTED_KEY, '1')
+    } catch {
+      /* private mode */
+    }
+    return body as T
+  } finally { deadline?.dispose() }
 }
 
 /* ---------------------------------------------------------------- theme */

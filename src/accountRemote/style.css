@@ -1,0 +1,5 @@
+#app { display: flex; flex-direction: column; height: 100dvh; }
+.account-content { position: relative; flex: 1; min-height: 0; }
+.account-notice { flex: none; padding: 10px 16px; background: var(--card); color: var(--text-muted); border-bottom: 1px solid var(--border); font-size: 13px; }
+.account-notice[hidden] { display: none; }
+.account-retry { margin: 16px; }

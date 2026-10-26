@@ -210,8 +210,6 @@ export function Sidebar({
   const menuProfile = profileMenu ? profiles.find((p) => foldGroup(p.id) === foldGroup(profileMenu.id)) : undefined
   const menuPlan = menuProfile && profileTabs ? profileTabs(menuProfile.id) : null
   const menuFolders = menuProfile ? profileFolders(menuProfile, projects, profileRoots, window.stoke.platform) : []
-  const selectedProfile = profiles.find(p => foldGroup(p.id) === foldGroup(activeProfile ?? ''))
-  const selectedFolders = selectedProfile ? profileFolders(selectedProfile, projects, profileRoots, window.stoke.platform) : []
   /*
    * A profile that leaves the row while its menu is up (its last folder gone
    * from the scan, settings changed from the phone or the hub) unmounts the
@@ -690,17 +688,12 @@ export function Sidebar({
                 >
                   {p.label}
                 </button>
-                {onEditProfiles && <button className="profile-edit" title={`Edit ${p.label} profile`} aria-label={`Edit ${p.label} profile`} onClick={() => onEditProfiles(p.id)}><span aria-hidden="true">···</span></button>}
                 </span>
               )
             })}
             {onCreateProfile && <button className="profile-chip profile-create" title="New profile" aria-label="New profile" onClick={onCreateProfile}><IconPlus /></button>}
           </div>
         )}
-        {selectedFolders.length > 0 && <div className="profile-folder-list" aria-label="Profile folders">
-          {selectedFolders.map(folder => <button key={folder} className="profile-folder" title={`Open profile folder: ${folder}`} onClick={() => onRevealProject(folder)}><IconFolder /><span className="truncate">{folder}</span></button>)}
-        </div>}
-
         <label className="sr-only" htmlFor="project-search">
           Search projects and sessions
         </label>

@@ -26,20 +26,26 @@ body {
 .quick-terminal-dock { width: min(460px, 45vw); min-width: 300px; display: flex; flex-shrink: 1; border-left: 1px solid var(--border); }
 .quick-terminal-window { height: 100%; display: flex; background: var(--bg); }
 .quick-terminal { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; color: var(--text); background: var(--bg); }
-.quick-terminal-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; border-bottom: 1px solid var(--border-subtle); }
-.quick-terminal-heading { display: flex; flex-direction: column; gap: 2px; font-size: var(--fs-sm); }
-.quick-terminal-heading span { color: var(--text-muted); font-size: var(--fs-xs); }
-.quick-terminal-actions { display: flex; gap: 4px; }
-.quick-terminal-shell { display: flex; align-items: center; gap: 10px; padding: 8px 12px; font-size: var(--fs-xs); color: var(--text-muted); }
-.quick-terminal-shell label { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
-.quick-terminal-shell select { flex: 1; min-width: 0; padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--bg-sunken); color: var(--text); }
-.quick-terminal-shell .quick-terminal-pin { flex-shrink: 0; gap: 4px; font-size: var(--fs-xs); }
-.quick-terminal-shell .quick-terminal-pin[aria-pressed='true'] { color: var(--text); background: var(--surface-selected); }
-.quick-terminal-folder { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 8px 12px; font-family: var(--mono); font-size: var(--fs-xs); color: var(--text-muted); background: var(--bg-sunken); }
-.quick-terminal-screen { flex: 1; min-width: 0; min-height: 0; padding: 10px; overflow: hidden; }
+.quick-terminal-header { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-4); padding: var(--space-4) var(--space-8); border-bottom: 1px solid var(--border-subtle); }
+.quick-terminal-title { flex: none; font-size: var(--fs-sm); font-weight: 500; margin-right: var(--space-4); }
+.quick-terminal-header select { flex: 1 1 5rem; min-width: 3rem; max-width: 12rem; height: 1.75rem; padding: 0 var(--space-4); border: 0; border-radius: var(--r-sm); background: transparent; color: var(--text-muted); font-size: var(--fs-xs); }
+.quick-terminal-header select:hover { background: var(--surface-hover); color: var(--text); }
+.quick-terminal-header .btn { min-height: 1.75rem; padding: 0 var(--space-4); font-size: var(--fs-xs); }
+.quick-terminal-actions { display: flex; flex: none; gap: 0; margin-left: auto; }
+.quick-terminal-header .quick-terminal-pin { flex: none; width: 1.75rem; padding: 0; }
+.quick-terminal-header .quick-terminal-pin[aria-pressed='true'] { color: var(--accent-ink); background: var(--accent-soft); }
+.quick-terminal-folder { display: flex; align-items: center; gap: var(--space-8); min-width: 0; padding: var(--space-4) var(--space-8); font-family: var(--mono); font-size: var(--fs-xs); color: var(--text-muted); }
+.quick-terminal-folder > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.quick-terminal-location { flex: none; color: var(--text-faint); font-family: var(--sans); }
+.quick-terminal-screen { flex: 1; min-width: 0; min-height: 0; padding: var(--space-8); overflow: hidden; }
 .quick-terminal-host { width: 100%; height: 100%; }
 .quick-terminal-screen .xterm { height: 100%; }
-.quick-terminal-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--border-subtle); font-size: var(--fs-xs); color: var(--text-muted); }
+.quick-terminal-footer { display: flex; align-items: center; justify-content: space-between; gap: var(--space-8); min-height: 2rem; padding: var(--space-4) var(--space-8); border-top: 1px solid var(--border-subtle); font-size: var(--fs-xs); color: var(--text-muted); }
+.quick-terminal-footer .btn { min-height: 1.5rem; padding: 0 var(--space-4); font-size: var(--fs-xs); }
+.quick-terminal-footer [role='status'] { display: flex; align-items: center; gap: var(--space-8); min-width: 0; }
+.quick-terminal-footer [role='status']::before { content: ''; flex: none; width: 0.375rem; height: 0.375rem; border-radius: 50%; background: var(--text-faint); }
+.quick-terminal[data-phase='running'] .quick-terminal-footer [role='status']::before { background: var(--success); }
+.quick-terminal[data-phase='exited'] .quick-terminal-footer [role='status']::before { background: var(--warning); }
 .quick-terminal-find { display: flex; gap: 4px; padding: 8px; }
 .quick-terminal-find input { flex: 1; min-width: 0; }
 .quick-terminal-empty { flex: 1; padding: 20px; color: var(--text-muted); }
@@ -505,6 +511,7 @@ body {
 /* -------------------------------------------------------------- titlebar */
 
 .titlebar {
+  container: titlebar / inline-size;
   display: flex;
   align-items: center;
   gap: var(--space-8);
@@ -617,6 +624,7 @@ body {
   align-items: stretch;
   gap: var(--space-4);
   min-width: 0;
+  flex: 0 1 auto;
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: none;
@@ -645,6 +653,20 @@ body {
   margin-top: calc(var(--space-4) * -1);
   flex: none;
 }
+
+.tab-scroll-controls {
+  display: flex;
+  align-items: center;
+  align-self: center;
+  margin-top: calc(var(--space-4) * -1);
+  flex: none;
+  -webkit-app-region: no-drag;
+}
+.tab-scroll-controls .icon-btn { width: 1.5rem; }
+.tab-scroll-left { transform: rotate(180deg); }
+/* Overflow must receive wheel input even in the gap between tabs. Empty,
+   non-overflowing title-bar space remains available for moving the window. */
+.tabs[data-overflow] .tablist { -webkit-app-region: no-drag; }
 
 .tab {
   position: relative;
@@ -1088,11 +1110,8 @@ body {
  * means context used, and red in the strip already says two things (a ring
  * past 60%, and the worklog dot in its centre), so this gets its own slot and
  * never uses red.
- * Working pulses grey so a long turn is visibly alive, and so does a finished
- * turn whose workflow or subagent is still running (`background`); done is the
- * accent, solid. Waiting is the warning colour with a ripple of its own —
- * a question on screen is the one state that stops the session until you act,
- * and it stays until it is answered, in front or not.
+ * Active turns and background agents pulse orange. Blocking questions stay
+ * solid orange until answered, including in the selected tab.
  */
 .tab-activity {
   flex: none;
@@ -1104,7 +1123,7 @@ body {
 
 .tab-activity[data-state='working'],
 .tab-activity[data-state='background'] {
-  background: var(--text-faint);
+  background: var(--warning);
   animation: activity-pulse 1.6s var(--ease) infinite;
 }
 
@@ -1117,7 +1136,6 @@ body {
 .tab-activity[data-state='waiting'] {
   background: var(--warning);
   box-shadow: 0 0 0 0.125rem color-mix(in srgb, var(--warning) 30%, transparent);
-  animation: waiting-pulse 1.2s ease-out infinite;
 }
 
 @keyframes activity-pulse {
@@ -1126,16 +1144,6 @@ body {
   }
 }
 
-/* A ripple out of a solid dot: the dot never dims, so the colour always reads. */
-@keyframes waiting-pulse {
-  0% {
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--warning) 70%, transparent);
-  }
-  70%,
-  100% {
-    box-shadow: 0 0 0 0.3125rem transparent;
-  }
-}
 
 /*
  * A reduced-motion rule repeats the selectors of the rules it stills and sits
@@ -2555,40 +2563,20 @@ mark.hit {
   --pane-drop-ring: inset 0 0 0 2px var(--accent-ink);
 }
 
-/*
- * The card's shadow is three layers with one owner each — the drop ring above,
- * the agent's rule below, the frame further down — composed here rather than
- * each rule setting `box-shadow` outright. Set outright, the frame's rule (the
- * same specificity, later in the file) replaced the drop ring on every framed
- * pane, and an agent rule would have replaced the frame. Front to back: the
- * ring over the rule over the frame.
- */
+/* Compose the file-drop ring with the optional frame so neither replaces the other. */
 .term-host,
 .paused-screen {
   --pane-drop-ring: 0 0 transparent;
-  --pane-agent-rule: 0 0 transparent;
   --pane-frame: 0 0 transparent;
-  box-shadow: var(--pane-drop-ring), var(--pane-agent-rule), var(--pane-frame);
+  box-shadow: var(--pane-drop-ring), var(--pane-frame);
 }
 
-/*
- * Whose terminal this is: a 2px rule in the agent's ink along the top of the
- * card, while more than one agent is in view (`data-agent-paint`, written by
- * applyAppearance). An inset shadow, never a border — a border on
- * `.term-host` is inside the height FitAddon measures and would cost a row —
- * and no background layer, so a wallpaper still shows through one surface
- * (gotcha 54). Ink, not fill: a 2px rule is a stroke on the page (gotcha 44).
- * The tab's top rule, the cursor and the selection stay the profile's.
- */
-:root[data-agent-paint] .term-pane[data-agent] .term-host,
-:root[data-agent-paint] .term-pane[data-agent] .paused-screen {
-  --pane-agent-rule: inset 0 2px 0 0 var(--agent-ink);
-}
+/* Agent identity belongs in the tab, leaving the terminal edge quiet. */
 
 .term-host {
   width: 100%;
   height: 100%;
-  border-radius: var(--r-lg);
+  border-radius: var(--r-sm);
   overflow: hidden;
 }
 
@@ -2606,28 +2594,19 @@ mark.hit {
 }
 
 /*
- * The framed pane: the terminal as a card on the page rather than a page.
- *
- * Every generated theme sets `terminal.background` to the page colour, so
- * canvas and chrome were one flat surface with 8px between the text and the
- * edge — a terminal window, not a document. With the frame on, the pane sits
- * on the sunken ground and the card is the page colour, lifted by an inset
- * hairline and a shadow. In dark mode raised is lighter, in light mode
- * elevation is the border and shadow (gotcha 43), and `--shadow-md` already
- * encodes both. An inset shadow rather than a border, for the box-sizing
- * reason above: a border on `.term-host` would be inside the height FitAddon
- * measures and clip the last row.
+ * Optional framing uses a quiet hairline and tighter corners. It adds no
+ * border width to the grid FitAddon measures, so the final row stays visible.
  */
 :root[data-term-frame='true'] .term-pane {
-  --pane-pad-right: var(--space-12);
-  padding: var(--space-12);
+  --pane-pad-right: var(--space-8);
+  padding: var(--space-8);
   background: var(--bg-sunken);
 }
 
 :root[data-term-frame='true'] .term-host,
 :root[data-term-frame='true'] .paused-screen {
   background: var(--bg);
-  --pane-frame: inset 0 0 0 1px var(--border-subtle), var(--shadow-md);
+  --pane-frame: inset 0 0 0 1px var(--border-subtle);
 }
 
 /* The floating strips sit inside the card rather than on its rim. */
@@ -3161,7 +3140,7 @@ mark.hit {
   width: 100%;
   height: 100%;
   overflow: hidden;
-  border-radius: var(--r-lg);
+  border-radius: var(--r-sm);
   /* The live pane's own inset, so the ghost's first column is where the live
      text's is and a resumed tab does not jump. */
   padding: var(--term-pad, 12px);
@@ -4529,9 +4508,9 @@ mark.hit {
   flex-shrink: 0;
   min-height: 2.25rem;
   padding: var(--space-4) var(--space-8);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
-  background: color-mix(in srgb, var(--accent) 8%, var(--bg));
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   font-size: var(--fs-sm);
   overflow: hidden;
 }
@@ -5027,6 +5006,7 @@ mark.hit {
 
 .status-activity[data-state='working'] .status-activity-dot,
 .status-activity[data-state='background'] .status-activity-dot {
+  background: var(--warning);
   animation: activity-pulse 1.6s var(--ease) infinite;
 }
 
@@ -5034,11 +5014,10 @@ mark.hit {
   background: var(--accent-ink);
 }
 
-/* Same ripple and same still halo as the tab strip's waiting dot. */
+/* The same solid waiting dot as the tab strip. */
 .status-activity[data-state='waiting'] .status-activity-dot {
   background: var(--warning);
   box-shadow: 0 0 0 0.125rem color-mix(in srgb, var(--warning) 30%, transparent);
-  animation: waiting-pulse 1.2s ease-out infinite;
 }
 
 /* Stilled with the same (0,3,0) selectors as the rules above, after them. */
@@ -7620,23 +7599,16 @@ button.color-field-swatch[aria-expanded='true'] {
 
 .sidebar-profile { display: inline-flex; align-items: center; min-width: 0; }
 .sidebar-profile > .profile-chip { max-width: 10rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.profile-edit { border: none; border-radius: var(--r-sm); background: transparent; color: var(--text-muted); padding: 0 var(--space-4); min-width: 1.25rem; min-height: 1.5rem; cursor: pointer; }
-.profile-edit:hover { background: var(--surface-hover); color: var(--text); }
 .profile-create { display: grid; place-items: center; min-width: 1.5rem; }
 .profile-create > svg { width: 0.75rem; height: 0.75rem; }
-.profile-folder-list { display: grid; min-width: 0; gap: var(--space-4); }
-.profile-folder { display: flex; align-items: center; gap: var(--space-4); min-width: 0; padding: var(--space-4); border: none; border-radius: var(--r-sm); background: transparent; color: var(--text-muted); font-size: var(--fs-xs); text-align: left; cursor: pointer; }
-.profile-folder:hover { color: var(--text); background: var(--surface-hover); }
-.profile-folder > svg { width: 0.875rem; height: 0.875rem; flex-shrink: 0; }
 .profile-folders-editor { display: grid; gap: var(--space-8); min-width: 0; }
 .profile-folders-editor > summary { color: var(--text-muted); cursor: pointer; }
 .profile-folders-editor > summary:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 2px; }
 .profile-folder-row { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-8); min-width: 0; }
 .profile-folder-row .mono { min-width: 0; overflow-wrap: anywhere; flex: 1; }
 @media (hover: hover) and (pointer: fine) {
-  .sidebar-profiles .profile-create, .sidebar-profile .profile-edit { opacity: 0; }
-  .sidebar-profiles:hover .profile-create, .sidebar-profiles:focus-within .profile-create,
-  .sidebar-profile:hover .profile-edit, .sidebar-profile:focus-within .profile-edit { opacity: 1; }
+  .sidebar-profiles .profile-create { opacity: 0; }
+  .sidebar-profiles:hover .profile-create, .sidebar-profiles:focus-within .profile-create { opacity: 1; }
   .sidebar-profiles[data-empty='true'] .profile-create { opacity: 1; }
 }
 
@@ -7932,10 +7904,9 @@ button.color-field-swatch[aria-expanded='true'] {
 
 /*
  * Two rows, read without a click: how much of each window is left, and when
- * the 5-hour one comes back. The chip used to be two bare percentages with no
- * labels, framed as "used", with the reset behind a click; the question people
- * ask is the other way round. Colour is the worst of the two rows' tones and
- * follows the account's own severity, not only the pace.
+ * each window comes back. The chip used to be two bare percentages with no
+ * labels, framed as "used", with the reset behind a click. Each row carries
+ * its own severity; the chip outline carries the worst of the two.
  */
 .usage-chip {
   display: grid;
@@ -8010,11 +7981,32 @@ button.color-field-swatch[aria-expanded='true'] {
 
 .usage-mini-left {
   text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 .usage-mini-reset {
   color: var(--text-faint);
   min-width: 2.5rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* One account window approaching its limit does not colour the other row. */
+.usage-mini[data-tone='normal'] { color: var(--text-muted); }
+.usage-mini[data-tone='normal'] .usage-mini-label,
+.usage-mini[data-tone='normal'] .usage-mini-reset { color: var(--text-faint); opacity: 1; }
+.usage-mini[data-tone='warning'] { color: var(--warning); }
+.usage-mini[data-tone='critical'] { color: var(--danger); }
+
+/* At larger interface scales the fixed actions otherwise consume the whole
+   strip. Retain labels and percentages; the usage popover keeps full detail. */
+@container titlebar (max-width: 64em) {
+  .titlebar-actions { gap: 0; padding-left: 0; }
+  .titlebar-actions .icon-btn { width: min(var(--control-h), 28px); }
+  .titlebar-actions .usage-mini { grid-template-columns: max-content max-content; }
+  .titlebar-actions .usage-mini-left { white-space: nowrap; }
+  .titlebar-actions .usage-mini-track,
+  .titlebar-actions .usage-mini-reset { display: none; }
+  .brand-name { display: none; }
 }
 
 .usage-chip[data-tone='warning'] .usage-mini-reset,
@@ -8165,14 +8157,13 @@ button.color-field-swatch[aria-expanded='true'] {
  * numbers lined up; that stopped being true when the reset cell grew from a
  * bare countdown into resetLabel().
  *
- * Label and percent columns are fixed, so the percentages still line up down
- * the rows. 4.25rem fits "Extra usage", which 3.75rem ellipsised. 2.25rem fits
- * "100%", and a plan window's percent is clamped to 0-100 and rounded at both
- * sources (main's `percent` + shared `statusLineWindows`; usage.ts).
+ * Labels keep their own column; percentages take enough room for the explicit
+ * "used" suffix. Reset times get the remaining width and can wrap. Percentages
+ * are clamped to 0–100 and rounded by both sources.
  */
 .usage-row {
   display: grid;
-  grid-template-columns: 4.25rem 2.25rem minmax(0, 1fr);
+  grid-template-columns: 4.25rem max-content minmax(0, 1fr);
   grid-template-areas:
     'label pct reset'
     'track track track';
@@ -8193,6 +8184,7 @@ button.color-field-swatch[aria-expanded='true'] {
 
 .usage-row > .usage-pct {
   grid-area: pct;
+  white-space: nowrap;
 }
 
 .usage-row > .usage-reset {
@@ -9396,3 +9388,16 @@ button.color-field-swatch[aria-expanded='true'] {
 .ssh-files-entry:hover:not(:disabled) { background: var(--bg-elevated); }
 .ssh-files-entry:disabled { opacity: 0.5; }
 .ssh-files-panel progress { width: 100%; accent-color: var(--accent); }
+
+/* Local drafts remain editable while the remote PTY is unreachable. */
+.remote-draft { flex: none; padding: var(--space-8); background: var(--bg); }
+.remote-draft[hidden] { display: none; }
+.remote-draft label { display: block; margin-bottom: var(--space-4); color: var(--text-muted); font-size: var(--fs-sm); }
+.remote-draft textarea { box-sizing: border-box; width: 100%; min-height: 4rem; max-height: 12rem; resize: vertical; padding: var(--space-8); color: var(--text); background: var(--bg); border: 1px solid var(--border-subtle); border-radius: var(--r-md); font: inherit; }
+.remote-draft-actions { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-8); margin-top: var(--space-4); }
+.remote-draft-actions > span { flex: 1; color: var(--text-muted); font-size: var(--fs-xs); }
+.remote-draft select { max-width: 16rem; }
+
+.phone-scope { display: flex; gap: var(--space-4); margin-bottom: var(--space-12); }
+.phone-scope .btn { flex: 1; }
+.phone-scope .btn[aria-pressed='true'] { background: var(--surface-selected); color: var(--text); }

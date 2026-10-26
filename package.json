@@ -1,6 +1,6 @@
 {
   "name": "stoke",
-  "version": "1.0.0-beta.14",
+  "version": "1.0.0-beta.15",
   "description": "A bespoke desktop shell for Claude Code",
   "author": "realvinn",
   "license": "MIT",
@@ -9,9 +9,9 @@
   "scripts": {
     "dev": "node scripts/build-windows-identity.mjs && node scripts/build-mac-reveal.mjs && electron-vite dev",
     "start": "electron-vite preview",
-    "build": "electron-vite build && node scripts/build-windows-identity.mjs && node scripts/build-mac-reveal.mjs && vite build --config vite.remote.config.ts",
+    "build": "electron-vite build && node scripts/build-windows-identity.mjs && node scripts/build-mac-reveal.mjs && vite build --config vite.remote.config.ts && npm run build:account-remote && npm run build:terminal",
     "build:remote": "vite build --config vite.remote.config.ts",
-    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.account-remote.json",
     "verify:context": "node scripts/verify-context.mts",
     "verify:statusline": "node scripts/verify-statusline.mts",
     "verify:unicode": "node scripts/verify-unicode.mts",
@@ -79,7 +79,7 @@
     "verify:manifests": "node scripts/verify-manifests.mts",
     "verify:portable": "node scripts/verify-portable.mts",
     "verify:winget": "node scripts/verify-winget.mts",
-    "check": "npm run typecheck && npm run verify:context && npm run verify:codex-context && npm run verify:statusline && npm run verify:unicode && npm run verify:usage && npm run verify:codex-resume && npm run verify:profiles && npm run verify:settings && npm run verify:secrets && npm run verify:hub && npm run verify:hub-server && npm run verify:hub-client && npm run verify:hub-relay && npm run verify:providers && npm run verify:claude-config && npm run verify:folders && npm run verify:search && npm run verify:settings-search && npm run verify:chat-sources && npm run verify:color && npm run verify:theme-gen && npm run verify:activity && npm run verify:worklog-gate && npm run verify:work-plugin && npm run verify:plugins && npm run verify:grok-bot && npm run verify:work-notion && npm run verify:work-drafts && npm run verify:work-session-notes && npm run verify:tabs && npm run verify:tab-windows && npm run verify:topbar && npm run verify:quick-terminal && npm run verify:pty-exit && npm run verify:git && npm run verify:launcher && npm run verify:launch-preflight && npm run verify:registry && npm run verify:restore && npm run verify:private && npm run verify:shortcuts && npm run verify:find && npm run verify:drop && npm run verify:fullscreen && npm run verify:layers && npm run verify:terminal-links && npm run verify:browser-url && npm run verify:browser-profiles && npm run verify:safari-import && npm run verify:chrome-import && npm run verify:voice && npm run verify:agents && npm run verify:accounts && npm run verify:account-sync && npm run verify:campfire && npm run verify:cli && npm run verify:stoke-args && npm run verify:updates && npm run verify:targets && npm run verify:probe && npm run verify:manifests && npm run verify:portable && npm run verify:winget && npm run verify:worklog-runner && npm run verify:worklog-retry && npm run verify:worklog-recall && npm run verify:worklog-autoscan && npm run verify:ssh && npm run verify:ssh-files && npm run verify:ssh-enroll && npm run verify:remote && npm run verify:phone-ui && npm run verify:installer-art && npm run verify:install && npm run verify:welcome && npm run verify:selection && npm run build",
+    "check": "npm run typecheck && npm run verify:context && npm run verify:codex-context && npm run verify:statusline && npm run verify:unicode && npm run verify:usage && npm run verify:codex-resume && npm run verify:profiles && npm run verify:settings && npm run verify:secrets && npm run verify:hub && npm run verify:hub-server && npm run verify:hub-client && npm run verify:hub-presence && npm run verify:account-remote && npm run verify:hub-relay && npm run verify:providers && npm run verify:claude-config && npm run verify:folders && npm run verify:search && npm run verify:settings-search && npm run verify:chat-sources && npm run verify:color && npm run verify:theme-gen && npm run verify:activity && npm run verify:worklog-gate && npm run verify:work-plugin && npm run verify:plugins && npm run verify:grok-bot && npm run verify:work-notion && npm run verify:work-drafts && npm run verify:work-session-notes && npm run verify:tabs && npm run verify:tab-overflow && npm run verify:tab-windows && npm run verify:topbar && npm run verify:quick-terminal && npm run verify:shell-layout && npm run verify:pty-exit && npm run verify:git && npm run verify:launcher && npm run verify:launch-preflight && npm run verify:registry && npm run verify:restore && npm run verify:private && npm run verify:shortcuts && npm run verify:find && npm run verify:drop && npm run verify:fullscreen && npm run verify:layers && npm run verify:terminal-links && npm run verify:browser-url && npm run verify:browser-profiles && npm run verify:safari-import && npm run verify:chrome-import && npm run verify:voice && npm run verify:agents && npm run verify:accounts && npm run verify:account-sync && npm run verify:campfire && npm run verify:cli && npm run verify:terminal && npm run verify:terminal-platform && npm run verify:stoke-args && npm run verify:updates && npm run verify:targets && npm run verify:probe && npm run verify:manifests && npm run verify:portable && npm run verify:winget && npm run verify:worklog-runner && npm run verify:worklog-retry && npm run verify:worklog-recall && npm run verify:worklog-autoscan && npm run verify:ssh && npm run verify:ssh-files && npm run verify:ssh-enroll && npm run verify:remote && npm run verify:phone-ui && npm run verify:phone-scroll && npm run verify:remote-composer && npm run verify:remote-draft && npm run verify:remote-recovery && npm run verify:installer-art && npm run verify:install && npm run verify:welcome && npm run verify:selection && npm run build",
     "icon": "electron scripts/make-icon.cjs",
     "art": "electron scripts/make-installer-art.cjs",
     "mac:signing-secrets": "bash scripts/mac-signing-secrets.sh",
@@ -90,7 +90,7 @@
     "dist:linux": "npm run build && node scripts/targets.mjs --build linux-x64",
     "targets": "node scripts/targets.mjs --list",
     "deploy:install": "npx --yes wrangler@4 deploy",
-    "deploy:hub-edge": "npx --yes wrangler@4 deploy -c wrangler.hub-edge.jsonc",
+    "deploy:hub-edge": "npm run build:account-remote && npx --yes wrangler@4 deploy -c wrangler.hub-edge.jsonc",
     "hub": "node --experimental-strip-types --disable-warning=ExperimentalWarning --disable-warning=MODULE_TYPELESS_PACKAGE_JSON hub/server.ts",
     "build:hub": "node hub/build.mjs",
     "verify:theme-gen": "node --experimental-strip-types scripts/verify-theme-gen.mts",
@@ -105,15 +105,36 @@
     "verify:account-sync": "node scripts/verify-account-sync.mts",
     "verify:grok-bot": "node scripts/verify-grok-bot.mts",
     "verify:codex-resume": "node scripts/verify-codex-resume.mts",
-    "verify:probe": "node scripts/verify-probe.mts"
+    "verify:probe": "node scripts/verify-probe.mts",
+    "terminal": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON src/terminal/index.ts",
+    "build:terminal": "vite build --config vite.terminal.config.ts",
+    "verify:terminal": "node --experimental-strip-types scripts/verify-terminal.mts",
+    "pack:terminal": "npm run build:terminal && node scripts/package-terminal.mjs && npm pack ./out/terminal-package --pack-destination ./out/cli-release",
+    "verify:account-remote": "node scripts/verify-account-remote.mts --needs-display",
+    "verify:hub-presence": "node scripts/verify-hub-presence.mts",
+    "dist:terminal": "npm run build:terminal && node scripts/package-terminal.mjs && node scripts/dist-terminal.mjs",
+    "verify:terminal-platform": "node scripts/verify-terminal-platform.mts",
+    "verify:terminal-release": "node scripts/verify-terminal-release.mjs",
+    "verify:tab-overflow": "electron scripts/verify-tab-overflow.mts",
+    "verify:phone-scroll": "electron scripts/verify-phone-scroll.mts",
+    "verify:remote-composer": "electron scripts/verify-remote-composer.mts",
+    "verify:remote-draft": "electron --experimental-strip-types scripts/verify-remote-draft.mts",
+    "verify:remote-recovery": "node scripts/verify-remote-recovery.mts",
+    "verify:shell-layout": "electron scripts/verify-shell-layout.mts",
+    "build:account-remote": "vite build --config vite.account-remote.config.ts"
   },
   "dependencies": {
     "@lydell/node-pty": "1.2.0-beta.14",
     "@modelcontextprotocol/sdk": "^1.30.0",
+    "@noble/ciphers": "2.4.0",
+    "@noble/curves": "2.4.0",
+    "@noble/hashes": "2.4.0",
+    "cross-spawn": "^7.0.6",
     "electron-updater": "^6.8.9",
     "qrcode": "^1.5.4",
     "react-markdown": "10.1.0",
     "remark-gfm": "4.0.1",
+    "string-width": "^4.2.3",
     "ws": "^8.21.1",
     "zod": "^4.4.3"
   },
@@ -139,5 +160,8 @@
     "react-dom": "^19.2.0",
     "typescript": "^5.9.0",
     "vite": "^7.1.0"
+  },
+  "bin": {
+    "stoke": "build/bin/stoke-terminal.mjs"
   }
 }

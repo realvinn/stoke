@@ -10,27 +10,33 @@ type Modifier = 'shift' | 'ctrl' | 'alt'
 type Latch = 'off' | 'next' | 'locked'
 interface Key { label: string; name: string; key?: TerminalKey; sequence?: string; repeat?: boolean }
 
+const QUICK: readonly Key[] = [
+  { label: 'Esc', name: 'Escape', key: 'Escape' },
+  { label: 'Tab', name: 'Tab', key: 'Tab' },
+  { label: '↑', name: 'Up arrow', key: 'ArrowUp', repeat: true },
+  { label: '↓', name: 'Down arrow', key: 'ArrowDown', repeat: true },
+  { label: 'Enter', name: 'Enter', key: 'Enter' }
+]
 const NAVIGATION: readonly Key[] = [
-  { label: 'esc', name: 'Escape', key: 'Escape' },
-  { label: 'tab', name: 'Tab', key: 'Tab' },
   { label: '←', name: 'Left arrow', key: 'ArrowLeft', repeat: true },
   { label: '↑', name: 'Up arrow', key: 'ArrowUp', repeat: true },
   { label: '↓', name: 'Down arrow', key: 'ArrowDown', repeat: true },
   { label: '→', name: 'Right arrow', key: 'ArrowRight', repeat: true },
-  { label: 'enter', name: 'Enter', key: 'Enter' }
+  { label: 'Home', name: 'Home', key: 'Home' },
+  { label: 'End', name: 'End', key: 'End' },
+  { label: 'Pg up', name: 'Page up', key: 'PageUp' },
+  { label: 'Pg dn', name: 'Page down', key: 'PageDown' }
 ]
-const MORE: readonly Key[] = [
-  { label: 'home', name: 'Home', key: 'Home' },
-  { label: 'end', name: 'End', key: 'End' },
-  { label: 'pg up', name: 'Page up', key: 'PageUp' },
-  { label: 'pg dn', name: 'Page down', key: 'PageDown' },
-  { label: 'ins', name: 'Insert', key: 'Insert' },
-  { label: 'del', name: 'Delete', key: 'Delete' },
+const SHORTCUTS: readonly Key[] = [
+  { label: 'Shift+Tab', name: 'Shift-Tab: cycle permission mode', sequence: '\x1b[Z' },
+  { label: 'Ctrl+C', name: 'Control-C: interrupt', sequence: '\x03' },
+  { label: 'Ctrl+R', name: 'Control-R: search history', sequence: '\x12' },
+  { label: 'Ctrl+L', name: 'Control-L: clear screen', sequence: '\x0c' }
+]
+const EDIT: readonly Key[] = [
   { label: '⌫', name: 'Backspace', key: 'Backspace', repeat: true },
-  { label: '⇧tab', name: 'Shift-Tab: cycle permission mode', sequence: '\x1b[Z' },
-  { label: 'ctrl-c', name: 'Control-C: interrupt', sequence: '\x03' },
-  { label: 'ctrl-r', name: 'Control-R: search history', sequence: '\x12' },
-  { label: 'ctrl-l', name: 'Control-L: clear screen', sequence: '\x0c' }
+  { label: 'Insert', name: 'Insert', key: 'Insert' },
+  { label: 'Delete', name: 'Delete', key: 'Delete' }
 ]
 
 /** On-screen keys share the terminal's protocol, never the browser's key shortcuts. */
@@ -144,30 +150,51 @@ export function mountTerminalKeys(root: HTMLElement, { write, applicationCursorM
     button.addEventListener('click', event => { if (!key.repeat || event.detail === 0) sendKey(key) }, { signal })
     return button
   }
-  const nav = el('div', { class: 'keys-main keys-navigation', role: 'group', 'aria-label': 'Navigation keys' }, ...NAVIGATION.map(keyButton))
-  const functions = el('div', { class: 'keys-functions', id: `${root.id}-functions`, hidden: true, role: 'group', 'aria-label': 'Function keys' },
-    ...TERMINAL_FUNCTION_KEYS.map(key => keyButton({ label: key, name: key, key })))
-  const more = el('div', { class: 'keys-more', id: `${root.id}-more`, hidden: true, role: 'group', 'aria-label': 'More terminal keys' }, ...MORE.map(keyButton))
-  const groupToggle = (name: string, label: string, panel: HTMLElement): HTMLButtonElement => {
-    const button = el('button', { type: 'button', class: 'key key-group-toggle', 'aria-label': name, 'aria-expanded': 'false', 'aria-controls': panel.id }, label)
-    button.addEventListener('pointerdown', event => event.preventDefault(), { signal })
-    button.addEventListener('click', () => {
-      const opening = panel.hidden
-      functions.hidden = true; more.hidden = true
-      for (const toggle of modifierRow.querySelectorAll('[aria-expanded]')) toggle.setAttribute('aria-expanded', 'false')
-      panel.hidden = !opening
-      button.setAttribute('aria-expanded', String(opening))
-      root.dataset.layer = opening ? panel === functions ? 'functions' : 'more' : 'navigation'
-    }, { signal })
-    return button
+  const quick = el('div', { class: 'keys-quick', role: 'group', 'aria-label': 'Quick terminal keys' }, ...QUICK.map(keyButton))
+  const tabs = el('div', { class: 'keys-tabs', role: 'tablist', 'aria-label': 'Terminal key groups' })
+  const body = el('div', { class: 'keys-panel-body' })
+  const panel = el('div', { class: 'keys-panel', id: `${root.id}-panel`, hidden: true }, modifierRow, tabs, body, hint)
+  const moreButton = el('button', { type: 'button', class: 'key key-more-toggle', 'aria-label': 'More terminal keys', 'aria-expanded': 'false', 'aria-controls': panel.id }, 'More')
+  const groups = [
+    { id: 'navigate', label: 'Navigate', keys: NAVIGATION },
+    { id: 'shortcuts', label: 'Shortcuts', keys: SHORTCUTS },
+    { id: 'functions', label: 'F keys', keys: TERMINAL_FUNCTION_KEYS.map(key => ({ label: key, name: key, key })) },
+    { id: 'edit', label: 'Edit', keys: EDIT }
+  ]
+  const panels = groups.map(group => el('div', { class: `keys-page keys-${group.id}`, role: 'tabpanel', id: `${root.id}-${group.id}`, 'aria-labelledby': `${root.id}-tab-${group.id}`, hidden: true }, ...group.keys.map(keyButton)))
+  const groupButtons: HTMLButtonElement[] = []
+  const selectGroup = (index: number): void => {
+    stopRepeat(); disarm()
+    panels.forEach((page, i) => { page.hidden = i !== index })
+    groupButtons.forEach((button, i) => { button.setAttribute('aria-selected', String(i === index)); button.tabIndex = i === index ? 0 : -1 })
   }
-  modifierRow.append(groupToggle('Function keys: F1 to F12', 'F1–F12', functions), groupToggle('More keys', 'more', more))
-  const eof = el('button', { type: 'button', class: 'key key-eof', 'data-key': 'ctrl-d', 'aria-label': 'Control-D: end of input. Tap twice.', disabled: true }, 'ctrl-d')
+  groups.forEach((group, index) => {
+    const button = el('button', { type: 'button', class: 'key key-group-toggle', role: 'tab', id: `${root.id}-tab-${group.id}`, 'aria-controls': panels[index].id }, group.label)
+    button.addEventListener('pointerdown', event => event.preventDefault(), { signal })
+    button.addEventListener('click', () => selectGroup(index), { signal })
+    button.addEventListener('keydown', event => {
+      const next = event.key === 'ArrowRight' ? (index + 1) % groups.length : event.key === 'ArrowLeft' ? (index + groups.length - 1) % groups.length : event.key === 'Home' ? 0 : event.key === 'End' ? groups.length - 1 : -1
+      if (next < 0) return
+      event.preventDefault(); event.stopPropagation(); selectGroup(next); groupButtons[next].focus()
+    }, { signal })
+    groupButtons.push(button); tabs.append(button)
+  })
+  moreButton.addEventListener('pointerdown', event => event.preventDefault(), { signal })
+  moreButton.addEventListener('click', () => {
+    const opening = panel.hidden
+    if (!opening) reset()
+    panel.hidden = !opening
+    moreButton.setAttribute('aria-expanded', String(opening))
+    root.dataset.expanded = String(opening)
+  }, { signal })
+  quick.append(moreButton)
+  body.append(...panels)
+  const eof = el('button', { type: 'button', class: 'key key-eof', 'data-key': 'ctrl-d', 'aria-label': 'Control-D: end of input. Tap twice.', disabled: true }, 'Ctrl+D')
   inputs.push(eof)
   const disarm = (): void => {
     if (eofTimer) clearTimeout(eofTimer)
     eofTimer = null
-    eof.classList.remove('armed'); eof.textContent = 'ctrl-d'
+    eof.classList.remove('armed'); eof.textContent = 'Ctrl+D'; eof.setAttribute('aria-label', 'Control-D: end of input. Tap twice.')
   }
   eof.addEventListener('pointerdown', event => event.preventDefault(), { signal })
   eof.addEventListener('click', () => {
@@ -176,23 +203,25 @@ export function mountTerminalKeys(root: HTMLElement, { write, applicationCursorM
       if (performance.now() - eofAt < 350) return
       disarm(); if (write('\x04')) consume()
     } else {
-      eof.classList.add('armed'); eof.textContent = 'ctrl-d?'; eofAt = performance.now()
+      eof.classList.add('armed'); eof.textContent = 'Confirm'; eof.setAttribute('aria-label', 'Confirm Control-D: end of input'); eofAt = performance.now()
       eofTimer = setTimeout(disarm, 3000)
     }
   }, { signal })
-  more.append(eof)
-  root.replaceChildren(modifierRow, nav, functions, more, hint)
+  panels[3].append(eof)
+  root.replaceChildren(quick, panel)
   root.addEventListener('keydown', event => {
     if (event.target instanceof HTMLButtonElement && (event.key === ' ' || event.key === 'Enter')) event.stopPropagation()
   }, { signal })
   const reset = (): void => {
     stopRepeat(); disarm(); held.clear()
+    panel.hidden = true; moreButton.setAttribute('aria-expanded', 'false'); root.dataset.expanded = 'false'
     for (const modifier of ['shift', 'ctrl', 'alt'] as const) { latches[modifier] = 'off'; taps[modifier] = -Infinity }
     paint()
   }
   window.addEventListener('blur', reset, { signal })
   document.addEventListener('visibilitychange', () => { if (document.visibilityState !== 'visible') reset() }, { signal })
   signal.addEventListener('abort', reset, { once: true })
+  selectGroup(0)
   paint()
   return {
     reset,

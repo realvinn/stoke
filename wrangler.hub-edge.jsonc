@@ -22,7 +22,8 @@
   // matches. `/hub/*`, not `/hub*`: `/hubba` and the bare `/hub` stay the
   // installer's. It rides the existing proxied record, so no new DNS name and
   // no gotcha-77 wait for this half.
-  "routes": [{ "pattern": "stoke.vinn.dev/hub/*", "zone_name": "vinn.dev" }],
+  "routes": [{ "pattern": "stoke.vinn.dev/hub/*", "zone_name": "vinn.dev" }, { "pattern": "stoke.vinn.dev/remote*", "zone_name": "vinn.dev" }],
+  "assets": { "directory": "./out/account-remote", "binding": "REMOTE_ASSETS", "run_worker_first": true },
 
   // The tunnel hostname cloudflared serves on the NUC (hub/README.md). Gotcha
   // 77 DOES apply to it: `cloudflared tunnel route dns` writes that record.

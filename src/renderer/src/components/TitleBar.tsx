@@ -9,6 +9,7 @@ import { ContextMenu, type MenuItem } from './ContextMenu'
 import { RemoteArrows, TabIndicator } from './TabIndicator'
 import {
   BrandMark,
+  IconChevron,
   IconClose,
   IconGear,
   IconGhost,
@@ -25,6 +26,7 @@ import { PRIVATE_BUTTON_TITLE, PRIVATE_FOLDER_TEXT } from '@shared/privateChat'
 import { chordLabel } from '../lib/shortcuts'
 import { canMoveTab } from '@shared/tabWindows'
 import { useTabDrag } from '../lib/useTabDrag'
+import { useTabOverflow } from '../lib/useTabOverflow'
 import { agentMark } from '../lib/agentColor'
 import { folderMenuEntry, revealLabel, type CloseSide } from '../lib/tabs'
 import type { ActivityView } from '@shared/activityView'
@@ -204,6 +206,7 @@ export function TitleBar({
     onReorder: onReorderTab,
     onDetach: id => { const tab = tabs.find(t => t.id === id); if (tab && canMoveTab(tab)) onDetachTab(id) }
   })
+  const overflow = useTabOverflow(listRef, tabs.length, drag.busy)
 
   // The right-click menu (its anchor tab) and the inline rename in progress.
   // Both are transient UI, so they live here rather than on the tab model.
@@ -324,11 +327,11 @@ export function TitleBar({
         reader announced it as one, and arrow-key tab semantics applied to a
         control that does not answer to them.
       */}
-      <div className="tabs">
+      <div className="tabs" data-overflow={overflow.overflowing || undefined}>
         <div className="tablist" role="tablist" aria-label="Sessions" ref={listRef}>
           {tabs.map((tab) => {
             const ctx = contexts[tab.sessionId]
-            const act = tab.kind === 'session' ? activity[tab.id] : undefined
+            const act = activity[tab.id]
             const dot = act?.dot ?? null
             const label = labelFor?.(tab) ?? { text: tab.title, agentTag: null, agent: null, account: null }
             const agentName = tab.kind === 'grok-bot' ? 'Grok Bot' : label.agent ? cliFor(label.agent).label : null
@@ -505,8 +508,8 @@ export function TitleBar({
                 )}
                 {/*
                   Where this session is. Working (and a turn whose workflow
-                  runs on in the background) pulses grey; waiting for you pulses
-                  in the warning colour until it is answered, whether or not the
+                  runs on in the background) pulses orange; waiting for you stays
+                  solid orange until it is answered, whether or not the
                   tab is in front; done is a solid accent dot, since you last
                   looked. Not red: red in the strip already says two things, a
                   ring past 60% and the worklog dot in its centre.
@@ -537,6 +540,27 @@ export function TitleBar({
             )
           })}
         </div>
+
+        {overflow.overflowing && (
+          <div className="tab-scroll-controls" role="group" aria-label="Scroll session tabs">
+            <button
+              className="icon-btn"
+              disabled={!overflow.left}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => overflow.scroll(-1)}
+              title="Scroll tabs left · Mouse wheel over tabs"
+              aria-label="Scroll tabs left"
+            ><IconChevron className="tab-scroll-left" /></button>
+            <button
+              className="icon-btn"
+              disabled={!overflow.right}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => overflow.scroll(1)}
+              title="Scroll tabs right · Mouse wheel over tabs"
+              aria-label="Scroll tabs right"
+            ><IconChevron /></button>
+          </div>
+        )}
 
         <button
           className="icon-btn"

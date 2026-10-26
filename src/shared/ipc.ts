@@ -390,6 +390,7 @@ export const CH = {
    * titles, states) and a remote tab's pty frames; never a key, never a path.
    */
   hubRemoteView: 'hub:remote-view',
+  hubRemoteBrowserLink: 'hub:remote-browser-link',
   /** main -> renderer: the "Other machines" view moved. */
   hubRemoteChanged: 'hub:remote-changed',
   /** main -> renderer: one pty-socket frame for a remote tab (tabId, frame). */

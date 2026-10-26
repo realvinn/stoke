@@ -32,6 +32,9 @@ export function PhonePopover({ onOpenSettings, settingsOpen }: Props): React.JSX
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [accountMode, setAccountMode] = useState(true)
+  const [accountLink, setAccountLink] = useState<{ url: string; qr: string } | null>(null)
+  const [accountError, setAccountError] = useState('')
   const panelRef = useRef<HTMLDivElement>(null)
 
   // Close on any route into Settings, not only this popover's own buttons.
@@ -87,6 +90,16 @@ export function PhonePopover({ onOpenSettings, settingsOpen }: Props): React.JSX
     window.setTimeout(() => setCopied(false), 1600)
   }
 
+  const pairAccount = async (): Promise<void> => {
+    setBusy(true); setAccountError('')
+    try {
+      const result = await window.stoke.hub.remote.createLink()
+      if (result.ok) setAccountLink(result)
+      else setAccountError(result.message)
+    } catch { setAccountError('The account link could not be created. Check your Stoke account connection.') }
+    finally { setBusy(false) }
+  }
+
   const running = state?.server.running ?? false
   const attached = state?.server.clients ?? 0
   const reachable = running && state !== null && state.reach !== 'loopback' && state.url !== null
@@ -118,6 +131,22 @@ export function PhonePopover({ onOpenSettings, settingsOpen }: Props): React.JSX
         <>
           <div className="popover-backdrop" onClick={() => setOpen(false)} />
           <div className="popover phone-panel" role="dialog" aria-label="Phone access" ref={panelRef}>
+            <div className="phone-scope" role="group" aria-label="Remote link scope">
+              <button className="btn" aria-pressed={accountMode} onClick={() => setAccountMode(true)}>Account</button>
+              <button className="btn" aria-pressed={!accountMode} onClick={() => setAccountMode(false)}>This computer</button>
+            </div>
+            {accountMode && <>
+              <p className="popover-title">All your Stoke computers</p>
+              <p className="popover-text">Pair your phone once. Open sessions on any online computer, even when this computer is off.</p>
+              {accountLink && <img className="phone-qr" src={accountLink.qr} alt="Account remote pairing QR code" width={200} height={200} />}
+              {accountError && <p className="popover-text" role="alert" data-tone="danger">{accountError}</p>}
+              <div className="popover-actions">
+                <button className="btn" disabled={busy} onClick={() => void pairAccount()}>{busy ? 'Pairing…' : accountLink ? 'Pair another phone' : 'Pair phone to account'}</button>
+                {accountLink && <button className="btn" data-variant="ghost" onClick={() => { window.stoke.clipboard.writeText(accountLink.url); setCopied(true) }}>{copied ? 'Copied' : 'Copy account link'}</button>}
+              </div>
+              <p className="popover-text">The phone is a remote-only device. Remove it under Accounts → Devices & sync to revoke access.</p>
+            </>}
+            <div hidden={accountMode}>
             {/*
               A server that failed to start used to show the plain off-state,
               as if nothing had been tried: the busy-port error lived only in
@@ -198,6 +227,7 @@ export function PhonePopover({ onOpenSettings, settingsOpen }: Props): React.JSX
                 </div>
               </>
             )}
+            </div>
           </div>
         </>
       )}

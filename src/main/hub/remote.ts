@@ -116,7 +116,7 @@ export interface RemoteContext {
   epoch: number
   me: { id: string; label: string; platform: string; signPriv: string }
   /** Every ACTIVE device of the verified, anchored chain (gotcha 140), this one included. */
-  active: { id: string; label: string; platform: string; sign: string }[]
+  active: { id: string; label: string; platform: string; sign: string; caps?: readonly string[] }[]
 }
 
 /** A relay socket, as much of `ws`'s WebSocket as this uses. */

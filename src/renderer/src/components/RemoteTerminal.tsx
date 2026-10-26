@@ -20,6 +20,7 @@ import { platformName } from '../lib/hubRemote'
 import { installShiftSelection } from '../lib/terminalSelection'
 import type { Tab } from '../types'
 import { RemoteFab } from './RemoteFab'
+import { RemoteDraft } from './RemoteDraft'
 import { useDictation } from './Dictation'
 
 /*
@@ -99,6 +100,7 @@ interface Props {
 }
 
 export function RemoteTerminal({ tab, view, active, theme, fontFamily, fontSize, terminal, accent, alpha, bar, voice, onClose, onOpenUrl }: Props): React.JSX.Element {
+  const draftInput = useRef<((text: string) => void) | null>(null)
   const hostRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const openUrlRef = useRef(onOpenUrl)
@@ -281,7 +283,8 @@ export function RemoteTerminal({ tab, view, active, theme, fontFamily, fontSize,
     })
     const offData = term.onData((data) => {
       // Only keys: xterm's own answers to the far application are the far terminal's to give.
-      if (stateRef.current !== 'open' || isTerminalReport(data)) return
+      if (isTerminalReport(data)) return
+      if (stateRef.current !== 'open') { draftInput.current?.(data); return }
       window.stoke.hub.remote.input(remoteId, data)
     })
     /*
@@ -474,6 +477,7 @@ export function RemoteTerminal({ tab, view, active, theme, fontFamily, fontSize,
         </RemoteFab>
       )}
       <div className="term-host remote-host" ref={hostRef} />
+      <RemoteDraft scope={JSON.stringify(['remote-desktop', tab.remote?.device, tab.remote?.ptyId ?? remoteId])} view={view} receive={draftInput} />
       {dictation.strip}
     </div>
   )

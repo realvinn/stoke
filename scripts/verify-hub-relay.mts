@@ -1430,6 +1430,10 @@ console.log('\nwho sizes the pty: the side being used, last active wins (sizeCla
 
 console.log('\na remote tab’s resize reaches its own session’s pty; the host’s status bar comes with it')
 {
+  check('remote activity telemetry survives validation',
+    ['busy', 'waiting', 'idle', null].map(activity => parseRemoteSessionStatus({agent:'codex',activity})?.activity),
+    ['busy', 'waiting', 'idle', null])
+  check('invalid activity stays unknown', parseRemoteSessionStatus({activity:'thinking maybe'})?.activity, undefined)
   const statusA1: RemoteSessionStatus = remoteSessionStatusFrom({
     model: 'claude-opus-5[1m]-statuscanary',
     effort: 'high',

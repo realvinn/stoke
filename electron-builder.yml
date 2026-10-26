@@ -169,6 +169,8 @@ mac:
       to: mac-reveal
     - from: build/bin/stoke
       to: bin/stoke
+    - from: out/terminal
+      to: terminal
   # A PTY spawns child processes; the JIT/unsigned-memory entitlements keep
   # hardened runtime from killing them.
   #

@@ -990,6 +990,7 @@ export interface StokeApi {
     cancelVerify(): Promise<void>
     /** "Other machines" (src/main/hub/remote.ts). */
     remote: {
+      createLink(): Promise<HubResult<{ url: string; device: string; qr: string }>>
       view(): Promise<HubRemoteView>
       onChange(cb: (view: HubRemoteView) => void): () => void
       /** One pty-socket frame (`attached`, `data`, `exit`, `status`, `size`) for a remote tab. */

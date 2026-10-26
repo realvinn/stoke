@@ -354,13 +354,13 @@ export interface OtherMachineView {
  */
 export function otherMachines(f: {
   me: string
-  active: readonly { id: string; label: string; platform: string }[]
+  active: readonly { id: string; label: string; platform: string; caps?: readonly string[] }[]
   online: readonly string[]
   statuses: Readonly<Record<string, RemoteStatus>>
 }): OtherMachineView[] {
   const online = new Set(f.online)
   return f.active
-    .filter((d) => d.id !== f.me && online.has(d.id))
+    .filter((d) => d.id !== f.me && online.has(d.id) && (!d.caps || d.caps.includes('remote-host')))
     .map((d) => {
       const s = f.statuses[d.id]
       return {
@@ -393,6 +393,8 @@ export function newerStatus(have: RemoteStatus | undefined, got: RemoteStatus): 
  * nothing about any other session on the host ever rides it.
  */
 export interface RemoteSessionStatus {
+  /** Optional for older hosts; never guess activity from the link being open. */
+  activity?: 'busy' | 'waiting' | 'idle' | 'shell' | null
   /** The model id as the host's bar reads it (payload first, then transcript, then launch flag), or null. */
   model: string | null
   /** The launch effort when one was chosen, or null for the default. */
@@ -448,11 +450,13 @@ export function remoteSessionStatusFrom(f: {
   model: string | null
   effort: string | null
   agent: string
+  activity?: RemoteSessionStatus['activity']
   context: { used: number; limit: number } | null
   usage: readonly UsageWindow[]
   usageAt: number | null
 }): RemoteSessionStatus {
   return {
+    ...(f.activity !== undefined ? { activity: f.activity } : {}),
     model: f.model ? clip(f.model, 80) || null : null,
     effort: f.effort && f.effort !== 'default' ? clip(f.effort, 16) || null : null,
     agent: clip(f.agent, 24) || 'claude',
@@ -487,6 +491,7 @@ export function parseRemoteSessionStatus(v: unknown): RemoteSessionStatus | null
     }
   }
   return {
+    ...(['busy', 'waiting', 'idle', 'shell', null].includes(v.activity as string | null) ? { activity: v.activity as RemoteSessionStatus['activity'] } : {}),
     model: typeof v.model === 'string' ? clip(v.model, 80) || null : null,
     effort: typeof v.effort === 'string' ? clip(v.effort, 16) || null : null,
     agent: clip(v.agent, 24) || 'claude',

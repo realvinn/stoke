@@ -101,7 +101,7 @@ export function stopNotifies(background: readonly SessionBackgroundTask[] | unde
   return agentWork(background).length === 0
 }
 
-export const WORKING_LABEL = 'Claude is working…'
+export const WORKING_LABEL = 'Agent is working…'
 export const DONE_LABEL = 'Finished — your move'
 /** The hook-only attention line when the CLI's message was empty. */
 export const ATTENTION_LABEL = 'Needs your attention'

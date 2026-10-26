@@ -152,6 +152,7 @@ console.log('\nwhich kind of copy this is')
   check('isStokeBuildPath reads either slash', [isStokeBuildPath('resources/app.asar'), isStokeBuildPath('resources\\app.asar'), isStokeBuildPath('Stoke.exe'), isStokeBuildPath('photos\\a.jpg')], [true, true, true, false])
   check('the Windows identity resource keeps a clean portable build on its normal update route', kind({ entries: [...(base.entries ?? []), 'resources\\windows-identity'] }).kind, 'portable')
   check('only the exact identity resource directory is a Stoke build path', [isStokeInnerEntry('resources', 'Windows-Identity'), isStokeInnerEntry('resources', 'windows-identity-backup')], [true, false])
+  check('the bundled terminal is a build resource, while similarly named user folders remain foreign', [isStokeInnerEntry('resources', 'terminal'), isStokeInnerEntry('resources', 'terminal-notes')], [true, false])
   /*
    * A new extraResources target lands in resources\ of every build — so it must
    * be one isStokeInnerEntry accepts, or the NEXT build's own folder reads as

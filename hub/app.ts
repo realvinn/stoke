@@ -1,3 +1,5 @@
+import { verifyText } from '../src/main/hub/crypto.ts'
+import { browserKeyProblem, browserKeyText, browserRouteAllowed, type BrowserPresenceKey } from '../src/shared/hub/browser.ts'
 /*
  * Stoke Hub, the server: accounts and sessions, the signed device chain, the
  * wrapped vault keys, the item store, pairing, presence and the relay — built
@@ -472,6 +474,7 @@ class HubServer {
   private drained: (() => void) | null = null
   private closing = false
   private closed: Promise<void> | null = null
+  private readonly browserTickets = new Map<string, { path: string; until: number; auth: Authed }>()
   private readonly handlers: Record<HubRouteName, Handler>
 
   constructor(config: HubConfig, deps: HubDeps) {
@@ -487,6 +490,10 @@ class HubServer {
       health: () => this.health(),
       signup: (ctx, body) => this.signup(ctx, body),
       login: (ctx, body, _p, pathV1) => this.login(ctx, body, pathV1),
+      browserSession: (ctx, body) => this.browserSession(ctx, body),
+      browserSocket: (ctx, body) => this.browserSocket(ctx, body),
+      browserKeyGet: (ctx) => this.browserKeyGet(ctx),
+      browserKeyPut: (ctx, body) => this.browserKeyPut(ctx, body),
       logout: (ctx) => this.logout(ctx),
       authVerify: (ctx, body) => this.authVerify(ctx, body),
       account: (ctx) => this.account(ctx),
@@ -758,6 +765,8 @@ class HubServer {
     const chain = this.chainState(account.id)
     const active = chain?.verdict?.active.find((d) => d.id === session.device_id && d.sign === session.sign_pub) ?? null
     if ((need === 'active' || need === 'owner') && !active) throw new HubError('pending')
+    const record = active ?? chain?.entries.find(e => e.device?.id === session.device_id && e.device.sign === session.sign_pub)?.device
+    if (record && !record.caps.includes('vault') && !browserRouteAllowed(method, pathV1)) throw new HubError('forbidden', 'This remote-only device cannot access the account vault.')
     if (need === 'owner' && account.role !== 'owner') throw new HubError('forbidden', 'Only the hub’s owner may do that.')
     return { session, tokenHash, account, device: session.device_id, active, chain }
   }
@@ -860,7 +869,8 @@ class HubServer {
       ctx.route = match.name
       const route = HUB_ROUTES[match.name] as { ws?: true; auth: HubAuth }
       if (!route.ws) throw new HubError('bad-request', 'That address does not take a WebSocket.')
-      const auth = this.authenticate(route.auth, 'GET', pathV1, headers, Buffer.alloc(0)) as Authed
+      const ticket = new URL(raw, 'http://hub').searchParams.get('stoke_ticket')
+      const auth = ticket ? this.takeBrowserTicket(ticket, pathV1.split('?')[0]) : this.authenticate(route.auth, 'GET', pathV1, headers, Buffer.alloc(0)) as Authed
       ctx.auth = auth
       if (match.name === 'wsPresence') {
         this.wssPresence.handleUpgrade(req, socket, head, (ws) => this.presenceOpened(ws, auth))
@@ -946,7 +956,7 @@ class HubServer {
   /* --------------------------------------------------- the routes */
 
   private health(): unknown {
-    return { ok: true, server: 'stoke-hub', protocol: HUB_PROTOCOL, version: HUB_SERVER_VERSION, needsBootstrap: this.store.accountCount() === 0 }
+    return { ok: true, accountRemote: true, server: 'stoke-hub', protocol: HUB_PROTOCOL, version: HUB_SERVER_VERSION, needsBootstrap: this.store.accountCount() === 0 }
   }
 
   private ipGate(ip: string): string {
@@ -1046,6 +1056,67 @@ class HubServer {
    * tripped only with that device's key, and a proven success clears only it:
    * the email stays locked for strangers.
    */
+  /** An approved vault device adds a remote-only browser, without sharing its own token. */
+  private browserSession(ctx: Ctx, body: Record<string, unknown>): unknown {
+    const a = ctx.auth as Authed
+    if (!a.active?.caps.includes('vault')) throw new HubError('forbidden')
+    const d = a.chain?.verdict?.active.find(d => d.id === body.device && d.caps.length === 1 && d.caps[0] === 'remote-guest')
+    if (!d) throw new HubError('bad-request', 'Add a remote-only browser to the signed device list first.')
+    const now = this.now(), token = SESSION_PREFIX + randomB64u(SESSION_TOKEN_BYTES)
+    this.store.insertSession({ token_hash: sha256B64u(token), account_id: a.account.id, device_id: d.id, sign_pub: d.sign, box_pub: d.box, label: d.label, platform: d.platform, created_at: now, seen_at: now, expires_at: now + SESSION_TTL_MS })
+    return { token, expiresAt: now + SESSION_TTL_MS }
+  }
+
+  /** One-use, short-lived browser WS authentication. No long-lived token in a URL. */
+  private browserSocket(ctx: Ctx, body: Record<string, unknown>): unknown {
+    const a = ctx.auth as Authed
+    const path = typeof body.path === 'string' ? body.path : ''
+    const route = matchHubRoute('GET', path)
+    if (path.includes('?') || !route || !(HUB_ROUTES[route.name] as { ws?: boolean }).ws || !a.active?.caps.includes('remote-guest')) throw new HubError('bad-request')
+    if (route.name === 'wsRelay') {
+      const relay = this.relays.get(a.account.id, route.params.relay)
+      if (!relay || !this.relays.roleOf(relay, a.device)) throw new HubError('forbidden')
+    }
+    const now = this.now()
+    for (const [key, entry] of this.browserTickets) if (entry.until <= now) this.browserTickets.delete(key)
+    if (this.browserTickets.size >= 2048) throw new HubError('rate-limited', 'Too many pending socket connections.', 1000)
+    const ticket = randomB64u(32)
+    this.browserTickets.set(ticket, { path, until: now + 10_000, auth: a })
+    return { ticket }
+  }
+
+  private takeBrowserTicket(ticket: string, path: string): Authed {
+    const entry = this.browserTickets.get(ticket)
+    this.browserTickets.delete(ticket)
+    if (!entry || entry.path !== path || entry.until <= this.now()) throw new HubError('unauthorized')
+    const session = this.store.session(entry.auth.tokenHash)
+    const account = this.store.accountById(entry.auth.account.id)
+    const chain = this.chainState(entry.auth.account.id)
+    const active = chain?.verdict?.active.find(d => d.id === entry.auth.device && d.sign === session?.sign_pub)
+    if (!session || session.expires_at <= this.now() || account?.status !== 'active' || !active?.caps.includes('remote-guest')) throw new HubError('unauthorized')
+    return { ...entry.auth, account, session, chain, active }
+  }
+
+  private browserKeyPut(ctx: Ctx, body: Record<string, unknown>): unknown {
+    const a = ctx.auth as Authed
+    if (!a.active?.caps.includes('vault')) throw new HubError('forbidden')
+    const key = body.key as unknown as BrowserPresenceKey
+    if (browserKeyProblem(key) || key.account !== a.account.id || key.epoch !== a.chain?.verdict?.epoch || key.author !== a.device || !verifyText(a.active.sign, browserKeyText(key), key.sig)) throw new HubError('bad-request', 'The presence key is not signed by this device.')
+    const d = a.chain.verdict.active.find(d => d.id === key.device && !d.caps.includes('vault') && d.caps.includes('remote-guest'))
+    if (!d) throw new HubError('bad-request')
+    // One wrap per device/epoch. It contains only a derived discovery key.
+    this.store.insertWrap(a.account.id, key.epoch, d.id, canonicalJson(key))
+    return { ok: true }
+  }
+
+  private browserKeyGet(ctx: Ctx): unknown {
+    const a = ctx.auth as Authed
+    if (a.active?.caps.includes('vault') || !a.active?.caps.includes('remote-guest')) throw new HubError('forbidden')
+    const key = this.store.wrap(a.account.id, a.chain?.verdict?.epoch ?? 0, a.device)
+    if (!key) throw new HubError('not-found', 'Waiting for an online computer to share its presence key.')
+    return { key: JSON.parse(key) }
+  }
+
   private async login(ctx: Ctx, body: Record<string, unknown>, pathV1: string): Promise<unknown> {
     const email = normalizeEmail(body.email)
     if (!email) throw new HubError('bad-request', 'That is not an email address.')

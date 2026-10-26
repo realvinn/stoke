@@ -125,8 +125,8 @@ if (platformArg !== null && !['darwin', 'win32', 'linux'].includes(platformArg))
 }
 const platform = platformArg ?? process.platform
 
-/** A suite needs a display when its own script starts Electron. */
-const needsDisplay = (name) => /^electron\s/.test(pkg.scripts[name])
+/** Node orchestrators that drive Electron declare --needs-display too. */
+const needsDisplay = (name) => /^electron\s/.test(pkg.scripts[name]) || /(?:^|\s)--needs-display(?:\s|$)/.test(pkg.scripts[name])
 
 /** The first executable `name` on PATH, or null. POSIX only — its one caller is. */
 function onPath(name) {

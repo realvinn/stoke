@@ -65,7 +65,7 @@ function Bar({ window: w, now }: { window: UsageWindow; now: number }): React.JS
       {/* In the order they are drawn: the text line, then the bar alone on
           the line below (app.css `.usage-row`'s grid areas). */}
       <span className="usage-label">{w.label}</span>
-      <span className="usage-pct">{w.percent}%</span>
+      <span className="usage-pct">{w.percent}% used</span>
       <span className="usage-reset">
         {ahead && <span className="usage-ahead">ahead · </span>}
         {w.active ? windowResetLabel(w, now) : 'not in use'}
@@ -393,7 +393,7 @@ export function UsageChip({ target, accountLabel }: { target: UsageTarget | null
     ? rows
         .map(
           (w) =>
-            `${w.label}: ${remainingLabel(w)}${w.kind === 'session' ? `, ${windowResetLabel(w, now)}` : ''}`
+            `${w.label}: ${remainingLabel(w)}, ${windowResetLabel(w, now)}`
         )
         .join('; ')
     : balance
@@ -482,14 +482,14 @@ export function UsageChip({ target, accountLabel }: { target: UsageTarget | null
 
 function MiniRows({ rows, now }: { rows: UsageWindow[]; now: number }): React.JSX.Element {
   return <>{rows.map(w => (
-    <span className="usage-mini" data-tone={tone(w)} key={`${w.kind}-${w.label}`} aria-hidden="true">
+    <span className="usage-mini" data-kind={w.kind} data-tone={tone(w)} key={`${w.kind}-${w.label}`} aria-hidden="true">
       <span className="usage-mini-label">{shortLabel(w)}</span>
       <span className="usage-track usage-mini-track" style={{ '--usage-fill': w.percent / 100 } as React.CSSProperties}>
         <span className="usage-fill" />
         {w.elapsed !== null && <span className="usage-pace" style={{ left: `${w.elapsed * 100}%` }} />}
       </span>
       <span className="usage-mini-left">{remainingLabel(w)}</span>
-      <span className="usage-mini-reset">{w.kind === 'session' ? countdown(w.resetsAt, w.percent, now) : ''}</span>
+      <span className="usage-mini-reset" title={windowResetLabel(w, now)}>{w.resetsAt !== null ? countdown(w.resetsAt, w.percent, now) : '—'}</span>
     </span>
   ))}</>
 }
@@ -517,7 +517,7 @@ export function RemoteUsageChip({ view }: { view: RemoteTabView | null }): React
   const at = status?.usageAt
   const stale = view?.state !== 'open' || (at != null && isStale(at, now))
   const device = view?.deviceLabel || 'remote computer'
-  const label = rows.length ? rows.map(w => `${w.label}: ${remainingLabel(w)}`).join('; ') : 'Waiting for the host’s usage reading'
+  const label = rows.length ? rows.map(w => `${w.label}: ${remainingLabel(w)}, ${windowResetLabel(w, now)}`).join('; ') : 'Waiting for the host’s usage reading'
   return (
     <div className="usage-chip-wrap">
       <button ref={chipRef} className="usage-chip" {...agentMark(status?.agent ?? null)} data-remote-usage data-stale={stale || undefined} data-tone={worstTone(rows)} aria-expanded={open} aria-label={`Usage on ${device}. ${label}`} title={`${device} — ${label}${at != null ? ` — as of ${clock(at)}` : ''}`} onClick={() => setOpen(v => !v)}>

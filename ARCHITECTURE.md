@@ -2218,6 +2218,18 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     label/name/path, session title and first prompt, ranked by tier then
                     recency, with highlight ranges. No runtime imports, so verify:search
                     imports it directly
+src/accountRemote/  account-wide phone entry point at /remote/, served by the Hub edge
+                  independently of desktops. Remote-only browser identity, signed-chain
+                  pinning, derived discovery-key wraps, one-use WS tickets, direct Hub
+                  relay; reuses remote UI and the desktop transport via browser crypto
+                  and virtual-socket adapters. vite.account-remote.config.ts builds it
+                  to out/account-remote/remote; tsconfig.account-remote.json checks it
+  main.ts           QR credential scrubbing, computer/session routes, offline host fallback,
+                    browser wake and page-cache resume; style.css supplies the account layout
+  client.ts         signed HTTP, browser socket tickets, verified chain and discovery key,
+                    reconnecting presence, direct encrypted relay and phone socket adapter
+  crypto.ts         browser wire crypto using noble, cross-tested against node:crypto
+  virtualSocket.ts  browser event/socket shim for the shared relay transport
 src/remote/       mobile web UI, built separately to out/remote. Vanilla TS on one `el()`
                   builder, hash-routed; below 1024px one screen at a time, from 1024px a
                   340px session rail beside the session (never a stretched phone)
@@ -2278,6 +2290,8 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
   hub/              the Stoke Hub wire contract, pure: codec.ts (base64url, Crockford base32,
                     canonical JSON, ids), labels.ts (every signature/KDF/AAD label), protocol.ts
                     (routes, bodies, errors, headers, presence, the request-signing text),
+                    browser.ts (remote-only pairing credentials, signed discovery-key wraps
+                    and the browser capability route allowlist),
                     auth.ts (email, password hash format, invites, throttle), chain.ts (the
                     signed device list: `verifyChain`, `compareToPinned`), pairing.ts (commit,
                     six-digit code, Recovery Kit format), items.ts (path grammar, T1_KEYS,
@@ -2693,6 +2707,10 @@ scripts/          the verify-*.mts suites, make-icon.cjs
                     one can survive a flatten. Groups by basename, merges each group by
                     updateInfoBuilder's own rules, refuses a version mismatch. Dependency
                     free, including its YAML, so the publish job needs no `npm ci`
+  check-terminal-assets.mjs  the CLI publish gate: all six native archives and SHA-256
+                    checksums must exist and match before joining the release assets
+  drive-account-remote.mts  Chromium driver for verify-account-remote's synthetic Hub:
+                    pairing scrub, independent discovery, terminal input, wake and drafts
   check-release-assets.mjs  the publish gate: for every target in targets.mjs, the feed
                     its updater fetches must list a file its updater will accept, and that
                     file must be on disk. Derived from the matrix, so a new platform
@@ -2798,8 +2816,10 @@ worker/           the Cloudflare Workers behind stoke.vinn.dev
   hub-edge.ts       the SECOND Worker, on the route stoke.vinn.dev/hub/*: forwards to the
                     hub's tunnel origin with the shared secret (the client's copy dropped),
                     path and query exact so signatures verify; bridges WebSocket upgrades.
-                    Refuses http, paths outside /hub/, an unset secret, a looping origin
-wrangler.hub-edge.jsonc   the edge Worker's config: name stoke-hub-edge, one route, never a custom
+                    Refuses http, invalid hub paths, an unset secret, a looping origin;
+                    independently serves /remote/ assets with restrictive CSP and no-referrer
+wrangler.hub-edge.jsonc   the edge Worker's config: name stoke-hub-edge, hub and remote routes,
+                    REMOTE_ASSETS binding for the account phone site, never a custom
                     domain; `npm run deploy:hub-edge` after `wrangler secret put HUB_EDGE_SECRET`
 wrangler.jsonc    deployed by hand: `npx wrangler login`, then `npm run deploy:install`.
                     A custom domain, so Cloudflare makes the DNS record and the certificate

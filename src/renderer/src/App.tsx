@@ -1,5 +1,5 @@
 import { usePluginAppearance } from './lib/usePlugins'
-import { capsFor, cliFor, cliStatusLine, DEFAULT_CLI, isClaudeCode, resumableClis } from '@shared/codingClis'
+import { capsFor, cliFor, cliStatusLine, DEFAULT_CLI, isCodingCliId, isClaudeCode, resumableClis } from '@shared/codingClis'
 import {
   CHAT_SEARCH_MIN_CHARS,
   chatOpenAction,
@@ -5109,6 +5109,12 @@ export function App(): React.JSX.Element {
   const activityViews = useMemo(() => {
     const out: Record<string, ActivityView> = {}
     for (const t of tabs) {
+      if (t.kind === 'remote') {
+        const view = hubRemote.tabs.find(v => v.id === t.remote?.tabId)
+        const status = view?.state === 'open' ? view.session?.activity : null
+        out[t.id] = activityView({ hook: null, live: status ? { status, waitingFor: status === 'waiting' ? 'input needed' : null, statusUpdatedAt: null } : null, running: view?.state === 'open' })
+        continue
+      }
       if (t.kind !== 'session') continue
       out[t.id] = activityView({
         hook: t.sessionId ? (activity[t.sessionId] ?? null) : null,
@@ -5117,7 +5123,7 @@ export function App(): React.JSX.Element {
       })
     }
     return out
-  }, [tabs, activity, live])
+  }, [tabs, activity, live, hubRemote.tabs])
 
   /* Memoised: a fresh array each render would rebuild the Sidebar's Set on every tick. */
   const openSessionIds = useMemo(() => tabs.map((t) => t.sessionId), [tabs])
@@ -6080,6 +6086,12 @@ export function App(): React.JSX.Element {
         onOpenSettings={() => openSettings()}
         onOpenPhoneSettings={() => openSettings('remote')}
         labelFor={(t) => {
+          if (t.kind === 'remote') {
+            const agent = hubRemote.tabs.find(v => v.id === t.remote?.tabId)?.session?.agent
+            return agent && isCodingCliId(agent)
+              ? { ...tabLabel({ ...t, cliId: agent }, null, tagOptions), agent, agentTag: tagOptions.show ? (tagOptions.labels[agent] || cliFor(agent).label) : null }
+              : { text: t.customTitle?.trim() || t.title, agentTag: null, agent: null, account: null }
+          }
           if (t.kind !== 'new') return tabLabel(t, null, tagOptions)
           // The tab in front names what its launcher is aimed at, fallback
           // included; one behind names its own selection, if it has one.
