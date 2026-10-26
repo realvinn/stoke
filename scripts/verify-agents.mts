@@ -805,6 +805,10 @@ console.log('\nagent colours against each theme\'s own accent: reported, and onl
     'nocturne gemini',
     'lagoon opencode',
     'ink gemini',
+    // Optional archived themes keep their intended orange, violet and blue accents.
+    'hearth claude',
+    'dusk codex',
+    'harbor gemini',
     'daylight claude',
     'paper claude',
     'mist opencode'

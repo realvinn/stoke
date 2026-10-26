@@ -1,3 +1,4 @@
+import { captureTestWindow } from './capture-test-window.mts'
 /** Real browser keyboard/draft lifecycle plus adversarial storage journals. */
 import { app, BrowserWindow, session } from 'electron'
 import assert from 'node:assert/strict'
@@ -115,7 +116,7 @@ window.test = {sent, keyboard, input, get cache(){return cache}, get state(){ret
     await run(`document.querySelector('[data-key="Tab"]').click()`)
     assert.equal(await run('test.sent.length'), count, 'disconnected controls cannot send')
     await run(`test.keyboard.setEnabled(true); document.querySelector('.key-more-toggle').click()`)
-    writeFileSync(resolve('out/remote-keyboard.png'), (await win.capturePage()).toPNG())
+    writeFileSync(resolve('out/remote-keyboard.png'), (await captureTestWindow(win)).toPNG())
 
     await run(`test.input.value='123456789';test.input.dispatchEvent(new InputEvent('input',{data:'123456789'}))`)
     assert.equal(await run(`localStorage.length`), 0, 'short edits coalesce before the checkpoint')

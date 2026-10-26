@@ -1,3 +1,4 @@
+import { captureTestWindow } from './capture-test-window.mts'
 /** Driven only by verify-account-remote with a throwaway account and loopback hub. */
 import { app, BrowserWindow } from 'electron'
 import assert from 'node:assert/strict'
@@ -22,14 +23,14 @@ app.whenReady().then(async () => {
     assert(!win.webContents.getURL().includes('connect='), 'QR credentials are removed from the address bar')
     await until(`!!document.querySelector('.device-session[data-pty="pty-pc"]')`)
     assert(await run(`!document.querySelector('.device-local')`), 'the account page has no laptop gateway card')
-    writeFileSync(resolve('out/account-remote-devices.png'), (await win.webContents.capturePage()).toPNG())
+    writeFileSync(resolve('out/account-remote-devices.png'), (await captureTestWindow(win)).toPNG())
     await run(`document.querySelector('.device-session[data-pty="pty-pc"]').click()`)
     await until(`!!document.querySelector('.link-strip[hidden]') && !!document.querySelector('.composer-input:not(:disabled)')`)
     await run(`{const input=document.querySelector('.composer-input');input.value='browser UI input';input.dispatchEvent(new Event('input',{bubbles:true}))}`)
     await until(`!!document.querySelector('button[aria-label="Send"]:not(:disabled)')`)
     await run(`document.querySelector('button[aria-label="Send"]').click()`)
     await new Promise(done => setTimeout(done, 300))
-    writeFileSync(resolve('out/account-remote-session.png'), (await win.webContents.capturePage()).toPNG())
+    writeFileSync(resolve('out/account-remote-session.png'), (await captureTestWindow(win)).toPNG())
     const sessionHash = await run('location.hash')
     await run(`window.dispatchEvent(new Event('online'))`)
     await new Promise(done => setTimeout(done, 500))

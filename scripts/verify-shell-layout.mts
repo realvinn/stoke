@@ -1,3 +1,4 @@
+import { captureTestWindow } from './capture-test-window.mts'
 import { app, BrowserWindow } from 'electron'
 import assert from 'node:assert/strict'
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'node:fs'
@@ -49,7 +50,7 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`)
     await run(`document.querySelector('.usage-chip').click()`); await settle()
     assert.ok(await run(`Array.from(document.querySelectorAll('.usage-row')).every(row=>{const pct=row.querySelector('.usage-pct'),reset=row.querySelector('.usage-reset');return !pct||!reset||pct.getBoundingClientRect().right<=reset.getBoundingClientRect().left+1})`), 'used labels and reset times do not overlap in the expanded panel')
     await run(`document.querySelector('.usage-chip').click()`); await settle()
-    writeFileSync(resolve('out/stoke-shell-layout.png'), (await win.webContents.capturePage()).toPNG())
+    writeFileSync(resolve('out/stoke-shell-layout.png'), (await captureTestWindow(win)).toPNG())
     console.log('PASS shell layout: quiet terminal frame, weekly reset, shell density at 300/400/640px and 100/160% scale, reachable controls and pinning.')
   } catch (error) { console.error(error); process.exitCode = 1 }
   finally { win?.destroy(); rmSync(temp, { recursive: true, force: true }); app.exit(process.exitCode ? Number(process.exitCode) : 0) }

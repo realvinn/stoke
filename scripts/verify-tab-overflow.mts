@@ -1,3 +1,4 @@
+import { captureTestWindow } from './capture-test-window.mts'
 /** Real TitleBar + CSS in Chromium: mouse-only access to overflowed tabs. */
 import { app, BrowserWindow } from 'electron'
 import assert from 'node:assert/strict'
@@ -83,7 +84,7 @@ applyTheme(EMBER);
     assert.equal(await run(`(() => {const r=document.querySelector('.popover-backdrop').getBoundingClientRect(); return r.width >= innerWidth && r.height >= innerHeight;})()`), true, 'responsive title bar does not confine the usage click-away backdrop')
     await run(`document.querySelector('.popover-backdrop').click()`)
     await settle()
-    writeFileSync(resolve('out/tab-overflow.png'), (await win.capturePage()).toPNG())
+    writeFileSync(resolve('out/tab-overflow.png'), (await captureTestWindow(win)).toPNG())
     await run(`document.documentElement.style.fontSize = '16px'; window.setCount(1)`)
     await settle()
     assert.equal(await run(`!!document.querySelector('[aria-label="Scroll session tabs"]')`), false, 'controls disappear when tabs fit')

@@ -10,7 +10,7 @@
 
 [Unit]
 Description=Stoke Hub (sync and remote for Stoke)
-Documentation=https://github.com/realvinn/stoke/blob/main/hub/README.md
+Documentation=https://github.com/realvinn/stoke/blob/beta/hub/README.md
 After=network-online.target
 Wants=network-online.target
 

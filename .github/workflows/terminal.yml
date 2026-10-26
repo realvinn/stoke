@@ -45,7 +45,9 @@ jobs:
           STOKE_EXPECTED_TARGET: ${{ matrix.id }}
         run: node -e 'if (process.platform + "-" + process.arch !== process.env.STOKE_EXPECTED_TARGET) throw new Error("CLI must build on its native architecture")'
       - run: npm run typecheck
-      - run: npm run verify:terminal
+      - name: Verify terminal interaction
+        timeout-minutes: 3
+        run: npm run verify:terminal
       - run: npm run verify:terminal-platform
       - run: npm run dist:terminal
       - name: Verify the extracted release, not the checkout

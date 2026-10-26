@@ -12,7 +12,7 @@ import { MENU_SECTIONS, menuItems, renderMenu } from '../src/terminal/menu.ts'
 import { stripVTControlCharacters } from 'node:util'
 import { history, launchArgs, Sessions } from '../src/terminal/sessions.ts'
 import { createConnection } from 'node:net'
-import { readServerInfo } from '../src/terminal/sessionProtocol.ts'
+import { readServerInfo, processAlive } from '../src/terminal/sessionProtocol.ts'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const temp = mkdtempSync(join(tmpdir(), 'stoke-terminal-'))
@@ -153,7 +153,7 @@ process.stdout.on('resize', () => console.log('AGENT_SIZE:' + process.stdout.col
   const send = async (text: string, expected: string): Promise<string> => {
     const offset = output.length
     terminal.write(text)
-    await until(() => output.slice(offset).includes(expected), `Waiting for ${expected}`)
+    await until(() => stripVTControlCharacters(output.slice(offset)).includes(expected), `Waiting for ${expected}`)
     return output.slice(offset)
   }
   try {
@@ -319,8 +319,14 @@ process.stdout.on('resize', () => console.log('AGENT_SIZE:' + process.stdout.col
     assert.equal(result.stdout, `1\n${realpathSync(resources)}/bin/../terminal/stoke.cjs\n--help\n`)
   })
   console.log(`\n${checks} terminal checks passed (fake agents; no provider requests).`)
+} catch (error) {
+  console.error(error) // Preserve the original failure if a Windows handle delays cleanup.
+  throw error
 } finally {
+  const info = readServerInfo(join(temp, 'state'))
   const cleanup = new Sessions(() => {}, () => {}, join(temp, 'state'))
   try { if (await cleanup.ready(false)) await cleanup.shutdown() } finally { cleanup.close() }
-  rmSync(temp, { recursive: true, force: true })
+  const deadline = Date.now() + 3000
+  while (info && processAlive(info.pid) && Date.now() < deadline) await new Promise(done => setTimeout(done, 30))
+  rmSync(temp, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 })
 }
