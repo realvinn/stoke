@@ -23,7 +23,11 @@ export async function doctor(): Promise<{ ok: boolean; platform: string; arch: s
       const child = spawn(process.execPath, ['-e', 'process.stdout.write("stoke-pty-ok")'], { cols: 80, rows: 24, env })
       const timer = setTimeout(() => { try { child.kill() } catch { /* exited */ }; resolve(false) }, 5000)
       child.onData((data) => { output += data })
-      child.onExit(({ exitCode }) => { clearTimeout(timer); resolve(exitCode === 0 && output.includes('stoke-pty-ok')) })
+      child.onExit(({ exitCode }) => {
+        clearTimeout(timer)
+        if (process.platform === 'win32') try { child.kill() } catch { /* already released */ }
+        resolve(exitCode === 0 && output.includes('stoke-pty-ok'))
+      })
     })
     checks.push({ name: 'Terminal engine', status: status ? 'ok' : 'error', message: status ? 'Native PTY spawned and exchanged output.' : 'Native PTY did not complete. Reinstall the release for this architecture.' })
   } catch { checks.push({ name: 'Terminal engine', status: 'error', message: 'The native PTY module could not load. Reinstall this architecture’s release; npm installs must include optional dependencies.' }) }

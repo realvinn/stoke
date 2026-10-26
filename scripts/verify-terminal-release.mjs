@@ -22,7 +22,7 @@ try {
   const release = join(temp, name)
   node = join(release, 'runtime', process.platform === 'win32' ? 'node.exe' : 'node')
   entry = join(release, 'lib/stoke.cjs')
-  const report = JSON.parse(execFileSync(node, [entry, 'doctor', '--json'], { env, encoding: 'utf8' }))
+  const report = JSON.parse(execFileSync(node, [entry, 'doctor', '--json'], { env, encoding: 'utf8', timeout: 15000 }))
   assert.equal(report.platform, process.platform); assert.equal(report.arch, process.arch); assert.equal(report.ok, true)
   const installRoot = join(temp, 'installed')
   const bin = process.platform === 'win32' ? join(installRoot, 'bin') : join(temp, 'commands')

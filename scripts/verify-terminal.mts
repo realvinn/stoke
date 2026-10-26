@@ -231,6 +231,7 @@ process.stdout.on('resize', () => console.log('AGENT_SIZE:' + process.stdout.col
     await send('\x07', 'Search agents:')
     await send('Claude Code', 'Search agents: Claude Code')
     await send('\r', 'AGENT_READY:')
+    await until(() => history(join(temp, 'state')).length === 3, 'The new agent chat is persisted')
     check('the agent picker starts a new agent without closing previous chats', () => assert.equal(history(join(temp, 'state')).length, 3))
     await send('\x1d', 'Returned to Stoke')
     await send('/chats\r', 'Use /attach NUMBER')
