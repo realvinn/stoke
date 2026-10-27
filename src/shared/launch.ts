@@ -74,8 +74,44 @@ export const EFFORT_LABELS: Record<string, string> = {
   max: 'Max'
 }
 
-/** Ultracode pins the session to this effort (see main/cli.ts buildArgs). */
+/**
+ * The effort an OLDER Claude Code needs pinned for ultracode to stay on.
+ * Measured against 2.1.221: `--effort high` beside the ultracode key started
+ * an ordinary high-effort session with ultracode silently off.
+ */
 export const ULTRACODE_EFFORT: EffortLevel = 'xhigh'
+
+/**
+ * The first Claude Code measured to keep ultracode on at EVERY effort.
+ * Measured 2026-10-27 against 2.1.311 with print-mode sessions: `--settings
+ * {ultracode:true}` with `--effort` low, medium, high, xhigh and max (Haiku and
+ * Opus) each recorded `ultra_effort_enter` and the "Ultracode is on" reminder,
+ * at the effort that was asked for. The change landed somewhere after 2.1.221;
+ * the CLI changelog does not say where, so this is the version measured, not a
+ * guessed lower one.
+ */
+export const ULTRACODE_ANY_EFFORT_SINCE = '2.1.311'
+
+/** `[major, minor, patch]` out of `2.1.311 (Claude Code)` or a bare `2.1.311`; null when there is none. */
+function versionTriple(raw: string | null | undefined): [number, number, number] | null {
+  const m = raw ? /(\d+)\.(\d+)\.(\d+)/.exec(raw) : null
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null
+}
+
+/**
+ * Whether this Claude Code is KNOWN to switch ultracode off below xhigh, so
+ * Stoke has to pin the effort for it. An unknown version is not pinned: Claude
+ * Code updates itself, and the measured behaviour is the current one.
+ */
+export function ultracodePinsEffort(cliVersion: string | null | undefined): boolean {
+  const have = versionTriple(cliVersion)
+  const need = versionTriple(ULTRACODE_ANY_EFFORT_SINCE)!
+  if (!have) return false
+  for (let i = 0; i < 3; i++) {
+    if (have[i] !== need[i]) return have[i] < need[i]
+  }
+  return false
+}
 
 /**
  * The three values the CLI would use with no flag, read out of its settings
@@ -271,7 +307,13 @@ export interface ResolvedLaunch {
     /** Where that came from, e.g. `~/.claude/settings.json (modelSettings.claude-opus-5)`. */
     settingsFrom: string | null
   }
-  ultracode: { choice: boolean; source: LaunchSource; changed: boolean }
+  ultracode: {
+    choice: boolean
+    source: LaunchSource
+    changed: boolean
+    /** True only when this launch's older Claude Code forces ultracode's effort to xhigh. */
+    pinsEffort: boolean
+  }
   /** The full choice to hand to startSession. */
   choice: LaunchChoice
 }
@@ -281,14 +323,18 @@ export interface ResolvedLaunch {
  *
  * `source` is `launch` when this tab overrides the default, `stoke` when the
  * Stoke default sends a flag, `claude` when no flag is sent and a CLI settings
- * file decides, `cli` when nothing does. Ultracode forces effort to xhigh and
- * the effort chip says so rather than showing a value the session does not
- * use.
+ * file decides, `cli` when nothing does. Ultracode runs at whatever effort is
+ * picked, except on a Claude Code known to be older than
+ * ULTRACODE_ANY_EFFORT_SINCE: that one switches ultracode off below xhigh, so
+ * the effort is pinned and the chip says so rather than showing a value the
+ * session does not use.
  */
 export function resolveLaunch(input: {
   override: LaunchOverride | undefined
   stoke: LaunchChoice
   claude: ClaudeLaunchDefaults
+  /** `CliInfo.version` of the Claude Code that will run; null when not known. */
+  cliVersion?: string | null
 }): ResolvedLaunch {
   const o = input.override ?? {}
   const s = input.stoke
@@ -319,17 +365,18 @@ export function resolveLaunch(input: {
   const modelSource = srcOf('model', modelFlag, c.model)
   const modelText = modelEffective ? modelLabel(modelEffective) : 'Default model'
 
-  const effortFlag = choice.ultracode || choice.effort !== 'default'
+  const pinned = choice.ultracode && ultracodePinsEffort(input.cliVersion)
+  const effortFlag = pinned || choice.effort !== 'default'
   // With no flag, a per-model entry for the model this launch runs beats the
   // top-level key; an entry Stoke cannot pin to a version leaves it unnamed.
   const perModel = effortForModel(modelEffective, c.modelEffort)
   const settingsEffort = perModel.value ?? (perModel.known ? c.effort : null)
-  const effortEffective = choice.ultracode
+  const effortEffective = pinned
     ? ULTRACODE_EFFORT
     : choice.effort !== 'default'
       ? choice.effort
       : settingsEffort
-  const effortSource = choice.ultracode
+  const effortSource = pinned
     ? srcOf('ultracode', true, null)
     : srcOf('effort', effortFlag, settingsEffort)
   const effortText = effortEffective ? `${EFFORT_LABELS[effortEffective] ?? effortEffective} effort` : 'Default effort'
@@ -365,7 +412,8 @@ export function resolveLaunch(input: {
     ultracode: {
       choice: choice.ultracode,
       source: o.ultracode !== undefined && o.ultracode !== s.ultracode ? 'launch' : 'stoke',
-      changed: choice.ultracode !== s.ultracode
+      changed: choice.ultracode !== s.ultracode,
+      pinsEffort: pinned
     },
     choice
   }

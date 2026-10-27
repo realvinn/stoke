@@ -529,7 +529,7 @@ export const SETTING_ROWS: readonly SettingRow[] = [
   { id: 'claude-launch.permissions', page: 'claude-launch', label: 'Default permissions', keywords: ['permission mode', 'bypass', 'plan mode', 'accept edits', 'yolo', 'dangerously skip'] },
   { id: 'claude-launch.model', page: 'claude-launch', label: 'Default model', keywords: ['opus', 'sonnet', 'haiku', 'claude model'] },
   { id: 'claude-launch.effort', page: 'claude-launch', label: 'Default effort', keywords: ['thinking', 'effort level', 'reasoning'] },
-  { id: 'claude-launch.ultracode', page: 'claude-launch', label: 'Start sessions with Ultracode', keywords: ['ultracode', 'max effort'] },
+  { id: 'claude-launch.ultracode', page: 'claude-launch', label: 'Start sessions with Ultracode', keywords: ['ultracode', 'workflows', 'orchestration'] },
 
   // Agents › Claude Code › Provider & keys
   { id: 'providers.auth-mode', page: 'providers', label: 'Auth mode', keywords: ['authentication', 'login', 'api key', 'claude.ai', 'subscription', 'gateway', 'openrouter'] },

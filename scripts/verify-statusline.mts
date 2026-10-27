@@ -1428,7 +1428,47 @@ check(
   argsBoth[argsBoth.indexOf('--settings') + 1],
   '/tmp/sid.settings.json'
 )
-check('ultracode still pins the effort flag', argsBoth[argsBoth.indexOf('--effort') + 1], 'xhigh')
+check('ultracode with Default effort sends no --effort on a current Claude Code', argsBoth.includes('--effort'), false)
+check(
+  'ultracode keeps the effort picked (measured on 2.1.311)',
+  (() => {
+    const a = buildArgs({ ...base, ultracode: true, effort: 'low', sessionId: 'sid' }, '/tmp/sid.settings.json', '2.1.311 (Claude Code)')
+    return a[a.indexOf('--effort') + 1]
+  })(),
+  'low'
+)
+check(
+  'an unprobed binary is trusted to be current',
+  (() => {
+    const a = buildArgs({ ...base, ultracode: true, effort: 'medium', sessionId: 'sid' }, '/tmp/sid.settings.json', null)
+    return a[a.indexOf('--effort') + 1]
+  })(),
+  'medium'
+)
+check(
+  'a Claude Code older than the measured one still gets xhigh pinned over a lower pick',
+  (() => {
+    const a = buildArgs({ ...base, ultracode: true, effort: 'low', sessionId: 'sid' }, '/tmp/sid.settings.json', '2.1.221 (Claude Code)')
+    return [a.filter((x) => x === '--effort').length, a[a.indexOf('--effort') + 1]]
+  })(),
+  [1, 'xhigh']
+)
+check(
+  '…and with Default effort, so it never falls back to a lower machine default',
+  (() => {
+    const a = buildArgs({ ...base, ultracode: true, sessionId: 'sid' }, '/tmp/sid.settings.json', '2.1.221')
+    return a[a.indexOf('--effort') + 1]
+  })(),
+  'xhigh'
+)
+check(
+  'no ultracode on an old Claude Code: the pick is sent as is',
+  (() => {
+    const a = buildArgs({ ...base, effort: 'low', sessionId: 'sid' }, '/tmp/sid.settings.json', '2.1.221')
+    return a[a.indexOf('--effort') + 1]
+  })(),
+  'low'
+)
 
 const argsPlain = buildArgs({ ...base, effort: 'high', sessionId: 'sid' }, '/tmp/sid.settings.json')
 check(

@@ -15,6 +15,7 @@ import {
   type CodingCliId,
   type CodingCliDetection
 } from '../shared/codingClis.ts'
+import { ULTRACODE_EFFORT, ultracodePinsEffort } from '../shared/launch.ts'
 
 const execFileAsync = promisify(execFile)
 
@@ -675,6 +676,18 @@ export function notFoundError(probeFailed: boolean, id: CodingCliId = 'claude'):
     : `Could not find the \`${bin}\` executable. Install ${cli.label}, or set an explicit path in Settings.`
 }
 
+/**
+ * The `--version` each probed Claude Code binary last answered, by path. The
+ * launch reads it (`claudeVersionAt`) to decide whether ultracode needs its
+ * effort pinned, without spawning `--version` on the launch path itself.
+ */
+const probedVersions = new Map<string, string | null>()
+
+/** What `probeClaude` last read from this binary; null when it has not been probed. */
+export function claudeVersionAt(path: string): string | null {
+  return probedVersions.get(path) ?? null
+}
+
 export async function probeClaude(override: string | null): Promise<CliInfo> {
   const found = await findClaude(override)
   if (!found) {
@@ -687,7 +700,9 @@ export async function probeClaude(override: string | null): Promise<CliInfo> {
       encoding: 'utf8',
       env: { ...process.env, PATH: await buildEnvPath() }
     })
-    return { path: found, version: stdout.trim() || null, ok: true, error: null }
+    const version = stdout.trim() || null
+    probedVersions.set(found, version)
+    return { path: found, version, ok: true, error: null }
   } catch (err) {
     return {
       path: found,
@@ -795,8 +810,11 @@ export function resumeOrMint(opts: LaunchOptions, hasTranscript: boolean): Launc
  *   the ultracode key and the statusLine wrapper. Null means the session needs
  *   none — but note the ultracode fallback below, which keeps a caller that
  *   passes nothing working exactly as it did.
+ * @param cliVersion the `--version` of the binary being launched, when known.
+ *   Only an ultracode launch reads it: a Claude Code older than
+ *   ULTRACODE_ANY_EFFORT_SINCE gets its effort pinned to xhigh.
  */
-export function buildArgs(opts: LaunchOptions, settingsFile: string | null = null): string[] {
+export function buildArgs(opts: LaunchOptions, settingsFile: string | null = null, cliVersion: string | null = null): string[] {
   const args: string[] = []
 
   if (opts.continueLast) {
@@ -817,26 +835,24 @@ export function buildArgs(opts: LaunchOptions, settingsFile: string | null = nul
 
   if (opts.model) args.push('--model', opts.model)
 
-  // Ultracode pins the effort flag rather than sending it alongside the user's
-  // pick, because --effort *beats* the settings key and switching ultracode off
-  // is how it loses. Measured against 2.1.221 by reading the transcripts of four
-  // print-mode sessions:
+  // Ultracode runs at the effort the user picked. It used to be pinned: measured
+  // against 2.1.221 by reading the transcripts of print-mode sessions,
   //
   //   --settings {ultracode:true}                  -> effort xhigh, ultra_effort_enter present
   //   --settings {ultracode:true} --effort xhigh   -> effort xhigh, ultra_effort_enter present
   //   --settings {ultracode:true} --effort high    -> effort high,  ultra_effort_enter GONE
   //
-  // That third line is the trap: an ordinary high-effort session starts happily,
-  // with no warning anywhere that the thing the user ticked did not happen.
-  //
-  // xhigh is sent explicitly rather than simply omitting --effort, because
-  // omitting it falls back to whatever effort the machine defaults to, and on a
-  // machine that defaults below xhigh that lands straight back on line three.
-  //
-  // --settings sits before extraArgs so a hand-written `--settings` there still
-  // wins — a repeated option is last-wins.
-  if (opts.ultracode) {
-    args.push('--effort', 'xhigh')
+  // so an ordinary high-effort session started with ultracode silently off.
+  // Measured again 2026-10-27 against 2.1.311: --effort low, medium, high, xhigh
+  // and max each kept ultra_effort_enter and the "Ultracode is on" reminder, at
+  // the effort asked for, and no flag ran at the machine's own effort setting.
+  // So the pin stays only for a binary KNOWN to be older than the measured
+  // version (ultracodePinsEffort); an unprobed one is trusted to be current.
+  // On that older binary xhigh is sent explicitly rather than omitting
+  // --effort, because omitting it fell back to the machine's default, and a
+  // default below xhigh landed straight back on the third line.
+  if (opts.ultracode && ultracodePinsEffort(cliVersion)) {
+    args.push('--effort', ULTRACODE_EFFORT)
   } else if (opts.effort && opts.effort !== 'default') {
     args.push('--effort', opts.effort)
   }

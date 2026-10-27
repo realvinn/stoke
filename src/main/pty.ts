@@ -21,6 +21,7 @@ import {
 import {
   buildArgs,
   buildEnvPath,
+  claudeVersionAt,
   findCli,
   loginPathProbeFailed,
   notFoundError,
@@ -667,7 +668,7 @@ export class PtyManager {
           : loggingIn
             ? [...agentPlan!.args]
             : instrumented
-            ? buildArgs({ ...opts, sessionId }, settingsFile)
+            ? buildArgs({ ...opts, sessionId }, settingsFile, claudeVersionAt(exe))
             : [...(agentPlan?.args ?? [])]
 
     // Hand the session Stoke's own browser tools, and any server Stoke holds

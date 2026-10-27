@@ -25,6 +25,7 @@ import { CLAUDE_SHARED_PLUGIN, SHARED_SKILLS_DIR, skillReport, type SkillDirScan
 import { AGENT_SEEDS, agentSeed } from '@shared/agentColors'
 import { agentAccessOptions, type AgentAccessMode } from '@shared/agentAccess'
 import { hydrateCodexResume, type CodexResumeSettings } from '@shared/codexResume'
+import { ULTRACODE_ANY_EFFORT_SINCE } from '@shared/launch'
 import {
   mcpTicksFor,
   STOKE_BROWSER_SERVER,
@@ -1008,10 +1009,10 @@ export function ClaudeLaunchDefaults({
           <FieldHint
             more={
               <>
-                Ultracode is a key in the settings file Stoke writes for each session, not a flag,
-                and the CLI resolves effort to its own maximum while it is on — so the Effort
-                control above is overridden for as long as this is ticked, and comes back when it
-                is not.
+                Ultracode is a key in the settings file Stoke writes for each session, not a flag.
+                It runs at the Effort chosen above. A Claude Code older than{' '}
+                {ULTRACODE_ANY_EFFORT_SINCE} turned it off below Extra high, so for one of those
+                Stoke still starts the session at Extra high.
               </>
             }
           >

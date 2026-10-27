@@ -20,6 +20,7 @@ import {
   resolveClaudeDefaults,
   resolveLaunch,
   sessionMode,
+  ultracodePinsEffort,
   type LaunchChoice
 } from '../src/shared/launch.ts'
 import {
@@ -154,9 +155,26 @@ check(
   resolveLaunch({ override: { model: '' }, stoke, claude }).model.changed,
   false
 )
-const ultra = resolveLaunch({ override: { ultracode: true, effort: 'low' }, stoke, claude })
-check('ultracode pins effort to Extra high whatever was picked', ultra.effort.label, 'Extra high effort')
-check('…and keeps the pick for when it is turned off', ultra.choice.effort, 'low')
+// Ultracode at any effort: measured 2026-10-27 against 2.1.311 (see ULTRACODE_ANY_EFFORT_SINCE).
+const ultra = resolveLaunch({ override: { ultracode: true, effort: 'low' }, stoke, claude, cliVersion: '2.1.311 (Claude Code)' })
+check('ultracode runs at the effort picked on a current Claude Code', ultra.effort.label, 'Low effort')
+check('…the effort is the launch\'s own pick, not ultracode\'s', ultra.effort.source, 'launch')
+check('…and nothing is pinned', ultra.ultracode.pinsEffort, false)
+const ultraDefault = resolveLaunch({ override: { ultracode: true }, stoke, claude, cliVersion: '2.1.400' })
+check('ultracode with Default effort sends no flag and reads the settings', [ultraDefault.effort.label, ultraDefault.effort.source], ['High effort', 'claude'])
+const ultraUnknown = resolveLaunch({ override: { ultracode: true, effort: 'medium' }, stoke, claude })
+check('an unknown Claude Code version is trusted to be current', ultraUnknown.effort.label, 'Medium effort')
+const ultraOld = resolveLaunch({ override: { ultracode: true, effort: 'low' }, stoke, claude, cliVersion: '2.1.221 (Claude Code)' })
+check('a Claude Code older than the measured one still pins Extra high', ultraOld.effort.label, 'Extra high effort')
+check('…says so', ultraOld.ultracode.pinsEffort, true)
+check('…and keeps the pick for when it is turned off', ultraOld.choice.effort, 'low')
+check('the pin is off when ultracode is', resolveLaunch({ override: { effort: 'low' }, stoke, claude, cliVersion: '2.1.221' }).ultracode.pinsEffort, false)
+check('ultracodePinsEffort: older', ultracodePinsEffort('2.1.310'), true)
+check('ultracodePinsEffort: the measured version', ultracodePinsEffort('2.1.311'), false)
+check('ultracodePinsEffort: newer minor', ultracodePinsEffort('2.2.0'), false)
+check('ultracodePinsEffort: older major', ultracodePinsEffort('1.9.999'), true)
+check('ultracodePinsEffort: no version', ultracodePinsEffort(null), false)
+check('ultracodePinsEffort: unparseable', ultracodePinsEffort('unknown'), false)
 check('pruneOverride drops keys equal to the default', pruneOverride({ model: '', effort: 'high' }, stoke), { effort: 'high' })
 check('pruneOverride of nothing changed is undefined', pruneOverride({ model: '' }, stoke), undefined)
 

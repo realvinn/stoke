@@ -733,15 +733,15 @@ export function Launcher(props: Props): React.JSX.Element {
                 label={launch.effort.label}
                 changed={launch.effort.changed}
                 title={`Effort — ${
-                  launch.ultracode.choice
-                    ? 'Ultracode runs at Extra high'
+                  launch.ultracode.pinsEffort
+                    ? 'this Claude Code runs Ultracode only at Extra high'
                     : sourceText(launch.effort.source, launch.effort.settingsFrom)
                 }`}
               >
                 <Options
                   name="Effort"
                   value={launch.effort.choice}
-                  disabled={launch.ultracode.choice}
+                  disabled={launch.ultracode.pinsEffort}
                   options={EFFORT_LEVELS.map((e) => ({
                     id: e.id,
                     label:
@@ -751,8 +751,10 @@ export function Launcher(props: Props): React.JSX.Element {
                   }))}
                   onPick={(id) => picked({ effort: id as EffortLevel })}
                 />
-                {launch.ultracode.choice && (
-                  <p className="popover-text">Ultracode runs this session at Extra high; the pick comes back when it is off.</p>
+                {launch.ultracode.pinsEffort && (
+                  <p className="popover-text">
+                    This Claude Code turns Ultracode off below Extra high, so the session runs at Extra high. Update Claude Code to pick any effort.
+                  </p>
                 )}
                 <ChipFoot
                   source={sourceText(launch.effort.source, launch.effort.settingsFrom)}
@@ -776,7 +778,7 @@ export function Launcher(props: Props): React.JSX.Element {
                   value={launch.ultracode.choice ? 'on' : 'off'}
                   options={[
                     { id: 'off', label: 'Off' },
-                    { id: 'on', label: 'On — Extra high effort plus workflows' }
+                    { id: 'on', label: 'On — workflows at the effort you pick' }
                   ]}
                   onPick={(id) => picked({ ultracode: id === 'on' })}
                 />

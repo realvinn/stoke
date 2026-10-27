@@ -5673,8 +5673,8 @@ export function App(): React.JSX.Element {
 
   const activeLaunch = tabs.find((t) => t.id === activeTabId && t.kind === 'new')?.launch
   const launchNow = useMemo(
-    () => resolveLaunch({ override: activeLaunch, stoke: stokeDefaults, claude: claudeDefaults }),
-    [activeLaunch, stokeDefaults, claudeDefaults]
+    () => resolveLaunch({ override: activeLaunch, stoke: stokeDefaults, claude: claudeDefaults, cliVersion: cli?.version ?? null }),
+    [activeLaunch, stokeDefaults, claudeDefaults, cli?.version]
   )
 
   /**

@@ -135,3 +135,15 @@ The general form: a label that describes "what happens with no flag" has to reso
 layer the CLI reads, in the CLI's order — user < project < local file, `ANTHROPIC_MODEL` over the
 files for the model, per-model over top-level for effort — or it is a second opinion, not a
 reading. Managed (policy) settings are the one layer `readLaunchDefaults` does not read.
+
+> **Checked against the CLI on 2026-10-27: ultracode no longer needs Extra high.** "A Stoke flag (or
+> ultracode's xhigh)" above described a pin that existed because 2.1.221 switched ultracode off when
+> `--effort` was below xhigh. Measured again against 2.1.311 with print-mode sessions in a scratch
+> folder (transcripts deleted afterwards): `--settings {ultracode:true}` with `--effort` low, medium,
+> high, xhigh and max, on Haiku and Opus, each recorded `ultra_effort_enter` and the "Ultracode is on"
+> reminder at the effort asked for, and with no `--effort` it ran at this machine's per-model setting.
+> The changelog does not say which release changed it. So effort now resolves the same with ultracode
+> on or off, and the pin (`ultracodePinsEffort`, `ULTRACODE_ANY_EFFORT_SINCE` in shared/launch.ts)
+> applies only to a binary KNOWN to be older than 2.1.311: main reads the version `probeClaude` last
+> read for that path (`claudeVersionAt`), the launcher reads `CliInfo.version`, and an unknown
+> version is trusted to be current. verify:launcher and verify:statusline hold both sides.
