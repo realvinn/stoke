@@ -1187,7 +1187,14 @@ npm run verify:winget         # the winget manifests: ProductCode from the appId
                               # installers per Windows arch, and one fixture's full text
 npm run verify:updates        # the updater: a failure and a success must not read the same,
                               # whether the channel the CLI follows is itself behind latest,
-                              # and macOS must still build the zip it updates from (24, 25, 46)
+                              # and macOS must still build the zip it updates from (24, 25, 46);
+                              # the renderer's mount reads main's cached check, never a second one
+npm run verify:freeze         # freeze telemetry on a fake app, clock and file system: the log's
+                              # lines, cap and rotation, the stall sampler (gotcha 160), the
+                              # watchdog on a REAL worker thread (main-stalled while held,
+                              # previous=unclean after a kill), the last lines on `quit`, and the
+                              # boot wiring; the clipboard peek's per-platform table (types only,
+                              # never a decode)
 npm run verify:worklog-gate     # which sessions the worklog agent would watch
 npm run verify:worklog-runner   # prompt building, JSON parsing, titles, create-vs-update
 npm run verify:worklog-retry    # writes happen once, and a retry never duplicates a record
@@ -1809,6 +1816,15 @@ src/main/         Electron main process
                     which App asks about first when a turn is running
   codesign.ts       whether this copy's signature could ever accept a downloaded update.
                     No electron import, so verify:updates can run the rule. Gotcha 24
+  diagnosticsLog.ts freeze telemetry's rules, Electron-free: `<userData>/diagnostics.log`
+                    (1 MB, one `.1` rotation, async batched appends; sync only at `quit`):
+                    start/quit with `previous=unclean`, window unresponsive and back,
+                    renderer-gone/child-gone, suspend/resume, main-loop `stall` lines
+                    (`LoopSampler`, its own timer: gotcha 160), and `main-stalled` from a
+                    watchdog worker thread while main is still held. Rate-limited, nothing
+                    personal in a line. verify:freeze
+  diagnostics.ts    the thin Electron wiring for it: `installDiagnostics()`, first in
+                    `whenReady`, above `initSecretStore()` so a block there is measured
   portableUpdate.ts a portable Windows copy updating itself: gathers the facts
                     installKind.ts decides on, downloads the release's -<arch>-win.zip
                     checked against latest.yml's sha512, unpacks it beside the running
@@ -1861,6 +1877,12 @@ src/main/         Electron main process
                     (`clipboardFiles`, also the clipboard peek's `files` count), send with
                     progress pushed, cancel. A failed upload stays held for Try again. Only
                     the app's own window may call it
+  clipboardPeek.ts  the synchronous clipboard peek (`clipboard:read`, on every paste chord and
+                    right-click) from TYPES only: `availableFormats()` and `has()`, never
+                    `readImage` (a Retina screenshot cost a decode on main per right-click).
+                    Raw `has()` fallbacks keep the old answer: Finder's icon beside its files,
+                    Windows' registered `PNG`. Pure (`peekClipboard`); sshImages.ts's
+                    `readClipboardPeek` hands it Electron's clipboard. verify:freeze
   sshEnroll.ts      setting up key login for a host that asks for a password.
                     `planEnrollLaunch` takes only the host id and size from a
                     `pty:start` with `opts.enroll`; `prepareEnroll` picks the key ssh -G

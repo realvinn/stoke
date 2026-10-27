@@ -192,6 +192,8 @@ rule file named on the group line.
   and delete only what its marker names, by exact join (`privateCleanupTargets`); a file is an id's by its FIRST uuid.
 - **156.** Serve another computer chat text only through `searchCleaned`/`openCleaned` (`chatIndexForGuests`) and
   `sharedChats`' key-shaped net, refusing a key-shaped search (`keyShapedQuery`): FTS confirms any key's prefix.
+- **160.** Time main-loop stalls with a timer of your own (`LoopSampler`), never `monitorEventLoopDelay`: it misses a block
+  right after `enable()` or `reset()`. Only a thread (`startWatchdog`) sees a hang ended by Force Quit; log on `quit`.
 
 **Terminal** — `.claude/rules/terminal.md`
 - **5.** Never read the terminal from the DOM: WebGL paints a canvas, so `.xterm-rows` is empty.

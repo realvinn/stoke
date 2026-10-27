@@ -164,7 +164,8 @@ import { sttConfigFrom, sttConfigOf, sttReadiness } from '../shared/speechProvid
 import { createProfile, planProfile } from './profiles.ts'
 import { readSshConfigHosts } from './ssh.ts'
 import { endRemoteSession, listRemoteSessions } from './sshSessions.ts'
-import { clipboardFiles, registerSshImageHandlers } from './sshImages.ts'
+import { clipboardFiles, readClipboardPeek, registerSshImageHandlers } from './sshImages.ts'
+import { installDiagnostics } from './diagnostics.ts'
 import { DesktopSshFiles } from './desktopSshFiles.ts'
 import { hostPersists, isSafeRemoteSessionName, mintRemoteSessionName } from '../shared/sshPersist.ts'
 import { shouldOfferKey } from '../shared/sshAuth.ts'
@@ -5799,8 +5800,11 @@ function registerIpc(): void {
   /*
    * Read synchronously. xterm's key handler must decide whether to swallow a
    * paste before it returns, so an async round trip would always land a
-   * keystroke too late. Reading the clipboard is microseconds, so blocking the
-   * renderer for it is cheaper than the alternative of caching and going stale.
+   * keystroke too late. Blocking the renderer is cheaper than caching and going
+   * stale only while the peek stays microseconds, so it reads the clipboard's
+   * TYPES and its text, never image bytes (`readClipboardPeek`,
+   * clipboardPeek.ts): `readImage()` here decoded the whole image on main while
+   * the window waited, on every paste chord and every right-click.
    *
    * hasImage is what lets plain Ctrl+V fall through to Claude Code's own image
    * handler: the CLI reads the image off the OS clipboard itself, so no image
@@ -5813,11 +5817,7 @@ function registerIpc(): void {
    * below) to type them, as a drop types a dropped file's path.
    */
   ipcMain.on(CH.clipboardRead, (e) => {
-    const peek: ClipboardPeek = {
-      text: clipboard.readText(),
-      hasImage: !clipboard.readImage().isEmpty(),
-      files: clipboardFiles().count
-    }
+    const peek: ClipboardPeek = readClipboardPeek()
     e.returnValue = peek
   })
   /*
@@ -5974,6 +5974,8 @@ if (!app.requestSingleInstanceLock(launchRequest ? { stokeCli: launchRequest } :
   })
 
   app.whenReady().then(() => {
+    // Freeze telemetry (diagnostics.ts): first, so a block below is measured too.
+    installDiagnostics()
     /*
      * Before anything reads a setting: open secrets.json and migrate any key
      * still in plain text in settings.json (secrets.ts). `safeStorage` is not

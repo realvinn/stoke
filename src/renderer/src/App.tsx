@@ -1734,8 +1734,12 @@ export function App(): React.JSX.Element {
       // `cli` is probed by the claudePath effect below, which runs as soon as
       // these settings land — once, rather than here and there both.
       void window.stoke.workspace.defaultCwd().then(setDefaultCwd)
-      // Quiet check; surfaces as a status-bar pill only when something is newer.
-      void window.stoke.updates.check().then(setUpdate)
+      // Main's cached check, never a new one: a check here spawned a second
+      // `claude --version` and an npm request in the first second, undoing
+      // the +12 s hold main gives its own (index.ts). That check pushes its
+      // answer through `updates.onState` above, and the pill shows only when
+      // something is newer. A null cache leaves a reading already pushed.
+      void window.stoke.updates.state().then((st) => setUpdate((cur) => st.info ?? cur))
       await refreshProjects()
     })()
 

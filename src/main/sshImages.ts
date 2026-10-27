@@ -2,7 +2,7 @@ import { clipboard, ipcMain, nativeImage, type WebContents } from 'electron'
 import { randomBytes, randomUUID } from 'node:crypto'
 import { basename } from 'node:path'
 import { CH } from '@shared/ipc'
-import type { ImagePrepared, ImageSent, UploadProgress } from '@shared/api'
+import type { ClipboardPeek, ImagePrepared, ImageSent, UploadProgress } from '@shared/api'
 import type { Settings, SshHost } from '@shared/types'
 import {
   MAX_IMAGE_BYTES,
@@ -20,6 +20,7 @@ import {
   tooLargeSentence
 } from '@shared/imageUpload'
 import { UploadHolds, inspectUploadFile, sendFile, sendImage } from './sshUpload.ts'
+import { peekClipboard } from './clipboardPeek.ts'
 
 /**
  * The IPC half of images and files into an SSH tab: prepare (read, check,
@@ -92,6 +93,17 @@ export function clipboardFiles(): { paths: string[]; count: number } {
   } catch {
     return { paths: [], count: 0 }
   }
+}
+
+/**
+ * The renderer's synchronous peek (`CH.clipboardRead`): text, and whether an
+ * image or files are there, decided from the clipboard's TYPES — never by
+ * decoding the image, which used to freeze the waiting window on every paste
+ * chord and right-click (clipboardPeek.ts). Files are read only when a file
+ * type is on the clipboard.
+ */
+export function readClipboardPeek(): ClipboardPeek {
+  return peekClipboard(clipboard, process.platform, () => clipboardFiles().count)
 }
 
 /**

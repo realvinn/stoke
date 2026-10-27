@@ -156,7 +156,14 @@ function compare(a: string, b: string): number {
   return 0
 }
 
-async function currentVersion(claudePath: string | null): Promise<string | null> {
+/**
+ * The installed CLI's version, read fresh every time: `claude --version`.
+ * Never the probe's earlier reading (`claudeVersionAt`): the CLI updates
+ * itself when a session starts, so a reading from boot can already be the
+ * version before, and the check would offer an update that is installed.
+ * Exported for verify:updates.
+ */
+export async function currentVersion(claudePath: string | null): Promise<string | null> {
   const exe = await findClaude(claudePath)
   if (!exe) return null
   try {

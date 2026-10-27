@@ -17,7 +17,7 @@
 import { execFile } from 'node:child_process'
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import type { UpdateInfo } from '../src/shared/api.ts'
@@ -33,6 +33,8 @@ import {
   updateApplied
 } from '../src/main/updates.ts'
 import { describeExecError } from '../src/main/updates.ts'
+import { currentVersion, runUpdate } from '../src/main/updates.ts'
+import { probeClaude } from '../src/main/cli.ts'
 import { channelLagNotice, updateButton, updateVerdict } from '../src/renderer/src/lib/updateVerdict.ts'
 import { AgentLifecycleGate, agentNpmPackages, agentVersion, nativeUpdaterInHelp } from '../src/shared/agentLifecycle.ts'
 import { inspectAgentInstallation, runAgentUpdate, agentCommandRunner, agentUpdateEnv, type AgentCommandRunner } from '../src/main/agentLifecycle.ts'
@@ -1049,6 +1051,64 @@ else { writeFileSync(state, '1.2.0'); console.log('Updated fake agent'); }
     const timed = await commandRunner(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], 150)
     check('a real timed-out process stays distinguishable from success', [timed.ok, timed.timedOut], [false, true])
   } finally { rmSync(home, { recursive: true, force: true }) }
+}
+
+/* ------------------------------------------- one `claude --version` at boot
+ *
+ * Boot used to spawn `claude --version` twice inside a second (the probe for
+ * `cli.info()`, and this module's own for an update check the renderer fired
+ * at once) plus an npm request, undoing the +12 s hold main gives its check.
+ * The renderer reads main's cached state now. The check itself never reuses
+ * the probe's reading: Claude Code updates ITSELF when a session starts, so a
+ * reading from boot can be the version before, and the check would offer an
+ * update that is already installed (review of G3, 2026-10-27).
+ */
+console.log('\nthe renderer asks main\'s cache at mount; the check reads the CLI fresh')
+
+{
+  const app = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'src/renderer/src/App.tsx'), 'utf8')
+  const mount = app.slice(app.indexOf('const s = await window.stoke.settings.get()'), app.indexOf('await refreshProjects()'))
+  check("the renderer's mount asks main's cache, not a new check", [mount.length > 0, mount.includes('updates.check()'), mount.includes('updates.state()')], [true, false, true])
+}
+
+if (isWin) {
+  console.log('\nthe check after a self-update, end to end  (skipped: /bin/sh fixtures are POSIX-only)')
+} else {
+  console.log('\nthe check after a self-update, end to end, against a counting fake claude')
+  const home = mkdtempSync(join(tmpdir(), 'stoke-updates-probe-'))
+  const realShell = process.env.SHELL
+  // A login shell that cannot start: the probe fails at once instead of running the owner's rc.
+  process.env.SHELL = join(home, 'no-such-shell')
+  try {
+    const log = join(home, 'calls.txt')
+    const state = join(home, 'version.txt')
+    writeFileSync(state, '7.7.7')
+    const exe = join(home, 'claude')
+    writeFileSync(
+      exe,
+      [
+        '#!/bin/sh',
+        `echo "$1" >> '${log}'`,
+        `if [ "$1" = update ]; then printf 7.9.0 > '${state}'; echo "Successfully updated"; exit 0; fi`,
+        `echo "$(cat '${state}') (Claude Code)"`
+      ].join('\n') + '\n'
+    )
+    chmodSync(exe, 0o755)
+    const calls = (): string[] => readFileSync(log, 'utf8').split('\n').filter(Boolean)
+
+    const probed = await probeClaude(exe)
+    check('the boot probe ran --version once', [probed.version, calls()], ['7.7.7 (Claude Code)', ['--version']])
+    // Claude Code updates itself in a session started at boot, between the probe and the +12 s check.
+    writeFileSync(state, '7.8.0')
+    check('the check right after reads the CLI again, so a self-update since the probe is seen', [await currentVersion(exe), calls().length], ['7.8.0', 2])
+    const ran = await runUpdate(exe)
+    check('an update reads either side fresh', [ran.from, ran.to, calls().slice(2)], ['7.8.0', '7.9.0', ['--version', 'update', '--version']])
+    check('and the next check reads it again too', [await currentVersion(exe), calls().length], ['7.9.0', 6])
+  } finally {
+    if (realShell === undefined) delete process.env.SHELL
+    else process.env.SHELL = realShell
+    rmSync(home, { recursive: true, force: true })
+  }
 }
 
 console.log(`\n${failures === 0 ? 'All checks passed.' : `${failures} check(s) FAILED.`}`)

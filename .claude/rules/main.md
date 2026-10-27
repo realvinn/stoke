@@ -880,3 +880,37 @@ byte of the guest's page.
 > marked nowhere there, so `matchedOnlyInKeys` cannot judge it) confirms an unknown key's opening up to
 > the refusal — case folded, its third letter/digit change, about 11 characters of a random base62 one;
 > secrets under 20 characters that no pattern knows, which are shown anyway; and a UUID-shaped password.
+## 160. `monitorEventLoopDelay` misses a stall right after `enable()` and right after `reset()`
+
+**Found 2026-10-27, building the freeze telemetry (`src/main/diagnosticsLog.ts`).** The obvious
+main-loop stall meter is perf_hooks' `monitorEventLoopDelay`: enable it, read `max` every window,
+`reset()`. It reports a block that starts at either of those two moments as nothing. Re-measured
+2026-10-28 (20 ms resolution, a 600 ms busy-wait, 200 ms of idle loop before the read), twice each on
+Node 26.7.0 and on Electron 43's own Node 24.18.0 (`ELECTRON_RUN_AS_NODE=1`):
+
+```
+block straight after enable()               max 22 ms
+block straight after reset(), warm monitor  max 22 ms
+block on a warm monitor, no reset (control) max 606-620 ms
+```
+
+Both moments are the ones a freeze log exists for. The freeze that prompted it, a Keychain prompt
+holding main 8-18 s, starts straight after install, and a per-window `reset()` is exactly where a
+stall that begins at a window boundary lands. `LoopSampler` (diagnosticsLog.ts) is the replacement:
+its own `SAMPLE_MS` timer records each tick's lateness into a `createHistogram()`, and keeps its
+previous tick from construction and across `restart()`. Its comment explains the miss as both calls
+forgetting the previous tick; that reading fits the numbers but was not read out of Node's source.
+`verify:freeze` drives the sampler on a fake clock, and a mutation where the first tick records
+nothing turned it red.
+
+Two more facts from the same build, both driven in a plain Electron 43.2 with scratch profiles:
+
+- **Any timer on main reports only once main is free again**, so a hang ended by Force Quit left
+  `start` and nothing else. The `main-stalled` line comes from a worker thread (`startWatchdog`,
+  `watchdogStep`) that watches a heartbeat main stamps, and writes while main is still held past
+  `WATCHDOG_STALL_MS`. A SIGKILL during a 3 s hold left `main-stalled ms=2164` as the log's last
+  line, and the next start wrote `previous=unclean lastEvent=main-stalled` (`previousRun`).
+- **Write the last lines, and stop the watchdog, on Electron's `quit` event, not `will-quit`.** With
+  both in `will-quit`, a later `will-quit` listener holding main 3 s left only `start` and `quit`;
+  on `quit`, the same run logged `main-stalled ms=2142` between them.
+
