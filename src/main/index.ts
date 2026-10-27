@@ -195,7 +195,8 @@ import { readSessionState, sessionStateFile, writeSessionState } from './worklog
 import { invalidateRecall, recall, scanOutcomeFor } from './worklog/recall.ts'
 import type { CreateProfileInput } from '@shared/profiles'
 import type { ClipboardPeek, CliRunResult, RemoteSessionStarted, RemoteState, StokeCommandState, VoiceState } from '@shared/api'
-import { flushSettings, getSettings, initSecretStore, onSettingsChanged, secretStoreStatus, setSettings } from './store.ts'
+import { flushSettings, getSettings, initSecretStore, onSecretsOpenState, onSettingsChanged, secretsOpenState, secretsReadable, secretsSettled, secretsStoredUnread, secretStoreStatus, setSettings } from './store.ts'
+import { keepUnseenSecrets, remoteKeyVerdict } from '../shared/secretsOpen.ts'
 import { hydrateSettings } from './settingsSchema.ts'
 import { defaultSetupName, openSetup, sealSetup } from './setupFile.ts'
 import {
@@ -1284,6 +1285,14 @@ async function launchSession(
   origin: 'desktop' | 'remote' = 'desktop'
 ): Promise<StartResult> {
   if (appQuitting) throw new Error('Stoke is closing.')
+  /*
+   * A launch reads its keys from settings — the provider's, an account's, an
+   * endpoint's, an MCP server's — and they read '' until the secret store has
+   * opened (store.ts). So it waits for that rather than start keyless: a tab
+   * restored while a Keychain dialog is up starts once it is answered.
+   */
+  await secretsSettled()
+  if (appQuitting) throw new Error('Stoke is closing.')
   const account = requested.accountLogin ? getSettings().accounts[requested.accountLogin.accountId] : null
   const cli = account?.cli ?? cliIdOf(requested.cli)
   const local = !requested.host && !requested.enroll
@@ -2005,12 +2014,26 @@ function remoteConfig(): Settings['remote'] {
  * renderer. Only the start paths call this (gotcha 53): `/api/host` reads the
  * public key and never mints. A new pair retires every subscription, which was
  * made to the old one and could never be sent to again.
+ *
+ * Never while the secret store is opening: both keys are sealed, so they read
+ * '' until it has opened, and a key minted then would replace the one every
+ * paired phone holds (`remoteKeyVerdict`). Every caller waits on
+ * `secretsSettled()` first; this refusal is the backstop. Nor once open, when
+ * the key is stored but this run could not open it (a Keychain Deny, a failed
+ * open: `secretsStoredUnread`) — only New key replaces that.
  */
 function ensureRemoteToken(): Settings['remote'] {
   const s = getSettings()
   const push = s.remote.push
   const pushWhole = isVapidPair({ publicKey: push.vapidPublic, privateKey: push.vapidPrivate })
-  if (s.remote.token && pushWhole) return s.remote
+  const verdict = remoteKeyVerdict(secretsReadable(), s.remote.token, pushWhole, secretsStoredUnread())
+  if (verdict === 'wait') throw new Error('Stoke is still opening your saved keys. Try again once they are open.')
+  if (verdict === 'stranded') {
+    throw new Error(
+      'Your phone access key is saved, but Stoke could not open it this time, so Phone access stays off rather than replace it. Quit and reopen Stoke and allow access to your saved keys (on a Mac, choose Always Allow), or choose New key: every paired phone then has to open the new link.'
+    )
+  }
+  if (verdict === 'keep') return s.remote
   const pair = pushWhole ? null : generateVapidKeys()
   const next = setSettings({
     remote: {
@@ -2146,6 +2169,8 @@ const probeStt = async (url: string): Promise<'up' | 'down'> => {
  * button's, on a press — so it is `ready` with a key and `off` without one.
  */
 const sttStatusNow = async (): Promise<'up' | 'down' | 'ready' | 'off'> => {
+  // A hosted provider's key is sealed: before the store opens it reads '', which is "off".
+  await secretsSettled()
   const r = sttReadiness(sttConfigOf(getSettings().voice))
   return r.kind === 'probe' ? probeStt(r.url) : r.kind
 }
@@ -2601,6 +2626,10 @@ function acceptLaunch(req: StokeCliRequest): void {
   if (req.kind === 'focus') return
   launchChain = launchChain
     .then(async () => {
+      // A request can make an account or remember a folder, each a settings
+      // write the renderer is told of: none before the secret store has opened,
+      // or the renderer is handed a copy whose sealed keys all read ''.
+      await secretsSettled()
       let checked: StokeCliRequest = req
       /*
        * `stoke account add AGENT NAME`: made here, where accounts are made
@@ -3569,9 +3598,25 @@ function createWindow(): void {
     void win.loadFile(join(__dirname, '../renderer/index.html'))
   }
 
-  // Bring remote access back up if it was left on.
-  if (getSettings().remote.enabled) {
-    const cfg = ensureRemoteToken()
+  /*
+   * Bring remote access back up if it was left on — once the secret store has
+   * opened. The window no longer waits for it (store.ts `initSecretStore`), and
+   * until it has, the phone key reads '' and `ensureRemoteToken` would mint a
+   * new one over the key every phone holds (gotcha 53). Only for this window:
+   * a window closed meanwhile stopped its server, and its successor brings it up.
+   */
+  const remoteWin = win
+  void secretsSettled().then(() => {
+    if (appQuitting || win !== remoteWin || remote || !getSettings().remote.enabled) return
+    let cfg: Settings['remote']
+    try {
+      cfg = ensureRemoteToken()
+    } catch (err) {
+      // A key stored but shut this run (`remoteKeyVerdict`'s `stranded`): left
+      // off, and left ENABLED, so the next run that opens it brings it back.
+      console.warn('[stoke] Phone access not brought back up:', err instanceof Error ? err.message : String(err))
+      return
+    }
     remote = new RemoteServer(remoteDeps(), pushRemote)
     void remote.start(cfg).then(() => {
       if (cfg.autoStartTunnel && cfg.hostname) {
@@ -3579,7 +3624,7 @@ function createWindow(): void {
       }
       pushRemote()
     })
-  }
+  })
 
   win.on('close', event => {
     if (!appQuitting && detachedWindows.size) { event.preventDefault(); win?.hide() }
@@ -3784,6 +3829,8 @@ function registerIpc(): void {
     if (appQuitting || !appFrame(event)) return null
     const target = accountIdentityTarget(raw)
     if (!target) return null
+    // A key account's key is sealed: before the store opens it reads '' ("no readable API key").
+    await secretsSettled()
     const configured = planAccountIdentity(target, getSettings(), process.env, homedir())
     return accountIdentities.read(target, configured, async (plan, signal) => {
       const executable = await findCli(plan.target.cli, plan.target.cli === 'claude' ? plan.claudePath : undefined)
@@ -3879,6 +3926,9 @@ function registerIpc(): void {
     return { cli: t.cli, accountId, ...(typeof t.ptyId === 'string' && t.ptyId.length <= 128 ? { ptyId: t.ptyId } : {}) }
   }
   const usageBoard = async (reasonRaw: unknown, targetRaw: unknown, all: boolean): Promise<UsageBoard> => {
+    // The OpenRouter key is sealed: read before the store opens, its source is
+    // missing and `retain` below evicts its cache. The chip asks on mount.
+    await secretsSettled()
     const reason = usageReason(reasonRaw)
     const target = usageTargetOf(targetRaw)
     const input = usagePlanInput(getSettings())
@@ -4139,6 +4189,8 @@ function registerIpc(): void {
   /* ------------------------------------------------------------------- pty */
   ipcMain.handle(CH.launchPreflight, async (event, input: unknown) => {
     if (!appFrame(event)) return { ok: false, message: 'Check setup from Stoke’s launcher.' }
+    // An API key is sealed: before the store opens it reads '' ("API key is empty").
+    await secretsSettled()
     try { return { ok: true, report: await (await launchPreflightFor()).check(input) } }
     catch { return { ok: false, message: 'Setup could not be checked. A check may still be running; wait before retrying, and check the folder and agent in Settings.' } }
   })
@@ -4483,6 +4535,8 @@ function registerIpc(): void {
    * is kept exactly as chosen.
    */
   ipcMain.handle(CH.remoteOpenOnPhone, async () => {
+    // The phone key is sealed: read it only once the secret store has opened (gotcha 53).
+    await secretsSettled()
     const cur = ensureRemoteToken()
     /*
      * "Has the user already chosen" is the stored preference and a running
@@ -4520,6 +4574,7 @@ function registerIpc(): void {
   })
 
   ipcMain.handle(CH.remoteStart, async () => {
+    await secretsSettled()
     const cfg = ensureRemoteToken()
     remote ??= new RemoteServer(remoteDeps(), pushRemote)
     await remote.start(cfg)
@@ -4545,8 +4600,23 @@ function registerIpc(): void {
   })
 
   ipcMain.handle(CH.remoteNewToken, async () => {
+    await secretsSettled()
     const s = getSettings()
-    const next = setSettings({ remote: { ...s.remote, token: generateToken() } })
+    /*
+     * The one way to replace a key that is stored but shut this run
+     * (`remoteKeyVerdict`'s `stranded`), so a push pair in that state is
+     * replaced too, or every start would still refuse. Nothing more is lost by
+     * it: a new key already retires every subscription (`pushKeyTag`).
+     */
+    const push = s.remote.push
+    const pair = isVapidPair({ publicKey: push.vapidPublic, privateKey: push.vapidPrivate }) ? null : generateVapidKeys()
+    const next = setSettings({
+      remote: {
+        ...s.remote,
+        token: generateToken(),
+        push: pair ? { vapidPublic: pair.publicKey, vapidPrivate: pair.privateKey, subscriptions: [] } : push
+      }
+    })
     // Existing phones must re-open the link; restart so the old key stops working.
     if (remote?.status().running) await remote.start(next.remote)
     send(CH.settingsChanged, next)
@@ -4735,8 +4805,25 @@ function registerIpc(): void {
   ipcMain.handle(CH.updateState, () => cliState())
 
   /* -------------------------------------------------------------- settings */
-  ipcMain.handle(CH.settingsGet, () => getSettings())
-  ipcMain.handle(CH.settingsSet, (_e, patch: Partial<Settings>) => commitSettings(patch))
+  /*
+   * Both wait for the secret store (store.ts `initSecretStore`), which opens
+   * while the window is already up. Until it has, every sealed key reads '',
+   * and a renderer handed that copy would spread it back — `{ voice: { ...voice,
+   * provider } }` — as "every key in here was deleted". So the renderer's
+   * first settings are the opened ones, and a patch that still arrives before
+   * the open (built from a pushed copy) has its empty keys put back
+   * (`keepUnseenSecrets`). The window says what it is waiting for meanwhile.
+   */
+  ipcMain.handle(CH.settingsGet, async () => {
+    await secretsSettled()
+    return getSettings()
+  })
+  ipcMain.handle(CH.settingsSet, async (_e, patch: Partial<Settings>) => {
+    const unseen = !secretsReadable()
+    await secretsSettled()
+    return commitSettings(unseen ? keepUnseenSecrets(patch, getSettings()) : patch)
+  })
+  ipcMain.handle(CH.secretStoreState, () => secretsOpenState())
 
   const quickAction = async (event: Electron.IpcMainInvokeEvent, action: (surface: QuickTerminalSurface) => Promise<import('../shared/quickTerminal.ts').QuickTerminalState> | import('../shared/quickTerminal.ts').QuickTerminalState) => {
     if (appQuitting) return { ok: false, message: 'Stoke is closing.' }
@@ -4995,6 +5082,8 @@ function registerIpc(): void {
           ? await dialog.showSaveDialog(win, opts)
           : await dialog.showSaveDialog(opts)
       if (res.canceled || !res.filePath) return { ok: false, canceled: true, message: '' }
+      // The keys are sealed: an export before the store opens would carry them empty, for good.
+      await secretsSettled()
       const payload = buildSetupPayload(getSettings(), {
         includeSecrets: req?.includeSecrets === true,
         version: app.getVersion(),
@@ -5102,6 +5191,9 @@ function registerIpc(): void {
   const hubService = (): Promise<import('./hub/service.ts').HubService> => {
     if (hubClient) return Promise.resolve(hubClient)
     hubStarting ??= (async () => {
+      // The hub session, its shared keys and the accounts it syncs are sealed:
+      // started only once the secret store has opened (store.ts).
+      await secretsSettled()
       const [{ HubService }, { safeStorageBackend }, { AccountSync }] = await Promise.all([import('./hub/service.ts'), import('./secrets.ts'), import('./hub/accountSync.ts')])
       const { hostname } = await import('node:os')
       const syncedAccounts = new AccountSync({ userData: app.getPath('userData'), root: accountsRoot(homedir()), trees: defaultTrees(process.env, homedir()), platform: process.platform, label: hostname().replace(/\.local$/, ''), backend: safeStorageBackend(safeStorage, process.platform), getSettings,
@@ -5767,6 +5859,8 @@ function registerIpc(): void {
    * the next launch.
    */
   ipcMain.handle(CH.transcribe, async (_e, wav: ArrayBuffer) => {
+    // A hosted provider's key is sealed: read it only once the store has opened.
+    await secretsSettled()
     return transcribe(sttConfigOf(getSettings().voice), new Uint8Array(wav))
   })
   /*
@@ -5977,12 +6071,21 @@ if (!app.requestSingleInstanceLock(launchRequest ? { stokeCli: launchRequest } :
     // Freeze telemetry (diagnostics.ts): first, so a block below is measured too.
     installDiagnostics()
     /*
-     * Before anything reads a setting: open secrets.json and migrate any key
-     * still in plain text in settings.json (secrets.ts). `safeStorage` is not
-     * usable before `ready` on Windows and Linux, and the window's first paint
-     * and every IPC answer should already see the keys.
+     * Open secrets.json and migrate any key still in plain text in
+     * settings.json (secrets.ts) — started here, NOT waited for. `safeStorage`
+     * is not usable before `ready` on Windows and Linux; and on macOS the key
+     * store can be a Keychain password dialog, which the blocking read used to
+     * wait on with no window on screen (18 s and 8 s measured on 2026-10-27).
+     * The window opens meanwhile and says what it is waiting for; whatever
+     * reads a key — `settings:get`, a launch, the phone server, the hub —
+     * waits on `secretsSettled()` (store.ts `initSecretStore`).
      */
-    initSecretStore()
+    void initSecretStore()
+    onSecretsOpenState((state) => {
+      send(CH.secretStoreState, state)
+      // The opened settings, for a renderer that was handed an earlier copy.
+      if (state.phase === 'open') send(CH.settingsChanged, getSettings())
+    })
     if (app.isPackaged && !app.commandLine.hasSwitch('user-data-dir')) app.setAsDefaultProtocolClient('stoke')
     for (const arg of process.argv) acceptPluginLink(arg)
     /*
@@ -6091,8 +6194,11 @@ if (!app.requestSingleInstanceLock(launchRequest ? { stokeCli: launchRequest } :
      * the realpath, and never touch the stale one sitting underneath, so
      * neither ever took effect on a folder added before this shipped. Skips
      * the write (and the `settingsChanged` broadcast) when nothing was stale.
+     * After the secret store has opened: that broadcast would otherwise hand
+     * the renderer a copy whose sealed keys all read ''.
      */
-    migrateSymlinkedProjectKeys(getSettings())
+    secretsSettled()
+      .then(() => migrateSymlinkedProjectKeys(getSettings()))
       .then((patch) => {
         if (!patch) return
         const next = setSettings(patch)

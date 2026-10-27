@@ -5,8 +5,9 @@
  * `store.ts` owns WHEN settings are written (coalescing, gotcha 63); this owns
  * WHAT is written where. Every write of settings goes through `save`, which
  * seals the secrets into secrets.json first and then writes settings.json with
- * them emptied; `load` does the reverse at boot, plus the one-time migration of
- * a settings.json that still holds plaintext.
+ * them emptied; `prepare` does the reverse at boot without blocking the main
+ * thread (`load` is its blocking form), plus the one-time migration of a
+ * settings.json that still holds plaintext.
  *
  * No `electron` import, on purpose: `scripts/verify-secrets.mts` drives this
  * whole file against a synthetic userData and an injected backend (gotcha 74:
@@ -49,6 +50,16 @@ export interface SecretBackend {
   encrypt(plain: string): Buffer
   /** Throws when the item was sealed by another key. */
   decrypt(sealed: Buffer): string
+  /**
+   * The key store's non-blocking twins (Electron's `isAsyncEncryptionAvailable`
+   * and `decryptStringAsync`), which the boot open uses (`prepare`). On macOS
+   * the blocking pair waits on the main thread for a Keychain password dialog
+   * — measured 18 s and 8 s before any window existed — while these wait off
+   * it. Optional: a backend without them is opened with the blocking calls, as
+   * every build before this one did.
+   */
+  isEncryptionAvailableAsync?(): Promise<boolean>
+  decryptAsync?(sealed: Buffer): Promise<string>
 }
 
 /** Structural, so this file never imports `electron`. */
@@ -57,16 +68,34 @@ export interface SafeStorageLike {
   encryptString(plain: string): Buffer
   decryptString(sealed: Buffer): string
   getSelectedStorageBackend?: () => string
+  isAsyncEncryptionAvailable?: () => Promise<boolean>
+  decryptStringAsync?: (sealed: Buffer) => Promise<{ result: string; shouldReEncrypt: boolean }>
 }
 
 export function safeStorageBackend(ss: SafeStorageLike, platform: string): SecretBackend {
-  return {
+  const backend: SecretBackend = {
     isEncryptionAvailable: () => ss.isEncryptionAvailable(),
     selectedBackend: () =>
       platform === 'linux' && typeof ss.getSelectedStorageBackend === 'function' ? ss.getSelectedStorageBackend() : null,
     encrypt: (plain) => ss.encryptString(plain),
     decrypt: (sealed) => ss.decryptString(sealed)
   }
+  /*
+   * Opening only. Electron documents that `decryptStringAsync` opens what
+   * `encryptString` sealed; sealing stays on `encryptString`, so what is
+   * written — and what an older build can open — does not change.
+   * `shouldReEncrypt` is not acted on for the same reason: re-sealing with the
+   * async encryptor is a change of format nobody has proven an older build
+   * reads. (Measured under --use-mock-keychain on macOS, Electron 43.2: both
+   * write `v10`, the same length, and each opens the other's.)
+   */
+  const available = ss.isAsyncEncryptionAvailable
+  const decrypt = ss.decryptStringAsync
+  if (typeof available === 'function' && typeof decrypt === 'function') {
+    backend.isEncryptionAvailableAsync = () => available.call(ss)
+    backend.decryptAsync = async (sealed) => (await decrypt.call(ss, sealed)).result
+  }
+  return backend
 }
 
 
@@ -114,6 +143,29 @@ function fileExists(file: string): boolean {
   return readText(file) !== null
 }
 
+/** What a boot reads before it may need the key store. */
+interface BootRead {
+  raw: unknown
+  items: Record<string, string>
+  tmp: string
+  tmpExists: boolean
+}
+
+/**
+ * The known secret paths `<dir>/secrets.json` holds, read without asking the
+ * key store: for a run whose open FAILED (store.ts), whose settings never got
+ * the vault's keys, so an empty sealed field there is "stored but unread", not
+ * "none" (`remoteKeyVerdict`). Never throws; an unreadable file holds nothing.
+ */
+export function vaultItemPaths(dir: string): string[] {
+  try {
+    const items = parseSecretsFile(readText(join(dir, SECRETS_FILE_NAME)) ?? '')?.items ?? {}
+    return Object.keys(items).filter((k) => secretSpecFor(k))
+  } catch {
+    return []
+  }
+}
+
 function sameMap(a: Record<string, string>, b: Record<string, string>): boolean {
   const ka = Object.keys(a)
   return ka.length === Object.keys(b).length && ka.every((k) => b[k] === a[k])
@@ -134,6 +186,8 @@ export class SecretStore {
   private strandedPaths: string[]
   /** Set while secrets.json is behind the settings because its last write failed. */
   private vaultWriteError: string | null
+  /** Set when `prepare` had to open the vault the blocking way (`decideAsync`). */
+  private openBlocking: boolean
 
   constructor(dir: string, backend: SecretBackend, platform: string) {
     this.dir = dir
@@ -145,6 +199,7 @@ export class SecretStore {
     this.kept = {}
     this.strandedPaths = []
     this.vaultWriteError = null
+    this.openBlocking = false
   }
 
   get settingsFile(): string {
@@ -200,47 +255,214 @@ export class SecretStore {
     writePrivateFile(this.secretsFile, serializeSecretsFile(this.decide().backend, { ...kept, ...sealed }))
   }
 
+  /** The two small files a boot reads before it may need the key store. */
+  private readBoot(): BootRead {
+    const tmp = `${this.settingsFile}.tmp`
+    return {
+      raw: readJson(this.settingsFile),
+      items: parseSecretsFile(readText(this.secretsFile) ?? '')?.items ?? {},
+      tmp,
+      tmpExists: fileExists(tmp)
+    }
+  }
+
+  /** Nothing secret anywhere, so the key store need not be asked. */
+  private nothingToOpen(boot: BootRead): boolean {
+    return Object.keys(boot.items).length === 0 && Object.keys(collectSecrets(boot.raw)).length === 0
+  }
+
+  /** An unprotected run: anything in secrets.json is carried, unread, for a run that can open it. */
+  private keepUnopened(items: Record<string, string>): void {
+    this.kept = { ...items }
+    this.strandedPaths = Object.keys(items).filter((k) => secretSpecFor(k))
+  }
+
+  /** One item's outcome: opened (`value`), or kept verbatim and, if it is a known path, stranded. */
+  private take(path: string, b64: string, value: string | null): void {
+    if (value === null) {
+      this.kept[path] = b64
+      if (secretSpecFor(path)) this.strandedPaths.push(path)
+    } else {
+      this.values[path] = value
+      this.sealed[path] = b64
+    }
+  }
+
   /**
    * Boot: read settings.json and secrets.json, migrate any plaintext secret,
    * and return the settings object to hydrate — secrets overlaid. Synchronous
    * and small (two files in userData), like the settings read it replaces; the
    * key store is consulted only when there is something to open or seal.
+   *
+   * The BLOCKING form: on macOS its first key-store call can wait on the main
+   * thread for a Keychain password dialog. The app opens with `prepare`; this
+   * stays for a backend with no async calls, and is the same decisions in the
+   * same order, which is what lets `verify:secrets` hold both to one result.
    */
   load(): unknown {
-    const raw = readJson(this.settingsFile)
-    const file = parseSecretsFile(readText(this.secretsFile) ?? '')
-    const plain = collectSecrets(raw)
-    const tmp = `${this.settingsFile}.tmp`
-    const tmpExists = fileExists(tmp)
-    const items = file?.items ?? {}
-    if (Object.keys(items).length === 0 && Object.keys(plain).length === 0) {
+    const boot = this.readBoot()
+    if (this.nothingToOpen(boot)) {
       // Nothing secret anywhere, so the key store is not asked. A temp file is
       // a crash's leftover that never became settings.json; it may still hold
       // a key typed before a migration, and nothing ever reads it.
-      if (tmpExists) removeQuietly(tmp)
-      return raw
+      if (boot.tmpExists) removeQuietly(boot.tmp)
+      return boot.raw
     }
-
     const p = this.decide()
     if (!p.protected) {
-      // Today's behaviour, exactly: settings.json holds the keys. Anything in
-      // secrets.json is carried, unread, for a run that can open it.
-      this.kept = { ...items }
-      this.strandedPaths = Object.keys(items).filter((k) => secretSpecFor(k))
-      return raw
+      // Today's behaviour, exactly: settings.json holds the keys.
+      this.keepUnopened(boot.items)
+      return boot.raw
     }
+    for (const [path, b64] of Object.entries(boot.items)) this.take(path, b64, secretSpecFor(path) ? this.open(path, b64) : null)
+    return this.finishOpen(boot.raw, boot)
+  }
 
-    for (const [path, b64] of Object.entries(items)) {
-      const value = secretSpecFor(path) ? this.open(path, b64) : null
-      if (value === null) {
-        this.kept[path] = b64
-        if (secretSpecFor(path)) this.strandedPaths.push(path)
-      } else {
-        this.values[path] = value
-        this.sealed[path] = b64
+  /**
+   * `load` without blocking the main thread: the same reads, decisions and
+   * migration, with the key store asked through its async calls. The two files
+   * are read now, synchronously, as `load` reads them; the key store is asked
+   * only when there is something to open or seal, exactly as there.
+   *
+   * Resolves with the step that FINISHES the open, to be called synchronously
+   * by the owner with the settings as they stand at that moment (`current`;
+   * omitted, the file read here — nothing wrote meanwhile):
+   * the window is up while this waits — for a Keychain dialog, maybe for
+   * seconds — and settings written meanwhile are in `current`, not on the disk
+   * this read. A sealed key reads `''` there, which is "not opened yet", and
+   * the vault's value goes over it; a non-empty value is newer than the vault
+   * and wins, as plaintext always has (and is sealed here, the migration).
+   * Handing back a step rather than the result is what lets the owner read
+   * `current` and install the result in one synchronous block, with no await
+   * between for another write to land in.
+   */
+  async prepare(): Promise<(current?: unknown) => unknown> {
+    const boot = this.readBoot()
+    if (this.nothingToOpen(boot)) {
+      return (current = boot.raw) => {
+        if (boot.tmpExists) removeQuietly(boot.tmp)
+        return current
       }
     }
+    const p = await this.decideAsync()
+    if (!p.protected) {
+      this.keepUnopened(boot.items)
+      return (current = boot.raw) => current
+    }
+    const entries = Object.entries(boot.items)
+    const opened = await Promise.all(entries.map(([path, b64]) => (secretSpecFor(path) ? this.openAsync(path, b64) : Promise.resolve(null))))
+    entries.forEach(([path, b64], i) => this.take(path, b64, opened[i]))
+    return (current = boot.raw) => this.finishOpen(current, boot)
+  }
 
+  /** `decide`, through the key store's async availability check where it has one. */
+  private async decideAsync(): Promise<SecretProtection> {
+    if (this.protection) return this.protection
+    const ask = this.backend.isEncryptionAvailableAsync
+    if (!ask || !this.backend.decryptAsync) {
+      this.openBlocking = true
+      return this.decide()
+    }
+    let available = false
+    try {
+      available = await ask.call(this.backend)
+    } catch {
+      available = false
+    }
+    /*
+     * Off macOS a refusal here is asked again the blocking way, which never
+     * shows a dialog there (DPAPI) or did not before this build (libsecret):
+     * should a platform's async key provider be the one that is missing, the
+     * keys still open, exactly as they did with `load`. Never on macOS, where
+     * the blocking call is the main-thread Keychain dialog this path exists to
+     * avoid — and, after a Deny, a second one. That holds for Stoke's own calls
+     * only: whether Chromium's async encryptor itself falls back to the
+     * blocking fetch, on the main thread, once its Keychain provider has been
+     * refused is unproven (it needs a real Keychain and a Deny, with the main
+     * thread sampled meanwhile).
+     */
+    if (!available && this.platform !== 'darwin') {
+      this.openBlocking = true
+      try {
+        available = this.backend.isEncryptionAvailable()
+      } catch {
+        available = false
+      }
+    }
+    let linux: string | null = null
+    try {
+      linux = this.backend.selectedBackend()
+    } catch {
+      linux = null
+    }
+    this.protection ??= judgeProtection(this.platform, available, linux)
+    return this.protection
+  }
+
+  /**
+   * macOS only: after an async open that opened at least one item, ask the
+   * BLOCKING key store once, so the rest of the run's blocking calls answer
+   * from its cache. Returns how long that took, or null when it was not asked.
+   *
+   * Electron 43 links two separate key fetches with separate caches: the async
+   * encryptor (`KeychainKeyProvider`, which `prepare` uses) and OSCrypt's
+   * blocking one (`encryptString`/`decryptString`/`isEncryptionAvailable`),
+   * which `save`, the migration, the hub (hub/files.ts), account sync and the
+   * plugins' credentials still use. The blocking open this replaced warmed the
+   * second as a side effect; the async open does not. With "Always Allow" the
+   * Keychain now lists Stoke and this returns in milliseconds. With "Allow" the
+   * blocking fetch can ask again, on the main thread — and this way that second
+   * dialog comes straight after the first, while the window still says it is
+   * waiting for the Keychain, instead of at some later click (the hub's start,
+   * the first key saved). Both caches and the dialog count are reasoned from
+   * the shipped framework, not measured: --use-mock-keychain shows neither.
+   *
+   * Never after a refusal (nothing opened: a Deny is final for the run, and
+   * this would be the dialog again), never for a profile with no keys (which
+   * never touches the Keychain), never when the open was blocking already
+   * (`openBlocking`), and never off macOS, where nothing prompts.
+   */
+  warmBlockingKeyStore(): number | null {
+    if (this.platform !== 'darwin' || this.openBlocking || !this.protection?.protected) return null
+    if (Object.keys(this.values).length === 0) return null
+    const started = Date.now()
+    try {
+      this.backend.isEncryptionAvailable()
+    } catch {
+      // Its answer is not used: the async open has decided this run already.
+    }
+    return Date.now() - started
+  }
+
+  /**
+   * The known items secrets.json holds that this run could not open, WITHOUT
+   * asking the key store (`status()` would, to decide). What reads '' at one of
+   * these paths is stored but unreadable, never "none" (`remoteKeyVerdict`).
+   */
+  stranded(): string[] {
+    return [...this.strandedPaths]
+  }
+
+  /** `open`, through the async decrypt. Off macOS a refusal is tried once the blocking way (see `decideAsync`). */
+  private async openAsync(path: string, b64: string): Promise<string | null> {
+    const decrypt = this.backend.decryptAsync
+    if (this.openBlocking || !decrypt) return this.open(path, b64)
+    try {
+      return unsealedValue(path, await decrypt.call(this.backend, Buffer.from(b64, 'base64')))
+    } catch {
+      return this.platform === 'darwin' ? null : this.open(path, b64)
+    }
+  }
+
+  /**
+   * The rest of a protected boot, once every item has been opened or kept:
+   * migrate any plaintext in `raw` into the vault, then return `raw` with the
+   * vault's keys overlaid. Synchronous; seals with the blocking `encrypt`
+   * only when there is plaintext to migrate.
+   */
+  private finishOpen(raw: unknown, boot: BootRead): unknown {
+    const items = boot.items
+    const plain = collectSecrets(raw)
     const needsMigration = Object.keys(plain).length > 0
     if (needsMigration) {
       const fromVault = { ...this.values }
@@ -278,7 +500,7 @@ export class SecretStore {
       writePrivateFile(this.settingsFile, JSON.stringify(scrubSecrets(raw), null, 2))
     }
     // A temp left by a crash mid-write can hold the plaintext the scrub just removed.
-    if (tmpExists) removeQuietly(tmp)
+    if (boot.tmpExists) removeQuietly(boot.tmp)
     return applySecrets(needsMigration ? scrubSecrets(raw) : raw, this.values)
   }
 

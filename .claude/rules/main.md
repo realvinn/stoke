@@ -9,6 +9,7 @@ paths:
   - "src/renderer/src/lib/useDraft.ts"
   - "src/shared/ui.ts"
   - "src/shared/secrets.ts"
+  - "src/shared/secretsOpen.ts"
   - "src/shared/setupFile.ts"
   - "src/renderer/src/components/BackupSettings.tsx"
   - "src/shared/hub/*.ts"
@@ -880,6 +881,7 @@ byte of the guest's page.
 > marked nowhere there, so `matchedOnlyInKeys` cannot judge it) confirms an unknown key's opening up to
 > the refusal — case folded, its third letter/digit change, about 11 characters of a random base62 one;
 > secrets under 20 characters that no pattern knows, which are shown anyway; and a UUID-shaped password.
+
 ## 160. `monitorEventLoopDelay` misses a stall right after `enable()` and right after `reset()`
 
 **Found 2026-10-27, building the freeze telemetry (`src/main/diagnosticsLog.ts`).** The obvious
@@ -914,3 +916,50 @@ Two more facts from the same build, both driven in a plain Electron 43.2 with sc
   both in `will-quit`, a later `will-quit` listener holding main 3 s left only `start` and `quit`;
   on `quit`, the same run logged `main-stalled ms=2142` between them.
 
+## 162. A sealed key reads `''` while the store is opening, and a key minted over that locks every phone out
+
+**Found 2026-10-27, moving the secret store's open off the boot path.** The blocking open
+(`SecretStore.load`) could wait on a macOS Keychain dialog on the main thread for 8-18 s before
+the window existed. Boot now runs `void initSecretStore()` before `createWindow()`. Its open is
+`SecretStore.prepare()`, which asks the key store only through Electron's async calls
+(`isAsyncEncryptionAvailable`, `decryptStringAsync`); the window is up while it waits. `load()`
+stays only for a backend with no async calls and for `verify:secrets`, which holds both to one
+result. Everything that reads a key has to account for that window.
+
+- **Wait for the open before reading a key.** Until it settles, every sealed field in
+  `getSettings()` reads `''`, which means "not opened yet", not "none". `settings:get`/`set`,
+  `launchSession`, the phone server, the hub, transcription, the usage board and the launcher's
+  preflight each `await secretsSettled()` first. `SecretsGate` (src/shared/secretsOpen.ts) is the
+  state: closed, opening, then open or off. A renderer patch built from a copy taken before the
+  open gets its unseen keys put back (`keepUnseenSecrets`).
+- **Never mint a key while `!secretsReadable()`, nor over one that is stored but unopened.**
+  `remoteKeyVerdict(readable, token, pushWhole, unread)` answers `wait` while opening and
+  `stranded` when the empty token or push key is in secrets.json but this run could not open it (a
+  Deny, a locked key store, a failed open). `unread` is `secretsStoredUnread()`, which never asks
+  the key store; when the open failed, it lists what secrets.json holds, or assumes both phone keys
+  if even that read fails. `ensureRemoteToken` throws on both. A token minted over a stranded one
+  goes to settings.json in plain text unprotected, and the next boot's migration (plaintext wins)
+  replaces the vault's. Protected, the vault drops the stranded copy. Either way every paired
+  phone is locked out (gotcha 53), and a new VAPID pair retires every push subscription. Only an
+  explicit New key (`remoteNewToken`) replaces them, and it now also re-mints a pair that is not
+  whole.
+- **On macOS, warm the blocking key store once, before announcing the open.** The async open does
+  not fill the blocking calls' own key cache, and `save`, `hub/files.ts`, `hub/accountSync.ts`,
+  `plugins/workCredentials.ts` and `plugins/grokBot.ts` still use the blocking calls. After
+  "Allow" rather than "Always Allow", the first of those could raise a second dialog at some later
+  click, on the main thread. `warmBlockingKeyStore()` makes one blocking `isEncryptionAvailable()`
+  call after `prepare()` and before `gate.settle('open')`, while the notice still says it is
+  waiting. It does nothing after a refusal, for an unprotected run, for a profile with no keys,
+  or off macOS.
+
+The finish is one synchronous block: flush pending writes, read the settings as they stand,
+overlay the vault, hydrate, then install. A key typed during the open is newer and wins. An
+untouched cache finishes from the file `prepare` read, so hydrate runs once (gotcha 116).
+`verify:secrets` bundles the real `store.ts` with esbuild and a stand-in `electron` for those
+orders, and 24 mutations each turned it red.
+
+**Unproven, needing a real Keychain and a driven build:** that Electron's async calls really read
+the Keychain off the main thread; whether the warm-up keeps later blocking calls silent; the dialog
+count under Allow and under Always Allow; whether a Deny blocks main inside Chromium's async
+encryptor; DPAPI and libsecret. The owner has not decided on a "continue without keys" timeout:
+an unanswered dialog leaves settings and every launch waiting, with the notice up.

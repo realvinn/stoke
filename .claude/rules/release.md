@@ -621,3 +621,19 @@ of every packaged build in the release workflow, next to `assert-packaged-pty.mj
 it fails a stock Electron and passes the flipped copy and a local `electron-builder --dir` build.
 Point it at a CLEAN `release/`: a stale `win-unpacked` from an older local build fails it, correctly.
 
+> **Checked against the code on 2026-10-28: the stable `Stoke` identity does NOT keep Keychain
+> access across an update.** The second paragraph says that identity "decides whether an update can
+> read the cookie store", implying a Stoke-signed update reads it with no prompt. Measured in the
+> unified log of the installed copy's launch on 2026-10-27 (11:44:20): securityd logged `ACL
+> partition mismatch: client cdhash:5574b21e…` against an access list already holding 18 `cdhash:`
+> entries, then `asking user about XARA partition for 'cdhash:5574b21e…'`, `client is not
+> Apple-signed`, and `displaying keychain prompt for /Applications/Stoke.app`. A self-signed
+> certificate carries no Team ID, so the item's partition list names each build by its cdhash, and
+> every update is a new binary with a new cdhash. So the Keychain asks again after every ShipIt
+> install, and "Always Allow" only adds that one build's cdhash, which is why 18 have piled up. The
+> designated requirement still lets Squirrel swap the app (gotcha 24); it never reaches the
+> Keychain's partition check. Only a Developer ID signature, which gives a `teamid:` partition,
+> ends it, and paying for one is the owner's decision. That prompt is also what held the boot
+> before the window existed (gotcha 162). So read the paragraph's "a build signed any other way
+> would prompt for it" as: every new build prompts, the Stoke-signed ones included.
+

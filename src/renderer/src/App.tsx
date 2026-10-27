@@ -99,6 +99,7 @@ import {
 } from '@shared/privateChat'
 import { HubJoinPrompt } from './components/HubJoinPrompt'
 import { Toaster } from './components/Toaster'
+import { SecretsWaitNotice } from './components/SecretsWaitNotice'
 import { toast } from './lib/toasts'
 import { reconnectAfterEnroll } from '@shared/sshAuth'
 import { RemoteTerminal } from './components/RemoteTerminal'
@@ -6692,6 +6693,7 @@ export function App(): React.JSX.Element {
           */}
           {(settings?.remoteBar ?? 'fab') === 'fab' && <RemoteHostFab view={hubRemote} />}
           <Toaster paused={shellInert} />
+          <SecretsWaitNotice />
         </div>
 
         {/*

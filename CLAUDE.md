@@ -194,6 +194,8 @@ rule file named on the group line.
   `sharedChats`' key-shaped net, refusing a key-shaped search (`keyShapedQuery`): FTS confirms any key's prefix.
 - **160.** Time main-loop stalls with a timer of your own (`LoopSampler`), never `monitorEventLoopDelay`: it misses a block
   right after `enable()` or `reset()`. Only a thread (`startWatchdog`) sees a hang ended by Force Quit; log on `quit`.
+- **162.** Read a sealed key only after `secretsSettled()`; never mint while `!secretsReadable()` or over a stored, unopened
+  key (`remoteKeyVerdict`, `secretsStoredUnread`). Boot opens via async `prepare()`, never `load()`; `warmBlockingKeyStore`.
 
 **Terminal** — `.claude/rules/terminal.md`
 - **5.** Never read the terminal from the DOM: WebGL paints a canvas, so `.xterm-rows` is empty.

@@ -318,6 +318,13 @@ export const CH = {
    * src/shared/setupFile.ts.
    */
   secretsStatus: 'secrets:status',
+  /*
+   * Whether the secret store has opened yet (shared/secretsOpen.ts): asked by
+   * the renderer on mount and pushed on every change, so the window can say
+   * "Waiting for macOS Keychain" while main waits for the key store off the
+   * main thread. Never carries a key.
+   */
+  secretStoreState: 'secrets:state',
   setupExport: 'setup:export',
   setupImportPick: 'setup:importPick',
   setupImportPreview: 'setup:importPreview',

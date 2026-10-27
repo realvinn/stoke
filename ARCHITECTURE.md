@@ -291,13 +291,17 @@ secret (a speech-to-text key, per-account keys) is one line there. `src/main/sec
 (`SecretStore`, no electron import) does the sealing. `store.ts` keeps WHEN a write happens
 (coalescing, gotcha 63) and hands every write to `SecretStore.save`, which writes secrets.json
 first and only when a key moved, then settings.json scrubbed. `hydrateSettings` stays pure:
-`load` overlays the decrypted values onto the parsed file before hydrate sees it, so the cache,
-every IPC answer and the renderer see the keys exactly as before. Each sealed value carries its
+the open (`prepare`'s finish step; `load` is its blocking twin) overlays the decrypted values onto
+the parsed file before hydrate sees it, so the cache, every IPC answer and the renderer see the
+keys exactly as before. Each sealed value carries its
 path (`sealedText`): macOS `safeStorage` is AES-CBC with no MAC, and the prefix turns a value
 opened with the wrong key into a refusal rather than garbage.
 
-**The migration** runs once per boot, first thing in `whenReady` (`initSecretStore`; `safeStorage`
-is not usable before `ready` on Windows and Linux): plaintext in settings.json is sealed, the
+**The migration** runs once per boot, started in `whenReady` (`void initSecretStore()`; `safeStorage`
+is not usable before `ready` on Windows and Linux). The window does not wait for it: the key store
+is asked through Electron's async calls, which Electron documents as off the main thread (not yet
+driven against a real Keychain dialog), and every reader of a key waits on `secretsSettled()` (gotcha 162;
+`SecretsWaitNotice` says so after 400 ms). Plaintext in settings.json is sealed, the
 vault is read back and every item opened, and only then is settings.json scrubbed and any
 `settings.json.tmp` removed. Idempotent — a clean profile writes nothing. Plaintext wins over the
 vault, being the newer write. The key store is asked only when there is something to seal or
@@ -1695,11 +1699,17 @@ src/main/         Electron main process
                     `stoke-asset://` scheme. Refuses anything that is not a bare file name
                     inside its own folder, so the scheme cannot be turned into a file reader
   store.ts          settings persistence: WHEN a write happens (coalesced, gotcha 63).
-                    Opens the secret store first thing in `whenReady` (`initSecretStore`)
+                    Opens the secret store from `whenReady` without the window waiting
+                    (`void initSecretStore()`, before `createWindow`): one claim, the async
+                    `prepare`, then one synchronous finish. Readers wait on `secretsSettled()`;
+                    `secretsReadable()` and `secretsStoredUnread()` gate any mint (gotcha 162)
   secrets.ts        secrets at rest: `SecretStore` seals the registered secret paths into
                     secrets.json with safeStorage and writes settings.json with them empty;
-                    the one-time migration. No electron import; the backend is injected, so
-                    verify:secrets never touches the Keychain. basic_text is NOT protection
+                    the one-time migration. The boot open is `prepare` (the key store's async
+                    calls); `load` is the blocking form. `stranded()` names what is stored but
+                    unopened; `warmBlockingKeyStore` (macOS) fills the blocking calls' cache
+                    once. No electron import; the backend is injected, so verify:secrets never
+                    touches the Keychain. basic_text is NOT protection
   setupFile.ts      sealing/opening a `.stoke-setup`: scrypt N=2^17 + AES-256-GCM, header as
                     AAD, node:crypto only
   hub/crypto.ts     Stoke Hub's node:crypto reference: device keys, signed requests, vault
@@ -2115,6 +2125,11 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     a line, gone after 5 s (held while pointed at, focused, behind an overlay
                     or in a background window). Above the pane's foot floats, under every
                     scrim; plain keys stop on the card. Gotcha 154
+  src/components/SecretsWaitNotice.tsx  draws nothing: one toast while main opens the secret
+                    store (`secrets:state`), "Waiting for macOS Keychain" after 400 ms on
+                    macOS, "Opening your saved keys…" after 1 s elsewhere, taken down when
+                    the store opens or fails. Mounted beside `<Toaster>`, outside anything
+                    that waits for settings
   src/components/Launcher.tsx  a New tab's page, one top-aligned column: where it runs
                     (FolderSwitcher), Start split with the other agents, the launch chips
                     (resolved, THIS launch only, "Make default"), the conversation list.
@@ -2358,6 +2373,12 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
   secrets.ts        `SECRET_PATHS`, the one registry of which settings are secrets (a new
                     secret is one line here), the move between settings and a path->value
                     map (`__proto__` refused), the secrets.json format, `judgeProtection`
+  secretsOpen.ts    the rules that let the store open after the window, pure: `SecretsGate`
+                    (closed, opening, open or off; one open per process), `remoteKeyVerdict`
+                    (`wait` while opening, `stranded` over a stored but unopened phone key,
+                    so never a mint over either: gotchas 53, 162), `keepUnseenSecrets` (a
+                    patch built before the open keeps the keys it never saw) and
+                    `secretsNotice`, the wait's wording. verify:secrets
   setupFile.ts      the `.stoke-setup` header and its refusals, what travels
                     (PORTABLE/PARTIAL/LOCAL_KEYS, a partition of Settings), the import merge
                     and preview (`planImport`), and the passphrase strength reading

@@ -48,6 +48,7 @@ import type { AccountIdentity, AccountIdentityTarget } from './accountIdentity'
 import type { LaunchPreflightRequest, LaunchPreflightResult } from './launchPreflight'
 import type { SshFilesRequest, SshFilesListResult, SshFilesSaveResult, SshFilesProgress } from './sshFiles'
 import type { SecretStoreStatus } from './secrets'
+import type { SecretsOpenState } from './secretsOpen'
 import type { SetupPreview } from './setupFile'
 import type { HubLocalKeyView, HubResult, HubVerifyResult, HubView } from './hub/client'
 import type { AttachAnswer, HubRemoteView, RemoteChatGrantView, RemoteChatOpen, RemoteChatsResult, RemoteTabFrame } from './hub/remote'
@@ -919,6 +920,15 @@ export interface StokeApi {
     get(): Promise<Settings>
     set(patch: Partial<Settings>): Promise<Settings>
     onChange(cb: (settings: Settings) => void): () => void
+  }
+
+  /**
+   * Whether main has opened the secret store yet. Until it has, `settings.get`
+   * waits; this says why, for the "Waiting for macOS Keychain" notice.
+   */
+  secretStore: {
+    state(): Promise<SecretsOpenState>
+    onState(cb: (state: SecretsOpenState) => void): () => void
   }
 
   /**

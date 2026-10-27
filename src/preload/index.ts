@@ -263,6 +263,11 @@ const api: StokeApi = {
     onChange: (cb) => on<[Settings]>(CH.settingsChanged, cb)
   },
 
+  secretStore: {
+    state: () => ipcRenderer.invoke(CH.secretStoreState),
+    onState: (cb) => on<[Parameters<typeof cb>[0]]>(CH.secretStoreState, cb)
+  },
+
   backup: {
     status: () => ipcRenderer.invoke(CH.secretsStatus),
     exportSetup: (req) => ipcRenderer.invoke(CH.setupExport, req),
