@@ -76,7 +76,8 @@ import {
   staticMissAnswer,
   stripLocalHostnameSuffix,
   type AnswerKey,
-  type PhoneSessionStatus
+  type PhoneSessionStatus,
+  PHONE_WS_FRAME_MAX
 } from '../../shared/remotePhone.ts'
 
 /*
@@ -407,7 +408,7 @@ const BAD_JSON = Symbol('bad-json')
  * `ws` closes the connection with 1009 when a frame exceeds this, which the
  * client already handles as a dropped socket.
  */
-const MAX_WS_FRAME = 256 * 1024
+const MAX_WS_FRAME = PHONE_WS_FRAME_MAX
 
 /**
  * Bounds on a phone-requested resize.

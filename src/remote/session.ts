@@ -46,7 +46,7 @@ import {
   type Size,
   type TermLayout
 } from '@shared/phoneUi'
-import type { PhoneSessionStatus } from '@shared/remotePhone'
+import { phoneFrameFits, type PhoneSessionStatus } from '@shared/remotePhone'
 import { createRecorder, postTranscription, voiceSupported } from '@shared/voice'
 import {
   SPACE_IDLE,
@@ -66,6 +66,9 @@ import { mountTerminalKeys } from './terminalKeyBar'
 import { mountTerminalTouchScroll } from './terminalTouchScroll'
 import { DraftJournal, mountDraftCache } from './draftCache'
 import { REMOTE_DEVICE_INPUT_MAX, REMOTE_DEVICE_SUBMIT_MAX, type RemoteDeviceState } from '@shared/remoteDevices'
+// The hub remote tab's copy and paste rules, one copy for both: the clipboard is the viewer's.
+import { installMotionGuard, installOsc52, installShiftSelection, installTerminalClipboard, takesSessionCopy, trackActs, viewportText } from '../renderer/src/lib/terminalSelection'
+import { copyFailedSentence, copyText } from './clipboard'
 
 /** Filled by whoever starts a session, so the header is right before the first push. */
 export const pendingMeta = new Map<string, { cwd: string; project: string }>()
@@ -299,11 +302,68 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
     allowProposedApi: true,
     theme: theme?.terminal ?? {},
     // Replayed history can carry colours chosen for another background (PX-21).
-    minimumContrastRatio: phoneTermContrast(theme?.contrastBoost)
+    minimumContrastRatio: phoneTermContrast(theme?.contrastBoost),
+    // A laptop browser selects under Claude Code like the desktop (gotcha 10):
+    // Option-drag, or Shift-drag retold as one; Option never moves the cursor.
+    macOptionClickForcesSelection: true,
+    altClickMovesCursor: false
   })
   term.open(inner)
   term.loadAddon(new UnicodeGraphemesAddon())
   term.unicode.activeVersion = '15-graphemes'
+
+  /*
+   * Copy and paste in a laptop browser, the desktop's rules (terminalSelection.ts):
+   * Shift-drag selects under Claude Code, bare pointer motion no longer clears
+   * the selection, Cmd/Ctrl+C with a selection copies it (Ctrl+C without one is
+   * still the interrupt), Ctrl+V pastes THIS device's clipboard, cleaned, and a
+   * right-click is never sent on as a mouse report (the far Claude answers one
+   * by pasting the host's clipboard). Through the browser's own copy and paste
+   * events, which need no https. Nothing here changes a touch screen.
+   */
+  {
+    const isMac = /^Mac/.test(navigator.platform)
+    const offSelection = installShiftSelection(inner, term, isMac)
+    const offMotion = installMotionGuard(term)
+    const offClipboard = installTerminalClipboard(inner, term, {
+      isMac,
+      native: true,
+      notText: () => toast('Only text can be pasted into the terminal.', 'error')
+    })
+    signal.addEventListener('abort', () => {
+      offClipboard()
+      offMotion()
+      offSelection()
+    })
+  }
+  /*
+   * OSC 52 from the session (tmux, nvim, Claude Code's own copy) lands on THIS
+   * device's clipboard. Outside a press most browsers refuse the write (iOS
+   * always, http everywhere), so a refusal offers a Copy button, whose press
+   * the fallback can use. Held while an attach's replay is parsed (`replays`).
+   */
+  let replays = 0
+  const copiedInSession = (text: string): void => {
+    const quiet = navigator.clipboard?.writeText(text)
+    if (quiet) {
+      quiet.then(
+        () => toast('Copied from the session.'),
+        () => toast('The session copied some text.', 'info', { label: 'Copy', run: () => void copyText(text).then(reportCopy) })
+      )
+    } else toast('The session copied some text.', 'info', { label: 'Copy', run: () => void copyText(text).then(reportCopy) })
+  }
+  const reportCopy = (outcome: 'copied' | 'empty' | 'failed'): void => {
+    if (outcome === 'copied') toast('Copied.')
+    else if (outcome === 'failed') toast(copyFailedSentence(window.isSecureContext), 'error')
+  }
+  // Only this viewer's copies (`takesSessionCopy`): one made at the desk, or on another device, is theirs.
+  const acts = trackActs(window)
+  const mine = (): boolean => takesSessionCopy({ shown: document.visibilityState === 'visible', focused: document.hasFocus(), sinceActMs: acts.since() })
+  const offOsc52 = installOsc52(term, copiedInSession, () => replays > 0 || !mine())
+  signal.addEventListener('abort', () => {
+    offOsc52()
+    acts.dispose()
+  })
   // The desktop switched theme while this was open: repaint in place.
   window.addEventListener(
     THEME_EVENT,
@@ -324,7 +384,10 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
     // Automatic answers to replayed queries must never reach the pty.
     if (isTerminalReport(data) || (!touchScrolling && !inner.contains(document.activeElement))) return
     if (opts.remote && data.length > REMOTE_DEVICE_INPUT_MAX) { toast('That paste is too large. Send it in smaller parts.', 'error'); return }
-    if (!ended && mayType() && ws?.readyState === WebSocket.OPEN && ready) ws.send(JSON.stringify({ type: 'input', data }))
+    const frame = JSON.stringify({ type: 'input', data })
+    // Past the socket's frame cap the server closes it (1009) and the paste is lost.
+    if (!phoneFrameFits(frame)) { toast('That paste is too large. Send it in smaller parts.', 'error'); return }
+    if (!ended && mayType() && ws?.readyState === WebSocket.OPEN && ready) ws.send(frame)
   })
 
   /* ---------------------------------------------------------- the layout */
@@ -622,7 +685,9 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
       // the same frame, so the replay does not land on top of the old screen.
       if (everAttached) term.reset()
       everAttached = true
+      replays++
       term.write(msg.history ?? '', () => {
+        replays--
         if (leaving) return
         if (revision === interaction) {
           if (saved) restoreTerminalViewport(term, saved)
@@ -1011,6 +1076,11 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
     const value = input.value
     if (!value.trim() || ended) return
     if (opts.remote && value.length > REMOTE_DEVICE_SUBMIT_MAX) { toast('That message is too long. Send it in smaller parts.', 'error'); return }
+    // Refused before it is sent, and kept: a frame past the cap closed the socket and the draft was cleared.
+    if (!phoneFrameFits(JSON.stringify({ type: 'submit', text: value }))) {
+      toast('That message is too long to send at once. Send it in smaller parts; it is still here.', 'error')
+      return
+    }
     // A relay is scoped to the current, approved connection. Keep an unsent
     // draft in place; it must never reach a later reconnect or permission grant.
     if (opts.remote && (!mayType() || !ready || ws?.readyState !== WebSocket.OPEN)) {
@@ -1447,10 +1517,13 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
       }
       items.push(
         action('Copy screen', 'copy', () => {
-          const text = screenLines(term).join('\n')
-          void navigator.clipboard?.writeText(text).then(
-            () => toast('Copied the screen.'),
-            () => toast('Copying needs a secure (https) link.', 'error')
+          // What is on screen (scrolled up or not), soft wraps joined; copied
+          // inside this press, with a fallback for http links (clipboard.ts).
+          void copyText(viewportText(term)).then((outcome) =>
+            toast(
+              outcome === 'copied' ? 'Copied the screen.' : outcome === 'empty' ? 'Nothing on the screen to copy yet.' : copyFailedSentence(window.isSecureContext),
+              outcome === 'failed' ? 'error' : 'info'
+            )
           )
         })
       )

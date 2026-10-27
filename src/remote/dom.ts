@@ -102,14 +102,24 @@ export function newButton(label: string): HTMLButtonElement {
 let toastHost: HTMLElement | null = null
 
 /** A short message, announced politely (the host is a live region). */
-export function toast(message: string, tone: 'info' | 'error' = 'info'): void {
+export function toast(message: string, tone: 'info' | 'error' = 'info', action?: { label: string; run: () => void }): void {
   if (!toastHost) {
     toastHost = el('div', { class: 'toasts', role: 'status', 'aria-live': 'polite' })
     document.body.append(toastHost)
   }
   const node = el('div', { class: 'toast', 'data-tone': tone }, message)
+  if (action) {
+    // A press is what some browsers need before they will write the clipboard (iOS).
+    node.dataset.action = 'true'
+    const button = el('button', { type: 'button', class: 'toast-action' }, action.label)
+    button.addEventListener('click', () => {
+      node.remove()
+      action.run()
+    })
+    node.append(button)
+  }
   toastHost.append(node)
-  setTimeout(() => node.remove(), 3200)
+  setTimeout(() => node.remove(), action ? 8000 : 3200)
 }
 
 /* ---------------------------------------------------------------- sheet */

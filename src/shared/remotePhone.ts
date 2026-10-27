@@ -143,6 +143,57 @@ export function isEndedExpired(endedAt: number | null, now: number): boolean {
  */
 export const SUBMIT_CHUNK = 64
 
+/**
+ * Whether a submit to this pty is typed as Claude Code takes typing (ESC CR
+ * newlines), from what the pty is running NOW where Stoke can tell, never the
+ * launch id alone (gotcha 85).
+ *
+ * An SSH tab launches as `claude` but is the one tab that can sit at a shell
+ * (byobu, a kept tmux session, after the far `claude` exits: gotcha 10), and
+ * a shell reads ESC CR as Escape then Enter: bash 3.2 rang the bell and ran
+ * `cd /srv/appgit pull` for two lines. Claude Code's input box always has
+ * bracketed paste (DECSET 2004) on — its mode manager sets it, and turns every
+ * mode off while it hands the terminal to something else — so 2004 OFF on an
+ * SSH tab means Claude Code is not what is reading the keys there, and the
+ * text is typed plain (a shell's newline is Enter, which is what the lines
+ * mean). 2004 ON is ambiguous: bash 5.1+, zsh and fish turn it on at their
+ * prompt too, and Stoke cannot tell them from Claude by modes alone, so that
+ * case keeps Claude's framing, the one an SSH tab is for (zsh takes ESC CR as
+ * a newline in its buffer; bash 5 still joins the lines). A local tab always
+ * runs Claude Code for its whole life.
+ */
+export function typesForClaude(s: { claude: boolean; ssh: boolean; bracketedPaste: boolean }): boolean {
+  return s.claude && (!s.ssh || s.bracketedPaste)
+}
+
+/**
+ * The phone socket's largest frame, in bytes: `ws` closes the socket (1009)
+ * on anything bigger (server.ts's `maxPayload`), and the frame is lost. The
+ * phone refuses a frame past it before sending (`phoneFrameFits`), keeping
+ * the text, where it used to send it, lose it and clear the composer.
+ */
+export const PHONE_WS_FRAME_MAX = 256 * 1024
+
+/** `text`'s length in UTF-8 bytes, without allocating it (a lone surrogate counts as U+FFFD, 3). */
+export function utf8Length(text: string): number {
+  let bytes = 0
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i)
+    if (code < 0x80) bytes += 1
+    else if (code < 0x800) bytes += 2
+    else if (code >= 0xd800 && code <= 0xdbff && i + 1 < text.length && (text.charCodeAt(i + 1) & 0xfc00) === 0xdc00) {
+      bytes += 4
+      i++
+    } else bytes += 3
+  }
+  return bytes
+}
+
+/** Whether a JSON frame for the phone socket is within `PHONE_WS_FRAME_MAX`. */
+export function phoneFrameFits(frame: string): boolean {
+  return utf8Length(frame) <= PHONE_WS_FRAME_MAX
+}
+
 export function submitFrames(
   text: string,
   opts: { bracketedPaste: boolean; claude: boolean; enter?: boolean }

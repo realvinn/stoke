@@ -69,6 +69,22 @@ import {
 } from '../src/shared/phoneUi.ts'
 import type { PhoneAgentChoices } from '../src/shared/remotePhone.ts'
 import { TERMINAL_FUNCTION_KEYS, terminalKeySequence, type TerminalKeyModifiers } from '../src/shared/terminalKeys.ts'
+import { readFileSync } from 'node:fs'
+// Default import: @xterm/headless is CJS and exposes no named ESM exports.
+import headless from '@xterm/headless'
+import {
+  SESSION_COPY_ACT_MS,
+  installMotionGuard,
+  installOsc52,
+  installTerminalClipboard,
+  pasteVerdict,
+  remoteChord,
+  takesSessionCopy,
+  trackActs,
+  viewportText
+} from '../src/renderer/src/lib/terminalSelection.ts'
+import { MAX_OSC52_BASE64, type ChordKey } from '../src/shared/clipboardText.ts'
+import { copyFailedSentence, copyText, type CopyEnv } from '../src/remote/clipboard.ts'
 
 let failures = 0
 
@@ -930,6 +946,398 @@ console.log('\nremote terminal keys: function keys and modifiers')
   check('unsupported Tab combinations are refused', [terminalKeySequence('Tab', { ctrl: true }), terminalKeySequence('Tab', { alt: true }), terminalKeySequence('Tab', { shift: true, ctrl: true, alt: true })], [null, null, null])
   check('ambiguous Shift/Ctrl raw controls are refused', ['Enter', 'Escape', 'Backspace'].flatMap((key) => [terminalKeySequence(key, { shift: true }), terminalKeySequence(key, { ctrl: true }), terminalKeySequence(key, { shift: true, alt: true })]), Array(9).fill(null))
   check('unknown keys cannot become malformed escape sequences', ['F0', 'F13', 'Left', '', 'constructor', 'toString'].map((key) => terminalKeySequence(key, { shift: true })), Array(6).fill(null))
+}
+
+{
+  /*
+   * Copy and paste for a session on ANOTHER computer: a hub remote tab and the
+   * phone/web UI, one module (renderer/src/lib/terminalSelection.ts) and the
+   * phone's clipboard writer (src/remote/clipboard.ts). The clipboard is the
+   * viewer's; each case is a defect from the 2026-10-27 copy/paste audit.
+   */
+  console.log('\ncopy and paste in a remote session (terminalSelection, clipboard.ts)')
+  type Key = ChordKey & { type: string }
+  const key = (k: string, code: string, mods: Partial<Key> = {}): Key => ({ type: 'keydown', key: k, code, altKey: false, ctrlKey: false, metaKey: false, shiftKey: false, ...mods })
+  const sel = (text: string) => (): string => text
+  const cmdC = key('c', 'KeyC', { metaKey: true })
+  const ctrlC = key('c', 'KeyC', { ctrlKey: true })
+  const ctrlShiftC = key('C', 'KeyC', { ctrlKey: true, shiftKey: true })
+  check(
+    'macOS: Cmd+C and Ctrl+Shift+C copy; Ctrl+C stays the interrupt',
+    [remoteChord(cmdC, true, sel('x'), true), remoteChord(ctrlShiftC, true, sel('x'), true), remoteChord(ctrlC, true, sel('x'), true)],
+    ['copy', 'copy', null]
+  )
+  check(
+    'Windows/Linux: Ctrl+C copies (and clears) only with a selection; Ctrl+Shift+C copies',
+    [remoteChord(ctrlC, false, sel('x'), true), remoteChord(ctrlC, false, sel(''), false), remoteChord(ctrlShiftC, false, sel('x'), true)],
+    ['copy-clear', null, 'copy']
+  )
+  check(
+    'a blank-cell selection takes bare Ctrl+C and clears it, so the next press interrupts (the desktop\'s swallow-clear)',
+    [remoteChord(ctrlC, false, sel(''), true), remoteChord(cmdC, true, sel(''), true)],
+    ['swallow-clear', 'swallow']
+  )
+  check(
+    'nothing selected: Cmd+C is taken and does nothing; Ctrl+Shift+C is xterm\'s, as on the desktop (copyAction)',
+    [remoteChord(cmdC, true, sel(''), false), remoteChord(ctrlShiftC, false, sel(''), false)],
+    ['swallow', null]
+  )
+  check(
+    'a Cyrillic layout copies and pastes by the physical key (chordLetter), not ^C',
+    [remoteChord(key('с', 'KeyC', { ctrlKey: true }), false, sel('x'), true), remoteChord(key('с', 'KeyC', { metaKey: true }), true, sel('x'), true), remoteChord(key('м', 'KeyV', { ctrlKey: true }), false, sel(''), false)],
+    ['copy-clear', 'copy', 'paste']
+  )
+  check(
+    'Ctrl+V pastes the viewer\'s clipboard off macOS; a bare macOS Ctrl+V is the far app\'s',
+    [remoteChord(key('v', 'KeyV', { ctrlKey: true }), false, sel(''), false), remoteChord(key('v', 'KeyV', { metaKey: true }), true, sel(''), false), remoteChord(key('v', 'KeyV', { ctrlKey: true }), true, sel(''), false), remoteChord(key('Insert', 'Insert', { shiftKey: true }), false, sel(''), false)],
+    ['paste', 'paste', null, 'paste']
+  )
+  check('a key-up and an Alt chord are never the clipboard\'s', [remoteChord({ ...cmdC, type: 'keyup' }, true, sel('x'), true), remoteChord(key('c', 'KeyC', { metaKey: true, altKey: true }), true, sel('x'), true)], [null, null])
+  {
+    let reads = 0
+    const counted = (): string => { reads++; return 'big selection' }
+    remoteChord(key('a', 'KeyA'), false, counted, true)
+    remoteChord(key('v', 'KeyV', { ctrlKey: true }), false, counted, true)
+    check('the selection is read only for a copy chord, never on every key', reads, 0)
+  }
+
+  const ESC = String.fromCharCode(27)
+  const BEL = String.fromCharCode(7)
+  check('a paste cannot end its own bracket (safePasteText)', pasteVerdict(`echo hi${ESC}[201~rm -rf ~\r`), { kind: 'text', text: 'echo hi[201~rm -rf ~\r' })
+  check('an image or files alone is said, not swallowed', [pasteVerdict({ text: '', hasImage: true }), pasteVerdict({ text: '', files: 2 })], [{ kind: 'not-text' }, { kind: 'not-text' }])
+  check('an empty clipboard pastes nothing', pasteVerdict({ text: '', hasImage: false, files: 0 }), null)
+  check(
+    'main\'s peek: Finder-copied files go first, never their bare names (filesFirst); a rich copy\'s text still pastes',
+    [pasteVerdict({ text: 'Shot.png', hasImage: false, files: 1 }, true), pasteVerdict({ text: 'words', hasImage: true, files: 0 }, true)],
+    [{ kind: 'not-text' }, { kind: 'text', text: 'words' }]
+  )
+  check('a browser paste event keeps text first: its files also count an image copied beside the text', pasteVerdict({ text: 'caption', hasImage: true, files: 1 }), { kind: 'text', text: 'caption' })
+
+  /*
+   * OSC 52 through xterm's own parser (headless), so what is checked is what a
+   * session's bytes do. What a write carries is the desktop's `osc52Write`
+   * (verify:drop); here, that the remote viewers take it, hold it, and never
+   * answer a read. (`osc52Write`'s explicit `?` test is defence in depth:
+   * `atob('?')` throws too, so only "nothing written, nothing sent back" is
+   * observable, and that is what is held.)
+   */
+  const b64 = (text: string): string => Buffer.from(text, 'utf8').toString('base64')
+  {
+    const osc = new headless.Terminal({ cols: 20, rows: 5, allowProposedApi: true })
+    const copies: string[] = []
+    const replies: string[] = []
+    osc.onData((d) => replies.push(d))
+    let hold = false
+    const offOsc = installOsc52(osc as never, (t) => copies.push(t), () => hold)
+    const feed = (data: string): Promise<void> => new Promise((done) => osc.write(`${ESC}]52;${data}${BEL}`, done))
+    await feed(`c;${b64('café → ok')}`)
+    check('an OSC 52 write reaches this viewer\'s clipboard, as UTF-8', copies, ['café → ok'])
+    await feed('c;?')
+    check('an OSC 52 read (?) is neither written nor answered', [copies.length, replies], [1, []])
+    await feed(`c;${b64(`a${ESC}[201~b`)}`)
+    check('OSC 52 text is cleaned like a paste', copies[1], 'a[201~b')
+    await feed(`c;${b64('x'.repeat((MAX_OSC52_BASE64 / 4) * 3 + 3))}`)
+    await feed('c;@@@')
+    check('past the desktop\'s cap, or not base64, is dropped', copies.length, 2)
+    hold = true
+    await feed(`c;${b64('replayed')}`)
+    check('held while quiet (a replay, or not this viewer\'s copy)', copies.length, 2)
+    hold = false
+    offOsc()
+    await feed(`c;${b64('after')}`)
+    check('removing it stops taking copies', copies.length, 2)
+    osc.dispose()
+  }
+
+  /*
+   * Every viewer of a pty is sent the same OSC 52. A copy at the host's desk
+   * overwrote the clipboard of a laptop whose remote tab merely sat open.
+   */
+  check('a session copy is taken only by a viewer shown, focused and acted on just now', [
+    takesSessionCopy({ shown: true, focused: true, sinceActMs: 300 }),
+    takesSessionCopy({ shown: false, focused: true, sinceActMs: 300 }),
+    takesSessionCopy({ shown: true, focused: false, sinceActMs: 300 }),
+    takesSessionCopy({ shown: true, focused: true, sinceActMs: SESSION_COPY_ACT_MS }),
+    takesSessionCopy({ shown: true, focused: true, sinceActMs: Infinity })
+  ], [true, false, false, false, false])
+  {
+    let clock = 1000
+    const pane = new EventTarget()
+    const acts = trackActs(pane, () => clock)
+    const trusted = (type: string): Event => {
+      const e = new Event(type)
+      Object.defineProperty(e, 'isTrusted', { value: true })
+      return e
+    }
+    const never = acts.since() === Infinity
+    pane.dispatchEvent(new Event('keydown'))
+    const scripted = acts.since() === Infinity
+    pane.dispatchEvent(trusted('pointerup'))
+    clock = 1400
+    const released = acts.since()
+    pane.dispatchEvent(trusted('keydown'))
+    clock = 1500
+    const keyed = acts.since()
+    acts.dispose()
+    pane.dispatchEvent(trusted('pointerdown'))
+    clock = 2000
+    check('acts: none yet, a scripted key is no person, a release and a key count, disposed stops', [never, scripted, released, keyed, acts.since()], [true, true, 400, 100, 600])
+  }
+
+  /*
+   * Copy screen took the bottom of the buffer, whatever was scrolled into
+   * view, and split every soft-wrapped line at the grid's width.
+   */
+  const term = new headless.Terminal({ cols: 20, rows: 5, scrollback: 100, allowProposedApi: true })
+  const lines = Array.from({ length: 12 }, (_, i) => `line ${i + 1}`)
+  await new Promise<void>((done) => term.write(lines.join('\r\n'), done))
+  term.scrollLines(-4)
+  const scrolled = viewportText(term)
+  check('Copy screen copies the scrolled view, not the bottom', scrolled, lines.slice(3, 8).join('\n'))
+  term.scrollToBottom()
+  check('at the bottom it copies the last screen', viewportText(term), lines.slice(7).join('\n'))
+  const url = 'http://localhost:5173/a/long/path?token=abc'
+  const wrapped = new headless.Terminal({ cols: 20, rows: 6, scrollback: 0, allowProposedApi: true })
+  await new Promise<void>((done) => wrapped.write(`go: ${url}\r\nnext`, done))
+  check('a soft-wrapped URL comes back in one piece, blank rows below it dropped', viewportText(wrapped), `go: ${url}\nnext`)
+  term.dispose()
+  wrapped.dispose()
+
+  /*
+   * Under Claude Code's mode 1003 every bare pointer move is a mouse report
+   * xterm calls user input, and its SelectionService clears the selection on
+   * user input. The guard withdraws only that claim. Measured on xterm's own
+   * coreService (headless): onUserInput is what SelectionService listens to.
+   */
+  const guarded = new headless.Terminal({ cols: 20, rows: 5, allowProposedApi: true })
+  const core = (guarded as unknown as { _core: { coreService: { onUserInput(fn: () => void): unknown; triggerDataEvent(d: string, u?: boolean): void } } })._core.coreService
+  let userInputs = 0
+  core.onUserInput(() => { userInputs++ })
+  const sent: string[] = []
+  guarded.onData((d) => sent.push(d))
+  const motion = `${ESC}[<35;10;5M`
+  core.triggerDataEvent(motion, true)
+  check('control: unguarded, a bare move is "user input" (the selection-clearing signal)', userInputs, 1)
+  const removeGuard = installMotionGuard(guarded as never)
+  core.triggerDataEvent(motion, true)
+  check('guarded, a bare move is no longer user input', userInputs, 1)
+  core.triggerDataEvent(`${ESC}[<0;10;5M`, true)
+  core.triggerDataEvent('a', true)
+  check('a click and a key still are', userInputs, 3)
+  check('and every report still reaches the far application byte for byte', sent, [motion, motion, `${ESC}[<0;10;5M`, 'a'])
+  removeGuard()
+  core.triggerDataEvent(motion, true)
+  check('removing the guard puts xterm back', userInputs, 4)
+  guarded.dispose()
+
+  /*
+   * On the phone's http links `navigator.clipboard` is undefined, and
+   * `navigator.clipboard?.writeText(t).then(ok, fail)` short-circuited as a
+   * whole: no copy, no toast. The fallback must run inside the press, before
+   * any await.
+   */
+  const env = (write: CopyEnv['writeText'], exec: boolean, log: string[]): CopyEnv => ({ writeText: write, execCopy: (t) => { log.push(`exec:${t}`); return exec } })
+  {
+    const log: string[] = []
+    const pending = copyText('screen', env(undefined, true, log))
+    check('http (no navigator.clipboard): the fallback copies inside the press', log, ['exec:screen'])
+    check('and says so', await pending, 'copied')
+  }
+  {
+    const log: string[] = []
+    check('nothing to copy is refused before anything is written', [await copyText('', env(async () => { log.push('write') }, true, log)), log], ['empty', []])
+  }
+  {
+    const log: string[] = []
+    check('https: writeText is used, no fallback', [await copyText('s', env(async (t) => { log.push(`write:${t}`) }, true, log)), log], ['copied', ['write:s']])
+  }
+  {
+    const log: string[] = []
+    check('a refused writeText falls back', [await copyText('s', env(async () => { throw new Error('denied') }, true, log)), log], ['copied', ['exec:s']])
+    check('both refused is a failure the caller can say', await copyText('s', env(async () => { throw new Error('denied') }, false, [])), 'failed')
+  }
+  check(
+    'a failed copy names the https link only on plain http (on https it is a diagnosis the page disproves)',
+    [copyFailedSentence(true).includes('https'), copyFailedSentence(false).includes('https link')],
+    [false, true]
+  )
+
+  /*
+   * installTerminalClipboard itself, on a fake page: the host and document are
+   * EventTargets, the terminal is xterm's surface as the module uses it, and
+   * the textarea normalises CRLF to LF as a real one does. `native` is the
+   * phone/web UI in a browser (the browser's own copy and paste events); the
+   * other is Electron's read/write, the hub remote tab.
+   */
+  const rig = (opts: { isMac: boolean; native?: boolean; read?: () => { text: string; hasImage: boolean; files: number }; menu?: boolean; refuse?: boolean }) => {
+    const host = new EventTarget()
+    const doc = new EventTarget()
+    const written: string[] = []
+    const execs: { staged: string; selected: boolean }[] = []
+    const menus: string[] = []
+    let notText = 0
+    const area = {
+      raw: '',
+      selected: false,
+      focused: false,
+      style: {} as Record<string, string>,
+      get value(): string { return this.raw },
+      set value(v: string) { this.raw = v.replace(/\r\n?/g, '\n'); this.selected = false },
+      select(): void { this.selected = true },
+      focus(): void { this.focused = true }
+    }
+    const clipEvent = (type: string, data: object): Event => Object.assign(new Event(type, { cancelable: true }), { clipboardData: data })
+    Object.assign(doc, {
+      execCommand: (cmd: string): boolean => {
+        execs.push({ staged: area.value, selected: area.selected })
+        // A refused copy (no user activation, an old WebKit) fires no copy event.
+        if (opts.refuse) return false
+        if (cmd === 'copy') host.dispatchEvent(clipEvent('copy', { setData: (_: string, v: string) => written.push(v) }))
+        return true
+      }
+    })
+    let handler: (e: Event) => boolean = () => true
+    const term = {
+      selection: '',
+      any: false,
+      pasted: [] as string[],
+      textarea: area,
+      element: { querySelector: (q: string) => (q === '.xterm-screen' ? { getBoundingClientRect: () => ({ left: 100, top: 50 }) } : null) },
+      attachCustomKeyEventHandler(fn: (e: Event) => boolean): void { handler = fn },
+      hasSelection(): boolean { return this.any },
+      getSelection(): string { return this.selection },
+      clearSelection(): void { this.selection = ''; this.any = false },
+      paste(text: string): void { this.pasted.push(text) },
+      pick(text: string): void { this.selection = text; this.any = true }
+    }
+    const saved = (globalThis as { document?: unknown }).document
+    ;(globalThis as { document?: unknown }).document = doc
+    const remove = installTerminalClipboard(host as never, term as never, {
+      isMac: opts.isMac,
+      native: opts.native,
+      read: opts.read,
+      write: opts.read ? (t: string) => written.push(t) : undefined,
+      menu: opts.menu ? (_e: MouseEvent, s: string) => menus.push(s) : undefined,
+      notText: () => { notText++ }
+    })
+    const press = (k: string, code: string, mods: Partial<Key> = {}) => {
+      const { type: _type, ...fields } = key(k, code, mods)
+      const e = Object.assign(new Event('keydown', { cancelable: true }), fields)
+      const ret = handler(e)
+      return { ret, prevented: e.defaultPrevented }
+    }
+    const paste = (text: string, files = 0, types = ['text/plain']) => {
+      const e = clipEvent('paste', { getData: (t: string) => (t === 'text/plain' ? text : ''), files: { length: files }, types })
+      host.dispatchEvent(e)
+      return e.defaultPrevented
+    }
+    const rightClick = () => {
+      const e = Object.assign(new Event('mousedown', { cancelable: true }), { button: 2, clientX: 130, clientY: 80, ctrlKey: false })
+      host.dispatchEvent(e)
+      const up = Object.assign(new Event('mouseup', { cancelable: true }), { button: 2 })
+      doc.dispatchEvent(up)
+      host.dispatchEvent(Object.assign(new Event('contextmenu', { cancelable: true }), { button: 2, clientX: 130, clientY: 80 }))
+      return [e.defaultPrevented, up.defaultPrevented]
+    }
+    const menuCopy = () => host.dispatchEvent(clipEvent('copy', { setData: (_: string, v: string) => written.push(v) }))
+    const done = (): void => {
+      remove()
+      ;(globalThis as { document?: unknown }).document = saved
+    }
+    return { term, area, written, execs, menus, notText: () => notText, press, paste, rightClick, menuCopy, done }
+  }
+  {
+    // A laptop browser on Windows/Linux, the phone UI's `native: true`.
+    const r = rig({ isMac: false, native: true })
+    check('native: Ctrl+V and Shift+Insert are left to the browser (no ^V to xterm, default not prevented)', [r.press('v', 'KeyV', { ctrlKey: true }), r.press('Insert', 'Insert', { shiftKey: true }), r.term.pasted], [{ ret: false, prevented: false }, { ret: false, prevented: false }, []])
+    check('native: the browser\'s paste event is taken and cleaned, once', [r.paste(`echo hi${ESC}[201~rm -rf ~\r`), r.term.pasted], [true, ['echo hi[201~rm -rf ~\r']])
+    r.paste('', 1, ['Files'])
+    check('native: an image-only paste is said, nothing typed', [r.notText(), r.term.pasted.length], [1, 1])
+    r.paste('caption', 1, ['text/plain', 'Files'])
+    check('native: a rich copy\'s text pastes beside its image', r.term.pasted[1], 'caption')
+    r.term.pick('one\r\ntwo')
+    const shiftCopy = r.press('C', 'KeyC', { ctrlKey: true, shiftKey: true })
+    check(
+      'native: Ctrl+Shift+C copies inside the press: staged and selected for execCommand, the CRLF selection written, the textarea emptied after',
+      [shiftCopy, r.execs, r.written, r.area.value, r.term.any],
+      [{ ret: false, prevented: true }, [{ staged: 'one\ntwo', selected: true }], ['one\r\ntwo'], '', true]
+    )
+    r.term.pick('abc')
+    r.press('c', 'KeyC', { ctrlKey: true })
+    check('native: bare Ctrl+C with a selection copies it and clears it', [r.written.at(-1), r.term.any, r.area.value], ['abc', false, ''])
+    r.term.selection = ''
+    r.term.any = true
+    const blank = r.press('c', 'KeyC', { ctrlKey: true })
+    const next = r.press('c', 'KeyC', { ctrlKey: true })
+    check('native: a blank-cell selection takes Ctrl+C once and clears it; the next Ctrl+C is the interrupt', [blank, r.term.any, r.execs.length, next], [{ ret: false, prevented: true }, false, 2, { ret: true, prevented: false }])
+    r.term.pick('x\r\ny')
+    const pressed = r.rightClick()
+    check(
+      'native: a right-click is never a mouse report, and stages the selection under the pointer for the browser\'s menu (Firefox runs xterm\'s staging from this press)',
+      [pressed, r.area.value, r.area.selected, r.area.focused, r.area.style.left, r.area.style.top, r.area.style.zIndex],
+      [[true, true], 'x\ny', true, true, '20px', '20px', '1000']
+    )
+    r.menuCopy()
+    check('native: the menu\'s Copy writes the selection and unstages it, CRLF and all', [r.written.at(-1), r.area.value], ['x\r\ny', ''])
+    r.done()
+  }
+  {
+    const r = rig({ isMac: false, native: true, refuse: true })
+    r.term.pick('one\r\ntwo')
+    r.press('C', 'KeyC', { ctrlKey: true, shiftKey: true })
+    check('native: a copy the browser refuses still empties the textarea, and keeps the selection', [r.execs.length, r.written, r.area.value, r.term.any], [1, [], '', true])
+    r.done()
+  }
+  {
+    // A hub remote tab: Electron's read/write and Stoke's own menu, on macOS.
+    let clip = { text: 'Shot.png', hasImage: false, files: 1 }
+    const r = rig({ isMac: true, read: () => clip, menu: true })
+    const filePaste = r.press('v', 'KeyV', { metaKey: true })
+    check('electron: Finder-copied files are said, never typed as their bare names', [filePaste, r.notText(), r.term.pasted], [{ ret: false, prevented: true }, 1, []])
+    r.paste('Shot.png')
+    check('electron: an app menu\'s Paste takes the same verdict (main\'s peek, files first)', [r.notText(), r.term.pasted], [2, []])
+    clip = { text: `a${ESC}[201~b`, hasImage: false, files: 0 }
+    r.press('v', 'KeyV', { metaKey: true })
+    check('electron: text is pasted cleaned', r.term.pasted, ['a[201~b'])
+    r.term.pick('sel')
+    r.press('c', 'KeyC', { metaKey: true })
+    r.term.clearSelection()
+    const empty = r.press('c', 'KeyC', { metaKey: true })
+    check('electron: Cmd+C writes the selection; with none it is taken and writes nothing', [r.written, empty], [['sel'], { ret: false, prevented: true }])
+    r.term.pick('menu me')
+    r.rightClick()
+    check('electron: a right-click opens Stoke\'s own menu with the selection, nothing staged', [r.menus, r.area.value], [['menu me'], ''])
+    r.done()
+  }
+
+  /*
+   * The wire (gotcha 31): the pure rules above only matter where the views
+   * call them. Read from the source; the behaviour itself needs the app.
+   */
+  const remoteTab = readFileSync(new URL('../src/renderer/src/components/RemoteTerminal.tsx', import.meta.url), 'utf8')
+  check('the hub remote tab guards motion, takes only its own OSC 52, says an image paste, pastes files first, offers Copy screen', [
+    remoteTab.includes('installMotionGuard(term)'),
+    /installOsc52\(term, text => window\.stoke\.clipboard\.writeText\(text\), \(\) => replays > 0 \|\| !mine\(\)\)/.test(remoteTab),
+    remoteTab.includes('takesSessionCopy({ shown: activeRef.current, focused: document.hasFocus(), sinceActMs: acts.since() })') && remoteTab.includes('trackActs(interactionHost)'),
+    remoteTab.includes('notText: () => toast({ title: NOT_TEXT_PASTE })'),
+    remoteTab.includes('pasteVerdict(window.stoke.clipboard.readSync(), true)'),
+    remoteTab.includes("label:'Copy screen'") && remoteTab.includes('viewportText(t)')
+  ], [true, true, true, true, true, true])
+  const phone = readFileSync(new URL('../src/remote/session.ts', import.meta.url), 'utf8')
+  check('the phone terminal selects, guards motion, copies and pastes like the desktop', [
+    phone.includes('macOptionClickForcesSelection: true'),
+    phone.includes('installShiftSelection(inner, term, isMac)'),
+    phone.includes('installMotionGuard(term)'),
+    /installTerminalClipboard\(inner, term, \{\s*isMac,\s*native: true/.test(phone),
+    phone.includes('installOsc52(term, copiedInSession, () => replays > 0 || !mine())'),
+    phone.includes("takesSessionCopy({ shown: document.visibilityState === 'visible', focused: document.hasFocus(), sinceActMs: acts.since() })") && phone.includes('trackActs(window)')
+  ], [true, true, true, true, true, true])
+  check('Copy screen copies the viewport through the fallback, never the old short-circuit', [
+    phone.includes('copyText(viewportText(term))'),
+    phone.includes('navigator.clipboard?.writeText(text).then(')
+  ], [true, false])
+  check('a failed copy says https only on http, in both places', [(phone.match(/copyFailedSentence\(window\.isSecureContext\)/g) ?? []).length, phone.includes('Try the https link')], [2, false])
+  check('both phone sends are capped by the socket\'s frame size before they go', (phone.match(/phoneFrameFits\(/g) ?? []).length, 2)
 }
 
 console.log(failures ? `\n${failures} FAILED` : '\nall pass')

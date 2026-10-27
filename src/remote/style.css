@@ -2381,6 +2381,40 @@ button.crumb:hover {
   color: var(--danger);
 }
 
+/* A toast with a button takes presses; the stack around it still lets them through. */
+.toast[data-action] {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  pointer-events: auto;
+}
+
+.toast-action {
+  flex: none;
+  min-height: 32px;
+  padding: 4px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--accent-ink);
+  font: inherit;
+  font-weight: 600;
+}
+
+/* The copy fallback's textarea (clipboard.ts): off sight, 16px so iOS does not zoom on its focus. */
+.clipboard-buffer {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  pointer-events: none;
+  font-size: 16px;
+}
+
 @keyframes toast-in {
   from {
     opacity: 0;

@@ -17,7 +17,8 @@ import { SizeClaimer, isGrid, type ClaimTrigger, type Grid } from '@shared/sizeC
 import { terminalTheme } from '../lib/theme'
 import { recentlyUsed } from '../lib/lastInput'
 import { platformName } from '../lib/hubRemote'
-import { installShiftSelection, installTerminalClipboard } from '../lib/terminalSelection'
+import { installMotionGuard, installOsc52, installShiftSelection, installTerminalClipboard, pasteVerdict, takesSessionCopy, trackActs, viewportText } from '../lib/terminalSelection'
+import { toast } from '../lib/toasts'
 import type { Tab } from '../types'
 import { RemoteFab } from './RemoteFab'
 import { RemoteDraft } from './RemoteDraft'
@@ -60,6 +61,16 @@ import { useDictation } from './Dictation'
 /** Live remote terminals by tab id, for a CDP probe (the buffer, gotcha 5). Nothing in the app reads it. */
 const remoteTerms = new Map<string, Terminal>()
 ;(window as unknown as { stokeRemoteTerminals?: Map<string, Terminal> }).stokeRemoteTerminals = remoteTerms
+
+/** Said for a paste whose clipboard holds only an image or files: nothing carries those to the other computer yet. */
+const NOT_TEXT_PASTE = 'Images and files can’t be pasted into another computer’s session yet. Paste text, or send the file from that computer.'
+
+/** A paste of the viewer's clipboard into the remote session, or the sentence for one that cannot go (files first: Finder's names name nothing there). */
+function pasteInto(term: Terminal | null): void {
+  const verdict = pasteVerdict(window.stoke.clipboard.readSync(), true)
+  if (verdict?.kind === 'text') term?.paste(verdict.text)
+  else if (verdict?.kind === 'not-text') toast({ title: NOT_TEXT_PASTE })
+}
 
 const STATE_WORDS: Record<RemoteTabView['state'], string> = {
   connecting: 'Connecting through your hub…',
@@ -200,13 +211,30 @@ export function RemoteTerminal({ tab, view, active, theme, fontFamily, fontSize,
     term.registerLinkProvider({ provideLinks: (line, done) => done(terminalLinkRepairs(term, line).map(link => ({ ...link, activate: openLink }))) })
     term.loadAddon(new WebLinksAddon(openLink))
     term.open(host)
-    const removeSelection = installShiftSelection(host, term, window.stoke.platform === 'darwin')
+    const isMac = window.stoke.platform === 'darwin'
+    const removeSelection = installShiftSelection(host, term, isMac)
+    // Bare pointer motion under Claude Code (1003) must not clear the selection (gotcha 10).
+    const removeMotion = installMotionGuard(term)
     const removeClipboard = installTerminalClipboard(host, term, {
-      isMac: window.stoke.platform === 'darwin',
-      read: () => window.stoke.clipboard.readSync().text,
+      isMac,
+      read: () => window.stoke.clipboard.readSync(),
       write: text => window.stoke.clipboard.writeText(text),
+      notText: () => toast({ title: NOT_TEXT_PASTE }),
       menu: (event, selection) => setClipboardMenu({x:event.clientX,y:event.clientY,selection})
     })
+    /*
+     * OSC 52 from the session lands on THIS computer's clipboard. The host's own
+     * tab for the session (if it has one open) handles the same sequence and
+     * writes the host's clipboard too; both is the intent. Held while a replay
+     * is parsed (`replays`), so an attach never copies again what was copied
+     * before it, and unless this tab is the one being used (`takesSessionCopy`):
+     * a copy made at the host's desk must not overwrite this computer's clipboard
+     * from a tab that merely sits open here.
+     */
+    let replays = 0
+    const acts = trackActs(interactionHost)
+    const mine = (): boolean => takesSessionCopy({ shown: activeRef.current, focused: document.hasFocus(), sinceActMs: acts.since() })
+    const removeOsc52 = installOsc52(term, text => window.stoke.clipboard.writeText(text), () => replays > 0 || !mine())
     termRef.current = term
     remoteTerms.set(remoteId, term)
     /** The pty's grid as the other machine last said it. */
@@ -269,7 +297,9 @@ export function RemoteTerminal({ tab, view, active, theme, fontFamily, fontSize,
           const rows = num(frame.rows, 30)
           term.reset()
           sizeTo({ cols, rows }, { cols: num(frame.desktopCols, cols), rows: num(frame.desktopRows, rows) })
+          replays++
           term.write(typeof frame.history === 'string' ? frame.history : '', () => {
+            replays--
             if (!disposed && saved && interaction === revision) restoreTerminalViewport(term, saved)
           })
           break
@@ -338,7 +368,10 @@ export function RemoteTerminal({ tab, view, active, theme, fontFamily, fontSize,
       claimerRef.current = null
       offFrame()
       offData.dispose()
+      removeOsc52()
+      acts.dispose()
       removeClipboard()
+      removeMotion()
       removeSelection()
       remoteTerms.delete(remoteId)
       termRef.current = null
@@ -497,7 +530,9 @@ export function RemoteTerminal({ tab, view, active, theme, fontFamily, fontSize,
       <RemoteDraft label={`${deviceLabel} · ${tab.customTitle?.trim() || tab.title}`} scope={JSON.stringify(['remote-desktop', tab.remote?.device, tab.remote?.ptyId ?? remoteId])} view={view} receive={draftInput} />
       {clipboardMenu && active && <ContextMenu x={clipboardMenu.x} y={clipboardMenu.y} onClose={() => setClipboardMenu(null)} items={[
         {label:'Copy',disabled:!clipboardMenu.selection,onSelect:()=>window.stoke.clipboard.writeText(clipboardMenu.selection)},
-        {label:'Paste',onSelect:()=>{const text=window.stoke.clipboard.readSync().text;if(text)termRef.current?.paste(text)}}
+        // The viewport, soft wraps joined: what is on screen, never an empty write over the clipboard.
+        {label:'Copy screen',onSelect:()=>{const t=termRef.current;const text=t?viewportText(t):'';if(text)window.stoke.clipboard.writeText(text)}},
+        {label:'Paste',onSelect:()=>pasteInto(termRef.current)}
       ]} />}
       {dictation.strip}
     </div>

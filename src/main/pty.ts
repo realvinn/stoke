@@ -53,7 +53,8 @@ import {
   isTerminalReport,
   SubmitQueue,
   submitFrames,
-  trackBracketedPaste
+  trackBracketedPaste,
+  typesForClaude
 } from '../shared/remotePhone.ts'
 import { ReplayModes } from '../shared/replayModes.ts'
 import { ScreenMirror } from './screenMirror.ts'
@@ -1018,7 +1019,8 @@ export class PtyManager {
     if (!s || s.exited) return false
     const frames = submitFrames(text, {
       bracketedPaste: s.bracketedPaste,
-      claude: isClaudeCode(cliIdOf(s.cli)),
+      // By what reads the keys now: an SSH tab at a shell is not Claude Code (`typesForClaude`).
+      claude: typesForClaude({ claude: isClaudeCode(cliIdOf(s.cli)), ssh: s.hostId !== null, bracketedPaste: s.bracketedPaste }),
       enter: opts.enter !== false
     })
     /*

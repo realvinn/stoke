@@ -69,6 +69,10 @@ import {
   trackBracketedPaste,
   trackPrompt,
   typingChunks,
+  typesForClaude,
+  PHONE_WS_FRAME_MAX,
+  phoneFrameFits,
+  utf8Length,
   type PromptTrack
 } from '../src/shared/remotePhone.ts'
 import { ReplayModes } from '../src/shared/replayModes.ts'
@@ -535,6 +539,51 @@ check(
   submitFrames('a\nb', { bracketedPaste: false, claude: false }).chunks,
   ['a\nb']
 )
+
+{
+  /*
+   * An SSH tab launches as `claude` and can sit at a shell (gotcha 10). The
+   * composer typed every newline there as Claude's ESC CR, and bash 3.2 rang
+   * the bell and ran `cd /srv/appgit pull`. With bracketed paste OFF nothing
+   * there is Claude Code's input box, so the lines go plain (a newline is
+   * Enter to a shell). 2004 on stays Claude's framing: Stoke cannot tell a
+   * modern shell's prompt from Claude's box by modes alone.
+   */
+  console.log('\nan SSH tab at a shell is typed as a shell, not as Claude (typesForClaude)')
+  const twoLines = 'cd /srv/app\ngit pull'
+  const framed = (s: { claude: boolean; ssh: boolean; bracketedPaste: boolean }): string =>
+    submitFrames(twoLines, { bracketedPaste: s.bracketedPaste, claude: typesForClaude(s) }).chunks.join('')
+  check('an SSH tab with 2004 off types its lines plain, no ESC CR', framed({ claude: true, ssh: true, bracketedPaste: false }), twoLines)
+  check('an SSH tab with 2004 on keeps Claude\'s framing (ambiguous: kept)', framed({ claude: true, ssh: true, bracketedPaste: true }), 'cd /srv/app\u001b\rgit pull')
+  check('a local Claude tab is Claude whatever its modes', [typesForClaude({ claude: true, ssh: false, bracketedPaste: false }), typesForClaude({ claude: true, ssh: false, bracketedPaste: true })], [true, true])
+  check('another agent is never typed as Claude', typesForClaude({ claude: false, ssh: true, bracketedPaste: true }), false)
+  const ptySource = readFileSync(join(import.meta.dirname, '../src/main/pty.ts'), 'utf8')
+  check(
+    'PtyManager frames a submit by the live session, SSH and 2004 included (the wire)',
+    ptySource.includes('claude: typesForClaude({ claude: isClaudeCode(cliIdOf(s.cli)), ssh: s.hostId !== null, bracketedPaste: s.bracketedPaste })'),
+    true
+  )
+}
+
+{
+  /*
+   * A frame past the socket's cap is closed with 1009 and lost; the phone
+   * cleared the composer after sending one. Measured in UTF-8 bytes of the
+   * JSON, which is what `ws` counts: CJK text passes `.length` checks at a
+   * third of the bytes.
+   */
+  console.log('\nthe phone refuses a frame the socket would drop (phoneFrameFits)')
+  const frame = (text: string): string => JSON.stringify({ type: 'submit', text })
+  check('the cap is the server\'s 256 KiB', PHONE_WS_FRAME_MAX, 256 * 1024)
+  check('a 200,000-character paste fits', phoneFrameFits(frame('x'.repeat(200_000))), true)
+  check('a 274,400-character paste does not', phoneFrameFits(frame('x'.repeat(274_400))), false)
+  const cjk = '\u6f22'.repeat(87_400)
+  check('87,400 CJK characters do not, though their .length is a third of the cap', [cjk.length < PHONE_WS_FRAME_MAX, phoneFrameFits(frame(cjk))], [true, false])
+  const mixed = 'a\u00e9\u6f22\u{1F600}\ud800z\n"\\'
+  check('utf8Length agrees with node for ASCII, accents, CJK, emoji and a lone surrogate', utf8Length(mixed), Buffer.byteLength(mixed, 'utf8'))
+  const serverSource = readFileSync(join(import.meta.dirname, '../src/main/remote/server.ts'), 'utf8')
+  check('the server caps its socket at the same constant (the wire)', serverSource.includes('const MAX_WS_FRAME = PHONE_WS_FRAME_MAX'), true)
+}
 
 check('DECSET 2004 on is read from the stream', trackBracketedPaste('\u001b[?2004h', false), true)
 check('and off turns it back off', trackBracketedPaste('\u001b[?2004l', true), false)
