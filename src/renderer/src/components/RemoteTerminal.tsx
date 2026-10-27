@@ -17,10 +17,11 @@ import { SizeClaimer, isGrid, type ClaimTrigger, type Grid } from '@shared/sizeC
 import { terminalTheme } from '../lib/theme'
 import { recentlyUsed } from '../lib/lastInput'
 import { platformName } from '../lib/hubRemote'
-import { installShiftSelection } from '../lib/terminalSelection'
+import { installShiftSelection, installTerminalClipboard } from '../lib/terminalSelection'
 import type { Tab } from '../types'
 import { RemoteFab } from './RemoteFab'
 import { RemoteDraft } from './RemoteDraft'
+import { ContextMenu } from './ContextMenu'
 import { useDictation } from './Dictation'
 
 /*
@@ -100,6 +101,8 @@ interface Props {
 }
 
 export function RemoteTerminal({ tab, view, active, theme, fontFamily, fontSize, terminal, accent, alpha, bar, voice, onClose, onOpenUrl }: Props): React.JSX.Element {
+  const [clipboardMenu, setClipboardMenu] = useState<{x:number;y:number;selection:string}|null>(null)
+  useEffect(() => { setClipboardMenu(null) }, [active, tab.remote?.tabId])
   const draftInput = useRef<((text: string) => boolean) | null>(null)
   const hostRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
@@ -198,6 +201,12 @@ export function RemoteTerminal({ tab, view, active, theme, fontFamily, fontSize,
     term.loadAddon(new WebLinksAddon(openLink))
     term.open(host)
     const removeSelection = installShiftSelection(host, term, window.stoke.platform === 'darwin')
+    const removeClipboard = installTerminalClipboard(host, term, {
+      isMac: window.stoke.platform === 'darwin',
+      read: () => window.stoke.clipboard.readSync().text,
+      write: text => window.stoke.clipboard.writeText(text),
+      menu: (event, selection) => setClipboardMenu({x:event.clientX,y:event.clientY,selection})
+    })
     termRef.current = term
     remoteTerms.set(remoteId, term)
     /** The pty's grid as the other machine last said it. */
@@ -266,7 +275,7 @@ export function RemoteTerminal({ tab, view, active, theme, fontFamily, fontSize,
           break
         }
         case 'data':
-          if (typeof frame.data === 'string') term.write(frame.data)
+          if (attached && typeof frame.data === 'string') term.write(frame.data)
           break
         case 'size': {
           const cols = num(frame.cols, term.cols)
@@ -283,6 +292,7 @@ export function RemoteTerminal({ tab, view, active, theme, fontFamily, fontSize,
           break
       }
     })
+    window.stoke.hub.remote.rendererAttached(remoteId, true)
     const offData = term.onData((data) => {
       // Only keys: xterm's own answers to the far application are the far terminal's to give.
       if (isTerminalReport(data)) return
@@ -316,6 +326,7 @@ export function RemoteTerminal({ tab, view, active, theme, fontFamily, fontSize,
     ro.observe(host, { box: 'border-box' })
     return () => {
       disposed = true
+      window.stoke.hub.remote.rendererAttached(remoteId, false)
       host.removeEventListener('wheel', touched)
       host.removeEventListener('pointerdown', touched, true)
       host.removeEventListener('keydown', touched, true)
@@ -327,6 +338,7 @@ export function RemoteTerminal({ tab, view, active, theme, fontFamily, fontSize,
       claimerRef.current = null
       offFrame()
       offData.dispose()
+      removeClipboard()
       removeSelection()
       remoteTerms.delete(remoteId)
       termRef.current = null
@@ -482,7 +494,11 @@ export function RemoteTerminal({ tab, view, active, theme, fontFamily, fontSize,
         </RemoteFab>
       )}
       <div className="term-host remote-host" ref={hostRef} />
-      <RemoteDraft scope={JSON.stringify(['remote-desktop', tab.remote?.device, tab.remote?.ptyId ?? remoteId])} view={view} receive={draftInput} />
+      <RemoteDraft label={`${deviceLabel} · ${tab.customTitle?.trim() || tab.title}`} scope={JSON.stringify(['remote-desktop', tab.remote?.device, tab.remote?.ptyId ?? remoteId])} view={view} receive={draftInput} />
+      {clipboardMenu && active && <ContextMenu x={clipboardMenu.x} y={clipboardMenu.y} onClose={() => setClipboardMenu(null)} items={[
+        {label:'Copy',disabled:!clipboardMenu.selection,onSelect:()=>window.stoke.clipboard.writeText(clipboardMenu.selection)},
+        {label:'Paste',onSelect:()=>{const text=window.stoke.clipboard.readSync().text;if(text)termRef.current?.paste(text)}}
+      ]} />}
       {dictation.strip}
     </div>
   )

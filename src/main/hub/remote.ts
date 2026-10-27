@@ -78,6 +78,7 @@ import {
   type ChatsShareBlock,
   type HubRemoteView,
   type OnceGrant,
+  type OtherMachineView,
   type RelayScope,
   type RemoteChatOpen,
   type RemoteChatPeerState,
@@ -219,6 +220,7 @@ export interface HubRemoteDeps extends RemoteMachineDeps {
   log(message: string, err?: unknown): void
   /** Tests only: the guest's keepalive, in real milliseconds (`RELAY_PING_MS`, `RELAY_PONG_WAIT_MS`). */
   keepAlive?: { pingMs: number; pongWaitMs: number }
+  snapshotWaitMs?: number
   /** Tests only: the guest's chats timings, in real milliseconds (`CHATS_IDLE_MS`, `CHATS_WAIT_MS`, `CHATS_RETRY_MS`). */
   chatsTiming?: { idleMs?: number; waitMs?: number; retryMs?: number; requestMs?: number }
 }
@@ -275,6 +277,10 @@ interface GuestTab {
   ping: ReturnType<typeof setInterval> | null
   pongWait: ReturnType<typeof setTimeout> | null
   closed: boolean
+  rendererReady: boolean
+  rendererOwners: Set<number | string>
+  terminalOpened: boolean
+  snapshotWait: ReturnType<typeof setTimeout> | null
   /** The host's last word on the session's model, context and usage, or null. */
   session: RemoteSessionStatus | null
   /**
@@ -364,6 +370,9 @@ interface PendingAsk {
 export class HubRemote {
   private readonly d: HubRemoteDeps
   private online: string[]
+  private lastAccount: string | null = null
+  private presenceKnown = false
+  private lastMachines: { machine: OtherMachineView; sign: string }[] = []
   private statuses: Record<string, RemoteStatus>
   private presenceOpen: boolean
   private sent: { core: string; full: string; at: number; epoch: number } | null
@@ -421,7 +430,10 @@ export class HubRemote {
     v.sharing = this.d.sharing()
     v.available = ctx !== null
     const label = (id: string): string => ctx?.active.find((a) => a.id === id)?.label ?? this.statuses[id]?.name ?? 'another device'
-    if (ctx) v.machines = otherMachines({ me: ctx.me.id, active: ctx.active, online: this.online, statuses: this.statuses })
+    if (ctx) v.machines = this.presenceKnown
+      ? otherMachines({ me: ctx.me.id, active: ctx.active, online: this.online, statuses: this.statuses })
+      : this.lastMachines.filter(({machine,sign}) => this.lastAccount === ctx.account && machine.id !== ctx.me.id && ctx.active.some(a => a.id === machine.id && a.sign === sign && (!a.caps || a.caps.includes('remote-host'))))
+        .map(({machine}) => ({...machine,reachable:false}))
     v.tabs = [...this.tabs.values()].filter((t) => !t.sink).map((t) => ({
       id: t.id,
       device: t.device,
@@ -430,7 +442,7 @@ export class HubRemote {
       ptyId: t.ptyId,
       title: t.title,
       project: t.project,
-      state: t.state,
+      state: t.state === 'open' && (!t.terminalOpened || t.snapshotWait !== null) ? 'connecting' : t.state,
       message: t.message,
       session: t.session,
       mode: t.mode,
@@ -506,7 +518,15 @@ export class HubRemote {
   }
 
   /** It closed: nothing is known about anyone until it opens again. */
-  presenceClosed(): void {
+  presenceClosed(remember = true): void {
+    const ctx = this.d.context()
+    if (!remember) { this.lastMachines = []; this.lastAccount = null }
+    else if (ctx && this.presenceKnown) {
+      this.lastAccount = ctx.account
+      this.lastMachines = otherMachines({me:ctx.me.id,active:ctx.active,online:this.online,statuses:this.statuses})
+        .map(machine => ({machine,sign:ctx.active.find(a=>a.id===machine.id)!.sign}))
+    }
+    this.presenceKnown = false
     this.presenceOpen = false
     if (this.pollTimer) clearInterval(this.pollTimer)
     this.pollTimer = null
@@ -516,6 +536,7 @@ export class HubRemote {
   }
 
   onOnline(online: string[]): void {
+    this.presenceKnown = true
     this.online = [...online]
     for (const id of Object.keys(this.statuses)) if (!this.online.includes(id)) delete this.statuses[id]
     this.emit()
@@ -649,7 +670,7 @@ export class HubRemote {
   /* ======================================================== guest: remote tabs */
 
   /** Open one of another machine's sessions in a tab here. */
-  open(device: string, ptyId: string, sink?: RemoteDeviceSink): { ok: true; tab: string } | { ok: false; message: string } {
+  open(device: string, ptyId: string, sink?: RemoteDeviceSink, waitForRenderer = false): { ok: true; tab: string } | { ok: false; message: string } {
     const ctx = this.d.context()
     if (!ctx) return { ok: false, message: 'Sign in to your hub and join its vault on this computer first.' }
     if (device === ctx.me.id || !ctx.active.some((a) => a.id === device)) return { ok: false, message: 'That machine is not one of your devices.' }
@@ -674,6 +695,10 @@ export class HubRemote {
       ping: null,
       pongWait: null,
       closed: false,
+      rendererReady: !waitForRenderer,
+      rendererOwners: new Set(),
+      terminalOpened: false,
+      snapshotWait: null,
       session: null,
       sizes: false,
       mode: null,
@@ -689,7 +714,7 @@ export class HubRemote {
   /** The authenticated website may open only advertised sessions of online, approved devices. */
   openDevice(device: string, ptyId: string, sink: RemoteDeviceSink): { ok: true; connection: RemoteDeviceConnection } | { ok: false; message: string } {
     const machine = this.view().machines.find((m) => m.id === device)
-    if (!machine) return { ok: false, message: 'That device is not online and approved for this Stoke account.' }
+    if (!machine || machine.reachable === false) return { ok: false, message: 'That device is not online and approved for this Stoke account.' }
     if (!machine.status?.open) return { ok: false, message: `${machine.label} is not sharing its sessions. Enable session sharing in Stoke there.` }
     if (!machine.status.sessions.some((s) => s.ptyId === ptyId)) return { ok: false, message: 'That session is no longer shared by this device.' }
     if ([...this.tabs.values()].filter((t) => t.sink && !t.closed).length >= HOSTED_MAX) return { ok: false, message: 'Too many website sessions are open on this computer. Close one and try again.' }
@@ -711,6 +736,41 @@ export class HubRemote {
       resize: (cols, rows) => this.resize(id, cols, rows),
       close: (reconnecting = false) => this.close(id, reconnecting)
     } }
+  }
+
+  /** Subscribe before requesting the screen. A fast host must not send its
+   * one full snapshot before the renderer has mounted its terminal. */
+  rendererAttached(tabId: string, attached: boolean, owner: number | string = 'legacy'): void {
+    const t = this.tabs.get(tabId)
+    if (!t || t.closed || t.sink) return
+    if (attached) t.rendererOwners.add(owner)
+    else {
+      t.rendererOwners.delete(owner)
+      if (t.rendererOwners.size) return
+    }
+    t.rendererReady = attached
+    this.clearSnapshotWait(t)
+    if (t.state !== 'open' || !t.channel) return
+    if (t.terminalOpened) {
+      t.channel.send({t:'ws-close',id:PTY_SOCKET,code:4000,reason:'refreshing terminal viewer'})
+      t.terminalOpened = false
+    }
+    if (attached) this.openTerminal(t, t.channel)
+  }
+  rendererGone(owner: number): void {
+    for (const t of this.tabs.values()) if (t.rendererOwners.has(owner)) this.rendererAttached(t.id, false, owner)
+  }
+  private openTerminal(t: GuestTab, channel: RelayChannel): void {
+    if (t.terminalOpened || (!t.sink && !t.rendererReady)) return
+    t.terminalOpened = channel.send({ t: 'ws-open', id: PTY_SOCKET, path: `/ws?ptyId=${encodeURIComponent(t.ptyId)}` })
+    if (t.terminalOpened) t.snapshotWait = setTimeout(() => {
+      t.snapshotWait = null
+      if (!t.closed && t.channel === channel) channel.close(`The chat on ${this.nameOf(t.device)} did not send its terminal screen. Other chats may still be available.`)
+    }, this.d.snapshotWaitMs ?? 15_000)
+  }
+  private clearSnapshotWait(t: GuestTab): void {
+    if (t.snapshotWait) clearTimeout(t.snapshotWait)
+    t.snapshotWait = null
   }
 
   /** Keystrokes typed into a remote tab. */
@@ -784,6 +844,7 @@ export class HubRemote {
     const t = this.tabs.get(tabId)
     if (!t) return
     t.closed = true
+    this.clearSnapshotWait(t)
     if (t.timer) clearTimeout(t.timer)
     if (t.hint) clearTimeout(t.hint)
     this.stopKeepAlive(t)
@@ -800,6 +861,8 @@ export class HubRemote {
   private async connect(t: GuestTab): Promise<void> {
     if (t.closed || t.connecting) return
     t.connecting = true
+    this.clearSnapshotWait(t)
+    t.terminalOpened = false
     const gen = ++t.gen
     const current = (): boolean => !t.closed && t.gen === gen
     try {
@@ -871,13 +934,12 @@ export class HubRemote {
         if (t.hint) clearTimeout(t.hint)
         t.state = 'open'
         t.message = null
-        t.tries = 0
         // Only a host that says its own tab follows takes a resize from here (relay.ts `ready`).
         t.sizes = f.mode === 'full' && f.sizes === true
         // And only one that says so takes a transcript: an older host would press Enter after it.
         t.mode = f.mode
         t.typeOnly = f.mode === 'full' && f.typeOnly === true
-        channel.send({ t: 'ws-open', id: PTY_SOCKET, path: `/ws?ptyId=${encodeURIComponent(t.ptyId)}` })
+        this.openTerminal(t, channel)
         this.emit()
         return
       case 'status': {
@@ -889,6 +951,7 @@ export class HubRemote {
         return
       }
       case 'refused':
+        this.clearSnapshotWait(t)
         if (t.hint) clearTimeout(t.hint)
         t.state = 'refused'
         t.message = f.reason.slice(0, 300)
@@ -905,8 +968,13 @@ export class HubRemote {
           return
         }
         if (!msg || typeof msg !== 'object' || typeof (msg as { type?: unknown }).type !== 'string') return
+        if ((msg as {type:string}).type === 'attached' || (msg as {type:string}).type === 'exit') {
+          this.clearSnapshotWait(t)
+          t.tries = 0
+        }
         if (t.sink) t.sink.frame(msg as RemoteTabFrame)
         else this.d.frame(t.id, msg as RemoteTabFrame)
+        if ((msg as {type:string}).type === 'attached') this.emit()
         if ((msg as { type: string }).type === 'exit') {
           t.state = 'ended'
           t.message = typeof (msg as { reason?: unknown }).reason === 'string' ? ((msg as { reason: string }).reason) : 'The session ended on the other machine.'
@@ -961,6 +1029,8 @@ export class HubRemote {
   }
 
   private lost(t: GuestTab, reason: string): void {
+    this.clearSnapshotWait(t)
+    t.terminalOpened = false
     if (t.hint) clearTimeout(t.hint)
     if (t.closed || t.state === 'refused' || t.state === 'ended') {
       this.emit()
@@ -1694,7 +1764,7 @@ export class HubRemote {
     this.once = []
     this.chatOnce = []
     this.endChatSearch()
-    this.presenceClosed()
+    this.presenceClosed(false)
   }
 
   /* ======================================================== guest: chat history */

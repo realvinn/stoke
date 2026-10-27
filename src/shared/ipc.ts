@@ -396,6 +396,7 @@ export const CH = {
   /** main -> renderer: one pty-socket frame for a remote tab (tabId, frame). */
   hubRemoteFrame: 'hub:remote-frame',
   hubRemoteOpen: 'hub:remote-open',
+  hubRemoteRendererAttached: 'hub:remote-renderer-attached',
   /** renderer -> main, fire and forget: keystrokes typed into a remote tab. */
   hubRemoteInput: 'hub:remote-input',
   /**

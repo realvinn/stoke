@@ -2000,12 +2000,19 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     App's `overlayOpen` as well. First home: AccountSyncSettings' ShareChats
   src/components/OtherMachines.tsx  the sidebar's "Other machines" group: the owner's other
                     signed-in desktops online now and, where their owner shares them, their
-                    sessions; a click opens one as a remote tab. A group, never an overlay
+                    sessions; a click opens one as a remote tab. Last-known rows stay visible
+                    during account presence reconnects, marked unreachable for new opens; each
+                    chat reports its own link state. A group, never an overlay
   src/components/RemoteDraft.tsx  persistent local prompt editor for remote tabs; printable
                     terminal input and dictation compose locally by default, with direct mode
                     available for native terminal input. Enter sends; Shift+Enter adds a line;
-                    sent text keeps a recovery copy and reconnect never replays it.
+                    sent text keeps a recovery copy and reconnect never replays it. The compact
+                    editor keeps its height across reconnects; expanding overlays the terminal.
+                    Checkpointed drafts recover after abrupt renderer loss; replacement host
+                    sessions offer labelled recovery instead of inheriting another draft.
   src/components/RemoteTerminal.tsx  a remote tab: the other machine's pty through the relay,
+                    snapshot requested only after the viewer subscribes (including remounts),
+                    with per-chat screen deadlines and local clipboard handling;
                     drawn at that pty's grid, which it claims for its own pane whenever it is
                     USED — focus, a key, a click, its pane resized just after a person acted —
                     last active wins (`SizeClaimer`, gotchas 87 and 151); never typing xterm's
@@ -2164,6 +2171,9 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     status bar's path, disabled with a reason on SSH), `profileClosePlan`
                     (a sidebar profile chip's Close N tabs, leaving running turns and
                     starts still in flight open)
+  src/lib/terminalSelection.ts  shared Shift-drag selection and clipboard controls;
+                    remote terminals copy locally, preserve Ctrl+C interrupts, and intercept
+                    secondary clicks before agent mouse reporting can paste or clear a highlight.
   src/lib/agentColor.ts  `agentMark(key)`: `data-agent` plus `--agent-ink`/`-text`/`-fill`
                     pointed at that key's tokens, inline, so a new agent or account needs
                     no stylesheet line. `paneAgent`: an install or key-enrolment tab is no

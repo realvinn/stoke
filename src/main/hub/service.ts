@@ -3069,9 +3069,15 @@ export class HubService {
 
   remoteOpen(device: string, ptyId: string): HubResult<{ tab: string }> {
     if (!this.remote) return { ok: false, message: 'Other machines are not available here.' }
-    const r = this.remote.open(device, ptyId)
+    const r = this.remote.open(device, ptyId, undefined, true)
     return r.ok ? { ok: true, tab: r.tab } : { ok: false, message: r.message }
   }
+
+  remoteRendererAttached(tab: string, attached: boolean, owner: number): void {
+    this.remote?.rendererAttached(tab, attached, owner)
+  }
+
+  remoteRendererGone(owner: number): void { this.remote?.rendererGone(owner) }
 
   remoteInput(tab: string, data: string): void {
     this.remote?.input(tab, data)

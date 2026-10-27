@@ -9344,15 +9344,30 @@ button.color-field-swatch[aria-expanded='true'] {
 .ssh-files-entry:disabled { opacity: 0.5; }
 .ssh-files-panel progress { width: 100%; accent-color: var(--accent); }
 
-/* Local drafts remain editable while the remote PTY is unreachable. */
-.remote-draft { flex: none; padding: var(--space-8); background: var(--bg); }
-.remote-draft[hidden] { display: none; }
-.remote-draft label { display: block; margin-bottom: var(--space-4); color: var(--text-muted); font-size: var(--fs-sm); }
-.remote-draft textarea { box-sizing: border-box; width: 100%; min-height: 4rem; max-height: 12rem; resize: vertical; padding: var(--space-8); color: var(--text); background: var(--bg); border: 1px solid var(--border-subtle); border-radius: var(--r-md); font: inherit; }
-.remote-draft-actions { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-8); margin-top: var(--space-4); }
-.remote-draft-actions > span { flex: 1; color: var(--text-muted); font-size: var(--fs-xs); }
-.remote-draft select { max-width: 16rem; }
+/* One compact editor stays mounted through every link state. Expanding the
+ * same textarea overlays the terminal rather than changing its grid. */
+.remote-draft { --remote-draft-input-height: calc(1.5em + 2 * var(--space-4) + 2px); position: relative; flex: none; padding: var(--space-4) var(--space-8); background: var(--bg); border-top: 1px solid var(--border-subtle); }
+.remote-draft textarea { display: block; box-sizing: border-box; width: 100%; height: var(--remote-draft-input-height); min-height: var(--remote-draft-input-height); resize: none; overflow: auto; padding: var(--space-4); color: var(--text); background: var(--bg); border: 1px solid transparent; border-radius: var(--r-sm); font: inherit; line-height: 1.5; }
+.remote-draft textarea:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: -2px; }
+.remote-draft[data-expanded] textarea { position: absolute; z-index: var(--z-sticky); bottom: 2rem; left: var(--space-8); right: var(--space-8); width: auto; height: clamp(6rem, 35vh, 20rem); border-color: var(--border-strong); box-shadow: var(--shadow-md); }
+.remote-draft[data-expanded] { padding-top: calc(var(--remote-draft-input-height) + var(--space-4)); }
+.remote-draft-actions { display: flex; align-items: center; gap: var(--space-4); height: 1.75rem; min-width: 0; }
+.remote-draft-actions > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); font-size: var(--fs-xs); }
+.remote-draft[data-offline] .remote-draft-actions > span { color: var(--warning); }
+.remote-draft-actions > .btn, .remote-draft-options > summary { flex: none; padding: 0 var(--space-4); min-height: 1.5rem; font-size: var(--fs-xs); white-space: nowrap; }
+.remote-draft-options { flex: none; font-size: var(--fs-xs); }
+.remote-draft-options > summary { display: flex; align-items: center; cursor: pointer; list-style: none; color: var(--text-muted); border-radius: var(--r-sm); }
+.remote-draft-options > summary::-webkit-details-marker { display: none; }
+.remote-draft-options > summary:focus-visible { outline: 2px solid var(--accent-ink); }
+.remote-draft-menu { position: absolute; right: var(--space-8); bottom: calc(100% + var(--space-8)); z-index: calc(var(--z-sticky) + 1); display: grid; gap: var(--space-8); width: 20rem; max-width: calc(100% - 2 * var(--space-8)); box-sizing: border-box; padding: var(--space-12); background: var(--bg-elevated); border: 1px solid var(--border-strong); border-radius: var(--r-md); box-shadow: var(--shadow-md); }
+.remote-draft-menu label { display: block; color: var(--text-muted); }
+.remote-draft-menu select { width: 100%; margin-top: var(--space-4); color: var(--text); background: var(--bg); font: inherit; }
 
 .phone-scope { display: flex; gap: var(--space-4); margin-bottom: var(--space-12); }
 .phone-scope .btn { flex: 1; }
 .phone-scope .btn[aria-pressed='true'] { background: var(--surface-selected); color: var(--text); }
+
+.machine[data-reachable='false'] .machine-dot { background: var(--warning); }
+.remote-session-link { flex: none; color: var(--text-muted); font-size: var(--fs-xs); }
+.remote-session-link[data-state='open'] { color: var(--success); }
+.remote-session-link[data-state='reconnecting'], .remote-session-link[data-state='lost'], .remote-session-link[data-state='refused'] { color: var(--warning); }

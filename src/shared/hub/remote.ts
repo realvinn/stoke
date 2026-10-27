@@ -339,6 +339,8 @@ export function isAttachAnswer(v: unknown): v is AttachAnswer {
 
 /** One of the owner's other devices, online now, as the "Other machines" list draws it. */
 export interface OtherMachineView {
+  /** False only for a last-known entry while account presence reconnects. */
+  reachable?: boolean
   id: string
   label: string
   platform: string

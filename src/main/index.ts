@@ -5233,6 +5233,17 @@ function registerIpc(): void {
   })
   ipcMain.handle(CH.hubRemoteView, () => hubClient?.remoteView() ?? emptyRemoteView())
   ipcMain.handle(CH.hubRemoteOpen, async (_e, device: unknown, ptyId: unknown) => (await hubService()).remoteOpen(str(device), str(ptyId)))
+  const remoteViewerContents = new Set<number>()
+  ipcMain.on(CH.hubRemoteRendererAttached, (event, tab: unknown, attached: unknown) => {
+    if (typeof attached !== 'boolean') return
+    const owner = event.sender.id
+    if (attached && !remoteViewerContents.has(owner)) {
+      remoteViewerContents.add(owner)
+      event.sender.on('render-process-gone', () => hubClient?.remoteRendererGone(owner))
+      event.sender.once('destroyed', () => { remoteViewerContents.delete(owner); hubClient?.remoteRendererGone(owner) })
+    }
+    hubClient?.remoteRendererAttached(str(tab), attached, owner)
+  })
   ipcMain.on(CH.hubRemoteInput, (_e, tab: unknown, data: unknown) => hubClient?.remoteInput(str(tab), str(data)))
   // Never STARTS the hub client: a remote tab exists only while it runs.
   ipcMain.handle(CH.hubRemoteType, (_e, tab: unknown, text: unknown, enter: unknown) =>

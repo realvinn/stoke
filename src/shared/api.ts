@@ -996,6 +996,8 @@ export interface StokeApi {
       /** One pty-socket frame (`attached`, `data`, `exit`, `status`, `size`) for a remote tab. */
       onFrame(cb: (tabId: string, frame: RemoteTabFrame) => void): () => void
       open(deviceId: string, ptyId: string): Promise<HubResult<{ tab: string }>>
+      /** Mount/unmount the terminal viewer; starts streaming only after subscription. */
+      rendererAttached(tabId: string, attached: boolean): void
       input(tabId: string, data: string): void
       /**
        * Type a transcript dictated on THIS computer into the remote tab's

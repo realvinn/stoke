@@ -9,7 +9,8 @@ import { platformName } from '../lib/hubRemote'
 
 /*
  * The sidebar's "Other machines" group: each of the owner's other signed-in
- * desktops that is online right now, and — where its owner ticked "Let my
+ * desktops last confirmed online (kept visibly pending while account
+ * presence reconnects), and — where its owner ticked "Let my
  * other devices see and open my sessions" THERE — its running sessions.
  * Clicking one opens it as a remote tab here; the other machine asks first
  * (src/main/hub/remote.ts). A group in the sidebar column, never an overlay
@@ -51,12 +52,13 @@ export function OtherMachines({ view, onOpen, hosts = [], onSsh }: Props): React
       )}
       {!folded &&
         view.machines.map((m) => (
-          <div key={m.id} className="machine" data-device={m.id}>
+          <div key={m.id} className="machine" data-device={m.id} data-reachable={m.reachable !== false}>
             <div className="machine-row" title={`${m.label} · ${platformName(m.platform)}`}>
               <span className="machine-dot" aria-hidden="true" />
               <span className="machine-name truncate">{m.label}</span>
               <span className="machine-platform">{platformName(m.platform)}</span>
             </div>
+            {m.reachable === false && <p className="sidebar-note machine-note">Reconnecting to your account… Showing last-known sessions.</p>}
             {onSsh && linkedSshRoutes(hosts, m.id).map(host => <button className="session remote-session" key={host.id} data-machine-ssh={host.id} onClick={() => onSsh(host)} title={`SSH through ${host.alias}; shared Stoke sessions below use the authenticated hub relay.`}><span className="session-title">Open SSH · {host.label || host.alias}</span><span className="session-meta">{sshDirectIp(host.preferredAddress) ?? sshDirectIp(host.alias.split('@').at(-1)) ?? host.alias} · {host.preferredAddress ? 'IP preferred · alias fallback' : 'SSH route'}</span></button>)}
             {m.status === null ? (
               <p className="sidebar-note machine-note">Waiting for it to say what it runs…</p>
@@ -66,18 +68,24 @@ export function OtherMachines({ view, onOpen, hosts = [], onSsh }: Props): React
               <p className="sidebar-note machine-note">No session running.</p>
             ) : (
               <div className="sessions">
-                {m.status.sessions.map((s) => (
+                {m.status.sessions.map((s) => {
+                  const connection = view.tabs.find(t => t.device === m.id && t.ptyId === s.ptyId)
+                  const link = connection?.state === 'open' ? 'Connected' : connection?.state === 'reconnecting' || connection?.state === 'connecting' ? 'Reconnecting' : connection?.state === 'asking' ? 'Awaiting approval' : connection ? 'Unavailable' : null
+                  return (
                   <button
                     key={s.ptyId}
                     className="session remote-session"
                     data-pty={s.ptyId}
+                    disabled={m.reachable === false && !connection}
+                    data-link={connection?.state}
                     aria-current={open.has(`${m.id}\n${s.ptyId}`) ? 'true' : undefined}
                     onClick={() => onOpen(m, s)}
-                    title={`Open on this computer: ${s.title ?? s.project} (${s.project}) on ${m.label}. ${m.label} asks first.`}
+                    title={connection?.message || `Open on this computer: ${s.title ?? s.project} (${s.project}) on ${m.label}. ${m.label} asks first.`}
                   >
                     <span className="session-title">{s.title || s.project || 'Untitled session'}</span>
                     <span className="session-meta">
                       <span className="truncate">{s.project}</span>
+                      {link && <span className="remote-session-link" data-state={connection?.state}>{link}</span>}
                       {STATUS_WORDS[s.status] && (
                         <span className="remote-session-status" data-status={s.status}>
                           {STATUS_WORDS[s.status]}
@@ -90,7 +98,7 @@ export function OtherMachines({ view, onOpen, hosts = [], onSsh }: Props): React
                       )}
                     </span>
                   </button>
-                ))}
+                )})}
               </div>
             )}
           </div>

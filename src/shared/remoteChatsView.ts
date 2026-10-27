@@ -162,7 +162,7 @@ function sameSet(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
  */
 export function chatSharersStep(
   prev: ChatSharers,
-  view: { available: boolean; machines: readonly Pick<OtherMachineView, 'id' | 'status'>[] }
+  view: { available: boolean; machines: readonly Pick<OtherMachineView, 'id' | 'status' | 'reachable'>[] }
 ): { next: ChatSharers; changed: boolean } {
   if (!view.available) {
     if (prev.live.size === 0 && prev.seen.size === 0) return { next: prev, changed: false }
@@ -171,6 +171,7 @@ export function chatSharersStep(
   const live = new Set<string>()
   const seen = new Set(prev.seen)
   for (const m of view.machines) {
+    if (m.reachable === false) continue
     if (m.status?.chats === true) {
       live.add(m.id)
       seen.add(m.id)

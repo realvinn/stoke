@@ -3,8 +3,9 @@ import { DRAFT_MAX, DraftJournal, mountDraftCache, type RecoveryDraft } from '..
 import { remoteTypeVerdict, type RemoteTabView } from '@shared/hub/remote'
 
 /** Compose the whole prompt locally; reconnect never replays terminal control keys. */
-export function RemoteDraft({ scope, view, receive }: {
+export function RemoteDraft({ scope, view, receive, label = 'Remote terminal' }: {
   scope: string
+  label?: string
   view: RemoteTabView | undefined
   receive: MutableRefObject<((text: string) => boolean) | null>
 }): React.JSX.Element {
@@ -17,6 +18,7 @@ export function RemoteDraft({ scope, view, receive }: {
   const [sending, setSending] = useState(false)
   const sendingRef = useRef(false)
   const [direct, setDirect] = useState(false)
+  const [expanded, setExpanded] = useState(false)
   const offline = view?.state !== 'open'
   const preferences = useRef({ direct, offline, waiting: view?.session?.activity === 'waiting' || view?.session?.activity === 'shell' })
   preferences.current = { direct, offline, waiting: view?.session?.activity === 'waiting' || view?.session?.activity === 'shell' }
@@ -25,15 +27,20 @@ export function RemoteDraft({ scope, view, receive }: {
     sendingRef.current = false
     setSending(false)
     const field = input.current!
+    // A resumed host may have a new PTY: flush the old scope in cleanup,
+    // then let only this scope's journal initialise the editor.
+    field.value = ''
+    setHasText(false)
+    setExpanded(false)
     const abort = new AbortController()
     let journal: DraftJournal | null = null
-    try { journal = new DraftJournal(localStorage, scope, Date.now, undefined, 'Remote terminal') } catch { /* editing still works */ }
+    try { journal = new DraftJournal(localStorage, scope, Date.now, undefined, label) } catch { /* editing still works */ }
     const mounted = mountDraftCache(field, journal, {
       signal: abort.signal,
       notify: (state, records) => {
         setHasText(!!field.value)
         setVersions(records)
-        setNote(state === 'error' ? 'Local saving unavailable. Keep a copy before closing.' : state === 'editing' ? 'Saving draft…' : 'Draft saved on this computer')
+        setNote(state === 'error' ? 'Saving unavailable — keep a copy before closing' : state === 'editing' ? 'Saving…' : state === 'restored' ? 'Draft restored' : 'Saved locally')
       }
     })
     cache.current = mounted
@@ -76,21 +83,39 @@ export function RemoteDraft({ scope, view, receive }: {
     } catch { if (identity === generation.current) setNote('The link dropped. Your draft is still here.') }
     finally { if (identity === generation.current) { sendingRef.current = false; setSending(false) } }
   }
+  const fieldId = `remote-draft-${view?.id ?? scope}`
+  const focusInput = (): void => input.current?.focus({ preventScroll: true })
   return (
-    <div className="remote-draft">
-      <label htmlFor={`remote-draft-${view?.id ?? scope}`}>{offline ? 'Connection interrupted — keep writing here' : direct ? 'Direct terminal input is not saved as a draft' : 'Prompt · saved on this computer'}</label>
-      <textarea id={`remote-draft-${view?.id ?? scope}`} ref={input} hidden={direct && !offline && !hasText} rows={3} disabled={sending} maxLength={DRAFT_MAX} placeholder="Write here — your full prompt stays through reconnects. Shift+Enter for a new line." onKeyDown={e => {
-        if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && !offline) { e.preventDefault(); void insert(!e.ctrlKey && !e.metaKey) }
-      }} onInput={() => setHasText(!!input.current?.value)} />
+    <div className="remote-draft" data-expanded={expanded || undefined} data-offline={offline || undefined} onKeyDown={e => e.stopPropagation()}>
+      <label className="sr-only" htmlFor={fieldId}>Remote prompt, saved locally</label>
+      <textarea id={fieldId} ref={input} rows={1} disabled={sending} maxLength={DRAFT_MAX}
+        aria-describedby={`${fieldId}-hint`} placeholder="Message agent…"
+        onKeyDown={e => {
+          if (e.key === 'Escape' && expanded) { e.preventDefault(); setExpanded(false) }
+          if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && !offline) { e.preventDefault(); void insert(!e.ctrlKey && !e.metaKey) }
+        }} onInput={() => setHasText(!!input.current?.value)} />
+      <span className="sr-only" id={`${fieldId}-hint`}>Enter sends, Shift+Enter adds a line, Ctrl+Enter inserts without sending. Your draft stays here through connection loss.</span>
       <div className="remote-draft-actions">
-        <span role="status">{note}</span>
-        {versions.length > 0 && <select aria-label="Recover another saved draft" value="" onChange={e => {
-          const entry = versions.find(v => v.key === e.target.value)
-          if (entry && cache.current?.restore(entry)) setHasText(true)
-        }}><option value="">Recover draft…</option>{versions.map(v => <option key={v.key} value={v.key}>{new Date(v.at).toLocaleString()} · {v.text.slice(0, 70)}</option>)}</select>}
-        <label><input type="checkbox" checked={direct} onChange={e => setDirect(e.target.checked)} /> Type directly in terminal</label>
-        <button className="btn" disabled={offline || !hasText || sending || !!remoteTypeVerdict(view)} onClick={() => void insert(false)}>Insert only</button>
-        <button className="btn" data-variant="primary" disabled={offline || !hasText || sending || !!remoteTypeVerdict(view)} onClick={() => void insert(true)}>{sending ? 'Sending…' : 'Send prompt'}</button>
+        <span role="status" title={note}>{offline ? 'Offline · ' : ''}{note}</span>
+        <button type="button" className="btn" aria-expanded={expanded} aria-controls={fieldId}
+          onMouseDown={e => e.preventDefault()} onClick={() => { setExpanded(v => !v); focusInput() }}>
+          {expanded ? 'Collapse prompt' : 'Expand prompt'}
+        </button>
+        <details className="remote-draft-options">
+          <summary>{versions.length ? `Recover · ${versions.length}` : direct ? 'Direct input' : 'Options'}</summary>
+          <div className="remote-draft-menu">
+            {versions.length > 0 && <label>Recover a saved prompt
+              <select aria-label="Recover another saved draft" value="" onChange={e => {
+                const entry = versions.find(v => v.key === e.target.value)
+                if (entry && cache.current?.restore(entry)) { setHasText(true); focusInput() }
+              }}><option value="">Choose a draft…</option>{versions.map(v => <option key={v.key} value={v.key}>{v.context || 'Saved remote prompt'} · {v.kind === 'queued' ? 'Send attempt' : 'Unsent'} · {new Date(v.at).toLocaleString()} · {v.text.slice(0, 70)}</option>)}</select>
+            </label>}
+            <label><input type="checkbox" checked={direct} onChange={e => setDirect(e.target.checked)} /> Type directly in terminal</label>
+            <span className="field-hint">{direct ? 'Terminal input is not saved as a draft. This editor still keeps anything you write here.' : 'Typing a prompt in the terminal moves it into this saved editor.'}</span>
+            <button type="button" className="btn" disabled={offline || !hasText || sending || !!remoteTypeVerdict(view)} onClick={() => void insert(false)}>Insert only</button>
+          </div>
+        </details>
+        <button type="button" className="btn" data-variant="primary" disabled={offline || !hasText || sending || !!remoteTypeVerdict(view)} onClick={() => void insert(true)}>{sending ? 'Sending…' : 'Send prompt'}</button>
       </div>
     </div>
   )

@@ -675,7 +675,7 @@ function chatAccess(m: Machine): ChatIndexAccess {
   }
 }
 
-function machine(d: Dev, opts: { keepAlive?: { pingMs: number; pongWaitMs: number }; olderHost?: boolean; noTyping?: boolean; chatsTiming?: { idleMs?: number; waitMs?: number; retryMs?: number; requestMs?: number } } = {}): Machine {
+function machine(d: Dev, opts: { snapshotWaitMs?: number; silentPty?: string; keepAlive?: { pingMs: number; pongWaitMs: number }; olderHost?: boolean; noTyping?: boolean; chatsTiming?: { idleMs?: number; waitMs?: number; retryMs?: number; requestMs?: number } } = {}): Machine {
   const m = { dev: d, active: [...ACTIVE], out: false, sharing: false, grants: {}, views: [], frames: [], ptyInput: [], sockets: [], requests: [], sessions: [], resizes: [], submits: [], status: {}, statusAsked: [], shareChats: false, chatGrants: {}, indexOn: true, redactOn: true, chats: [], hidden: [] } as unknown as Machine
   const chatShare = sharedChats(chatAccess(m))
   /** A give that is being written: the hook (once) runs while it is in flight, as a sync pass or a click would. */
@@ -694,6 +694,7 @@ function machine(d: Dev, opts: { keepAlive?: { pingMs: number; pongWaitMs: numbe
   })
   m.remote = new HubRemote({
     keepAlive: opts.keepAlive,
+    snapshotWaitMs: opts.snapshotWaitMs,
     chatsTiming: opts.chatsTiming,
     now: () => clock,
     context: ctx,
@@ -773,7 +774,7 @@ function machine(d: Dev, opts: { keepAlive?: { pingMs: number; pongWaitMs: numbe
       // A fake pty behind the phone socket: the attach replay, then an echo of whatever is typed.
       m.sockets.push(sock as VirtualSocket)
       const ptyId = new URLSearchParams(path.split('?')[1] ?? '').get('ptyId')
-      sock.send(JSON.stringify({ type: 'attached', ptyId, cols: 100, rows: 30, desktopCols: 100, desktopRows: 30, status: 'idle', history: 'stub$ ' }))
+      if (ptyId !== opts.silentPty) sock.send(JSON.stringify({ type: 'attached', ptyId, cols: 100, rows: 30, desktopCols: 100, desktopRows: 30, status: 'idle', history: 'stub$ ' }))
       sock.on('message', (raw) => {
         const msg = JSON.parse(String(raw)) as { type: string; data?: string; text?: string; enter?: boolean; cols?: number; rows?: number; force?: boolean }
         if (msg.type === 'input' && msg.data) {
@@ -859,6 +860,11 @@ hostA.sessions = [{ ptyId: 'pty-a1', project: 'stoke', title: 'Stub session', st
   const fromA = presence.filter((p) => p.from === A.id && p.frame.t === 'status').map((p) => (p.frame as { status: SealedStatus }).status)
   const newestFromA = fromA[fromA.length - 1]
   guestB.remote.presenceClosed()
+  check('a presence interruption keeps the last-known machine visible but unreachable', [last(guestB).machines[0]?.label,last(guestB).machines[0]?.reachable,last(guestB).machines[0]?.status?.sessions.length], ['Studio',false,1])
+  const activeBefore = guestB.active
+  guestB.active=guestB.active.filter(d=>d.id!==A.id)
+  check('last-known machines never retain a revoked device', guestB.remote.view().machines.length,0)
+  guestB.active=activeBefore
   guestB.remote.presenceOpened()
   guestB.remote.onOnline([A.id, B.id])
   await guestB.remote.onStatus(A.id, fromA[0])
@@ -1036,6 +1042,40 @@ async function served(hostM: Machine, guestM: Machine): Promise<string> {
   if (ask && ask !== 'open') await hostM.remote.answer(ask.id, 'once')
   await until(() => tabOf(guestM, tab)?.state === 'open' && guestM.frames.some((f) => f.tab === tab && f.frame.type === 'attached'))
   return tab
+}
+
+console.log('\nterminal viewers subscribe before the initial screen, independently per chat')
+{
+  const hostM=machine(A,{silentPty:'pty-a2'}), guestM=machine(B,{snapshotWaitMs:80})
+  hostM.sessions=[stubRow(),{...stubRow(),ptyId:'pty-a2',title:'Second chat'}]
+  hostM.sharing=true
+  hostM.grants={[B.id]:{mode:'full',label:'Laptop',at:clock}}
+  for(const m of [hostM,guestM]) m.remote.onOnline([A.id,B.id])
+  const opened=guestM.remote.open(A.id,'pty-a1',undefined,true)
+  const tab=opened.ok?opened.tab:''
+  await until(()=>tabOf(guestM,tab)?.mode==='full')
+  check('a fast host sends no screen before the renderer subscribes', [hostM.sockets.length,guestM.frames.length,tabOf(guestM,tab)?.state], [0,0,'connecting'])
+  guestM.remote.rendererAttached(tab,true)
+  await until(()=>guestM.frames.some(f=>f.tab===tab&&f.frame.type==='attached'))
+  check('the mounted viewer receives the full initial screen and becomes connected', [guestM.frames[0].frame.history,tabOf(guestM,tab)?.state], ['stub$ ','open'])
+  guestM.remote.rendererAttached(tab,false)
+  await until(()=>hostM.sockets[0].readyState===3)
+  guestM.remote.rendererAttached(tab,true)
+  await until(()=>guestM.frames.filter(f=>f.frame.type==='attached').length===2)
+  check('a remounted viewer gets a new snapshot instead of blank deltas', hostM.sockets.length,2)
+  guestM.remote.rendererAttached(tab,true,101)
+  await until(()=>guestM.frames.filter(f=>f.frame.type==='attached').length===3)
+  guestM.remote.rendererAttached(tab,false)
+  check('detaching one viewer does not stop another window’s stream',hostM.sockets.at(-1)?.readyState,1)
+  const second=guestM.remote.open(A.id,'pty-a2')
+  const broken=second.ok?second.tab:''
+  await until(()=>tabOf(guestM,broken)?.state==='reconnecting')
+  ok('a chat that never sends its screen reports a session-specific failure', /did not send its terminal screen/.test(tabOf(guestM,broken)?.message??''))
+  guestM.remote.input(tab,'working chat stays usable')
+  await until(()=>guestM.frames.some(f=>f.tab===tab&&f.frame.type==='data'))
+  check('one stalled chat never closes the working chat on the same machine', tabOf(guestM,tab)?.state,'open')
+  guestM.remote.reset();hostM.remote.reset()
+  check('reset clears cached machine identities as well as streams', guestM.remote.view().machines.length,0)
 }
 
 console.log('\nthe phone website reaches other devices through independently owned session relays')
@@ -2910,7 +2950,7 @@ console.log('\nchat history across computers: the wire from the renderer to thos
     [
       /failure: r \}/.test(viewer),
       /remote && state\.failure \? remoteReadLine\(remote\.computer, state\.failure, online\) : state\.error/.test(viewer),
-      /<ChatViewer[\s\S]*?online=\{chatView\.kind === 'remote' && hubRemote\.available \? hubRemote\.machines\.some\(\(m\) => m\.id === chatView\.device\) : null\}/.test(app)
+      /<ChatViewer[\s\S]*?online=\{chatView\.kind === 'remote' && hubRemote\.available \? hubRemote\.machines\.some\(\(m\) => m\.id === chatView\.device && m\.reachable !== false\) : null\}/.test(app)
     ],
     [true, true, true]
   )

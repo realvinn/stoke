@@ -6681,7 +6681,7 @@ export function App(): React.JSX.Element {
                 key={chatViewOpen}
                 target={chatView}
                 peer={chatView.kind === 'remote' ? (hubRemote.chatPeers.find((p) => p.device === chatView.device)?.state ?? null) : null}
-                online={chatView.kind === 'remote' && hubRemote.available ? hubRemote.machines.some((m) => m.id === chatView.device) : null}
+                online={chatView.kind === 'remote' && hubRemote.available ? hubRemote.machines.some((m) => m.id === chatView.device && m.reachable !== false) : null}
                 onClose={() => setChatView(null)}
               />
             </div>

@@ -36,7 +36,7 @@ function deviceCard(): DeviceCard {
       if (platform.textContent !== platformText) platform.textContent = platformText
       sessions.setAttribute('aria-label', `Sessions on ${machine.label}`)
       const status = machine.status
-      const message = !status
+      const message = machine.reachable === false ? 'Reconnecting to your account… Showing last-known sessions.' : !status
         ? 'Waiting for this device to share its status…'
         : !status.open
           ? 'To open sessions, turn on “Let my other devices see and open my sessions” under Accounts → Devices & sync on this device.'
@@ -60,7 +60,8 @@ function deviceCard(): DeviceCard {
         const meta = [session.project, session.agent, STATUS[session.status], context].filter(Boolean).join(' · ')
         if (link.title.textContent !== title) link.title.textContent = title
         if (link.meta.textContent !== meta) link.meta.textContent = meta
-        link.root.href = deviceSessionHash(machine.id, session.ptyId)
+        if (machine.reachable === false) { link.root.removeAttribute('href'); link.root.setAttribute('aria-disabled','true') }
+        else { link.root.href = deviceSessionHash(machine.id, session.ptyId); link.root.removeAttribute('aria-disabled') }
         link.root.dataset.pty = session.ptyId
         link.root.dataset.status = session.status
         link.root.title = `Open ${title} on ${machine.label}. This device may ask for approval.`

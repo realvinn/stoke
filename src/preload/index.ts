@@ -315,6 +315,7 @@ const api: StokeApi = {
       onChange: (cb) => on<[Parameters<typeof cb>[0]]>(CH.hubRemoteChanged, cb),
       onFrame: (cb) => on<Parameters<typeof cb>>(CH.hubRemoteFrame, cb),
       open: (deviceId, ptyId) => ipcRenderer.invoke(CH.hubRemoteOpen, deviceId, ptyId),
+      rendererAttached: (tabId, attached) => ipcRenderer.send(CH.hubRemoteRendererAttached, tabId, attached),
       input: (tabId, data) => ipcRenderer.send(CH.hubRemoteInput, tabId, data),
       type: (tabId, text, enter) => ipcRenderer.invoke(CH.hubRemoteType, tabId, text, enter),
       resize: (tabId, cols, rows) => ipcRenderer.send(CH.hubRemoteResize, tabId, cols, rows),
