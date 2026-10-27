@@ -27,6 +27,13 @@ export function quickTerminalEnv(source: NodeJS.ProcessEnv, path: string): Recor
   const env: Record<string, string> = {}
   for (const [key, value] of Object.entries(source)) if (value !== undefined && !STRIP.has(key)) env[key] = value
   setPathKey(env, path)
+  // Stoke's terminal is always UTF-8, but a Dock or Finder launch hands main no
+  // locale at all. In the C locale bash's readline has convert-meta on, so every
+  // typed or pasted byte >= 0x80 became a Meta key (0xF0, an emoji's first byte,
+  // is M-p: a history search) and the line never ran. zsh inserts the bytes, so
+  // only bash showed it. LANG rather than LC_CTYPE=UTF-8, which is no locale on
+  // Linux; an explicit locale of the user's is kept.
+  if (process.platform !== 'win32' && !env.LC_ALL && !env.LC_CTYPE && !env.LANG) env.LANG = process.platform === 'darwin' ? 'en_US.UTF-8' : 'C.UTF-8'
   env.TERM = 'xterm-256color'; env.COLORTERM = 'truecolor'; env.TERM_PROGRAM = 'Stoke'
   // No selected provider keys, MCP, agent hooks or config-home overlays.
   return env

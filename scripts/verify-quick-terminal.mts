@@ -165,12 +165,20 @@ try {
   check('queued frames covered by a snapshot never replay twice', written, ['snapshot🔥', 'after', 'next'])
   const env = quickTerminalEnv({ PATH: '/stale', NODE_OPTIONS: 'never', ELECTRON_RUN_AS_NODE: '1', CLAUDE_CODE_CHILD_SESSION: 'yes', TERM_PROGRAM: 'another-wrapper', STOKE_QUICK_FIXTURE: 'retained' }, '/usr/bin:/bin')
   check('agent runtime markers cannot nest shell commands', [env.NODE_OPTIONS, env.ELECTRON_RUN_AS_NODE, env.CLAUDE_CODE_CHILD_SESSION, env.TERM_PROGRAM, env.STOKE_QUICK_FIXTURE], [undefined, undefined, undefined, 'Stoke', 'retained'])
+  // A Dock launch gives main no locale; bash's readline then turns bytes >= 0x80 into Meta keys.
+  const utf8 = process.platform === 'win32' ? undefined : process.platform === 'darwin' ? 'en_US.UTF-8' : 'C.UTF-8'
+  check('a launch with no locale gets a UTF-8 LANG', quickTerminalEnv({ PATH: '/x' }, '/usr/bin:/bin').LANG, utf8)
+  check('an explicit LANG is kept', quickTerminalEnv({ LANG: 'fr_FR.UTF-8' }, '/usr/bin:/bin').LANG, 'fr_FR.UTF-8')
+  check('an LC_ALL or LC_CTYPE is left to rule, with no LANG added', [quickTerminalEnv({ LC_ALL: 'de_DE.UTF-8' }, '/usr/bin:/bin').LANG, quickTerminalEnv({ LC_CTYPE: 'UTF-8' }, '/usr/bin:/bin').LANG], [undefined, undefined])
 
   console.log('\nQuick terminal: independent tab folders, shell state and pinning')
   const folderA = join(root, 'tab-one'), folderB = join(root, 'tab-two')
   await Promise.all([mkdir(folderA), mkdir(folderB)])
   let tabPreparations = 0
-  const scoped = new QuickTerminal({ enabled: () => enabled, onState: () => {}, onData: () => {}, environment: async () => { tabPreparations++; return quickTerminalEnv({ ...process.env, HOME: root, ZDOTDIR: root, STOKE_TAB_VALUE: '' }, process.env.PATH || '/usr/bin:/bin') } })
+  // No locale on purpose, as a Dock launch has none: the root's emoji then reaches bash's
+  // readline, which runs it only if quickTerminalEnv supplied a UTF-8 locale.
+  const localeFree = Object.fromEntries(Object.entries(process.env).filter(([key]) => key !== 'LANG' && !key.startsWith('LC_')))
+  const scoped = new QuickTerminal({ enabled: () => enabled, onState: () => {}, onData: () => {}, environment: async () => { tabPreparations++; return quickTerminalEnv({ ...localeFree, HOME: root, ZDOTDIR: root, STOKE_TAB_VALUE: '' }, process.env.PATH || '/usr/bin:/bin') } })
   const reportFixture = join(root, 'tab-shell-report.cjs')
   await writeFile(reportFixture, `const fs = require('node:fs'); fs.writeFileSync(process.argv[2], JSON.stringify({cwd:process.cwd(),value:process.env.STOKE_TAB_VALUE||null})); process.stdout.write('STOKE_CONTEXT_'+process.argv[3]+'\\n');`)
   const shellQuote = (value: string): string => process.platform === 'win32' ? `"${value}"` : `'${value.replace(/'/g, "'\\''")}'`
