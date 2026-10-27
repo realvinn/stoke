@@ -10,6 +10,7 @@ import { discoverTerminalShells, terminalEnvironmentPath, type ResolvedTerminalS
 import type { IPty } from '@lydell/node-pty'
 import type { ScreenMirror } from './screenMirror.ts'
 import type { QuickTerminalFrame, QuickTerminalMode, QuickTerminalShell, QuickTerminalSnapshot, QuickTerminalState, QuickTerminalSurface } from '../shared/quickTerminal.ts'
+import { QUICK_TERMINAL_WRITE_MAX } from '../shared/quickTerminalClipboard.ts'
 
 type Runtime = { spawn: typeof import('@lydell/node-pty').spawn; mirror: (cols: number, rows: number) => ScreenMirror }
 interface Options {
@@ -116,8 +117,9 @@ class QuickTerminalSession {
     if (this.state.phase === 'stopping') throw new Error('Wait for the shell to exit.')
     return this.start(surface, this.state.cwd || undefined)
   }
+  // One write is capped; the panel splits a long paste to fit (quickTerminalWrites).
   write(surface: QuickTerminalSurface, id: string, data: string): void {
-    if (!this.options.enabled() || this.state.mode !== surface || this.state.id !== id || this.state.phase !== 'running' || typeof data !== 'string' || data.length > 256_000) return
+    if (!this.options.enabled() || this.state.mode !== surface || this.state.id !== id || this.state.phase !== 'running' || typeof data !== 'string' || data.length > QUICK_TERMINAL_WRITE_MAX) return
     try { this.child?.write(data) } catch { /* an exit may win */ }
   }
   resize(surface: QuickTerminalSurface, id: string, cols: number, rows: number): void {

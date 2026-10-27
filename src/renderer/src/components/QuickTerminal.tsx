@@ -6,8 +6,9 @@ import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { terminalLinkClick, terminalLinkRepairs } from '@shared/terminalLinks'
 import { QuickTerminalReplay, type QuickTerminalApi, type QuickTerminalAppearance, type QuickTerminalShell, type QuickTerminalState, type QuickTerminalSurface } from '@shared/quickTerminal'
+import { QuickTerminalPresses, quickTerminalKey, quickTerminalPasteText, quickTerminalStopsCopy, quickTerminalWrites } from '@shared/quickTerminalClipboard'
 import { terminalTheme } from '../lib/theme'
-import { installShiftSelection } from '../lib/terminalSelection'
+import { installMotionGuard, installShiftSelection } from '../lib/terminalSelection'
 import { IconPin } from './Icons'
 import '@xterm/xterm/css/xterm.css'
 
@@ -140,7 +141,7 @@ function QuickTerminalScreen({ api, id, appearance, phase, find, focusTerminal, 
     }
     const press = (event: MouseEvent): void => { downAt = { x: event.clientX, y: event.clientY } }
     node.addEventListener('mousedown', press, true)
-    const term = new Terminal({ cols: 80, rows: 24, scrollback: 2000, fontFamily: a.fontFamily, fontSize: a.fontSize, lineHeight: a.terminal.lineHeight, letterSpacing: a.terminal.letterSpacing, fontWeightBold: a.terminal.boldWeight, minimumContrastRatio: a.terminal.contrastBoost, cursorStyle: a.terminal.cursorStyle, cursorBlink: a.terminal.cursorBlink, theme: terminalTheme(a.theme), macOptionIsMeta: true, macOptionClickForcesSelection: true, altClickMovesCursor: false, allowProposedApi: true, linkHandler: { activate: openLink } })
+    const term = new Terminal({ cols: 80, rows: 24, scrollback: 2000, fontFamily: a.fontFamily, fontSize: a.fontSize, lineHeight: a.terminal.lineHeight, letterSpacing: a.terminal.letterSpacing, fontWeightBold: a.terminal.boldWeight, minimumContrastRatio: a.terminal.contrastBoost, cursorStyle: a.terminal.cursorStyle, cursorBlink: a.terminal.cursorBlink, theme: terminalTheme(a.theme), macOptionIsMeta: true, macOptionClickForcesSelection: true, altClickMovesCursor: false, rightClickSelectsWord: false, allowProposedApi: true, linkHandler: { activate: openLink } })
     terminal.current = term
     quickTerms.set(id, term)
     focusTerminal.current = () => { if (alive) term.focus() }
@@ -152,17 +153,57 @@ function QuickTerminalScreen({ api, id, appearance, phase, find, focusTerminal, 
     const removeSelection = installShiftSelection(node, term, api.platform === 'darwin')
     const replay = new QuickTerminalReplay(id, data => { if (alive) term.write(data) })
     const offData = api.onData(frame => replay.frame(frame))
-    const input = term.onData(data => api.write(id, data))
+    // A paste reaches onData as one string; main caps a single write, so a long one goes as several.
+    const input = term.onData(data => { for (const part of quickTerminalWrites(data)) api.write(id, part) })
+    // Under any-motion reporting (claude asks for 1003), every pointer move is a
+    // report flagged as user input, and xterm clears the selection on user input:
+    // a selection died before right-click or Cmd+C could copy it. The report is
+    // still sent, only not as user input. The same guard as TerminalView's and hub remote tabs' (gotcha 10).
+    const removeMotionGuard = installMotionGuard(term)
+    const isMac = api.platform === 'darwin'
+    // Cleaned (safePasteText): a clipboard holding ESC[201~ ended the bracket early and typed the rest.
+    const paste = (): void => { void api.paste().then(text => { const clean = quickTerminalPasteText(text); if (alive && clean) term.paste(clean) }).catch(() => {}) }
     // Copy/paste retain interrupt keys and xterm's bracketed-paste behavior.
     term.attachCustomKeyEventHandler(event => {
-      const modifier = api.platform === 'darwin' ? event.metaKey : event.ctrlKey && event.shiftKey
-      if (!modifier || event.type !== 'keydown') return true
-      if (event.key.toLowerCase() === 'c' && term.hasSelection()) { event.preventDefault(); api.copy(term.getSelection()); return false }
-      if (event.key.toLowerCase() === 'v') { event.preventDefault(); void api.paste().then(text => { if (alive) term.paste(text) }); return false }
-      return true
+      const action = quickTerminalKey(event, isMac, () => ({ text: term.getSelection(), any: term.hasSelection() }))
+      if (action.kind === 'pass') return true
+      event.preventDefault()
+      if (action.kind === 'copy') api.copy(action.text)
+      else if (action.kind === 'paste') paste()
+      return false
     })
-    const context = (event: MouseEvent): void => { event.preventDefault(); if (term.hasSelection()) api.copy(term.getSelection()); else void api.paste().then(text => { if (alive) term.paste(text) }) }
-    node.addEventListener('contextmenu', context)
+    // The right-click is Stoke's alone, as in an agent tab: taken in the
+    // capture phase before xterm can select the word under it (macOS) or report
+    // it to a mouse-reporting program that pastes on its own (claude).
+    // QuickTerminalPresses decides all three: every press resets it, and only
+    // the release of a press it took is stopped, or xterm's own drag listeners
+    // leak (gotcha 34). A claimed Shift+Ctrl-drag's macOS contextmenu does nothing.
+    const presses = new QuickTerminalPresses(isMac)
+    const secondaryDown = (event: MouseEvent): void => { if (presses.down(event)) event.stopPropagation() }
+    const secondaryUp = (event: MouseEvent): void => { if (presses.up(event)) event.stopPropagation() }
+    const context = (event: MouseEvent): void => {
+      event.preventDefault(); event.stopPropagation()
+      const action = presses.context({ text: term.getSelection(), any: term.hasSelection() })
+      if (action.kind === 'ignore') return
+      if (action.kind === 'copy') api.copy(action.text)
+      else { if (action.clear) term.clearSelection(); paste() }
+      // xterm's own press would have focused the terminal; it never saw this one.
+      term.focus()
+    }
+    // Shift+Insert, a Linux middle-click and Paste from a menu arrive as a DOM
+    // paste on xterm's textarea, never through the keys above: cleaned the same way.
+    const pasteEvent = (event: ClipboardEvent): void => {
+      event.preventDefault(); event.stopPropagation()
+      const clean = quickTerminalPasteText(event.clipboardData?.getData('text/plain'))
+      if (clean) term.paste(clean)
+    }
+    const copyEvent = (event: ClipboardEvent): void => { if (quickTerminalStopsCopy({ text: term.getSelection(), any: term.hasSelection() })) event.stopPropagation() }
+    // After installShiftSelection, so a press it claimed reads as defaultPrevented here.
+    node.addEventListener('mousedown', secondaryDown, true)
+    document.addEventListener('mouseup', secondaryUp, true)
+    node.addEventListener('contextmenu', context, true)
+    node.addEventListener('paste', pasteEvent, true)
+    node.addEventListener('copy', copyEvent, true)
     let hydrated = false
     const resize = (): void => { if (!alive || !hydrated || node.clientWidth < 20 || node.clientHeight < 20) return; fit.fit(); api.resize(id, term.cols, term.rows) }
     const observer = new ResizeObserver(resize); observer.observe(node)
@@ -184,7 +225,7 @@ function QuickTerminalScreen({ api, id, appearance, phase, find, focusTerminal, 
         if (mayFocus && document.activeElement === focusFrom) term.focus()
       })
     }).catch(() => { if (alive) term.write('\r\nThe shell view could not reconnect. Hide and reopen it.\r\n') })
-    return () => { alive = false; observer.disconnect(); offData(); input.dispose(); removeSelection(); node.removeEventListener('contextmenu', context); node.removeEventListener('mousedown', press, true); fitCurrent.current = null; find.current = null; focusTerminal.current = null; terminal.current = null; quickTerms.delete(id); term.dispose() }
+    return () => { alive = false; observer.disconnect(); offData(); input.dispose(); removeSelection(); removeMotionGuard(); node.removeEventListener('contextmenu', context, true); node.removeEventListener('paste', pasteEvent, true); node.removeEventListener('copy', copyEvent, true); node.removeEventListener('mousedown', secondaryDown, true); document.removeEventListener('mouseup', secondaryUp, true); node.removeEventListener('mousedown', press, true); fitCurrent.current = null; find.current = null; focusTerminal.current = null; terminal.current = null; quickTerms.delete(id); term.dispose() }
   }, [api, id, find, focusTerminal, claimFocusRequest])
   useEffect(() => {
     // Explicitly reopening an already mounted panel also focuses its shell.

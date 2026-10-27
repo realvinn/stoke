@@ -33,6 +33,7 @@ import { configureWindowsAccountIdentityLibrary } from './accountIdentityWindows
 import { accountIdentityTarget } from '../shared/accountIdentity.ts'
 import type { QuickTerminalAppearance, QuickTerminalMode, QuickTerminalSurface } from '../shared/quickTerminal.ts'
 import { quickTerminalLink } from '../shared/quickTerminal.ts'
+import { quickTerminalCopyText } from '../shared/quickTerminalClipboard.ts'
 import { activeThemeId, resolveTheme } from '@shared/themes'
 import { revealInsetFor, revealsOnEntry } from '@shared/fullScreenReveal'
 import { DEFAULT_BROWSER_PROFILE_ID, newProfileId, nextProfileLabel } from '@shared/browserProfiles'
@@ -4822,8 +4823,10 @@ function registerIpc(): void {
   ipcMain.on(CH.quickTerminalWrite, (event, id, data) => { const surface = quickTerminalSurface(event); if (surface) quickTerminal?.write(surface, id, data) })
   ipcMain.on(CH.quickTerminalResize, (event, id, cols, rows) => { const surface = quickTerminalSurface(event); if (surface) quickTerminal?.resize(surface, id, cols, rows) })
   ipcMain.handle(CH.quickTerminalAppearance, event => { if (!appFrame(event) && !quickTerminalSurface(event)) throw new Error('Open the terminal in Stoke.'); return quickTerminalAppearance() })
-  ipcMain.on(CH.quickTerminalCopy, (event, text) => { if (quickTerminalSurface(event) && typeof text === 'string' && text.length <= 200_000) clipboard.writeText(text) })
-  ipcMain.handle(CH.quickTerminalPaste, event => { if (!quickTerminalSurface(event)) throw new Error('Open the terminal in Stoke.'); return clipboard.readText().slice(0, 200_000) })
+  // No length caps: they cut pastes and dropped copies silently. A long paste
+  // goes back as several writes (quickTerminalWrites); '' is never written.
+  ipcMain.on(CH.quickTerminalCopy, (event, text) => { const copy = quickTerminalCopyText(text); if (quickTerminalSurface(event) && copy !== null) clipboard.writeText(copy) })
+  ipcMain.handle(CH.quickTerminalPaste, event => { if (!quickTerminalSurface(event)) throw new Error('Open the terminal in Stoke.'); return clipboard.readText() })
   ipcMain.on(CH.quickTerminalOpenLink, (event, id, url) => {
     const surface = quickTerminalSurface(event)
     const link = surface && quickTerminal ? quickTerminalLink(quickTerminal.view(), surface, id, url) : null

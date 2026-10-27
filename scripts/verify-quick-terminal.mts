@@ -9,6 +9,8 @@ import type { QuickTerminalFrame, QuickTerminalState } from '../src/shared/quick
 import { hydrateSettings } from '../src/main/settingsSchema.ts'
 import { LOCAL_KEYS, portableSettings } from '../src/shared/setupFile.ts'
 import { addRefusal, clampTopBar, fitTopBar } from '../src/shared/topBar.ts'
+import { QUICK_TERMINAL_WRITE_MAX, QuickTerminalPresses, quickTerminalCopyText, quickTerminalKey, quickTerminalPasteText, quickTerminalRightClick, quickTerminalStopsCopy, quickTerminalTakesPress, quickTerminalWrites, selectionIsBlank } from '../src/shared/quickTerminalClipboard.ts'
+import type { ChordKey, PressEvent, SelectionReading } from '../src/shared/quickTerminalClipboard.ts'
 
 let failures = 0
 function check(name: string, actual: unknown, expected: unknown): void {
@@ -39,6 +41,83 @@ try {
   check('a second terminal is refused', addRefusal('terminal', bar.items) !== null, true)
   const fit = fitTopBar({ room: 60, gap: 4, fixed: 20, more: 20, items: [{ id: 'one', kind: 'terminal', full: 90, compact: 90 }] })
   check('a narrow top bar keeps the terminal in its actionable overflow', fit.overflow, ['one'])
+
+  console.log('\nQuick terminal: copy and paste')
+  const key = (over: Partial<ChordKey>): ChordKey => ({ type: 'keydown', key: 'c', code: 'KeyC', metaKey: false, ctrlKey: false, shiftKey: false, altKey: false, ...over })
+  const picked: SelectionReading = { text: 'npm run check', any: true }
+  const blank: SelectionReading = { text: '', any: true }
+  const unselected: SelectionReading = { text: '', any: false }
+  // What xterm's getSelection reads for blank cells over several rows: trimmed
+  // rows joined by '\n' ('\r\n' on Windows), and a full-screen program's
+  // painted background as written spaces, which the trim keeps.
+  const blankRows: SelectionReading[] = [{ text: '\n', any: true }, { text: '\r\n\r\n', any: true }, { text: ' '.repeat(10) + '\n' + ' '.repeat(10), any: true }]
+  const keyAct = (over: Partial<ChordKey>, isMac: boolean, selection = picked) => quickTerminalKey(key(over), isMac, () => selection)
+  const copied = { kind: 'copy', text: 'npm run check' }, pasted = { kind: 'paste' }, passed = { kind: 'pass' }
+  check('Cmd+C on macOS and Ctrl+Shift+C elsewhere copy the selection', [keyAct({ metaKey: true }, true), keyAct({ ctrlKey: true, shiftKey: true, key: 'C' }, false)], [copied, copied])
+  check('Cmd+V and Ctrl+Shift+V paste', [keyAct({ metaKey: true, key: 'v', code: 'KeyV' }, true), keyAct({ ctrlKey: true, shiftKey: true, key: 'V', code: 'KeyV' }, false)], [pasted, pasted])
+  check('bare Ctrl+C and Ctrl+V stay the shell’s interrupt and literal-next keys', [keyAct({ ctrlKey: true }, false), keyAct({ ctrlKey: true, key: 'v', code: 'KeyV' }, false), keyAct({ ctrlKey: true }, true)], [passed, passed, passed])
+  check('a Cyrillic layout still copies and pastes (the letter is the key’s position)', [keyAct({ metaKey: true, key: 'с' }, true), keyAct({ ctrlKey: true, shiftKey: true, key: 'М', code: 'KeyV' }, false)], [copied, pasted])
+  check('a Latin layout keeps the letter printed on the key (Dvorak)', [keyAct({ metaKey: true, key: 'c', code: 'KeyI' }, true), keyAct({ metaKey: true, key: 'j', code: 'KeyC' }, true)], [copied, passed])
+  check('a copy of a blank-cell selection swallows the key and writes nothing', keyAct({ metaKey: true }, true, blank), { kind: 'swallow' })
+  check('a copy of blank cells over several rows (line breaks, painted spaces) swallows the key too', blankRows.map(selection => keyAct({ metaKey: true }, true, selection)), blankRows.map(() => ({ kind: 'swallow' })))
+  check('a selection is blank only when it holds nothing visible', [selectionIsBlank(''), selectionIsBlank('\r\n \n'), selectionIsBlank('a\n'), selectionIsBlank('  x  ')], [true, true, false, false])
+  check('a copy with nothing selected is left to the terminal', keyAct({ ctrlKey: true, shiftKey: true }, false, unselected), passed)
+  check('only a keydown acts, and an Option or Alt chord is left alone', [keyAct({ metaKey: true, type: 'keyup' }, true), keyAct({ metaKey: true, altKey: true, key: 'ç' }, true), keyAct({ ctrlKey: true, shiftKey: true, altKey: true, key: 'V', code: 'KeyV' }, false)], [passed, passed, passed])
+  let selectionReads = 0
+  const counting = (): SelectionReading => { selectionReads++; return picked }
+  quickTerminalKey(key({ metaKey: true, key: 'v', code: 'KeyV' }), true, counting); quickTerminalKey(key({ key: 'a', code: 'KeyA' }), true, counting)
+  check('the selection is read only for a copy chord', selectionReads, 0)
+  check('a right-click copies a selection and otherwise pastes', [quickTerminalRightClick(picked), quickTerminalRightClick(unselected)], [copied, { kind: 'paste', clear: false }])
+  check('a right-click on a blank-cell selection clears it and pastes, never copying an empty string', quickTerminalRightClick(blank), { kind: 'paste', clear: true })
+  check('a right-click on blank cells over several rows clears them and pastes, never copying blanks', blankRows.map(quickTerminalRightClick), blankRows.map(() => ({ kind: 'paste', clear: true })))
+  check('a selection of text across rows still copies whole', quickTerminalRightClick({ text: 'one\n  two', any: true }), { kind: 'copy', text: 'one\n  two' })
+  const pressOf = (over: Partial<PressEvent>): PressEvent => ({ button: 2, ctrlKey: false, shiftKey: false, isTrusted: true, defaultPrevented: false, ...over })
+  check('a right press and a macOS Ctrl+click are taken before xterm can report them', [quickTerminalTakesPress(pressOf({}), true), quickTerminalTakesPress(pressOf({}), false), quickTerminalTakesPress(pressOf({ button: 0, ctrlKey: true }), true)], [true, true, true])
+  check('a plain press, a middle press and an off-macOS Ctrl+click still reach xterm', [quickTerminalTakesPress(pressOf({ button: 0 }), true), quickTerminalTakesPress(pressOf({ button: 1 }), true), quickTerminalTakesPress(pressOf({ button: 0, ctrlKey: true }), false)], [false, false, false])
+  check('the Shift-drag clone and the press it was made from are never taken (gotcha 34)', [quickTerminalTakesPress(pressOf({ button: 0, ctrlKey: true, isTrusted: false }), true), quickTerminalTakesPress(pressOf({ button: 0, ctrlKey: true, shiftKey: true, defaultPrevented: true }), true)], [false, false])
+  // Whole press → contextmenu → release sequences, as the panel's three capture listeners feed them.
+  const run = (isMac: boolean, steps: Array<['down', Partial<PressEvent>] | ['up', number] | ['menu', SelectionReading]>): unknown[] => {
+    const presses = new QuickTerminalPresses(isMac)
+    return steps.map(([step, arg]) => step === 'down' ? presses.down(pressOf(arg as Partial<PressEvent>)) : step === 'up' ? presses.up({ button: arg as number }) : presses.context(arg as SelectionReading))
+  }
+  const ctrlClick: Partial<PressEvent> = { button: 0, ctrlKey: true }, leftPress: Partial<PressEvent> = { button: 0 }
+  check('a right-click and a macOS Ctrl+click: the press, the menu and the release are all Stoke’s', [run(true, [['down', {}], ['menu', picked], ['up', 2]]), run(true, [['down', ctrlClick], ['menu', unselected], ['up', 0]])], [[true, copied, true], [true, { kind: 'paste', clear: false }, true]])
+  check('a release whose press went to xterm is never stopped (gotcha 34)', run(true, [['down', leftPress], ['up', 0], ['down', {}], ['up', 0], ['up', 2]]), [false, false, true, false, true])
+  check('a lost release cannot make the next left drag’s release be stopped', run(true, [['down', ctrlClick], ['down', leftPress], ['up', 0]]), [true, false, false])
+  // On macOS Chromium sends a contextmenu for a Ctrl+left press even when it was cancelled.
+  const shiftCtrlDrag: Array<['down', Partial<PressEvent>]> = [['down', { button: 0, ctrlKey: true, isTrusted: false }], ['down', { button: 0, ctrlKey: true, shiftKey: true, defaultPrevented: true }]]
+  check('a macOS Shift+Ctrl-drag’s contextmenu neither pastes nor copies, and its release reaches xterm', run(true, [...shiftCtrlDrag, ['menu', unselected], ['up', 0]]), [false, false, { kind: 'ignore' }, false])
+  check('after that drag, the next right-click acts again', run(true, [...shiftCtrlDrag, ['menu', unselected], ['up', 0], ['down', {}], ['menu', unselected]]), [false, false, { kind: 'ignore' }, false, true, { kind: 'paste', clear: false }])
+  check('a drag’s release ends its claim, so a later menu-key contextmenu still acts', run(true, [...shiftCtrlDrag, ['up', 0], ['menu', picked]]), [false, false, false, copied])
+  check('a Shift+Ctrl press the shim left alone is a secondary click; off macOS no press is a claimed drag', [run(true, [['down', { button: 0, ctrlKey: true, shiftKey: true }], ['menu', picked]]), run(false, [['down', { button: 0, ctrlKey: true, shiftKey: true, defaultPrevented: true }], ['menu', unselected]])], [[true, copied], [false, { kind: 'paste', clear: false }]])
+  const hostile = 'echo safe' + '\x1b[201~' + 'touch owned\r' + '\x9b' + 'x\u0007'
+  check('a paste cannot close the bracket early or carry other controls', quickTerminalPasteText(hostile), 'echo safe[201~touch owned\rx')
+  check('tabs and line breaks survive a paste, and a non-string pastes nothing', [quickTerminalPasteText('a\tb\r\nc\n'), quickTerminalPasteText(undefined)], ['a\tb\r\nc\n', ''])
+  check('main writes no empty or non-string copy over the clipboard', [quickTerminalCopyText(''), quickTerminalCopyText(undefined), quickTerminalCopyText(42)], [null, null, null])
+  check('main writes no copy of only line breaks or spaces either, and keeps a copy with text whole', [...blankRows.map(selection => quickTerminalCopyText(selection.text)), quickTerminalCopyText('  a\n')], [null, null, null, '  a\n'])
+  check('a copy past the old 200,000 cap is written whole', quickTerminalCopyText('x'.repeat(300_000))?.length, 300_000)
+  // '\x1b[200~' is 6 units, so the emoji's high surrogate is the last unit a plain cut would keep.
+  const longPaste = '\x1b[200~' + 'a'.repeat(QUICK_TERMINAL_WRITE_MAX - 7) + '🔥' + 'b'.repeat(60_000) + '\x1b[201~'
+  const longParts = quickTerminalWrites(longPaste)
+  const surrogate = (unit: number, low: boolean): boolean => unit >= (low ? 0xdc00 : 0xd800) && unit <= (low ? 0xdfff : 0xdbff)
+  check('a long paste goes as writes main accepts, in order, losing nothing', [longParts.length, longParts.every(part => part.length <= QUICK_TERMINAL_WRITE_MAX), longParts.join('') === longPaste], [2, true, true])
+  check('no write ends or starts inside a surrogate pair', longParts.every(part => !surrogate(part.charCodeAt(part.length - 1), false) && !surrogate(part.charCodeAt(0), true)), true)
+  check('typing stays one write', quickTerminalWrites('ls\r'), ['ls\r'])
+  // The wire from real input to the rules above (gotcha 31): a node suite cannot drive the panel.
+  const panelSource = await readFile(new URL('../src/renderer/src/components/QuickTerminal.tsx', import.meta.url), 'utf8')
+  const mainSource = await readFile(new URL('../src/main/index.ts', import.meta.url), 'utf8')
+  check('the panel takes the right-click in the capture phase, before xterm selects a word or reports it', [/addEventListener\('contextmenu', context, true\)/.test(panelSource), /addEventListener\('mousedown', secondaryDown, true\)/.test(panelSource), /const secondaryDown = \(event: MouseEvent\): void => \{ if \(presses\.down\(event\)\) event\.stopPropagation\(\) \}/.test(panelSource), /rightClickSelectsWord: false/.test(panelSource)], [true, true, true, true])
+  check('the panel stops a release only when QuickTerminalPresses says its press was taken (gotcha 34)', [/const presses = new QuickTerminalPresses\(isMac\)/.test(panelSource), /const secondaryUp = \(event: MouseEvent\): void => \{ if \(presses\.up\(event\)\) event\.stopPropagation\(\) \}/.test(panelSource), /addEventListener\('mouseup', secondaryUp, true\)/.test(panelSource)], [true, true, true])
+  check('a contextmenu acts as decided: nothing for a claimed drag, and a blank selection is cleared before the paste', [/const action = presses\.context\(\{ text: term\.getSelection\(\), any: term\.hasSelection\(\) \}\)\n\s*if \(action\.kind === 'ignore'\) return\n/.test(panelSource), /else \{ if \(action\.clear\) term\.clearSelection\(\); paste\(\) \}/.test(panelSource)], [true, true])
+  check('the press guard is installed after the Shift-drag shim it must defer to', panelSource.indexOf('installShiftSelection(node') < panelSource.indexOf("addEventListener('mousedown', secondaryDown"), true)
+  check('keys, right-clicks and pastes go through the shared rules', [/quickTerminalKey\(event, isMac,/.test(panelSource), /presses\.context\(\{ text: term\.getSelection\(\), any: term\.hasSelection\(\) \}\)/.test(panelSource), /const clean = quickTerminalPasteText\(text\); if \(alive && clean\) term\.paste\(clean\)/.test(panelSource), /term\.paste\(text\)/.test(panelSource)], [true, true, true, false])
+  check('the panel splits every input into writes main accepts', /term\.onData\(data => \{ for \(const part of quickTerminalWrites\(data\)\) api\.write\(id, part\) \}\)/.test(panelSource), true)
+  // installMotionGuard's own rule is held by verify:phone-ui; this holds the panel's use of it.
+  check('pointer motion under any-motion reporting does not clear the selection', [/const removeMotionGuard = installMotionGuard\(term\)/.test(panelSource), /removeSelection\(\); removeMotionGuard\(\);/.test(panelSource), /triggerDataEvent/.test(panelSource)], [true, true, false])
+  check('a DOM copy (Ctrl+Insert, a menu) is kept from xterm only for a blank-cell selection', [quickTerminalStopsCopy(blank), quickTerminalStopsCopy(picked), quickTerminalStopsCopy(unselected), ...blankRows.map(quickTerminalStopsCopy)], [true, false, false, true, true, true])
+  check('Shift+Insert, middle-click and menu pastes are cleaned before xterm sees them', [/addEventListener\('paste', pasteEvent, true\)/.test(panelSource), /event\.preventDefault\(\); event\.stopPropagation\(\)\n\s*const clean = quickTerminalPasteText\(event\.clipboardData\?\.getData\('text\/plain'\)\)\n\s*if \(clean\) term\.paste\(clean\)/.test(panelSource), /addEventListener\('copy', copyEvent, true\)/.test(panelSource), /quickTerminalStopsCopy\(\{ text: term\.getSelection\(\), any: term\.hasSelection\(\) \}\)\) event\.stopPropagation\(\)/.test(panelSource)], [true, true, true, true])
+  const copyHandler = /ipcMain\.on\(CH\.quickTerminalCopy,[^\n]*/.exec(mainSource)?.[0] ?? '', pasteHandler = /ipcMain\.handle\(CH\.quickTerminalPaste,[^\n]*/.exec(mainSource)?.[0] ?? ''
+  check('main copies through quickTerminalCopyText and pastes the clipboard uncut', [/quickTerminalCopyText\(text\)/.test(copyHandler), /200_000|\.slice\(/.test(copyHandler + pasteHandler), /return clipboard\.readText\(\)/.test(pasteHandler)], [true, false, true])
 
   console.log('\nQuick terminal: installed shell catalog')
   check('shell arguments follow the executable instead of the OS', ['C:\\Windows\\System32\\cmd.exe', 'C:\\Windows\\powershell.exe', '/opt/homebrew/bin/pwsh', '/bin/bash'].map(terminalShellArgs), [['/d'], ['-NoLogo'], ['-NoLogo'], ['-l']])
@@ -253,6 +332,21 @@ try {
     scoped.dispose()
     check('app disposal drains native shells from every tab and shell selection', await ownedPtyExits.wait(), 0)
   }
+
+  // A real shell, but the paste itself never reaches it: what is checked is
+  // what main's write accepts, not how a line editor takes 300,000 characters.
+  const delivered: string[] = []
+  const recording = new QuickTerminal({ enabled: () => enabled, onState: () => {}, onData: () => {}, environment: async () => quickTerminalEnv({ ...process.env, HOME: root, ZDOTDIR: root }, process.env.PATH || '/usr/bin:/bin'), runtime: async () => {
+    const [pty, screen] = await Promise.all([import('@lydell/node-pty'), import('../src/main/screenMirror.ts')])
+    return { spawn: (...args: Parameters<typeof pty.spawn>) => { const child = pty.spawn(...args); child.write = (data: string | Buffer) => { delivered.push(String(data)) }; return child }, mirror: (cols: number, rows: number) => new screen.ScreenMirror(cols, rows) }
+  } })
+  try {
+    const recorded = await recording.open('panel', root)
+    recording.write('panel', recorded.id!, longPaste)
+    check('one write past the cap is still refused whole, which is why the panel splits a paste', delivered.length, 0)
+    for (const part of quickTerminalWrites(longPaste)) recording.write('panel', recorded.id!, part)
+    check('a split paste past the cap reaches the shell whole and in order', [delivered.length, delivered.join('') === longPaste], [2, true])
+  } finally { recording.dispose(); check('the paste-recording shell drains', await ownedPtyExits.wait(), 0) }
 
   let releaseActivation!: () => void
   const activationGate = new Promise<void>(resolve => { releaseActivation = resolve })
