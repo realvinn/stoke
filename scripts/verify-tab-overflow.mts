@@ -47,6 +47,25 @@ window.themes = BUILT_IN_THEMES.map(t => t.id);
     await settle()
     assert.deepEqual(errors, [], 'fixture mounts the real title bar without renderer errors')
     assert.equal(await run(`document.querySelector('[data-tab-id="1"] .tab-activity')?.dataset.state`), 'working', 'remote tabs draw activity dots too')
+    // Nothing below may read the machine's own motion setting. app.css stills
+    // every dot under prefers-reduced-motion (the macOS and Windows CI legs
+    // failed the pulse check from dad02b0 on), and its global reduce block's
+    // `transition-duration: 1ms` turns the initial `transition-property: all`
+    // into a real transition on every element, so the palette audit's
+    // same-task getComputedStyle read the PREVIOUS theme's colours. So: say
+    // what this machine reports, pin 'no-preference' for the whole run, and
+    // emulate 'reduce' only for the checks about it. Rehearse a runner with
+    // `electron --force-prefers-reduced-motion` (gotcha 113): it must pass both.
+    const motion = win.webContents.debugger
+    motion.attach('1.3')
+    const emulateMotion = (value: 'reduce' | 'no-preference') => motion.sendCommand('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value }] })
+    const reducedHere = await run(`matchMedia('(prefers-reduced-motion: reduce)').matches`)
+    console.log(`this machine reports prefers-reduced-motion: ${reducedHere ? 'reduce' : 'no-preference'} (the run emulates each value, so neither decides it)`)
+    await emulateMotion('reduce')
+    assert.equal(await run(`matchMedia('(prefers-reduced-motion: reduce)').matches`), true, 'the reduce emulation took')
+    assert.equal(await run(`getComputedStyle(document.querySelector('[data-tab-id="1"] .tab-activity')).animationName`), 'none', 'a working dot stays still under reduced motion')
+    await emulateMotion('no-preference')
+    assert.equal(await run(`matchMedia('(prefers-reduced-motion: reduce)').matches`), false, 'the no-preference emulation took')
     assert.equal(await run(`getComputedStyle(document.querySelector('[data-tab-id="1"] .tab-activity')).animationName`), 'activity-pulse')
     await run(`document.querySelector('[data-tab-id="1"] .tab-activity').dataset.state='waiting'`)
     assert.equal(await run(`getComputedStyle(document.querySelector('[data-tab-id="1"] .tab-activity')).animationName`), 'none', 'blocking questions use a solid dot')
@@ -65,11 +84,10 @@ window.themes = BUILT_IN_THEMES.map(t => t.id);
     await run(`window.setRemoteState('reconnecting')`); await settle();
     assert.equal(await run(`getComputedStyle(document.querySelector('[data-tab-id="1"] .tab-remote-dot')).animationName`), 'none', 'a lost link never continues pulsing as connected');
     await run(`window.setRemoteState('open');window.setRemoteUsed(50000);window.setRingStyle('solid')`); await settle();
-    await win.webContents.debugger.attach('1.3');
-    await win.webContents.debugger.sendCommand('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
+    assert.equal(await run(`getComputedStyle(document.querySelector('[data-tab-id="1"] .tab-remote-dot')).animationName`), 'remote-connection-pulse', 'a restored link pulses again');
+    await emulateMotion('reduce');
     assert.equal(await run(`getComputedStyle(document.querySelector('[data-tab-id="1"] .tab-remote-dot')).animationName`), 'none', 'remote dot respects reduced motion');
-    await win.webContents.debugger.sendCommand('Emulation.setEmulatedMedia', { features: [] });
-    win.webContents.debugger.detach();
+    await emulateMotion('no-preference');
     const palette = await run(`window.themes.map(id=>{window.setTheme(id);return [id,[0,1].map(n=>getComputedStyle(document.querySelector('[data-tab-id="'+n+'"]'),'::before').backgroundColor), (()=>{const c=document.createElement('canvas');c.width=c.height=1;const x=c.getContext('2d');const rgb=color=>{x.clearRect(0,0,1,1);x.fillStyle=color;x.fillRect(0,0,1,1);const [r,g,b,a]=x.getImageData(0,0,1,1).data;return {r,g,b,a:a/255}};return {inks:[0,1].map(n=>rgb(getComputedStyle(document.querySelector('[data-tab-id="'+n+'"]'),'::before').backgroundColor)),grounds:['--bg','--bg-sunken','--surface-hover'].map(key=>rgb(getComputedStyle(document.documentElement).getPropertyValue(key)))}})()]})`);
     for (const [id, , audit] of palette) for (const ink of audit.inks) for (const ground of audit.grounds) assert.ok(contrastRatio(ink, ground) >= 3, 'tab edge contrast on ' + id);
     assert.ok(palette.every(([,colors])=>colors[0]!==colors[1]), 'Claude orange and Codex purple remain distinct on every theme');
@@ -121,6 +139,9 @@ window.themes = BUILT_IN_THEMES.map(t => t.id);
     assert.equal(await run(`!!document.querySelector('[aria-label="Scroll session tabs"]')`), false, 'controls disappear when tabs fit')
     await run(`window.setCount(3);window.setSessionTabs(true)`); await settle();
     writeFileSync(resolve('out/tab-appearance.png'), (await captureTestWindow(win)).toPNG());
+    await motion.sendCommand('Emulation.setEmulatedMedia', { features: [] });
+    assert.equal(await run(`matchMedia('(prefers-reduced-motion: reduce)').matches`), reducedHere, 'the emulation is cleared back to this machine’s own setting');
+    motion.detach();
     console.log('PASS real title bar: theme-aware agent edges, shared ring styles, remote context/link states, reduced motion, overflow, zoom and usage clearance.')
   } catch (error) { console.error(error); process.exitCode = 1 }
   finally { win?.destroy(); rmSync(temp, { recursive: true, force: true }); app.exit(process.exitCode ? Number(process.exitCode) : 0) }

@@ -91,8 +91,8 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
 
@@ -231,8 +231,8 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
 
@@ -338,7 +338,7 @@ jobs:
           "$found of $($ids.Count) agents installed and found"
           "every agent that installed is found by Stoke, without a restart, and starts"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: agents-${{ matrix.arch }}
@@ -369,8 +369,8 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
       - name: Remember the PATH a running Stoke would have
@@ -423,11 +423,11 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # This job's own node — for writing the script and running the probe —
       # comes from the tool cache, by absolute path, so hiding the machine's
       # Node below cannot take it away.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         id: node
         with:
           node-version: '24'
@@ -478,7 +478,7 @@ jobs:
           $env:Path = ([Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [Environment]::GetEnvironmentVariable('Path', 'User'))
           & $env:JOB_NODE scripts/probe-clis.mts --expect gemini,opencode,cline
           if ($LASTEXITCODE -ne 0) { throw 'an agent installed on a fresh machine is not found, or does not start' }
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: fresh-node
@@ -497,8 +497,8 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: npm
@@ -672,7 +672,7 @@ jobs:
           if ($up.ExitCode -eq 0) { throw 'the installer went ahead with a process it could not close' }
           if (-not $alive) { throw 'the installer killed the process instead of stopping' }
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: build-${{ matrix.arch }}
@@ -707,8 +707,8 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: npm
@@ -892,8 +892,8 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
       - name: The latest release's installers
@@ -1016,7 +1016,7 @@ jobs:
           'the installer runs fine with these switches — the stall is in how winget starts it'
           exit 1
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: winget-diagnostics

@@ -1,7 +1,7 @@
 /** Synthetic account + three computers + browser; every network request stays on loopback. */
 import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, rmSync, readFileSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import nativePath, { join, resolve, posix, win32 } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createRequire } from 'node:module'
 import { createServer, request as httpRequest } from 'node:http'
@@ -46,10 +46,28 @@ function computer(name: string, ptyId: string) {
   }
   const svc = new HubService({ userData: root, backend, platform: 'linux', hostname: name, appVersion: 'test', getSettings: () => settings, commit: patch => { settings = hydrateSettings({ ...settings, ...patch }); for (const fn of listeners) fn(settings); return settings }, hydrate: hydrateSettings, onSettingsChanged: fn => { listeners.add(fn); return () => listeners.delete(fn) }, emit: () => {}, pairPollMs: 30, remote: machine, ssh: { home: root, dir: join(root, '.ssh'), config: join(root, '.ssh/config') } })
   services.push(svc)
-  return { svc, root, inputs, ptyId }
+  return { svc, root, inputs, ptyId, name }
+}
+/** The file the asset stub serves for a URL path, or null outside `root`. It
+ * takes the path module so the Windows rule runs on every OS (gotcha 113): the
+ * old `file.startsWith(root + '/')` refused every file on Windows, where
+ * resolve() answers in backslashes, so the page never booted and the
+ * windows-latest leg failed from dad02b0 on. */
+function assetFile(paths: typeof posix, root: string, pathname: string): string | null {
+  const file = paths.resolve(root, pathname.slice(1) + (pathname.endsWith('/') ? 'index.html' : ''))
+  const rel = paths.relative(root, file)
+  return rel !== '' && rel !== '..' && !rel.startsWith('..' + paths.sep) && !paths.isAbsolute(rel) ? file : null
 }
 let account: any
 try {
+  // The asset stub's containment, under both path modules, whatever this OS is.
+  for (const [paths, root] of [[win32, 'D:\\a\\stoke\\stoke\\out\\account-remote'], [posix, '/w/stoke/out/account-remote']] as const) {
+    const os = paths === win32 ? 'Windows' : 'POSIX'
+    assert.equal(assetFile(paths, root, '/remote/'), paths.join(root, 'remote', 'index.html'), `${os}: the page shell is served`)
+    assert.equal(assetFile(paths, root, '/remote/assets/index-abc.js'), paths.join(root, 'remote', 'assets', 'index-abc.js'), `${os}: a bundle file is served`)
+    assert.equal(assetFile(paths, root, '/../account-remote-old/x.js'), null, `${os}: a sibling folder sharing the name's prefix is refused`)
+    assert.equal(assetFile(paths, root, '/../../secret.txt'), null, `${os}: a path above the root is refused`)
+  }
   // Differential tests cover the existing cryptographic wire format.
   const keys = native.generateDeviceKeys(), seed = new Uint8Array(32).fill(7)
   assert.equal(browser.browserPublic(keys.signPriv), keys.signPub)
@@ -77,7 +95,7 @@ try {
   const kit = await laptop.svc.createVault(); assert(kit.ok, !kit.ok ? kit.message : '')
   assert((await laptop.svc.confirmKit(kit.kit.split('-')[kit.group])).ok)
   async function joinComputer(device: ReturnType<typeof computer>): Promise<void> {
-    await device.svc.start(); assert((await device.svc.signIn({ email, password, label: device.root.split('/').at(-1) })).ok)
+    await device.svc.start(); assert((await device.svc.signIn({ email, password, label: device.name })).ok)
     await laptop.svc.syncNow()
     await until('pair request appears', () => laptop.svc.view().pairs.some(p => p.state === 'waiting'))
     const pair = laptop.svc.view().pairs.find(p => p.state === 'waiting')!
@@ -131,6 +149,9 @@ try {
   account = new AccountRemote(link)
   await account.start()
   await until('browser sees both online computers', () => account.view.machines.filter((m: any) => m.status?.sessions.length).length >= 2)
+  // A computer's name is its own label, never a path read with split('/'): on Windows
+  // that kept the whole backslashed temp folder (gotcha 113).
+  assert.deepEqual(['PC', 'WorkPC'].filter(label => account.view.machines.some((m: any) => m.label === label)), ['PC', 'WorkPC'], 'the browser lists each computer by its own name: ' + JSON.stringify(account.view.machines.map((m: any) => m.label)))
   const workId = work.svc.view().devices.find(d => d.me)!.id
   const pcId = pc.svc.view().devices.find(d => d.me)!.id
   const frames: any[] = []
@@ -176,9 +197,8 @@ try {
     }
     try {
       const response = await edge.fetch(new Request(`http://${req.headers.host}${req.url}`), { REMOTE_ASSETS: { async fetch(request: Request) {
-        const path = new URL(request.url).pathname
-        const file = resolve('out/account-remote', path.slice(1) + (path.endsWith('/') ? 'index.html' : ''))
-        if (!file.startsWith(resolve('out/account-remote') + '/')) return new Response(null, { status: 404 })
+        const file = assetFile(nativePath, resolve('out/account-remote'), new URL(request.url).pathname)
+        if (!file) return new Response(null, { status: 404 })
         try { return new Response(readFileSync(file), { headers: { 'content-type': file.endsWith('.js') ? 'text/javascript' : file.endsWith('.css') ? 'text/css' : 'text/html' } }) } catch { return new Response(null, { status: 404 }) }
       } } } as any)
       res.writeHead(response.status, Object.fromEntries(response.headers)); res.end(Buffer.from(await response.arrayBuffer()))

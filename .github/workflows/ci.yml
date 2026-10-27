@@ -70,8 +70,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: npm
@@ -133,8 +133,8 @@ jobs:
     continue-on-error: true
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: npm
@@ -157,7 +157,7 @@ jobs:
       matrix: ${{ steps.targets.outputs.matrix }}
       debian: ${{ steps.targets.outputs.debian }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - id: targets
         run: |
           echo "matrix=$(node scripts/targets.mjs --probe-matrix)" >> "$GITHUB_OUTPUT"
@@ -187,8 +187,8 @@ jobs:
       # workflow reads none (it runs for pull requests).
       STOKE_PROBE_SSH_PASSWORD: probe-Pass-1
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: npm
@@ -314,7 +314,7 @@ jobs:
           if [ "$RUNNER_OS" = Linux ]; then docker logs stoke-probe-sshd 2>&1 | tail -n 80 || true
           else sudo tail -n 80 "$RUNNER_TEMP/sshd/sshd.log" || true; fi
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: probe-${{ matrix.key }}
@@ -352,8 +352,8 @@ jobs:
             curl ca-certificates git procps xvfb xauth \
             libasound2 libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 xdg-utils libatspi2.0-0 libsecret-1-0 libgbm1 \
             ${{ matrix.fuse && 'fuse3' || '' }}
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
       # ws, for cdp-eval.mjs. No Electron download and no native builds: the
@@ -367,7 +367,7 @@ jobs:
       # uploaded the logs and none of the screenshots that were there.
       - name: Install as root, and boot it (scripts/probe/debian.sh)
         run: sh scripts/probe/debian.sh ${{ matrix.fuse && 'fuse' || 'nofuse' }} "$GITHUB_WORKSPACE/probe-debian"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: probe-${{ matrix.key }}

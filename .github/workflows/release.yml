@@ -59,8 +59,8 @@ jobs:
     # A hung Electron window must not hold the release for six hours.
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: npm
@@ -128,11 +128,11 @@ jobs:
     outputs:
       matrix: ${{ steps.targets.outputs.matrix }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Pinned rather than taking whatever the runner image ships, for the same
       # reason the other jobs do: the whole matrix comes out of this step, and
       # "the image moved" is not a failure anybody would look for here.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
       - id: targets
@@ -153,8 +153,8 @@ jobs:
       matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: npm
@@ -404,7 +404,7 @@ jobs:
       # merge exists to prevent.
       - name: Upload installers
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: installers-${{ matrix.key }}
           if-no-files-found: warn
@@ -435,8 +435,8 @@ jobs:
       # Checked out for scripts/, and for package.json's version. No `npm ci`:
       # the merger and the gate below import nothing outside node's own
       # builtins, precisely so this job stays a download and two node scripts.
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
 
@@ -451,7 +451,7 @@ jobs:
       # exists. The old guards below this line would all still have passed. Each
       # artifact lands in dist/<artifact-name>/ instead, and the merger reads
       # the tree.
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: installers-*
           path: dist
@@ -491,7 +491,7 @@ jobs:
 
       # CLI names include the OS and architecture, so these do not collide
       # with each other or with the desktop update manifests above.
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: stoke-cli-*
           path: cli-assets
@@ -587,8 +587,8 @@ jobs:
     steps:
       # For scripts/winget.mjs and scripts/targets.mjs. No `npm ci`: both
       # import only node's builtins and each other.
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
 

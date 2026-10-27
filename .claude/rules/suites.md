@@ -296,3 +296,47 @@ values alike. The scanner reads shapes, not intent. A suite that needs the liter
 the rule must leave alone) assembles it the same way. If a push is refused anyway, never use the
 "allow this secret" link: rewrite the unpushed commits.
 
+## 161. Under reduced motion every property change is a 1 ms transition, so a same-task read is stale and a window drawing no frames never finishes it
+
+**Found 2026-10-27, on the macOS and Windows CI legs.** app.css ends with a global block,
+`@media (prefers-reduced-motion: reduce) { *, *::before, *::after { … transition-duration: 1ms
+!important } }`. `transition-property` defaults to `all`, so under it EVERY property change on
+every element is a transition, 1 ms long but still a transition. Two consequences for anything
+that measures:
+
+- **A `getComputedStyle` in the same task as the change reads the OLD value.** A transition
+  starts on the next frame. verify:tab-overflow's palette audit switched theme and read the tab
+  edge's colours in one evaluation, and under forced reduced motion got the previous theme's
+  ("tab edge contrast on daylight" failed).
+- **In a window that draws no frames, the transition never finishes.** It holds its start value
+  while non-animatable properties (`position`) land at once. verify:remote-draft's dock measured
+  1 + 4 + 28 + 4 = 37 px for 68, because `padding-top` stayed at 4px. That is the windows-latest
+  number exactly (ffa9975, job 122052788712). Rehearsed on a Mac with `--force-prefers-reduced-motion`
+  plus frozen animations (CDP `Animation.setPlaybackRate` 0), and separately in a hidden window that
+  stops painting: both 68 → 37 without the fix. Reduced motion alone passed on the Mac, whose
+  hidden window kept drawing frames.
+
+CI runners can report reduce (inferred: the same Windows leg failed tab-overflow's pulse check,
+which only reduce turns off). The rule: **a suite that reads computed style or geometry pins
+`prefers-reduced-motion` through CDP `Emulation.setEmulatedMedia`** for the whole run. It switches
+to `reduce` only for its reduced-motion checks, asserts that each emulation took, and clears it at
+the end, asserting the machine's own setting is back. Each suite prints that setting first, so a
+CI log says which case ran. verify-tab-overflow.mts and verify-remote-draft.mts are the shape;
+in each, removing a pin turned its rehearsal red. Pinning only around one check is not enough: a
+cleared emulation before the palette audit failed it again.
+
+Two guards ride with the pin in verify-remote-draft, because only screenshots need frames:
+
+- **A bounded frame probe** after the window's reload. `requestAnimationFrame` raced against a 1 s
+  timeout prints how many frames were drawn and cancels its last request. `document.visibilityState`
+  cannot tell: it reads `visible` for a hidden window with `backgroundThrottling: false`.
+- **A 10 s deadline on each `captureTestWindow`** (it waits on `requestAnimationFrame` with no
+  deadline of its own) that throws `ScreenshotStalled`. `ci-verify.mjs` has no per-suite timeout,
+  so a capture waiting on a frame that never comes would hold the leg until the job's own timeout.
+  Rehearsed in the stopped window: with the deadline it failed by name at 16 s; without it, it was
+  still waiting when stopped at 45 s.
+
+**Unverified, in app code:** the same block makes any app code that measures right after a style
+change read stale values for a person with Reduce Motion on, for example the title bar's hidden
+measurer (`fitTopBar`, gotcha 155) and anything reading a theme's colours just after
+`applyTheme`. Observed only through the suites; no app path has been checked.

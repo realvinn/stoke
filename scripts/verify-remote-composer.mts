@@ -78,6 +78,8 @@ window.test = {sent, keyboard, input, get cache(){return cache}, get state(){ret
     await win.webContents.debugger.sendCommand('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 })
     const run = (script: string) => win!.webContents.executeJavaScript(script)
     const wait = (ms = 60) => new Promise((done) => setTimeout(done, ms))
+    /** Polls a page condition until it holds or `ms` passes; the assertion after it reports. */
+    const until = async (script: string, ms: number): Promise<void> => { const end = Date.now() + ms; while (!(await run(script)) && Date.now() < end) await wait(25) }
     await wait()
     assert.equal(await run(`document.querySelector('.keys-panel').hidden`), true)
     assert.equal(await run(`document.querySelectorAll('.keys-quick > button').length`), 6)
@@ -122,8 +124,12 @@ window.test = {sent, keyboard, input, get cache(){return cache}, get state(){ret
     assert.equal(await run(`localStorage.length`), 0, 'short edits coalesce before the checkpoint')
     await run(`test.input.value+='0';test.input.dispatchEvent(new InputEvent('input',{data:'0'}))`)
     assert.equal(await run(`JSON.parse(localStorage.getItem(localStorage.key(0))).text`), '1234567890')
-    await run(`test.input.value+='短';test.input.dispatchEvent(new InputEvent('input',{data:'短'}))`)
-    await wait(550)
+    // A short edit waits for the 500 ms idle checkpoint (mountDraftCache). Read
+    // in the SAME task as the edit, so the timer cannot have fired yet, then
+    // poll: a fixed wait(550) left a loaded runner 50 ms of slack, and the
+    // macOS leg failed here reading the old '1234567890'.
+    assert.equal(await run(`test.input.value+='短';test.input.dispatchEvent(new InputEvent('input',{data:'短'}));JSON.parse(localStorage.getItem(localStorage.key(0))).text`), '1234567890', 'a short edit is not saved at once')
+    await until(`JSON.parse(localStorage.getItem(localStorage.key(0))).text === '1234567890短'`, 3000)
     assert.equal(await run(`JSON.parse(localStorage.getItem(localStorage.key(0))).text`), '1234567890短', 'idle saves shorter edits')
     await run(`test.input.dispatchEvent(new CompositionEvent('compositionstart'));test.input.value+='候補';test.input.dispatchEvent(new InputEvent('input',{data:'候補',isComposing:true}));window.dispatchEvent(new Event('pagehide'))`)
     assert.equal(await run(`JSON.parse(localStorage.getItem(localStorage.key(0))).text`), '1234567890短', 'uncommitted IME candidates are not saved')

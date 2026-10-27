@@ -5,6 +5,10 @@ import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'node:fs'
 import { resolve, join } from 'node:path'
 import { build } from 'vite'
 
+// This suite screenshots a hidden window, so it must keep drawing while hidden
+// or covered (CLAUDE.md's standing traps; drive-account-remote runs the same way).
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows')
+
 async function main(): Promise<void> {
   mkdirSync('out', { recursive: true })
   const temp = mkdtempSync(resolve('out/remote-draft-'))
@@ -71,6 +75,43 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`)
     await run(`document.querySelector('textarea').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}))`); await settle();
     assert.deepEqual(await run('window.sent[1]'), {id:'remote-one',text:'full Xprompt before the drop',enter:true}, 'Send hands the entire draft to the host in one submission');
     assert.ok(await run(`document.querySelector('select').textContent.includes('full Xprompt before the drop')`), 'a submitted prompt retains a local recovery copy');
+    // The geometry checks must not read the machine's motion setting. Under
+    // prefers-reduced-motion, app.css's global `transition-duration: 1ms` turns
+    // the initial `transition-property: all` into a transition on every
+    // property, so expanding starts one on the dock's padding-top. A transition
+    // starts on the next frame, so in a window that draws none it holds its
+    // start, 4px, while the textarea's `position: absolute` (not animatable)
+    // lands at once: 1 + 4 + 28 + 4 = 37, the windows-latest leg's 68 -> 37
+    // exactly (ffa9975, job 122052788712). Measured there: only that the
+    // runner's hidden window drew frames BEFORE a reload (verify:remote-composer
+    // and verify:shell-layout screenshot through requestAnimationFrame and pass
+    // on that leg). Inferred: that it reports reduce (the same leg failed
+    // verify:tab-overflow's pulse check, which only reduce turns off) and that
+    // this window draws no frames after its reload. The line below prints both.
+    // The frame probe is bounded, so a window that stopped drawing prints 0
+    // rather than hanging (`visibilityState` cannot tell: backgroundThrottling
+    // false keeps it 'visible'), and it cancels its last request, so no
+    // callback is left pending in a window that never paints. With the pin no
+    // transition runs on the dock, so the geometry holds whether frames run,
+    // crawl or stop. Only the screenshots below need frames, and they fail by
+    // name after 10 s rather than hanging the leg: ci-verify.mjs has no
+    // per-suite timeout. Rehearsed on a Mac (gotcha 113) under
+    // `--force-prefers-reduced-motion`, with animations frozen (CDP
+    // `Animation.setPlaybackRate` 0) and, separately, in a hidden window that
+    // stops painting (`paintWhenInitiallyHidden: false`,
+    // `backgroundThrottling: true`; the probe printed 1 frame): without this
+    // pin both fail with exactly 68 -> 37 (padding-top 4px, 10 animations);
+    // with it both pass the geometry. The stopped window then fails by name at
+    // the first screenshot (16 s for the whole run), as does a page whose
+    // requestAnimationFrame never fires (probe 0); without the deadline the
+    // capture was still waiting when stopped at 45 s.
+    const motion = win.webContents.debugger
+    motion.attach('1.3')
+    const reducedHere = await run(`matchMedia('(prefers-reduced-motion: reduce)').matches`)
+    const framesAfterReload: number = await run(`new Promise(done=>{let n=0,id=0;const tick=()=>{n++;id=requestAnimationFrame(tick)};id=requestAnimationFrame(tick);setTimeout(()=>{cancelAnimationFrame(id);done(n)},1000)})`)
+    console.log(`this machine reports prefers-reduced-motion: ${reducedHere ? 'reduce' : 'no-preference'}; the window drew ${framesAfterReload} animation frames in the 1 s after its reload (the geometry checks pin no-preference)`)
+    await motion.sendCommand('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'no-preference' }] })
+    assert.equal(await run(`matchMedia('(prefers-reduced-motion: reduce)').matches`), false, 'the no-preference emulation took')
     const geometry=()=>run(`({dock:document.querySelector('.remote-draft').getBoundingClientRect().height,screen:document.querySelector('.fixture-screen').getBoundingClientRect().height})`)
     await run(`document.querySelector('details').open=false;window.typeOffline('Draft saved before the computer stopped.'+String.fromCharCode(10)+'The previous lines are still here.');document.querySelector('textarea').setSelectionRange(12,12);window.fieldNode=document.querySelector('textarea')`);await settle()
     for(const width of [900,390]) {
@@ -78,6 +119,7 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`)
       const before=await geometry()
       assert.ok(before.dock<=80,'compact dock stays small: '+JSON.stringify(before))
       await run(`document.querySelector('[aria-controls]').click()`);await settle()
+      if (width === 900) console.log(`expanded under the pin: dock padding-top ${await run(`getComputedStyle(document.querySelector('.remote-draft')).paddingTop`)}, ${await run('document.getAnimations().length')} animations on the page`)
       assert.deepEqual(await geometry(),before,'expanding overlays the screen without resizing the terminal')
       assert.equal(await run(`window.fieldNode===document.querySelector('textarea') && document.querySelector('textarea').selectionStart===12`),true,'expand preserves the editor and caret')
       await run(`document.querySelector('[aria-controls]').click();window.setLink('reconnecting')`);await settle()
@@ -89,9 +131,18 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`)
       await run(`document.querySelector('details').open=false`)
     }
     win.setSize(900,640);await settle()
-    writeFileSync(resolve('out/remote-draft-compact.png'),(await captureTestWindow(win)).toPNG())
+    // captureTestWindow waits on requestAnimationFrame with no deadline of its own.
+    const capture = async (file: string) => {
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const stalled = new Promise<never>((_, fail) => { timer = setTimeout(() => fail(Object.assign(new Error(`${file}: no frame within 10 s, so the hidden window has stopped drawing (it drew ${framesAfterReload} frames in the 1 s after its reload)`), { name: 'ScreenshotStalled' })), 10_000) })
+      try { writeFileSync(resolve('out', file), (await Promise.race([captureTestWindow(win!), stalled])).toPNG()) } finally { clearTimeout(timer) }
+    }
+    await capture('remote-draft-compact.png')
     await run(`document.querySelector('[aria-controls]').click()`);await settle()
-    writeFileSync(resolve('out/remote-draft-expanded.png'),(await captureTestWindow(win)).toPNG())
+    await capture('remote-draft-expanded.png')
+    await motion.sendCommand('Emulation.setEmulatedMedia', { features: [] })
+    assert.equal(await run(`matchMedia('(prefers-reduced-motion: reduce)').matches`), reducedHere, 'the emulation is cleared back to this machine’s own setting')
+    motion.detach()
     const savedText=await run(`document.querySelector('textarea').value`)
     assert.ok(savedText.includes(String.fromCharCode(10)), 'recovery covers complete multiline prompts')
     await run(`addEventListener('pagehide',()=>localStorage.setItem('fixture-pagehide','yes'))`)

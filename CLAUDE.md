@@ -578,6 +578,8 @@ rule file named on the group line.
   missing reading, and keep both `verify` jobs step-identical: `displayRoute` reads the runner.
 - **157.** Build every secret-shaped test fixture from pieces at run time (`fake()`, `SLACK_HOOKS`): GitHub's
   push protection refuses a push whose history holds one whole, documented placeholders included.
+- **161.** Pin `prefers-reduced-motion` (`Emulation.setEmulatedMedia`) in a suite that reads style or geometry: app.css makes every
+  change a 1 ms transition, stale in the same task and never done without frames; give `captureTestWindow` a deadline.
 
 ## Standing traps when driving the app
 
