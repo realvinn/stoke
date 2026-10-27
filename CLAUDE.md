@@ -38,14 +38,21 @@ npm run hub        # the Stoke Hub server from source (hub/README.md is the NUC 
 A `dist:*` exists per target and each MUST run on that target's own platform and arch
 (gotcha 67): `dist:win`, `dist:win:arm64`, `dist:mac`, `dist:mac:intel`, `dist:linux`.
 
-Every suite runs alone as `npm run verify:<name>`: context, statusline, unicode, usage,
-profiles, settings, secrets, hub, hub-server, hub-client, hub-relay, providers, claude-config, folders, search, settings-search, chat-sources, color, theme-gen, activity,
-worklog-gate, tabs, topbar, git, launcher, registry,
-restore, private, shortcuts, find, drop, fullscreen, layers, browser-url, browser-profiles, safari-import, chrome-import, voice, agents, accounts, campfire, cli, stoke-args, updates, targets, manifests, portable, winget, worklog-runner,
-worklog-retry, worklog-recall, worklog-autoscan, ssh, ssh-enroll, remote, phone-ui, installer-art, install, welcome,
-selection — the `check` chain — plus extract and security, which
-need a live instance (`verify:security <url> <token> --access`). `verify:selection` opens a real
-Electron window and needs a display (both Linux CI gates give it `xvfb-run`); `verify:context` reads
+Every suite runs alone as `npm run verify:<name>`: context, codex-context, statusline, unicode,
+usage, codex-resume, profiles, settings, secrets, hub, hub-server, hub-client, hub-presence,
+account-remote, hub-relay, providers, claude-config, folders, search, settings-search,
+chat-sources, color, theme-gen, activity, worklog-gate, work-plugin, plugins, grok-bot,
+work-notion, work-drafts, work-session-notes, tabs, tab-overflow, tab-windows, topbar,
+quick-terminal, shell-layout, pty-exit, git, launcher, launch-preflight, registry, restore,
+private, shortcuts, find, drop, fullscreen, layers, terminal-links, browser-url, browser-profiles,
+safari-import, chrome-import, voice, agents, accounts, account-sync, campfire, cli, terminal,
+terminal-platform, stoke-args, updates, freeze, targets, probe, manifests, portable, winget,
+worklog-runner, worklog-retry, worklog-recall, worklog-autoscan, ssh, ssh-files, ssh-enroll,
+remote, phone-ui, phone-scroll, remote-composer, remote-draft, remote-recovery, installer-art,
+install, welcome, selection — the `check` chain — plus extract and security, which
+need a live instance (`verify:security <url> <token> --access`). `verify:selection` and the other
+window suites `--list` names open a real Electron window and need a display (both Linux CI gates
+give them `xvfb-run`); `verify:context` reads
 this machine's real transcripts on purpose, so CI skips it (`npm run verify:ci -- --list`).
 `.github/workflows/ci.yml` runs the gate on every push and PR. `STOKE_LIVE_USAGE=1` adds the
 account call to `verify:usage`.

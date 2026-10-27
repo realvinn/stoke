@@ -920,12 +920,14 @@ Linux arm64 is deliberately not built (`NOT_BUILT` in `scripts/targets.mjs`).
 
 ## Testing
 
-Verification lives in `scripts/`, one `verify-*` suite per subject — fifty-eight of them now.
-Fifty-six are in `npm run check`, between the typecheck and the full build (the other two,
-extract and security, need a live instance); `check` is the gate, and it is what "done" means
-here. They are `.mts` run straight through node's
-type-stripping with no build step, except `verify:selection`, which opens a real Electron window
-and so needs a display. Each runs alone:
+Verification lives in `scripts/`, one `verify-*` suite per subject — ninety of them now.
+Eighty-seven are in `npm run check`, between the typecheck and the full build (of the other
+three, extract and security need a live instance and terminal-release checks terminal.yml's
+extracted release); `check` is the gate, and it is what "done" means here. They are `.mts` run
+straight through node's type-stripping with no build step; the window suites
+(`npm run verify:ci -- --list` names them, `verify:selection` among them) open a real Electron
+window and so need a display. A suite that writes under `tmpdir()/stoke` runs in a scratch temp
+folder of its own (`scripts/suite-tmpdir.mts`, gotcha 74). Each runs alone:
 
 ```bash
 npm run verify:context        # context meter against the real transcripts on this machine,
