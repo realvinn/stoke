@@ -9,8 +9,10 @@ without closing the agent processes. OpenCode stays OpenCode: its own interface,
 login, providers, tools, permissions, MCP and slash commands run inside Stoke.
 Stoke does not replace those agents with an API chat client.
 
-This is a development preview, not a published CLI release. The website's
-existing installers still download the published desktop builds.
+Standalone CLI archives are published with beta releases for macOS, Windows
+and Linux on x64 and ARM64. The website’s ordinary installers still install
+the desktop app; Windows and Linux desktop launchers keep their graphical
+behaviour. Use a standalone CLI archive for a headless machine.
 
 ## Run from this checkout
 
@@ -41,15 +43,39 @@ batch launchers use Windows argument escaping.
 with a checksum-verified Node runtime and matching PTY binary. Supported build
 targets are macOS, Windows and Linux, each on x64 and ARM64. Linux currently
 targets glibc; musl and older 32-bit ARM are deferred. Agent vendors have their
-own platform requirements. Only macOS ARM64 has been validated locally; the
-new six-target native CI workflow must pass before claiming release coverage.
+own platform requirements. Local validation uses macOS ARM64; release CI builds and verifies all six
+targets natively, including running each extracted CLI package.
 
 Extract the archive and run its `stoke` or `stoke.cmd` directly, with no system
 Node installation. `install.sh` installs a versioned copy under `~/.local/share`
 and a launcher under `~/.local/bin`; `install.ps1` uses LocalAppData and the user
 PATH. Run the installer from a newer extracted archive to switch versions.
-These are offline installers; online publishing and automatic updates are not
-enabled. Uninstalling preserves configuration and chat metadata.
+These are offline installers; download a newer release archive to update.
+Automatic CLI updates are not enabled. Uninstalling preserves configuration and chat metadata.
+
+## Linux as root or over SSH
+
+The standalone CLI runs as root without Electron or Chromium. A message saying
+“running as root, so Chromium sandbox is off” comes from the **desktop** launcher:
+it is a warning, not a startup refusal, but that app still needs a graphical session.
+Adding `--cli claude` to the Linux desktop launcher selects an agent in the app;
+it does not turn that launcher into the standalone terminal UI.
+
+For beta 18 on Linux x64, run these in the root shell:
+
+```sh
+curl -fLO https://github.com/realvinn/stoke/releases/download/v1.0.0-beta.18/stoke-cli-1.0.0-beta.18-linux-x64.tar.gz
+curl -fLO https://github.com/realvinn/stoke/releases/download/v1.0.0-beta.18/stoke-cli-1.0.0-beta.18-linux-x64.tar.gz.sha256
+sha256sum -c stoke-cli-1.0.0-beta.18-linux-x64.tar.gz.sha256
+tar -xzf stoke-cli-1.0.0-beta.18-linux-x64.tar.gz
+./stoke-cli-1.0.0-beta.18-linux-x64/stoke
+```
+
+For `aarch64`/`arm64` (`uname -m`), replace `linux-x64` with `linux-arm64`.
+The package includes its Node runtime; root uses its own Stoke configuration
+and coding-agent sign-ins. `./install.sh` inside the extracted archive installs
+it permanently; if a desktop `stoke` command already occupies `~/.local/bin`,
+choose a separate `STOKE_BIN_DIR` rather than silently overwriting it.
 
 ## Navigation
 
