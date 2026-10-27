@@ -300,13 +300,16 @@ export function ChatViewer({
                 <div className="chat-msg-head">
                   <span className="chat-msg-who">{m.role === 'user' ? 'You' : who}</span>
                   {m.atMs !== null && <time className="chat-msg-at">{stampLabel(m.atMs)}</time>}
+                  {/* Named by aria-label, not an sr-only span: a selection across
+                      messages copied that span's text between every message.
+                      `.chat-msg-copy` is user-select: none for the same reason. */}
                   <button
                     className="icon-btn chat-msg-copy"
                     onClick={() => copy(key, m.text)}
                     title="Copy this message"
+                    aria-label="Copy this message"
                   >
                     {copied === key ? <IconCheck /> : <IconCopy />}
-                    <span className="sr-only">Copy this message</span>
                   </button>
                 </div>
                 <div className="chat-msg-text">

@@ -3,6 +3,7 @@ import { DAILY_STATES, TASK_STATES, localWorkDay } from '@shared/workPlugin'
 import type { WorkCommand, WorkDaily, WorkDailyStatus, WorkTask, WorkView } from '@shared/workPlugin'
 import { WorkNotion } from './WorkNotion'
 import { WorkDrafts } from './WorkDrafts'
+import { refuseOverlongPaste } from '../lib/pasteLimit'
 
 interface Props {
   session?: { id: string; title: string; notesPtyId?: string }
@@ -11,6 +12,8 @@ interface Props {
 export function WorkPanel({ session }: Props): React.JSX.Element {
   const [view, setView] = useState<WorkView | null>(null)
   const [error, setError] = useState('')
+  // Its own state, not `error`: it lasts only until the fields next change, and a save's error outlives typing.
+  const [pasteNote, setPasteNote] = useState('')
   const [busy, setBusy] = useState(false)
   const [mode, setMode] = useState<'tasks' | 'daily'>('daily')
   const [day, setDay] = useState(localWorkDay)
@@ -46,18 +49,22 @@ export function WorkPanel({ session }: Props): React.JSX.Element {
     finally { claimed.current = false; if (mounted.current) setBusy(false) }
   }
   const pick = (entry: WorkTask | WorkDaily): void => {
-    setAdding(false); setSelected(entry.id); setEditorRevision(entry.revision); setTitle(entry.title); setEvidence(entry.evidence); setError('')
+    setAdding(false); setSelected(entry.id); setEditorRevision(entry.revision); setTitle(entry.title); setEvidence(entry.evidence); setError(''); setPasteNote('')
     if ('brief' in entry) { setBody(entry.brief); setProject(entry.project) }
     else { setBody(entry.notes); setStatus(entry.status) }
   }
   const begin = (): void => {
-    setAdding(true); setSelected(null); setTitle(''); setBody(''); setProject(''); setEvidence(''); setError('')
+    setAdding(true); setSelected(null); setTitle(''); setBody(''); setProject(''); setEvidence(''); setError(''); setPasteNote('')
   }
   const task = mode === 'tasks' ? view?.tasks.find((r) => r.id === selected) : undefined
   const entry = mode === 'daily' ? view?.daily.find((r) => r.id === selected) : undefined
   const unsavedIdea = task?.status === 'Idea' && (title !== task.title || body !== task.brief || project !== task.project)
   const changedElsewhere = !!(task || entry) && (task?.revision ?? entry?.revision) !== editorRevision
-  const closeEditor = (): void => { setSelected(null); setAdding(false); setError('') }
+  const closeEditor = (): void => { setSelected(null); setAdding(false); setError(''); setPasteNote('') }
+  // A paste past a field's maxLength is refused and said, never cut silently (pasteLimit.ts),
+  // and the note goes as soon as a field changes: an edit or a paste that fits.
+  const pasteGuard = (e: React.ClipboardEvent<HTMLInputElement | HTMLTextAreaElement>): void => { const note = refuseOverlongPaste(e); if (note) setPasteNote(note) }
+  const typed = (set: (value: string) => void) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>): void => { setPasteNote(''); set(e.target.value) }
   const taskAction = (kind: 'approve' | 'start' | 'complete' | 'plan'): void => {
     if (!task) return
     if (changedElsewhere) { setError('This entry changed. Reload it before saving.'); return }
@@ -89,11 +96,12 @@ export function WorkPanel({ session }: Props): React.JSX.Element {
         else if (task?.status === 'Idea') void change({ kind: 'edit', id: task.id, revision: editorRevision, title, brief: body, project })
         else if (entry) void change({ kind: 'daily-edit', id: entry.id, revision: editorRevision, notes: body, status, evidence })
       }}>
-        <label>Title<input className="input" required maxLength={240} value={title} disabled={busy || !!task && task.status !== 'Idea' || !!entry} onChange={(e) => setTitle(e.target.value)} /></label>
-        {mode === 'tasks' && <label>Project name<input className="input" maxLength={2048} value={project} disabled={busy || !!task && task.status !== 'Idea'} onChange={(e) => setProject(e.target.value)} /></label>}
-        <label>{mode === 'tasks' ? 'Brief' : 'Notes'}<textarea className="input" rows={4} maxLength={16000} value={body} disabled={busy || !!task && task.status !== 'Idea'} onChange={(e) => setBody(e.target.value)} /></label>
+        <label>Title<input className="input" required maxLength={240} onPaste={pasteGuard} value={title} disabled={busy || !!task && task.status !== 'Idea' || !!entry} onChange={typed(setTitle)} /></label>
+        {mode === 'tasks' && <label>Project name<input className="input" maxLength={2048} onPaste={pasteGuard} value={project} disabled={busy || !!task && task.status !== 'Idea'} onChange={typed(setProject)} /></label>}
+        <label>{mode === 'tasks' ? 'Brief' : 'Notes'}<textarea className="input" rows={4} maxLength={16000} onPaste={pasteGuard} value={body} disabled={busy || !!task && task.status !== 'Idea'} onChange={typed(setBody)} /></label>
         {entry && <label>Daily status<select className="input" value={status} disabled={busy} onChange={(e) => setStatus(e.target.value as WorkDailyStatus)}>{DAILY_STATES.map((s) => <option key={s}>{s}</option>)}</select></label>}
-        {(entry || task?.status === 'Working' || task?.status === 'Completed') && <label>Completion evidence<textarea className="input" rows={3} maxLength={8000} placeholder="What changed, checks passed, commit or session links…" value={evidence} disabled={busy || task?.status === 'Completed'} onChange={(e) => setEvidence(e.target.value)} /></label>}
+        {(entry || task?.status === 'Working' || task?.status === 'Completed') && <label>Completion evidence<textarea className="input" rows={3} maxLength={8000} onPaste={pasteGuard} placeholder="What changed, checks passed, commit or session links…" value={evidence} disabled={busy || task?.status === 'Completed'} onChange={typed(setEvidence)} /></label>}
+        {pasteNote && <p className="work-error" role="alert">{pasteNote}</p>}
         {task?.status === 'Approved' && <>
           {session && <label className="work-enable"><input type="checkbox" checked={link} onChange={(e) => setLink(e.target.checked)} disabled={busy} /> Link this session: {session.title}</label>}
           <p className="work-note">Start work records progress. Send your task brief to the agent when you are ready.</p>

@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { GrokBotOperation, GrokBotResult, GrokBotTabBinding, GrokBotView } from '@shared/grokBot'
 import { grokBotMessages, grokBotSwitch, grokBotThreads, type GrokBotMessage, type GrokBotThread } from '@shared/grokBotConversation'
 import { ipcErrorMessage } from '../lib/format'
+import { refuseOverlongPaste } from '../lib/pasteLimit'
 import { GrokBotMessages } from './GrokBotMessages'
 import { GrokBotTools, type GrokBotTool } from './GrokBotTools'
 import '../styles/grokBot.css'
@@ -156,7 +157,7 @@ export function GrokBotWorkspace({ binding, onChange, onManage, onNewChat, onOpe
           <div className="grok-history" ref={history} onScroll={() => { const el = history.current; if (el) follow.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80 }}>
             {messages.length ? <GrokBotMessages messages={messages} name={binding.targetLabel} onOpenUrl={onOpenUrl} /> : <div className="grok-empty"><h3>{reading ? 'Reading the conversation…' : 'Ready when you are'}</h3><p>{reading ? 'Fetching recent messages from this account.' : `Send ${binding.targetLabel} a task or refresh the recent conversation.`}</p></div>}
           </div>
-          <form className="grok-composer" onSubmit={event => { event.preventDefault(); void send() }}><label>Message as {account.label}<textarea value={binding.draft} maxLength={32 * 1024} disabled={binding.sending} onChange={event => onChange({ draft: event.target.value, delivery: undefined, sendError: '' })} onKeyDown={event => { if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') { event.preventDefault(); void send() } }} placeholder={`Message ${binding.targetLabel}…`} /></label>
+          <form className="grok-composer" onSubmit={event => { event.preventDefault(); void send() }}><label>Message as {account.label}<textarea value={binding.draft} maxLength={32 * 1024} disabled={binding.sending} onPaste={event => { const note = refuseOverlongPaste(event); if (note) onChange({ sendError: note }) }} onChange={event => onChange({ draft: event.target.value, delivery: undefined, sendError: '' })} onKeyDown={event => { if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') { event.preventDefault(); void send() } }} placeholder={`Message ${binding.targetLabel}…`} /></label>
             {binding.sendError && <p role="alert" className="plugin-error">{binding.sendError}</p>}{binding.delivery === 'accepted' && <p role="status">Message sent.</p>}
             <div className="btn-row"><small>Enter for a new line · {window.stoke.platform === 'darwin' ? '⌘' : 'Ctrl'}+Enter to send</small><button className="btn" data-variant="primary" disabled={busy || !binding.draft.trim()}>{binding.sending ? 'Sending…' : 'Send message'}</button></div>
           </form>

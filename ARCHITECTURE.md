@@ -1649,6 +1649,11 @@ src/main/         Electron main process
   claudeGlobalConfig.ts  ~/.claude.json: the lock protocol, the refusals, and the
                     verify-after-write. See gotcha 38 before touching it
   browser.ts        docked Chromium: tabs, find, console/network capture
+  contextMenu.ts    the native right-click menu for Stoke's windows and every docked page:
+                    `contextMenuTemplate` (pure, no electron import) and `attachContextMenu`,
+                    whose edit items call the right-clicked contents' own methods, never a
+                    focus-following role. Never over a terminal: each host cancels its DOM
+                    contextmenu (verify:browser-url)
   browserImport/    Chrome-family and Safari profiles into a Stoke browser profile each:
                     chrome.ts (Local State, the Keychain key, the cookie DB copied and read with
                     node:sqlite), chromeCookies.ts (the macOS v10 crypto and BOTH row mappings — the
@@ -2196,6 +2201,9 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     status bar's path, disabled with a reason on SSH), `profileClosePlan`
                     (a sidebar profile chip's Close N tabs, leaving running turns and
                     starts still in flight open)
+  src/lib/pasteLimit.ts  a paste a field's `maxLength` would cut, refused whole with a note
+                    (`refuseOverlongPaste`, measured as Blink does); the composers show it in
+                    their own state until the field's next edit (verify:browser-url)
   src/lib/terminalSelection.ts  shared Shift-drag selection and clipboard controls;
                     remote terminals copy locally, preserve Ctrl+C interrupts, and intercept
                     secondary clicks before agent mouse reporting can paste or clear a highlight.

@@ -1,5 +1,5 @@
 import { randomUUID, X509Certificate } from 'node:crypto'
-import { BrowserWindow, session, shell, WebContentsView } from 'electron'
+import { app, BrowserWindow, clipboard, Menu, session, shell, WebContentsView } from 'electron'
 import type { WebContents, WebContentsViewConstructorOptions } from 'electron'
 import type { BrowserLoadError, BrowserState, BrowserTabState, Rect } from '@shared/types'
 // Relative and with the extension, so this module still runs under
@@ -7,6 +7,7 @@ import type { BrowserLoadError, BrowserState, BrowserTabState, Rect } from '@sha
 import { browserPopupUrl, normalizeUrl } from '../shared/url.ts'
 import { DEFAULT_BROWSER_PROFILE_ID, partitionFor } from '../shared/browserProfiles.ts'
 import type { BrowserProfile } from '../shared/browserProfiles.ts'
+import { attachContextMenu } from './contextMenu.ts'
 
 /** Recent console output, exposed to the agent through the MCP tools. */
 export interface ConsoleEntry {
@@ -50,20 +51,38 @@ const LOG_LIMIT = 300
  * The only permissions a browsed page may have, out of the twenty-odd Electron
  * routes through the two handlers.
  *
- * Both are pure viewport affordances: they reach nothing on the machine, they
- * need a user gesture, and the user can always press Escape. Denying them would
- * make the docked browser visibly worse than a browser — no full-screen video,
- * no canvas or map that captures the pointer — for no gain, and a security
- * measure that degrades daily use is one that gets turned off.
+ * `fullscreen` and `pointerLock` are pure viewport affordances: they reach
+ * nothing on the machine, they need a user gesture, and the user can always
+ * press Escape. Denying them would make the docked browser visibly worse than a
+ * browser — no full-screen video, no canvas or map that captures the pointer —
+ * for no gain, and a security measure that degrades daily use is one that gets
+ * turned off.
+ *
+ * `clipboard-sanitized-write` is `navigator.clipboard.writeText`/`write`, which
+ * most in-page "Copy" buttons call (GitHub's `<clipboard-copy>` among them);
+ * denied, the promise rejects and the button silently does nothing. Granting it
+ * is what Chrome does: it gives the permission to the page in the active tab
+ * unasked. It is WRITE only, and it is more than a click's worth: per MDN,
+ * Chromium lets a write through on the permission OR a user activation, so a
+ * focused page may replace what is on the clipboard at any moment, not only
+ * when the user copies from it (the `copy` event and `execCommand('copy')`
+ * need a gesture). Not measured here. That is the accepted cost, as in Chrome:
+ * it can swap what the user is about to paste, and it hands the page nothing.
+ * It is not narrowed to the main frame: a cross-origin frame already needs its
+ * embedder's `allow="clipboard-write"` (Permissions Policy, per web.dev's
+ * "Unblocking clipboard access"; also not measured here), so a main-frame rule
+ * would break only the embeds a page chose to trust.
+ * Reading stays refused (`clipboard-read`, `deprecated-sync-clipboard-read`):
+ * that is the one that would hand a page whatever else was copied.
  *
  * Everything else is refused: `media` (microphone and camera), `geolocation`,
  * `clipboard-read`, `notifications`, `display-capture`, `midi`, `serial`,
  * `hid`, `usb`, `idle-detection`, `openExternal` and the rest. None of them has
  * a use in a pane that exists to read documentation and dashboards, and each is
  * a way for a page — or for whatever talked the agent into opening one — to
- * reach past it.
+ * reach past it. verify:browser-url pins this list.
  */
-const HARMLESS_PERMISSIONS = new Set(['fullscreen', 'pointerLock'])
+const HARMLESS_PERMISSIONS = new Set(['fullscreen', 'pointerLock', 'clipboard-sanitized-write'])
 
 /**
  * Size a page gets whenever it is not showing in the panel. It must be a real
@@ -370,6 +389,19 @@ export class EmbeddedBrowser {
       if (input.key === 'Escape' && tab.findTotal > 0) {
         event.preventDefault()
         this.stopFind()
+      }
+    })
+
+    // Right-click: Cut/Copy/Paste in fields, Copy on a selection, a link's and
+    // an image's address. Native, so it paints over this view (gotcha 14); a
+    // page that draws its own menu cancels `contextmenu` and never gets this.
+    // A link opens behind the current tab in this tab's own profile.
+    attachContextMenu(wc, { Menu, clipboard }, {
+      window: this.win,
+      dev: !app.isPackaged,
+      detachDevTools: true,
+      openInNewTab: (url) => {
+        if (this.tabs.includes(tab) && browserPopupUrl(url)) this.newTab(url, tab.profileId, undefined, false)
       }
     })
 

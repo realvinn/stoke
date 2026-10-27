@@ -62,6 +62,7 @@ import type {
   WorklogWatchState
 } from '@shared/types'
 import { EmbeddedBrowser } from './browser.ts'
+import { attachContextMenu } from './contextMenu.ts'
 import { clearWallpaper, mimeFor, storeWallpaper, WALLPAPER_SCHEME, wallpaperFileFor } from './wallpaper.ts'
 import {
   buildEnvPath,
@@ -2398,6 +2399,7 @@ function createDetachedWindow(): BrowserWindow {
   popup.on('enter-full-screen', () => { pushChrome(); updateNativeReveal() })
   popup.on('leave-full-screen', () => { pushChrome(); updateNativeReveal() })
   bindWindowSwitching(popup)
+  attachContextMenu(popup.webContents, { Menu, clipboard }, { window: popup, dev: !app.isPackaged })
   const embedded = new EmbeddedBrowser(popup, state => popup.webContents.send(CH.browserState, state), () => popup.webContents.send(CH.browserFindRequested), input => switchWindow(popup, input))
   detachedBrowsers.set(popup.id, embedded)
   const settings = getSettings()
@@ -2503,6 +2505,7 @@ async function presentQuickTerminal(mode: QuickTerminalMode): Promise<void> {
     webPreferences: { preload: join(__dirname, '../preload/index.js'), additionalArguments: ['--stoke-quick-terminal'], contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: false, backgroundThrottling: false }
   })
   quickTerminalWindow = popup
+  attachContextMenu(popup.webContents, { Menu, clipboard }, { window: popup, dev: !app.isPackaged })
   popup.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   popup.webContents.on('will-navigate', event => event.preventDefault())
   popup.webContents.on('will-redirect', event => event.preventDefault())
@@ -3233,6 +3236,8 @@ function createWindow(): void {
 
   bindWindowSwitching(win)
   const browserOwner = win
+  // Fields, the chat viewer, any selection; never a terminal (contextMenu.ts).
+  attachContextMenu(win.webContents, { Menu, clipboard }, { window: win, dev: !app.isPackaged })
   browser = new EmbeddedBrowser(
     win,
     (state) => win?.webContents.send(CH.browserState, state),

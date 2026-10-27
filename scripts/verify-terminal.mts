@@ -192,11 +192,22 @@ process.stdout.on('resize', () => console.log('AGENT_SIZE:' + process.stdout.col
   const file = join(temp, 'config.json')
   const config = { version: 1, ui: { startup: 'composer' }, agent: 'opencode', agents: {
     opencode: { executable: fixture }, claude: { executable: fixture }
-  }, remotes: { lab: { kind: 'opencode', url: 'http://127.0.0.1:4096' } } }
+  }, remotes: { lab: { kind: 'opencode', url: 'http://127.0.0.1:4096' }, vps: { kind: 'ssh', host: 'vps' } } }
   writeFileSync(file, JSON.stringify(config))
   const env = { ...process.env, STOKE_CONFIG: file, STOKE_TERMINAL_HOME: join(temp, 'state'), ELECTRON_RUN_AS_NODE: '1' }
+  // A fake `ssh` first on PATH for this UI only: `/remote vps` runs the bare
+  // name, so the fixture answers with the argv the real ssh would have had.
+  // Off Windows only — there `ssh` resolves through PATHEXT and a .cmd shim,
+  // which this suite has never rehearsed (gotcha 113).
+  const sshBin = join(temp, 'ssh-bin')
+  if (process.platform !== 'win32') {
+    mkdirSync(sshBin)
+    writeFileSync(join(sshBin, 'ssh'), fixtureCode)
+    chmodSync(join(sshBin, 'ssh'), 0o755)
+  }
+  const terminalEnv = process.platform === 'win32' ? env : { ...env, PATH: `${sshBin}:${process.env.PATH ?? ''}` }
   const terminal = spawn(process.execPath, ['--experimental-strip-types', join(root, 'src/terminal/index.ts'), temp],
-    { cwd: root, cols: 120, rows: 36, env, name: 'xterm-256color' })
+    { cwd: root, cols: 120, rows: 36, env: terminalEnv, name: 'xterm-256color' })
   let output = '', exited = false
   terminal.onData((data) => { output += data })
   terminal.onExit(() => { exited = true; if (process.platform === 'win32') try { terminal.kill() } catch { /* already released */ } })
@@ -269,6 +280,14 @@ process.stdout.on('resize', () => console.log('AGENT_SIZE:' + process.stdout.col
     await send('EXIT_NOW', 'Session exited (0)')
     await send('/remote lab\r', 'AGENT_READY:')
     check('remote OpenCode uses the real attach client', () => assert.match(output, /"args":\["attach","http:\/\/127.0.0.1:4096"\]/))
+    if (process.platform !== 'win32') {
+      await send('\x1d', 'Returned to Stoke')
+      const ssh = await send('/remote vps\r', 'AGENT_READY:')
+      // Gotcha 29: ssh's `~` escape is live on a pty, so a pasted line starting
+      // `~.` would drop the link. `-e none` must come before the destination.
+      check('an SSH remote turns off ssh escapes before the destination', () =>
+        assert.match(stripVTControlCharacters(ssh), /"args":\["-e","none","-t","vps","stoke"\]/))
+    }
     await send('\x1d', 'Returned to Stoke')
     await send('\x1b[15~', 'Search sessions:')
     await send('\x13', 'Search settings:')

@@ -9166,6 +9166,19 @@ button.color-field-swatch[aria-expanded='true'] {
   opacity: 1;
 }
 
+/*
+ * A per-message Copy button is chrome, not text: unselectable, so a selection
+ * dragged across messages does not copy its label between each pair. Measured
+ * in Playwright's headless Chromium (build 1243): without this, "…line\nClaude\n27 Oct\nCopy this
+ * message\nsecond"; with it, "…line\nClaude\n27 Oct\nsecond". The Grok panel's
+ * visible "Copy" button is the same case.
+ */
+.chat-msg-copy,
+.grok-message-copy {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
 .chat-msg-text {
   font-size: var(--fs-sm);
   line-height: var(--lh-normal);
@@ -9354,6 +9367,8 @@ button.color-field-swatch[aria-expanded='true'] {
 .remote-draft-actions { display: flex; align-items: center; gap: var(--space-4); height: 1.75rem; min-width: 0; }
 .remote-draft-actions > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); font-size: var(--fs-xs); }
 .remote-draft[data-offline] .remote-draft-actions > span { color: var(--warning); }
+/* A refused paste (pasteLimit.ts) is an error, offline or not; its whole text is the span's title. */
+.remote-draft .remote-draft-actions > span[data-alert] { color: var(--danger); }
 .remote-draft-actions > .btn, .remote-draft-options > summary { flex: none; padding: 0 var(--space-4); min-height: 1.5rem; font-size: var(--fs-xs); white-space: nowrap; }
 .remote-draft-options { flex: none; font-size: var(--fs-xs); }
 .remote-draft-options > summary { display: flex; align-items: center; cursor: pointer; list-style: none; color: var(--text-muted); border-radius: var(--r-sm); }

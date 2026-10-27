@@ -29,7 +29,8 @@ export function GrokBotMessages({ messages, name = 'Grok Bot', onOpenUrl = url =
       <div className="grok-message-heading">
         <strong>{message.role === 'user' ? 'You' : message.role === 'assistant' ? name : 'Activity'}</strong>
         {message.atMs !== null && <time dateTime={new Date(message.atMs).toISOString()}>{new Date(message.atMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>}
-        <button className="btn" data-variant="ghost" onClick={() => window.stoke.clipboard.writeText(message.text)} aria-label="Copy message">Copy</button>
+        {/* .grok-message-copy is user-select: none, so a selection across messages does not copy "Copy" between them. */}
+        <button className="btn grok-message-copy" data-variant="ghost" onClick={() => window.stoke.clipboard.writeText(message.text)} aria-label="Copy message">Copy</button>
       </div>
       <div className="grok-message-text">{message.role === 'user' ? <p className="grok-user-text">{message.text}</p> : <MessageText text={message.text} onOpenUrl={onOpenUrl} />}</div>
     </li>)}

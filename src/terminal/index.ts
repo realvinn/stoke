@@ -280,7 +280,9 @@ async function main(): Promise<void> {
         const chat = sessions.create(remoteAgent, cwd, '')
         delete chat.nativeId
         chat.title = `Remote: ${value}`
-        const args = remote.kind === 'ssh' ? ['-t', remote.host, 'stoke'] : ['attach', remote.url]
+        // `-e none` before the destination (gotcha 29): ssh runs on a pty here and a
+        // pasted line starting `~.` after a newline would otherwise drop the link.
+        const args = remote.kind === 'ssh' ? ['-e', 'none', '-t', remote.host, 'stoke'] : ['attach', remote.url]
         attach(sessions.start(chat, config, '', false, { file, args })); break
       }
       case '/config':

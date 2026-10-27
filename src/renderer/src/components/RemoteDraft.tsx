@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type MutableRefObject } from 'react'
 import { DRAFT_MAX, DraftJournal, mountDraftCache, type RecoveryDraft } from '../../../remote/draftCache'
 import { remoteTypeVerdict, type RemoteTabView } from '@shared/hub/remote'
+import { refuseOverlongPaste } from '../lib/pasteLimit'
 
 /** Compose the whole prompt locally; reconnect never replays terminal control keys. */
 export function RemoteDraft({ scope, view, receive, label = 'Remote terminal' }: {
@@ -14,6 +15,9 @@ export function RemoteDraft({ scope, view, receive, label = 'Remote terminal' }:
   const cache = useRef<ReturnType<typeof mountDraftCache> | null>(null)
   const [hasText, setHasText] = useState(false)
   const [note, setNote] = useState('')
+  // A refused paste's note, kept apart from `note`: the draft cache rewrites that
+  // on every save, blur and storage event, and this must last until the next edit.
+  const [pasteNote, setPasteNote] = useState('')
   const [versions, setVersions] = useState<RecoveryDraft[]>([])
   const [sending, setSending] = useState(false)
   const sendingRef = useRef(false)
@@ -31,6 +35,7 @@ export function RemoteDraft({ scope, view, receive, label = 'Remote terminal' }:
     // then let only this scope's journal initialise the editor.
     field.value = ''
     setHasText(false)
+    setPasteNote('')
     setExpanded(false)
     const abort = new AbortController()
     let journal: DraftJournal | null = null
@@ -90,13 +95,14 @@ export function RemoteDraft({ scope, view, receive, label = 'Remote terminal' }:
       <label className="sr-only" htmlFor={fieldId}>Remote prompt, saved locally</label>
       <textarea id={fieldId} ref={input} rows={1} disabled={sending} maxLength={DRAFT_MAX}
         aria-describedby={`${fieldId}-hint`} placeholder="Message agent…"
+        onPaste={e => { const refused = refuseOverlongPaste(e); if (refused) setPasteNote(refused) }}
         onKeyDown={e => {
           if (e.key === 'Escape' && expanded) { e.preventDefault(); setExpanded(false) }
           if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && !offline) { e.preventDefault(); void insert(!e.ctrlKey && !e.metaKey) }
-        }} onInput={() => setHasText(!!input.current?.value)} />
+        }} onInput={() => { setPasteNote(''); setHasText(!!input.current?.value) }} />
       <span className="sr-only" id={`${fieldId}-hint`}>Enter sends, Shift+Enter adds a line, Ctrl+Enter inserts without sending. Your draft stays here through connection loss.</span>
       <div className="remote-draft-actions">
-        <span role="status" title={note}>{offline ? 'Offline · ' : ''}{note}</span>
+        <span role="status" title={pasteNote || note} data-alert={pasteNote ? '' : undefined}>{offline ? 'Offline · ' : ''}{pasteNote || note}</span>
         <button type="button" className="btn" aria-expanded={expanded} aria-controls={fieldId}
           onMouseDown={e => e.preventDefault()} onClick={() => { setExpanded(v => !v); focusInput() }}>
           {expanded ? 'Collapse prompt' : 'Expand prompt'}

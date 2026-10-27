@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { WORK_DRAFT_BUDGET_USD } from '@shared/workDrafts'
 import type { WorkDraftKind, WorkDraftResult, WorkDraftView, WorkSessionNotes } from '@shared/workDrafts'
 import type { WorkView } from '@shared/workPlugin'
+import { refuseOverlongPaste } from '../lib/pasteLimit'
 
 interface Props { work: WorkView; selection: { kind: 'task' | 'daily'; id: string } | null; day: string; session?: { id: string; title: string; notesPtyId?: string } }
 export function WorkDrafts({ work, selection, day, session }: Props): React.JSX.Element {
@@ -9,6 +10,8 @@ export function WorkDrafts({ work, selection, day, session }: Props): React.JSX.
   const [kind, setKind] = useState<WorkDraftKind>('brief')
   const [notes, setNotes] = useState('')
   const [error, setError] = useState('')
+  // Its own state, not `error`: a refused paste's note lasts only until the notes next change.
+  const [pasteNote, setPasteNote] = useState('')
   const [busy, setBusy] = useState(false)
   const [preview, setPreview] = useState<{ context: string; notes: WorkSessionNotes; title: string } | null>(null)
   const claimed = useRef(false)
@@ -63,7 +66,8 @@ export function WorkDrafts({ work, selection, day, session }: Props): React.JSX.
         {!available.length && <option value="">Select an idea, working task or daily entry</option>}
         {available.map((k) => <option key={k} value={k}>{k === 'brief' ? 'Idea brief' : k === 'summary' ? 'Daily summary' : 'Completion evidence'}</option>)}
       </select></label>
-      <label>Source notes<textarea className="input" rows={4} maxLength={6000} value={notes} disabled={locked} placeholder="Observed changes, session notes, checks and results…" onChange={(e) => setNotes(e.target.value)} /></label>
+      <label>Source notes<textarea className="input" rows={4} maxLength={6000} onPaste={(e) => { const note = refuseOverlongPaste(e); if (note) setPasteNote(note) }} value={notes} disabled={locked} placeholder="Observed changes, session notes, checks and results…" onChange={(e) => { setPasteNote(''); setNotes(e.target.value) }} /></label>
+      {pasteNote && <p className="work-error" role="alert">{pasteNote}</p>}
       <button className="btn" data-variant="ghost" type="button" disabled={locked || !row || !session?.notesPtyId || !session.id} onClick={() => void readNotes()}>Read current session notes</button>
       <p className="work-note">Local Claude sessions only. Reads recent conversation excerpts for review; it sends nothing to Sonnet. Tool output is excluded, and conversation claims still need verification.</p>
       {currentPreview && <div className="work-publish-row">
@@ -72,7 +76,7 @@ export function WorkDrafts({ work, selection, day, session }: Props): React.JSX.
         <textarea className="input" rows={6} readOnly aria-label="Session notes preview" value={currentPreview.notes.text} />
         <button className="btn" type="button" disabled={locked} onClick={() => {
           setNotes(`Conversation excerpts from session ${currentPreview.notes.sessionId}, captured ${new Date(currentPreview.notes.capturedAt).toISOString()}. Claims need review.\n\n${currentPreview.notes.text}`)
-          setPreview(null)
+          setPreview(null); setPasteNote('')
         }}>{notes.trim() ? 'Replace source notes with this excerpt' : 'Use this excerpt as source notes'}</button>
         <button className="btn" data-variant="ghost" type="button" disabled={locked} onClick={() => setPreview(null)}>Discard excerpt</button>
       </div>}
