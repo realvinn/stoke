@@ -117,12 +117,15 @@ export function initSecretStore(): Promise<void> {
       gate.settle('off')
       return
     }
-    // Only what was measured: the window was created without waiting for this,
-    // and the blocking key-store check, if one ran, held the main thread.
+    // Only what was measured. `took` is wall time from the start to here, and
+    // `prepare`'s first await yields to the rest of whenReady (registerIpc,
+    // createWindow, …), so it includes that boot work: it says when the store
+    // opened, not how long the key store took (measured in a driven boot on
+    // 2026-10-28: ~200 ms with no keys at all). The blocking check's own ms is exact.
     const took = Date.now() - started
     if (took > 50) {
       console.warn(
-        `[stoke] opening the secret store took ${took}ms (async key store; the window did not wait for it)` +
+        `[stoke] the secret store opened ${took}ms after boot started it (that includes boot work done meanwhile; the window did not wait for it)` +
           (warmedMs === null ? '' : `, ${warmedMs}ms of it in the blocking key-store check on the main thread`)
       )
     }
