@@ -1,6 +1,7 @@
 ---
 paths:
   - "scripts/verify-*.{mts,mjs}"
+  - "scripts/suite-tmpdir.mts"
   - "scripts/ci-verify.mjs"
   - "package.json"
   - "tsconfig.node.json"
@@ -113,6 +114,71 @@ Two rules come out of it:
    red — measured — where before, every assertion stayed green while the damage happened beside
    them. A suite that cannot observe its own side effects will report success on a run that broke
    the machine.
+
+> **Checked against the code on 2026-10-27: "fine for writing under a synthetic key" was wrong, and
+> it was clobbering the installed app's live shim.** Rule 1 above allowed the suites to write the real
+> shared directory as long as each file had a key of its own. But `writeStatusLineWrapper()` has no
+> key. It rewrites `wrapper.mjs` and `run.sh`/`run.cmd`, the two files every Stoke session on the
+> machine runs for its status line and its Stop/Notification/UserPromptSubmit hooks. Measured on the
+> owner's Mac: `$TMPDIR/stoke/statusline/run.sh` read `ELECTRON_RUN_AS_NODE=1 exec
+> "<…>/node/bin/node" …/wrapper.mjs`, not Stoke's own binary. Its mtime and wrapper.mjs's matched
+> the last `npm run check`, and wrapper.mjs was the working tree's copy, while the installed app's
+> live `*.settings.json` pointed at both. verify:statusline also deleted `wrapper.mjs` and put a
+> DIRECTORY there for the length of its "never throws" block. Any live status line or hook call in
+> that window failed, and a lost Stop leaves a tab's dot on "working", which looks just like a stuck
+> terminal. verify:private wrote the wrapper too, and verify:context wrote and deleted payloads
+> there, all on every check, many times a day.
+>
+> The fix fakes the whole input, not part of it. `scripts/suite-tmpdir.mts` is the FIRST import of
+> verify-statusline, verify-private and verify-context. ESM runs it before any module under test,
+> and it points `TMPDIR`/`TMP`/`TEMP` at a fresh mkdtemp for that process alone. It refuses to run
+> if `tmpdir()` does not then answer the scratch folder, and it removes the folder on exit, SIGINT,
+> SIGTERM and SIGHUP included (a signal skips `'exit'`; measured, a TERM mid-run left the folder
+> behind until the helper turned signals into `process.exit(128 + n)`). Children
+> inherit the variable, so the real wrapper still runs under the real node. Nothing in `src/` reads
+> a new switch, so the packaged app cannot be pointed anywhere by accident. The bystander check
+> above now sits in the scratch folder's own statusline directory, and mutating the sweep back to
+> `statusLineDir()` still turns it red (3 checks). Each suite's FIRST statement is
+> `requireScratch(statusLineDir(), …)`, which exits 1 on the spot when the directory under test is
+> not in the scratch folder: a counted check there only reported the clobber after the suite had
+> carried on and done it. Each suite also adds two checks. `inScratch(statusLineDir())` records the
+> mechanism in the tally. `sharedStatusLineDamage()`, run just before the tally, compares the REAL
+> directory's shim files (inode, mtime ns, size, sha256) with what the run found. A change counts as
+> a SUITE's when the shim now names this process's own `process.execPath` (which an unfixed suite
+> run elsewhere on the same node also leaves, so the finding says "this run, or an unfixed one"),
+> when a shim file is gone or is not a file, or when the directory appeared without a Stoke's shim in
+> it. A Stoke launching a session beside the run also rewrites both files, but its shim names
+> Stoke's binary, so that change is printed as a NOTE and is not a failure. That was driven:
+> rewriting the shim mid-run gave two NOTEs and a pass, and so did a directory that did not exist
+> at the start and appeared mid-run holding a Stoke-style shim (which, when "the directory
+> appeared" was a finding by itself, failed the run).
+>
+> Shown red against an outer `TMPDIR` scratch seeded with stand-in shim files, so the owner's
+> directory was never at stake. With the redirect and its import-time guard removed, each of the
+> three suites now stops at `requireScratch` with exit 1 and the stand-in files byte-identical;
+> before it existed, verify:statusline and verify:private failed both checks and the stand-in
+> `run.sh` came back naming plain node: the measured clobber, reproduced. With `requireScratch`
+> removed too, that is still what the two checks catch. The damage check also fails on its own: one
+> extra `writeStatusLineWrapper()` aimed at the shared directory, everything else isolated, turned
+> only it red.
+>
+> **Closed the same day: the rest of `<tmpdir()>/stoke`.** That folder also holds fixed-content files
+> every Stoke shares, rewritten in place with `writeFileSync`. verify:worklog-runner and
+> verify:work-drafts rewrote `empty-mcp.json` through `emptyMcpConfigFile` (agent.ts, reached by
+> every strict `buildHeadlessArgs`/`runHeadless`), the file the installed app hands its own headless
+> worklog and draft runs as `--mcp-config`. Both now take the same first import, and their first
+> statement is `requireScratch(join(tmpdir(), 'stoke'), …)`, spelled the way `emptyMcpConfigFile`
+> spells it, because that call is itself the write. Each also checks that the `--mcp-config` path on
+> the real argv is `inScratch`. Against an outer scratch `TMPDIR`: with the redirect removed, both
+> stop at `requireScratch` (exit 1, nothing written); with `requireScratch` also a no-op, each fails
+> exactly that check and the outer `empty-mcp.json` is written. The shared `ultracode-settings.json`
+> touched at 17:42 came from verify:statusline's `buildArgs({ ultracode: true })` with no settings
+> file (`ultracodeSettingsFile`), isolated by the fix above. Grepping every `verify-*.mts` for
+> `statusLineDir`, the statusLine.ts writers, `emptyMcpConfigFile`, `ultracodeSettingsFile`,
+> `agentScratchDir`, `buildHeadlessArgs`/`runHeadless`, a real `PtyManager` spawn, a launch of the
+> app's main bundle and a literal `tmpdir()/stoke`, plus the modules that reach them (worklog
+> recall and retry inject `run`; no suite calls `scanSession`), found no other suite that writes
+> there. A new suite that writes anywhere under `tmpdir()/stoke` takes the same import and call.
 
 ## 78. A path alias in a module a suite imports typechecks, builds, and dies only when the suite runs
 

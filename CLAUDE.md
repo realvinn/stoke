@@ -565,9 +565,8 @@ rule file named on the group line.
 - **62.** End every verify suite by setting `process.exitCode` from its failures, and add suites
   only to the `check` chain — `scripts/ci-verify.mjs` derives CI from it; a hand-kept second list
   drifts.
-- **74.** Fake every input or none: a suite that hands a function a synthetic clock must hand it
-  synthetic paths too (`sweepStaleSessionFiles(now, dir)`), and must assert a bystander survives —
-  a fixed clock over the real shared directory deletes every running Stoke's live files, greenly.
+- **74.** Fake every input or none (`sweepStaleSessionFiles(now, dir)`) and assert a bystander survives; a suite
+  writing under `tmpdir()/stoke` imports `scripts/suite-tmpdir.mts` FIRST, then calls `requireScratch` first thing.
 - **78.** Import into a suite-loaded module only from `src/shared`, by relative path with the
   `.ts` extension — strip-types resolves no aliases, so an `@shared/...` specifier passes
   typecheck AND build and dies only when the suite runs.

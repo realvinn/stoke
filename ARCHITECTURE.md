@@ -2719,6 +2719,12 @@ scripts/          the verify-*.mts suites, make-icon.cjs
                     cannot start (`sandboxProblem`: the userns knobs, root). Runs
                     suites through the shell on Windows, where npm is npm.cmd.
                     `npm run verify:ci -- --list [--platform linux]` prints the plan
+  suite-tmpdir.mts  the FIRST import of every suite that writes under `tmpdir()/stoke`
+                    (statusline, private, context, worklog-runner, work-drafts): points
+                    TMPDIR/TMP/TEMP at a fresh scratch folder for that process, refuses to
+                    run if `tmpdir()` does not follow, removes it on exit and on a signal.
+                    `requireScratch` is each suite's first statement; `sharedStatusLineDamage`
+                    checks the REAL shim was left alone. Gotcha 74
   targets.mjs       the ONE list of what a release builds: key, job name, runner,
                     electron-builder flags, and the platform/arch the runner must be.
                     The release workflow reads its matrix from it (`--matrix`) and every

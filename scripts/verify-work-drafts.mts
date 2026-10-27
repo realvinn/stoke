@@ -1,3 +1,8 @@
+// First, above every other import: a draft run is strict, so its argv carries
+// emptyMcpConfigFile(), which rewrites `<tmpdir()>/stoke/empty-mcp.json` in
+// place, the file the installed app hands its own headless runs. This moves
+// the whole process to a scratch temp folder (gotcha 74).
+import { inScratch, requireScratch } from './suite-tmpdir.mts'
 import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -6,6 +11,10 @@ import { WorkDrafts, workDraftOptions } from '../src/main/plugins/workDrafts.ts'
 import { buildHeadlessArgs, runHeadless } from '../src/main/agent.ts'
 import type { HeadlessOptions, HeadlessResult } from '../src/main/agent.ts'
 import type { WorkDraftRequest } from '../src/shared/workDrafts.ts'
+
+// Before anything is written. Spelled the way emptyMcpConfigFile() spells its
+// folder: that call is itself the write, so it cannot be the probe.
+requireScratch(join(tmpdir(), 'stoke'), "emptyMcpConfigFile()'s folder")
 
 let failures = 0
 function check(name: string, actual: unknown, expected: unknown): void {
@@ -144,6 +153,7 @@ try {
   const args = buildHeadlessArgs(opts)
   check('real subprocess receives exact argv and Unicode stdin', [received.args, received.prompt, real.costUsd], [args, opts.prompt, 0.01])
   check('the run explicitly removes every built-in tool and MCP server', [args[args.indexOf('--tools') + 1], args.includes('--strict-mcp-config'), args.includes('--safe-mode'), args.includes('--no-session-persistence'), args[args.indexOf('--max-budget-usd') + 1]], ['', true, true, true, '1'])
+  check("the run's empty --mcp-config was written in this run's scratch folder, not the shared <tmpdir>/stoke (gotcha 74)", inScratch(args[args.indexOf('--mcp-config') + 1] ?? ''), true)
   await rm(ready)
   const cancel = new AbortController()
   let settled = false

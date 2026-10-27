@@ -7,11 +7,15 @@
  * is handed — the private root, both config dirs, the temp root — is a fixture
  * under one mkdtemp folder, and every deleting step is checked against a
  * bystander beside its target that must survive. Nothing here reaches
- * `~/.claude`, userData or `$TMPDIR/stoke/statusline` except the wrapper run at
- * the end, which writes one events file under a synthetic key and removes it.
+ * `~/.claude` or userData, and the wrapper run at the end writes its wrapper,
+ * shim and events file under `tmpdir()`, which suite-tmpdir.mts (imported
+ * first) points at a scratch folder of this run's own: the shared
+ * `$TMPDIR/stoke/statusline` is the installed app's live shim (gotcha 74).
  *
  *   node scripts/verify-private.mts
  */
+// FIRST, before any module under test: moves tmpdir() to a scratch folder.
+import { inScratch, requireScratch, sharedStatusLineDamage, SHARED_STATUSLINE_DIR } from './suite-tmpdir.mts'
 import { execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
@@ -53,6 +57,10 @@ import {
   statusLineDir,
   writeStatusLineWrapper
 } from '../src/main/statusLine.ts'
+
+// Before the first write, or not at all: the wrapper run at the end rewrites
+// wrapper.mjs and the shim every live session on the machine runs (gotcha 74).
+requireScratch(statusLineDir(), 'statusLineDir()')
 
 let failures = 0
 
@@ -529,9 +537,11 @@ try {
 
 console.log('\nthe generated wrapper, run as the hook runs it')
 {
-  // A synthetic key under the shared directory: written once, removed after
-  // (gotcha 74 allows writing under a key of our own; nothing directory-wide).
+  // A synthetic key, written once and removed after — and the whole directory
+  // is this run's scratch one, because writeStatusLineWrapper() below rewrites
+  // the wrapper and shim every live session on the machine runs (gotcha 74).
   const key = `stoke-verify-private-${randomUUID()}`
+  check('the wrapper is written in this run\'s scratch folder, never the shared one', inScratch(statusLineDir()), true)
   writeStatusLineWrapper()
   const wrapper = join(statusLineDir(), 'wrapper.mjs')
   const event = {
@@ -552,6 +562,13 @@ console.log('\nthe generated wrapper, run as the hook runs it')
     clearSessionFiles(key)
   }
   check('and the events file is gone afterwards', existsSync(sessionEventsFile(key)), false)
+}
+
+/* The blast radius (gotcha 74): the real shared directory is as this run found it. */
+{
+  const { findings, notes } = sharedStatusLineDamage()
+  for (const note of notes) console.log(`  NOTE  ${note}`)
+  check(`nothing in ${SHARED_STATUSLINE_DIR} was rewritten, removed or created by a suite during this run`, findings, [])
 }
 
 /*

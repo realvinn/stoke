@@ -17,7 +17,14 @@
  * spend that.
  *
  *   node scripts/verify-worklog-runner.mts
+ *
+ * Not quite pure on disk: every strict run's argv carries
+ * `emptyMcpConfigFile()`, which rewrites `<tmpdir()>/stoke/empty-mcp.json` in
+ * place, the same file the installed app hands its own worklog and draft runs
+ * as `--mcp-config`. So suite-tmpdir.mts is imported first and moves this run
+ * to a scratch folder (gotcha 74).
  */
+import { inScratch, requireScratch } from './suite-tmpdir.mts'
 import { DEFAULT_PROVIDERS } from '../src/shared/providers.ts'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -73,6 +80,10 @@ import {
 } from '../src/main/worklog/queue.ts'
 import type { TranscriptTurn } from '../src/main/sessionFile.ts'
 import type { WorklogBoards, WorklogProposal } from '../src/shared/types.ts'
+
+// Before anything is written. Spelled the way emptyMcpConfigFile() spells its
+// folder: that call is itself the write, so it cannot be the probe.
+requireScratch(join(tmpdir(), 'stoke'), "emptyMcpConfigFile()'s folder")
 
 let failures = 0
 
@@ -452,6 +463,17 @@ for (const [name, args] of [
     configs.every((c) => basename(c) === 'empty-mcp.json' && !MCP_FILE_NAME.test(basename(c))) &&
       (configs.length === 0 || args.includes('--strict-mcp-config')),
     configs.join(' ')
+  )
+}
+{
+  // The file emptyMcpConfigFile() really wrote, read off the argv rather than
+  // re-derived: this run's copy, never the one the installed app hands its own
+  // worklog and draft runs (gotcha 74).
+  const written = scanArgs[scanArgs.indexOf('--mcp-config') + 1] ?? ''
+  ok(
+    "the scan's empty --mcp-config was written in this run's scratch folder, not the shared <tmpdir>/stoke",
+    inScratch(written),
+    written
   )
 }
 check(

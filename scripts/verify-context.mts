@@ -3,7 +3,14 @@
  *
  * Run with:  node scripts/verify-context.mts
  * (Node strips the type annotations natively; there is no build step.)
+ *
+ * The transcripts it reads are the machine's real ones, on purpose; the
+ * statusLine payloads it writes are not. They go under `tmpdir()`, which
+ * suite-tmpdir.mts (imported first) points at a scratch folder of this run's
+ * own, never the directory every Stoke on the machine shares (gotcha 74).
  */
+// FIRST, before any module under test: moves tmpdir() to a scratch folder.
+import { inScratch, requireScratch, sharedStatusLineDamage, SHARED_STATUSLINE_DIR } from './suite-tmpdir.mts'
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { mkdtemp, open, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
@@ -20,8 +27,12 @@ import {
   foldLines,
   parseSession
 } from '../src/main/sessionFile.ts'
-import { readStatusLine, statusLinePayloadFile, windowFor } from '../src/main/statusLine.ts'
+import { readStatusLine, statusLineDir, statusLinePayloadFile, windowFor } from '../src/main/statusLine.ts'
 import type { ContextSnapshot } from '../src/shared/types.ts'
+
+// Before the first write, or not at all: the payloads below are written and
+// removed under statusLineDir() (gotcha 74).
+requireScratch(statusLineDir(), 'statusLineDir()')
 
 const root = join(homedir(), '.claude', 'projects')
 
@@ -128,6 +139,11 @@ check(
    --------------------------------------------------------------------------- */
 const payloadId = 'verify-context-1m'
 const payloadFile = statusLinePayloadFile(payloadId)
+check(
+  "statusLine payloads are written in this run's scratch folder",
+  inScratch(payloadFile),
+  inScratch(payloadFile) ? 'not the directory every Stoke shares' : payloadFile
+)
 mkdirSync(dirname(payloadFile), { recursive: true })
 try {
   writeFileSync(
@@ -463,6 +479,17 @@ await rm(fixtureDir, { recursive: true, force: true })
       await fh.close()
     }
   }
+}
+
+// The blast radius (gotcha 74): the real shared statusLine directory is as this run found it.
+{
+  const { findings, notes } = sharedStatusLineDamage()
+  for (const note of notes) console.log(`NOTE  ${note}`)
+  check(
+    `nothing in ${SHARED_STATUSLINE_DIR} was rewritten, removed or created by a suite during this run`,
+    findings.length === 0,
+    findings.join('; ') || 'as found'
+  )
 }
 
 console.log(`\n${failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} FAILED: ${failures.join(', ')}`}`)

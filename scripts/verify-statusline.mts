@@ -6,10 +6,14 @@
  * something unexpected paints it straight into the user's terminal.
  *
  * So this exercises the REAL generated wrapper under this very node, rather
- * than a re-implementation of it.
+ * than a re-implementation of it — in a temp directory of this run's own
+ * (suite-tmpdir.mts, imported first), never the shared one every Stoke on the
+ * machine runs its shim from (gotcha 74).
  *
  *   node scripts/verify-statusline.mts
  */
+// FIRST, before any module under test: moves tmpdir() to a scratch folder.
+import { inScratch, requireScratch, sharedStatusLineDamage, SHARED_STATUSLINE_DIR } from './suite-tmpdir.mts'
 import { execFileSync } from 'node:child_process'
 import {
   chmodSync,
@@ -66,6 +70,10 @@ import {
   tone,
   worstTone
 } from '../src/shared/usageView.ts'
+
+// Before the first write, or not at all: this suite rewrites wrapper.mjs and the
+// shim, puts a directory where wrapper.mjs goes, and sweeps (gotcha 74).
+requireScratch(statusLineDir(), 'statusLineDir()')
 
 let failures = 0
 
@@ -275,10 +283,11 @@ console.log('\na non-string session id degrades instead of throwing')
 check('a numeric session id reads as nothing, never a throw', readStatusLine(12345 as never), null)
 
 /*
- * Every fixture from here on lives under statusLineDir(). Whether that
- * directory pre-existed is captured now, before anything below creates it,
- * so the directory-level teardown in the `finally` at the bottom of this
- * file can tell "we made this" from "something else already had it" — the
+ * Every fixture from here on lives under statusLineDir(), which in this run is
+ * the scratch folder's (suite-tmpdir.mts), not the machine's shared one.
+ * Whether that directory pre-existed is captured now, before anything below
+ * creates it, so the directory-level teardown in the `finally` at the bottom of
+ * this file can tell "we made this" from "something else already had it" — the
  * house rule is that a fixture is deleted again, not "the directory is
  * always deleted".
  */
@@ -318,6 +327,18 @@ try {
     statusLineDir().startsWith(tmpdir()),
     true
   )
+  /*
+   * Gotcha 74, fake every input or none: everything below rewrites wrapper.mjs
+   * and the shim, puts a directory where wrapper.mjs goes and sweeps. Against
+   * the shared directory that is the installed app's live status line and
+   * hooks, so this run's temp directory has to be its own. `requireScratch` at
+   * the top already stopped the run if it is not; this records it in the tally.
+   */
+  check(
+    "and in this run it is the suite's own scratch folder, never the one every Stoke on the machine shares",
+    inScratch(statusLineDir()),
+    true
+  )
 
   console.log('\nthe wrapper, run exactly the way the CLI runs it')
   const shim = writeStatusLineWrapper()
@@ -333,6 +354,10 @@ try {
    * never throws" — not that a usable wrapper gets written; the case that
    * matters for real is a caller (Task 9) that must never see an exception
    * out of this call.
+   *
+   * Only ever in the scratch folder: in the shared one, this deleted the live
+   * wrapper.mjs of every Stoke session on the machine and left a directory in
+   * its place for as long as the block ran (measured 2026-10-27, gotcha 74).
    */
   const wrapperTarget = join(statusLineDir(), 'wrapper.mjs')
   try {
@@ -1312,11 +1337,12 @@ try {
   const wrapperFile = join(sweepDir, 'wrapper.mjs')
   const shimFile = join(sweepDir, 'run.sh')
 
-  // A stand-in for somebody else's live session, in the SHARED directory, with
-  // an ordinary real-clock mtime — i.e. ancient relative to SWEEP_NOW. If the
-  // sweep under test ever goes back to reading statusLineDir(), this is the
-  // file it eats, and the check below turns that into a red run instead of a
-  // silent afternoon.
+  // A stand-in for somebody else's live session, in the directory the app
+  // shares (statusLineDir(): in this run the scratch folder's copy of it, so
+  // no real session's file is ever at stake), with an ordinary real-clock
+  // mtime — i.e. ancient relative to SWEEP_NOW. If the sweep under test ever
+  // goes back to reading statusLineDir(), this is the file it eats, and the
+  // check below turns that into a red run instead of a silent afternoon.
   const realBystander = join(statusLineDir(), 'stoke-verify-sweep-bystander.settings.json')
 
   try {
@@ -1378,11 +1404,12 @@ try {
     )
     check('wrapper.mjs is never removed, no matter its age', existsSync(wrapperFile), true)
     check('and neither is the platform shim', existsSync(shimFile), true)
-    // The point of the fixture directory, asserted rather than assumed: a real
-    // session's files sitting in the SHARED directory are untouched by a sweep
-    // run with a clock seven years ahead.
+    // The point of the fixture directory, asserted rather than assumed: a
+    // session's files sitting in statusLineDir() (the scratch folder's copy of
+    // the shared directory, in this run) are untouched by a sweep run with a
+    // clock seven years ahead.
     check(
-      'the shared directory is not what a fixed-clock sweep just swept',
+      'statusLineDir() is not what a fixed-clock sweep just swept: its bystander survives',
       existsSync(realBystander),
       true
     )
@@ -2212,6 +2239,19 @@ check('out of range is clamped', [ringBeads(-1), ringBeads(2)], [[0, 1, 2, 3, 4,
   check('a win32 command never names run.sh', winHook.includes('run.sh'), false)
   check('a posix command names run.sh', /[\\/]run\.sh" /.test(posix), true)
   check('and never names run.cmd', posix.includes('run.cmd'), false)
+}
+
+/*
+ * The blast radius, asserted (gotcha 74's second rule). Every write above went
+ * to the scratch folder; this says whether the REAL shared directory — the one
+ * the installed app's live sessions run wrapper.mjs and the shim from — is as
+ * this run found it. Kept last before the tally, so it sees the whole run.
+ */
+{
+  console.log('\nthe shared statusLine directory, untouched by this run')
+  const { findings, notes } = sharedStatusLineDamage()
+  for (const note of notes) console.log(`  NOTE  ${note}`)
+  check(`nothing in ${SHARED_STATUSLINE_DIR} was rewritten, removed or created by a suite during this run`, findings, [])
 }
 
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
