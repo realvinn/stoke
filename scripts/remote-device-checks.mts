@@ -36,10 +36,12 @@ export async function remoteDeviceChecks(check: Check): Promise<void> {
     const { RemoteServer } = createRequire(import.meta.url)(bundle)
     const calls: unknown[][] = []
     const sinks: RemoteDeviceSink[] = []
+    const closeIntents: boolean[] = []
     const machines = [{ id: 'fixture-device', label: 'Desktop', platform: 'win32', status: { at: 1, open: true, chats: false,
       sessions: [{ ptyId: 'pty-remote1', project: 'project', title: 'Remote session', status: 'idle', agent: 'Codex', context: null, lastActivityAt: null }] } }]
+    let localPtys: any = null
     server = new RemoteServer({
-      ptys: () => null, registryStates: () => [], hosts: () => [],
+      ptys: () => localPtys, registryStates: () => [], hosts: () => [],
       theme: () => ({ theme: BUILT_IN_THEMES[0], fontFamily: 'monospace' }),
       devices: {
         view: () => ({ available: true, machines }),
@@ -52,7 +54,7 @@ export async function remoteDeviceChecks(check: Check): Promise<void> {
             input: (data: string) => { calls.push(['input', data]); sink.frame({ type: 'data', data }); return true },
             submit: (text: string, enter: boolean) => { calls.push(['submit', text, enter]); return true },
             resize: (cols: number, rows: number) => { calls.push(['resize', cols, rows]); return true },
-            close: () => { calls.push(['close', ptyId]) }
+            close: (reconnecting = false) => { calls.push(['close', ptyId]); closeIntents.push(reconnecting) }
           } }
         }
       }
@@ -109,13 +111,57 @@ export async function remoteDeviceChecks(check: Check): Promise<void> {
     sinks[1].close()
     await until(() => ws2.readyState === WebSocket.CLOSED)
     check('sign-out or relay teardown closes the browser socket', calls.filter((c) => c[0] === 'close').length, 2)
+    const renewing = new WebSocket(url, {headers});sockets.push(renewing)
+    await until(()=>sinks.length===3)
+    renewing.close(4000,'reconnecting')
+    await until(()=>closeIntents.length===3)
+    check('an explicit browser reconnect preserves the host size lease through the gateway', closeIntents, [false,false,true])
     await server!.start({ ...config, requireAccessHeader: true })
     check('the Access gate also protects device summaries', (await fetch(`${base}/api/machines`, { headers })).status, 403)
     check('the Access gate also protects device sockets', await refused(headers), 403)
     server!.serveRelay({ sized: () => {} })
     let relayClosed = false
     server!.relaySocket('/ws/machine?device=fixture-device&ptyId=pty-remote1', new VirtualSocket(() => {}, () => { relayClosed = true }))
-    check('a relayed socket cannot pivot through this gateway', [relayClosed, sinks.length], [true, 2])
+    check('a relayed socket cannot pivot through this gateway', [relayClosed, sinks.length], [true, 3])
+    // Exercise the real PTY socket router across loss/re-attach, with a fake
+    // timer only for the size lease; no sixty-second sleep or real agent.
+    let dimensions = { cols: 120, rows: 40 }
+    const sizes: unknown[] = []
+    localPtys = {
+      subscribe: () => () => {}, subscribeExit: () => () => {},
+      list: () => [{ptyId:'pty-resize1',...dimensions,exited:false,instrumented:false}],
+      lastInputAt: () => null, historyFor: () => '› saved input',
+      resize: (_id: string, cols: number, rows: number) => { dimensions={cols,rows}; sizes.push({...dimensions}) }
+    }
+    const leases = new Map<any, () => void>()
+    const realTimeout = globalThis.setTimeout, realClear = globalThis.clearTimeout
+    globalThis.setTimeout = ((fn: () => void, ms: number, ...args: any[]) => {
+      if(ms!==60_000) return realTimeout(fn, ms, ...args)
+      const handle={unref(){}}; leases.set(handle,fn); return handle
+    }) as any
+    globalThis.clearTimeout = ((handle: any) => { if(!leases.delete(handle)) realClear(handle) }) as any
+    try {
+      const attach = () => { const socket=new VirtualSocket(()=>{},()=>{});server!.relaySocket('/ws?ptyId=pty-resize1',socket);return socket }
+      const fit = (socket: VirtualSocket) => socket.deliver(JSON.stringify({type:'resize',cols:90,rows:28,force:true}))
+      let socket=attach(); fit(socket); socket.drop('network lost')
+      check('an interrupted link retains the remote grid and arms one lease', [dimensions,leases.size], [{cols:90,rows:28},1])
+      socket=attach()
+      check('reconnecting cancels restoration without a resize', [dimensions,leases.size,sizes.length], [{cols:90,rows:28},0,1])
+      socket.drop('flap'); socket=attach(); socket.drop('flap again')
+      check('repeated drops retain one pending restoration', [dimensions,leases.size], [{cols:90,rows:28},1])
+      const [handle,expire]=[...leases][0];leases.delete(handle);expire()
+      check('an abandoned connection eventually restores the host grid', dimensions, {cols:120,rows:40})
+      socket=attach();fit(socket);socket.drop('explicit close',1000)
+      check('a deliberate close restores immediately and leaves no timer', [dimensions,leases.size], [{cols:120,rows:40},0])
+      socket=attach();fit(socket);socket.drop('network lost')
+      const staleExpiry=[...leases.values()][0]
+      localPtys.resize('pty-resize1',144,44);(server as any).desktopResized('pty-resize1')
+      staleExpiry()
+      check('host activity cancels restoration and cannot be rolled back by a stale timer', [dimensions,leases.size], [{cols:144,rows:44},0])
+      socket=attach();fit(socket);socket.drop('network lost');await server!.stop()
+      check('stopping cancels leases and restores the desktop', [dimensions,leases.size], [{cols:144,rows:44},0])
+    } finally { globalThis.setTimeout=realTimeout;globalThis.clearTimeout=realClear }
+
   } finally {
     for (const socket of sockets) if (socket.readyState !== WebSocket.CLOSED) socket.terminate()
     await server?.stop()

@@ -2001,6 +2001,10 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
   src/components/OtherMachines.tsx  the sidebar's "Other machines" group: the owner's other
                     signed-in desktops online now and, where their owner shares them, their
                     sessions; a click opens one as a remote tab. A group, never an overlay
+  src/components/RemoteDraft.tsx  persistent local prompt editor for remote tabs; printable
+                    terminal input and dictation compose locally by default, with direct mode
+                    available for native terminal input. Enter sends; Shift+Enter adds a line;
+                    sent text keeps a recovery copy and reconnect never replays it.
   src/components/RemoteTerminal.tsx  a remote tab: the other machine's pty through the relay,
                     drawn at that pty's grid, which it claims for its own pane whenever it is
                     USED — focus, a key, a click, its pane resized just after a person acted —
@@ -2009,7 +2013,8 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     the full banner (`remoteBar`). Dictation is THIS computer's (Dictation.tsx):
                     Space is always Stoke's here (`spaceOwner`), a tab that may only watch or a
                     host too old to type without Enter is refused (`remoteTypeVerdict`), and a
-                    transcript goes to `hub.remote.type` for the host to type with no Enter;
+                    transcript joins the local prompt editor by default (direct mode uses
+                    `hub.remote.type` without Enter);
                     Dictate on the button or banner, the strip under them (`--strip-top`)
   src/components/Dictation.tsx  `useDictation`, the one copy of Stoke's dictation for a terminal
                     pane (TerminalView and RemoteTerminal): ⇧⌘D / Ctrl+Shift+D, the held Space

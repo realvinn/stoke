@@ -3077,10 +3077,10 @@ export class HubService {
     this.remote?.input(tab, data)
   }
 
-  /** This computer's dictation for a remote tab's session: typed there, no Enter (`HubRemote.type`). */
-  remoteType(tab: string, text: string): HubResult {
+  /** Local remote-session text: dictation inserts only; a composed prompt may request Enter. */
+  remoteType(tab: string, text: string, enter = false): HubResult {
     if (!this.remote) return { ok: false, message: 'Other machines are not available here, so nothing was typed.' }
-    return this.remote.type(tab, text)
+    return this.remote.type(tab, text, enter)
   }
 
   remoteResize(tab: string, cols: number, rows: number): void {

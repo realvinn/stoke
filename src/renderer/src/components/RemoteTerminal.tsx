@@ -100,7 +100,7 @@ interface Props {
 }
 
 export function RemoteTerminal({ tab, view, active, theme, fontFamily, fontSize, terminal, accent, alpha, bar, voice, onClose, onOpenUrl }: Props): React.JSX.Element {
-  const draftInput = useRef<((text: string) => void) | null>(null)
+  const draftInput = useRef<((text: string) => boolean) | null>(null)
   const hostRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const openUrlRef = useRef(onOpenUrl)
@@ -150,6 +150,7 @@ export function RemoteTerminal({ tab, view, active, theme, fontFamily, fontSize,
       // Through xterm's onData, as a typed space goes: the relay's input path.
       typeSpace: () => termRef.current?.input(' ', true),
       deliver: async (text) => {
+        if (draftInput.current?.(text)) return null
         const r = await window.stoke.hub.remote.type(remoteId, text)
         return r.ok ? null : r.message
       }
@@ -159,6 +160,7 @@ export function RemoteTerminal({ tab, view, active, theme, fontFamily, fontSize,
   useEffect(() => {
     const host = hostRef.current
     if (!host || !remoteId) return
+    const interactionHost = (host.closest('.remote-pane') ?? host) as HTMLElement
     let downAt: { x: number; y: number } | null = null
     const openLink = (event: MouseEvent, uri: string): void => {
       event.preventDefault()
@@ -234,7 +236,7 @@ export function RemoteTerminal({ tab, view, active, theme, fontFamily, fontSize,
     const use = (kind: ClaimTrigger): void => {
       claimer.trigger(kind, {
         shown: activeRef.current && stateRef.current === 'open',
-        focused: host.contains(document.activeElement),
+        focused: host.contains(document.activeElement) || interactionHost.querySelector('.remote-draft textarea') === document.activeElement,
         windowFocused: document.hasFocus(),
         recentInput: recentlyUsed()
       })
@@ -284,7 +286,8 @@ export function RemoteTerminal({ tab, view, active, theme, fontFamily, fontSize,
     const offData = term.onData((data) => {
       // Only keys: xterm's own answers to the far application are the far terminal's to give.
       if (isTerminalReport(data)) return
-      if (stateRef.current !== 'open') { draftInput.current?.(data); return }
+      if (draftInput.current?.(data)) return
+      if (stateRef.current !== 'open') return
       window.stoke.hub.remote.input(remoteId, data)
     })
     /*
@@ -298,9 +301,9 @@ export function RemoteTerminal({ tab, view, active, theme, fontFamily, fontSize,
     }
     const onKey = (): void => use('key')
     const onPress = (event: MouseEvent): void => { downAt = { x: event.clientX, y: event.clientY }; use('click') }
-    host.addEventListener('focusin', onFocus)
-    host.addEventListener('keydown', onKey, true)
-    host.addEventListener('mousedown', onPress, true)
+    interactionHost.addEventListener('focusin', onFocus)
+    interactionHost.addEventListener('keydown', onKey, true)
+    interactionHost.addEventListener('mousedown', onPress, true)
     let firstObservation = true
     const ro = new ResizeObserver(() => {
       // Observing fires once at the start: that is the pane appearing, not changing.
@@ -317,9 +320,9 @@ export function RemoteTerminal({ tab, view, active, theme, fontFamily, fontSize,
       host.removeEventListener('pointerdown', touched, true)
       host.removeEventListener('keydown', touched, true)
       ro.disconnect()
-      host.removeEventListener('focusin', onFocus)
-      host.removeEventListener('keydown', onKey, true)
-      host.removeEventListener('mousedown', onPress, true)
+      interactionHost.removeEventListener('focusin', onFocus)
+      interactionHost.removeEventListener('keydown', onKey, true)
+      interactionHost.removeEventListener('mousedown', onPress, true)
       claimer.dispose()
       claimerRef.current = null
       offFrame()
@@ -360,7 +363,9 @@ export function RemoteTerminal({ tab, view, active, theme, fontFamily, fontSize,
     if (view?.state === 'open') claimedOpenRef.current = true
     // Focus events fire inside focus(): a reconnect's focus is marked quiet so its focusin claims nothing.
     quietFocusRef.current = !switchedTo && !firstOpen
-    termRef.current?.focus()
+    // Reconnecting must not steal the caret from a locally saved prompt.
+    const editingDraft = hostRef.current?.closest('.remote-pane')?.querySelector('.remote-draft')?.contains(document.activeElement)
+    if (!editingDraft) termRef.current?.focus()
     quietFocusRef.current = false
     if (firstOpen || (switchedTo && view?.state === 'open')) {
       claimerRef.current?.trigger('focus', { shown: true, focused: true, windowFocused: document.hasFocus(), recentInput: recentlyUsed() })

@@ -572,6 +572,22 @@ export class RemoteServer {
    * sitting at it, and nothing used to undo that.
    */
   private desktopSize = new Map<string, { cols: number; rows: number }>()
+  /** Brief network drops must not reflow the agent twice during a reconnect. */
+  private sizeRestore = new Map<string, NodeJS.Timeout>()
+  private cancelSizeRestore(ptyId: string): void {
+    const timer = this.sizeRestore.get(ptyId)
+    if (timer) clearTimeout(timer)
+    this.sizeRestore.delete(ptyId)
+  }
+  private restoreDesktopSize(ptyId: string): void {
+    this.cancelSizeRestore(ptyId)
+    if (this.attached.get(ptyId)?.size) return
+    const saved = this.desktopSize.get(ptyId)
+    this.desktopSize.delete(ptyId)
+    if (!saved) return
+    this.deps.ptys()?.resize(ptyId, saved.cols, saved.rows)
+    this.relayHooks?.sized(ptyId, saved.cols, saved.rows, 'restore')
+  }
   /** Sockets on `/ws/events` — phone contract point 4. */
   private eventsClients = new Set<PhoneSocket>()
   /** The last `{type:'sessions',...}` payload sent, so an unchanged poll sends nothing. */
@@ -813,10 +829,10 @@ export class RemoteServer {
    * while a remote viewer holds the grid, happens only when someone uses that
    * tab). On the relay instance: the desktop's size is the live one again,
    * so there is nothing to put back when the viewer leaves, and every
-   * relayed viewer is told the new grid now. A no-op on the phone's server.
+   * viewer is told the new grid now, including a phone watching locally.
    */
   desktopResized(ptyId: string): void {
-    if (!this.relayHooks) return
+    this.cancelSizeRestore(ptyId)
     this.desktopSize.delete(ptyId)
     this.pushSizes()
   }
@@ -886,6 +902,7 @@ export class RemoteServer {
     for (const ws of this.clients) ws.close()
     this.clients.clear()
     this.attached.clear()
+    for (const ptyId of this.desktopSize.keys()) this.restoreDesktopSize(ptyId)
     this.eventsClients.clear()
     if (this.eventsDebounce) {
       clearTimeout(this.eventsDebounce)
@@ -2172,15 +2189,15 @@ export class RemoteServer {
     this.attachKeepalive(ws)
     let connection: RemoteDeviceConnection | null = null
     let closed = false
-    const drop = (): void => {
+    const drop = (code = 1006): void => {
       if (closed) return
       closed = true
       this.clients.delete(ws)
-      connection?.close()
+      connection?.close(code !== 1000 && code !== 1005)
       connection = null
     }
     ws.on('close', drop)
-    ws.on('error', drop)
+    ws.on('error', () => drop())
     const refuse = (message: string): void => {
       sendPhoneFrame(ws, JSON.stringify({ type: 'remote-state', state: 'refused', message, mode: null,
         sizes: false, typeOnly: false, deviceLabel: '', title: '', project: '', session: null }))
@@ -2294,6 +2311,7 @@ export class RemoteServer {
       set = new Set()
       this.attached.set(ptyId, set)
     }
+    this.cancelSizeRestore(ptyId)
     set.add(ws)
     this.onClientsChanged()
 
@@ -2390,7 +2408,10 @@ export class RemoteServer {
       }
     })
 
-    const drop = (): void => {
+    let dropped = false
+    const drop = (code = 1006): void => {
+      if (dropped) return
+      dropped = true
       set?.delete(ws)
       this.clients.delete(ws)
       if (set && set.size === 0) {
@@ -2408,17 +2429,17 @@ export class RemoteServer {
          */
         if (this.attached.get(ptyId) === set) this.attached.delete(ptyId)
         this.lastPtyStatus.delete(ptyId)
-        const saved = this.desktopSize.get(ptyId)
-        if (saved) {
-          this.desktopSize.delete(ptyId)
-          this.deps.ptys()?.resize(ptyId, saved.cols, saved.rows)
-          // The last remote viewer left: the desktop's own tab fits its pane again.
-          this.relayHooks?.sized(ptyId, saved.cols, saved.rows, 'restore')
+        if (code === 1000 || code === 1005) this.restoreDesktopSize(ptyId)
+        else if (this.desktopSize.has(ptyId)) {
+          this.cancelSizeRestore(ptyId)
+          const timer = setTimeout(() => this.restoreDesktopSize(ptyId), 60_000)
+          timer.unref?.()
+          this.sizeRestore.set(ptyId, timer)
         }
       }
       this.onClientsChanged()
     }
     ws.on('close', drop)
-    ws.on('error', drop)
+    ws.on('error', () => drop())
   }
 }

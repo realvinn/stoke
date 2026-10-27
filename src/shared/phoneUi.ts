@@ -539,7 +539,7 @@ export function decideResize(input: ResizeInput): ResizeDecision {
    * SIGWINCH for a height change, the one thing this function exists to refuse.
    */
   if (
-    (input.reason === 'observe' || input.reason === 'blur') &&
+    (input.reason === 'observe' || input.reason === 'blur' || input.reason === 'attach') &&
     input.fitWidth !== null &&
     Math.abs(input.width - input.fitWidth) < Math.max(1, input.cellWidth)
   ) {

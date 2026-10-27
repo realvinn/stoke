@@ -191,7 +191,8 @@ export interface RemoteDeviceConnection {
   input(data: string): boolean
   submit(text: string, enter?: boolean): boolean
   resize(cols: number, rows: number): boolean
-  close(): void
+  /** A replacement socket retains the host grid through its reconnect grace. */
+  close(reconnecting?: boolean): void
 }
 
 export interface HubRemoteDeps extends RemoteMachineDeps {
@@ -708,7 +709,7 @@ export class HubRemote {
         return send({ type: 'submit', text, enter })
       },
       resize: (cols, rows) => this.resize(id, cols, rows),
-      close: () => this.close(id)
+      close: (reconnecting = false) => this.close(id, reconnecting)
     } }
   }
 
@@ -735,14 +736,14 @@ export class HubRemote {
    * session minutes after they were spoken, into whatever it shows by then,
    * are words nobody meant there.
    */
-  type(tabId: string, text: string): { ok: true } | { ok: false; message: string } {
+  type(tabId: string, text: string, enter = false): { ok: true } | { ok: false; message: string } {
     const t = this.tabs.get(tabId)
     if (typeof text !== 'string' || text.trim().length === 0) return { ok: true }
     // The name the tab's banner shows, so the strip and the banner say the same machine.
     const who = t ? (this.d.context()?.active.find((a) => a.id === t.device)?.label ?? this.statuses[t.device]?.name ?? t.label) : ''
     const why = remoteTypeVerdict(t ? { state: t.state, mode: t.mode, typeOnly: t.typeOnly, deviceLabel: who } : null, text)
     if (why) return { ok: false, message: why }
-    const sent = t?.channel?.send({ t: 'ws-msg', id: PTY_SOCKET, data: JSON.stringify({ type: 'submit', text, enter: false }) }) ?? false
+    const sent = t?.channel?.send({ t: 'ws-msg', id: PTY_SOCKET, data: JSON.stringify({ type: 'submit', text, enter: enter === true }) }) ?? false
     return sent ? { ok: true } : { ok: false, message: `The link to ${who} dropped before the words were sent, so nothing was typed.` }
   }
 
@@ -779,7 +780,7 @@ export class HubRemote {
   }
 
   /** The tab closed here: the relay goes; nothing on the other machine is killed. */
-  close(tabId: string): void {
+  close(tabId: string, reconnecting = false): void {
     const t = this.tabs.get(tabId)
     if (!t) return
     t.closed = true
@@ -789,7 +790,7 @@ export class HubRemote {
     t.gen++
     const ch = t.channel
     t.channel = null
-    if (ch?.state === 'open') ch.send({ t: 'ws-close', id: PTY_SOCKET, code: 1000, reason: 'closed' })
+    if (ch?.state === 'open') ch.send({ t: 'ws-close', id: PTY_SOCKET, code: reconnecting ? 4000 : 1000, reason: reconnecting ? 'reconnecting' : 'closed' })
     ch?.close('the tab was closed')
     this.tabs.delete(tabId)
     try { t.sink?.close() } catch (err) { this.d.log('hub remote: browser close failed', err) }
@@ -1123,7 +1124,7 @@ export class HubRemote {
         const s = h.sockets.get(f.id)
         if (!s) return
         h.sockets.delete(f.id)
-        s.sock.drop('closed on the other machine')
+        s.sock.drop('closed on the other machine', f.code === 1000 ? 1000 : 1001)
         return
       }
       default:

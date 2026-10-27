@@ -615,7 +615,8 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
       pty = { cols: msg.cols ?? pty.cols, rows: msg.rows ?? pty.rows }
       // A phone that fitted before a reconnect is still the one that resized.
       resized = pty.cols !== desktop.cols || pty.rows !== desktop.rows ? resized : false
-      fitWidth = null
+      // Keep the previous fit across a reconnect: keyboard height changes
+      // must not claim a different grid just because the network recovered.
       if (term.cols !== pty.cols || term.rows !== pty.rows) term.resize(pty.cols, pty.rows)
       // The server replays the full history on every attach: reset first, in
       // the same frame, so the replay does not land on top of the old screen.
@@ -1492,7 +1493,7 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
     // the replacement connection or flush a message twice.
     const previous = ws
     ws = null
-    previous?.close()
+    previous?.close(4000, 'reconnecting')
     ready = false
     if (opts.remote) {
       deviceState = null

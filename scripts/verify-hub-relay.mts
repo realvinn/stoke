@@ -1599,6 +1599,10 @@ console.log('\ndictation on a remote tab: typed by the host with no Enter, refus
   check('a runaway is refused and sends nothing', [guestM.remote.type(tab, 'y'.repeat(REMOTE_TYPE_MAX + 1)).ok, hostM.submits.length], [false, 1])
   check('an unknown tab is refused', guestM.remote.type('rt-nope', 'hello').ok, false)
 
+  check('a locally composed prompt can explicitly request Enter', guestM.remote.type(tab, 'complete draft', true), {ok:true})
+  await until(() => hostM.submits.length === 2)
+  check('the host receives the whole prompt and its Enter together as one command', hostM.submits[1], {ptyId:'pty-a1',text:'complete draft',enter:true})
+
   // The link drops while the speech service is still working: the words come back to a tab that is not open.
   const r = relays.get(lastRelay)!
   r.host.close(1000)
@@ -1606,7 +1610,7 @@ console.log('\ndictation on a remote tab: typed by the host with no Enter, refus
   const dropped = guestM.remote.type(tab, 'spoken while the link was down')
   check('a link that dropped mid-transcript refuses it with the sentence, for the strip to keep the words', [dropped.ok, dropped.ok ? '' : dropped.message], [false, 'The link to Studio is not open, so nothing was typed there.'])
   await tick(50)
-  check('and never queues them for a later connection', hostM.submits.length, 1)
+  check('and never queues them for a later connection', hostM.submits.length, 2)
   guestM.remote.close(tab)
   hostM.remote.reset()
   guestM.remote.reset()
@@ -1659,7 +1663,7 @@ console.log('\ndictation on a remote tab: typed by the host with no Enter, refus
   const serviceSrc = src('src/main/hub/service.ts')
   check('the phone server types a submit with no Enter when the frame says enter: false', /msg\.type === 'submit' && typeof msg\.text === 'string'\)[\s\S]{0,240}manager\.submit\(ptyId, msg\.text, \{ enter: msg\.enter !== false \}\)/.test(server), true)
   check('this machine’s ready says typeOnly (main wires the dep)', /followsResize: true,[\s\S]{0,200}typeOnly: true,/.test(mainSrc), true)
-  check('the renderer’s request reaches HubRemote.type through the service, and answers', /ipcMain\.handle\(CH\.hubRemoteType,[\s\S]{0,120}hubClient\.remoteType\(str\(tab\), str\(text\)\)/.test(mainSrc) && /remoteType\(tab: string, text: string\): HubResult \{[\s\S]{0,200}return this\.remote\.type\(tab, text\)/.test(serviceSrc), true)
+  check('the renderer’s request reaches HubRemote.type through the service, and answers', /ipcMain\.handle\(CH\.hubRemoteType,[\s\S]{0,120}hubClient\.remoteType\(str\(tab\), str\(text\), enter === true\)/.test(mainSrc) && /remoteType\(tab: string, text: string, enter = false\): HubResult \{[\s\S]{0,200}return this\.remote\.type\(tab, text, enter\)/.test(serviceSrc), true)
 }
 
 /* ============================================================ chat history (spec 2026-10-03 §3) */

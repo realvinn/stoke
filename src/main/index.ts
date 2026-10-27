@@ -4160,6 +4160,7 @@ function registerIpc(): void {
     ptys?.resize(ptyId, cols, rows)
     // The desktop's own tab fitted its pane: a remote tab holding the grid is told now (last active wins).
     relayServer?.desktopResized(ptyId)
+    remote?.desktopResized(ptyId)
   })
   ipcMain.on(CH.ptyKill, (_e, ptyId: string) => {
     const sessionId = ptys?.sessionIdFor(ptyId)
@@ -5234,8 +5235,8 @@ function registerIpc(): void {
   ipcMain.handle(CH.hubRemoteOpen, async (_e, device: unknown, ptyId: unknown) => (await hubService()).remoteOpen(str(device), str(ptyId)))
   ipcMain.on(CH.hubRemoteInput, (_e, tab: unknown, data: unknown) => hubClient?.remoteInput(str(tab), str(data)))
   // Never STARTS the hub client: a remote tab exists only while it runs.
-  ipcMain.handle(CH.hubRemoteType, (_e, tab: unknown, text: unknown) =>
-    hubClient ? hubClient.remoteType(str(tab), str(text)) : { ok: false, message: 'Sign in to Stoke Hub first, so nothing was typed.' }
+  ipcMain.handle(CH.hubRemoteType, (_e, tab: unknown, text: unknown, enter: unknown) =>
+    hubClient ? hubClient.remoteType(str(tab), str(text), enter === true) : { ok: false, message: 'Sign in to Stoke Hub first, so nothing was typed.' }
   )
   ipcMain.on(CH.hubRemoteResize, (_e, tab: unknown, cols: unknown, rows: unknown) => {
     if (typeof cols === 'number' && typeof rows === 'number') hubClient?.remoteResize(str(tab), cols, rows)

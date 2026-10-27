@@ -461,6 +461,7 @@ console.log('\na send while disconnected is queued, never lost (PX-3)')
 
 let s = INITIAL_SEND_STATE
 let r = submitText(s, 'typed while offline', 1)
+check('reattaching at the same width keeps the existing grid despite keyboard height changes', decideResize({...base,reason:'attach',proposed:{cols:52,rows:20}}).send, null)
 check('not attached: nothing sent, one queued', [r.send, r.state.queue.map((q) => q.text)], [null, ['typed while offline']])
 s = r.state
 r = submitText(s, 'and a second', 2)

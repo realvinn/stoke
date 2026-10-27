@@ -23,7 +23,8 @@ export interface PhoneSocket {
   ping(): void
   terminate(): void
   on(event: 'message', fn: (raw: unknown) => void): unknown
-  on(event: 'close' | 'error' | 'pong', fn: () => void): unknown
+  on(event: 'close', fn: (code?: number) => void): unknown
+  on(event: 'error' | 'pong', fn: () => void): unknown
   once(event: 'close', fn: () => void): unknown
 }
 
@@ -46,8 +47,8 @@ export function sendPhoneFrame(ws: PhoneSocket, text: string): boolean {
  * A relayed socket. `out` carries what the server sends to the far end;
  * `onClose` tells the far end the server closed it. `deliver` is a message
  * from the far end; `drop` is the far end (or the relay) going away, which the
- * server hears as a close — so it forgets the socket and, for a pty, puts back
- * the desktop's size exactly as it does when a phone leaves.
+ * server hears as a close. Normal departure restores the desktop grid; a
+ * dropped connection gets the same reconnect grace as a phone.
  */
 export class VirtualSocket extends EventEmitter implements PhoneSocket {
   readyState: number
@@ -87,9 +88,9 @@ export class VirtualSocket extends EventEmitter implements PhoneSocket {
     if (this.readyState === OPEN) this.emit('message', text)
   }
 
-  drop(reason = 'the other machine left'): void {
+  drop(reason = 'the other machine left', code = 1001): void {
     if (this.readyState !== OPEN) return
     this.readyState = CLOSED
-    this.emit('close', 1001, reason)
+    this.emit('close', code, reason)
   }
 }

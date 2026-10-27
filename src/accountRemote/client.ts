@@ -64,10 +64,10 @@ class TerminalSocket extends EventTarget {
     else if (frame.type === 'submit') connection.submit(frame.text, frame.enter !== false)
     else if (frame.type === 'resize') connection.resize(frame.cols, frame.rows)
   }
-  close(): void {
+  close(code = 1000, _reason = ''): void {
     if (this.closed) return
     this.closed = true; this.readyState = WebSocket.CLOSED
-    if (this.connection?.ok) this.connection.connection.close()
+    if (this.connection?.ok) this.connection.connection.close(code !== 1000)
     this.dispatchEvent(new CloseEvent('close', { code: 1000 }))
   }
 }
