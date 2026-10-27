@@ -463,6 +463,7 @@ const api: StokeApi = {
 
   clipboard: {
     readSync: () => ipcRenderer.sendSync(CH.clipboardRead) as ClipboardPeek,
+    filePathsSync: () => ipcRenderer.sendSync(CH.clipboardFilePaths) as { paths: string[]; count: number },
     writeText: (text: string) => ipcRenderer.send(CH.clipboardWrite, text)
   },
 

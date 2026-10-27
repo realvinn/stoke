@@ -2,9 +2,11 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Terminal } from '@xterm/xterm'
 import type { ImagePrepared, UploadProgress } from '@shared/api'
 import type { SshHost } from '@shared/types'
-import { dropText } from '@shared/drop'
+import { dropText, uploadsLostNote } from '@shared/drop'
+import { pasteSafely } from '@shared/clipboardText'
 import { formatBytes } from '@shared/imageUpload'
 import { ImageJobs, pathTakesFocus, type ImagePhase } from '@shared/imageJobs'
+import { toast } from '../lib/toasts'
 import type { Tab } from '../types'
 import { Spinner } from './Spinner'
 
@@ -119,7 +121,8 @@ export function useSshImages({
         const term = termRef.current
         const text = dropText(paths, 'linux')
         if (term && text) {
-          term.paste(text)
+          // Main took only a far path with no control character in it; cleaned anyway, like every paste.
+          pasteSafely(term, text)
           // Not out of the find bar (or any other field) the user went to
           // while the image was on its way (`pathTakesFocus`).
           if (pathTakesFocus(document.activeElement, document.body, [term.element, stripRef.current])) term.focus()
@@ -149,9 +152,22 @@ export function useSshImages({
     []
   )
 
-  // A tab whose process ended drops everything held for it, waiting jobs too.
+  /*
+   * A tab whose process ended drops everything held for it, waiting jobs too —
+   * and says so (`uploadsLostNote`), or an upload in flight when a kept
+   * session's link dropped simply vanished with its strip. A toast, because the
+   * reconnect that follows remounts this pane (a new pty is a new tab id) and a
+   * note on the strip would go with it.
+   */
+  const phaseRef = useRef(phase)
+  phaseRef.current = phase
+  const waitingRef = useRef(waiting)
+  waitingRef.current = waiting
   useEffect(() => {
-    if (tab.status !== 'running') jobsRef.current?.reset()
+    if (tab.status === 'running') return
+    const lost = uploadsLostNote(phaseRef.current, waitingRef.current, labelRef.current)
+    jobsRef.current?.reset()
+    if (lost) toast({ tone: 'error', title: lost.title, description: lost.description })
   }, [tab.status])
 
   const pasteClipboard = useCallback((): void => {

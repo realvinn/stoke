@@ -560,6 +560,8 @@ export const CH = {
 
   // clipboard
   clipboardRead: 'clipboard:read',
+  /** renderer -> main (sync): the full paths of files a file manager copied, typed on a tab with no uploads. */
+  clipboardFilePaths: 'clipboard:file-paths',
   clipboardWrite: 'clipboard:write',
 
   // audio

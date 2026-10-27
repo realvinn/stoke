@@ -2325,7 +2325,8 @@ console.log('\nan image sent to the machine: the path typed, and where the keybo
   const hook = readFileSync(new URL('../src/renderer/src/components/ImageSendStrip.tsx', import.meta.url), 'utf8')
   same(
     'the hook asks it before term.focus(), with the terminal and the strip as owners',
-    /term\.paste\(text\)\s+(?:\/\/[^\n]*\n\s+)*if \(pathTakesFocus\(document\.activeElement, document\.body, \[term\.element, stripRef\.current\]\)\) term\.focus\(\)/.test(hook),
+    // The far paths are typed through pasteSafely (shared/clipboardText.ts), like every paste.
+    /pasteSafely\(term, text\)\s+(?:\/\/[^\n]*\n\s+)*if \(pathTakesFocus\(document\.activeElement, document\.body, \[term\.element, stripRef\.current\]\)\) term\.focus\(\)/.test(hook),
     true
   )
   same('every strip root carries the ref', (hook.match(/className="image-strip"[^>]*ref=\{act\.ref\}/g) ?? []).length, 4)

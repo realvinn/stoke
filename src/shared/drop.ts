@@ -58,9 +58,17 @@ export function quotePath(path: string, platform: string): string {
  * POSIX permits such a name, so this is reachable rather than theoretical. It
  * is refused rather than mangled, because a silently altered path that then
  * fails to open is harder to understand than one that never appeared.
+ *
+ * Every other control character is refused for a reason of its own: xterm
+ * brackets a paste as it is, so a name holding ESC[201~ ended the bracket and
+ * everything after it arrived as TYPED keys — a ^C that interrupts Claude, a
+ * ^U that clears the line. POSIX allows those bytes in a name too. Refused,
+ * not stripped, for the same reason as the newline: TAB, DEL and C1 included.
  */
+const UNTYPABLE = /[\u0000-\u001f\u007f-\u009f]/
+
 export function isInsertable(path: string): boolean {
-  return path.length > 0 && !/[\r\n]/.test(path)
+  return path.length > 0 && !UNTYPABLE.test(path)
 }
 
 /**
@@ -104,6 +112,83 @@ export function dropText(paths: string[], platform: string): string {
   if (!usable.length) return ''
   if (usable.length > 1 && platform !== 'win32') return `${usable.map(escapePath).join(' ')} `
   return `${usable.map((p) => quotePath(p, platform)).join(' ')} `
+}
+
+/**
+ * What a paste of files a file manager copied types on a tab that does not
+ * send uploads: their full paths, exactly as dropping them would (`dropText`).
+ *
+ * Finder also puts each file's bare NAME on the clipboard as text, and a plain
+ * paste typed that — a name that means nothing in the session's folder, so
+ * Claude neither attached the screenshot nor found the file. Explorer puts no
+ * text on at all, so Ctrl+V sent ^V. Main reads the paths (`clipboardFiles`);
+ * `count` is how many were copied, which on Windows can be more than the one
+ * path Electron can read there, and then this says so rather than typing one
+ * of several. Null when no path could be read, for the caller to paste what
+ * else is there.
+ */
+export function copiedFilesText(
+  copied: { paths: string[]; count: number },
+  platform: string
+): { text: string } | { refusal: string } | null {
+  if (copied.count > copied.paths.length && copied.paths.length > 0) {
+    return { refusal: `Stoke can read only the first of the ${copied.count} files copied here. Drop them on the tab instead, or copy one at a time.` }
+  }
+  if (!copied.paths.length) return null
+  const text = dropText(copied.paths, platform)
+  if (text) return { text }
+  return {
+    refusal:
+      copied.paths.length > 1
+        ? 'Every one of those file names holds a control character, which would be typed as a key, so nothing was pasted.'
+        : 'That file’s name holds a control character, which would be typed as a key, so it was not pasted.'
+  }
+}
+
+/**
+ * What to say when an SSH tab's ssh ends with uploads still on their way, or
+ * null when nothing was lost. `phase` is the strip's (`ImagePhase`), `waiting`
+ * how many more were queued behind it.
+ *
+ * A tab whose process ended drops everything held for it (`ImageJobs.reset`),
+ * which is right — there is no connection to send over — but it used to drop
+ * it silently: the strip simply vanished, no far path was typed, and a kept
+ * session that reconnected looked as if the send had worked. The pane itself
+ * is remounted by that reconnect (a new pty, a new tab id), so this is said in
+ * a toast, which lives above the pane, never on the strip.
+ */
+export function uploadsLostNote(
+  phase: { kind: string; name?: string; file?: string },
+  waiting: number,
+  label: string
+): { title: string; description: string } | null {
+  const failed = phase.kind === 'failed'
+  const busy = phase.kind === 'reading' || phase.kind === 'sending' || failed
+  if (!busy && waiting <= 0) return null
+  const what = phase.file ?? phase.name
+  const lost = (busy ? 1 : 0) + Math.max(0, waiting)
+  const title =
+    lost > 1
+      ? `${lost} uploads to ${label} were not sent`
+      : what && busy
+        ? `${what} was not sent to ${label}`
+        : `Not sent to ${label}`
+  /*
+   * A failed upload was not on its way: it had already failed for a reason of
+   * its own (the login refused, the host unreachable, the send broken off),
+   * was showing it with Try again, and the ended connection took that away.
+   */
+  const why = failed
+    ? lost > 1
+      ? 'One had already failed and was waiting to be tried again, the rest queued behind it, when the connection ended'
+      : 'It had already failed and was waiting to be tried again when the connection ended'
+    : lost > 1
+      ? 'The connection ended while they were on their way'
+      : 'The connection ended while it was on its way'
+  return {
+    title,
+    description: `${why}, so no path was typed. Paste or drop ${lost > 1 ? 'them' : 'it'} again once the tab is connected.`
+  }
 }
 
 /**

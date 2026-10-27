@@ -1267,6 +1267,8 @@ export interface StokeApi {
      * one keystroke too late.
      */
     readSync(): ClipboardPeek
+    /** The full paths of copied files (`count` may exceed them on Windows), to type on a tab with no uploads. */
+    filePathsSync(): { paths: string[]; count: number }
     writeText(text: string): void
   }
 

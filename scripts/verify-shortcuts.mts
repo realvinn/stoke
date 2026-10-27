@@ -19,6 +19,18 @@
 import { chordLabel, matchShortcut, typeThroughKey } from '../src/renderer/src/lib/shortcuts.ts'
 import { tabShortcut } from '../src/shared/windowShortcuts.ts'
 import {
+  chordLetter,
+  chromeTakesChord,
+  clipboardChord,
+  copyAction,
+  pasteAction,
+  pasteMenuItem,
+  selectionHasText,
+  type ChordKey,
+  type ClipboardChord
+} from '../src/shared/clipboardText.ts'
+import { readFileSync } from 'node:fs'
+import {
   FONT_SIZE_MAX,
   FONT_SIZE_MIN,
   UI_SCALE_MAX,
@@ -332,6 +344,163 @@ console.log('\nkeystrokes nobody claimed go to the terminal')
   // length test has to agree with the user about what "one character" is.
   check('an astral character counts as one', typeThroughKey(key({ key: '\u{1F525}' }), live), '\u{1F525}')
   check('a null target does not throw', typeThroughKey(key({ target: null }), live), 'a')
+}
+
+console.log('\nthe clipboard chords, on any keyboard layout (shared/clipboardText.ts)')
+{
+  /** A keydown as the clipboard chords read it: `key` is the character, `code` the physical key. */
+  const press = (k: string, code: string, mods: { ctrl?: boolean; meta?: boolean; shift?: boolean; alt?: boolean } = {}): ChordKey => ({
+    key: k,
+    code,
+    ctrlKey: !!mods.ctrl,
+    metaKey: !!mods.meta,
+    shiftKey: !!mods.shift,
+    altKey: !!mods.alt
+  })
+  /*
+   * The layout case. On ЙЦУКЕН the C key reports `с` (U+0441) and the V key `м`,
+   * so a `key === 'c'` test missed Ctrl+C, and xterm, which keys bare Ctrl by
+   * keyCode (Keyboard.ts:308-310), sent ^C: an interrupt instead of a copy.
+   */
+  check('Cyrillic `с` on the C key is c', chordLetter(press('с', 'KeyC')), 'c')
+  check('Cyrillic `м` on the V key is v', chordLetter(press('м', 'KeyV')), 'v')
+  check('Greek `ψ` on the C key is c', chordLetter(press('ψ', 'KeyC')), 'c')
+  check('a Latin key wins over its position: Dvorak’s C is on the I key', chordLetter(press('c', 'KeyI')), 'c')
+  check('and Dvorak’s J on the C key is not a copy', chordLetter(press('j', 'KeyC')), 'j')
+  check('Shift’s capital is the same letter', chordLetter(press('C', 'KeyC')), 'c')
+  check('a capital of another script falls back too: Shift on ЙЦУКЕН’s C key', chordLetter(press('С', 'KeyC')), 'c')
+  check('Hebrew, Arabic and kana letters fall back to the position', [chordLetter(press('ב', 'KeyC')), chordLetter(press('ر', 'KeyV')), chordLetter(press('そ', 'KeyC'))], ['c', 'v', 'c'])
+  check('AZERTY keeps the letter printed on its key: its A is where QWERTY’s Q is', chordLetter(press('a', 'KeyQ')), 'a')
+  /*
+   * Only a letter of ANOTHER script falls back. Windows reports AltGr as
+   * Ctrl+Alt, so Polish AltGr+Shift+C (`Ć`) is ctrl+alt+shift on the C key:
+   * a fallback for any non-a–z key read it as Ctrl+Shift+C and ate the letter
+   * (copying the selection instead). BÉPO's `.` sits on the V key, and macOS
+   * Cmd+Option+C/V type `ç`/`√`.
+   */
+  check('a Latin letter with a mark is itself, not its position', [chordLetter(press('Ć', 'KeyC')), chordLetter(press('ç', 'KeyC'))], ['ć', 'ç'])
+  check('punctuation is itself: BÉPO’s `.` on the V key', chordLetter(press('.', 'KeyV')), '.')
+  check('Polish AltGr+Shift+C (Ć) is no copy chord', clipboardChord(press('Ć', 'KeyC', { ctrl: true, alt: true, shift: true }), false), null)
+  check('BÉPO Ctrl+. is no paste chord', [clipboardChord(press('.', 'KeyV', { ctrl: true }), false), clipboardChord(press('.', 'KeyV', { ctrl: true }), true)], [null, null])
+  check('macOS Cmd+Option+C and +V (ç, √) are no clipboard chord', [clipboardChord(press('ç', 'KeyC', { meta: true, alt: true }), true), clipboardChord(press('√', 'KeyV', { meta: true, alt: true }), true)], [null, null])
+
+  check('macOS Cmd+C is the primary copy', clipboardChord(press('c', 'KeyC', { meta: true }), true), { op: 'copy', via: 'cmd' })
+  check('macOS Cmd+V on a Cyrillic layout is still a paste', clipboardChord(press('м', 'KeyV', { meta: true }), true), { op: 'paste', via: 'cmd' })
+  check('macOS bare Ctrl+C is no clipboard chord: it stays SIGINT', clipboardChord(press('c', 'KeyC', { ctrl: true }), true), null)
+  check('macOS bare Ctrl+V is Claude Code’s image chord', clipboardChord(press('v', 'KeyV', { ctrl: true }), true), { op: 'paste', via: 'ctrl' })
+  check('Ctrl+Shift+V is the primary paste on every platform', [clipboardChord(press('V', 'KeyV', { ctrl: true, shift: true }), false), clipboardChord(press('V', 'KeyV', { ctrl: true, shift: true }), true)], [{ op: 'paste', via: 'ctrl-shift' }, { op: 'paste', via: 'ctrl-shift' }])
+  check('Windows bare Ctrl+C on ЙЦУКЕН is a copy chord, not ^C', clipboardChord(press('с', 'KeyC', { ctrl: true }), false), { op: 'copy', via: 'ctrl' })
+  check('Windows bare Ctrl+V on ЙЦУКЕН is a paste chord, not ^V', clipboardChord(press('м', 'KeyV', { ctrl: true }), false), { op: 'paste', via: 'ctrl' })
+  check('Ctrl+Alt+V and Ctrl+X are no clipboard chord', [clipboardChord(press('v', 'KeyV', { ctrl: true, alt: true }), false), clipboardChord(press('x', 'KeyX', { ctrl: true }), false)], [null, null])
+  check('macOS Ctrl+Cmd+V is not the image chord', clipboardChord(press('v', 'KeyV', { ctrl: true, meta: true }), true), null)
+
+  console.log('\nwhat a copy chord does with the selection')
+  const cmdC: ClipboardChord = { op: 'copy', via: 'cmd' }
+  const ctrlC: ClipboardChord = { op: 'copy', via: 'ctrl' }
+  const shiftC: ClipboardChord = { op: 'copy', via: 'ctrl-shift' }
+  check('a selection is copied', copyAction(cmdC, 'text', true), 'copy')
+  check('bare Ctrl+C copies and clears, so a second press interrupts', copyAction(ctrlC, 'text', true), 'copy-clear')
+  /*
+   * Blank cells: `hasSelection` true, the text "". Bare Ctrl+C used to fall
+   * through as ^C here — clearing Claude's draft or interrupting the turn under
+   * a highlight the user could see — while Cmd+C and Ctrl+Shift+C swallowed it.
+   */
+  check('a blank-cell selection: Cmd+C swallows', copyAction(cmdC, '', true), 'swallow')
+  check('a blank-cell selection: bare Ctrl+C swallows too, and clears it', copyAction(ctrlC, '', true), 'swallow-clear')
+  check('nothing selected: bare Ctrl+C is SIGINT', copyAction(ctrlC, '', false), 'xterm')
+  check('nothing selected: Ctrl+Shift+C goes to xterm as before', copyAction(shiftC, '', false), 'xterm')
+  check('nothing selected: Cmd+C is left to the browser, which copies nothing', copyAction(cmdC, '', false), 'browser')
+  /*
+   * Blank ROWS: xterm trims blank cells but joins the selected rows with a
+   * line break (`\r\n` on Windows), so a drag over two blank rows reads "\n",
+   * not "" — and copying that wiped the clipboard as copying "" did.
+   */
+  check('only line breaks between blank rows is blank', [selectionHasText('\n'), selectionHasText('\r\n\r\n'), selectionHasText(' \t\n '), selectionHasText(' x ')], [false, false, false, true])
+  check('blank rows: Cmd+C swallows, never writes "\\n" over the clipboard', copyAction(cmdC, '\n', true), 'swallow')
+  check('blank rows on Windows: bare Ctrl+C swallows and clears, never sends ^C', copyAction(ctrlC, '\r\n', true), 'swallow-clear')
+  check('blank rows: Ctrl+Shift+C swallows too', copyAction(shiftC, '\n\n', true), 'swallow')
+
+  console.log('\nwhat a paste chord does with the clipboard')
+  const cmdV: ClipboardChord = { op: 'paste', via: 'cmd' }
+  const ctrlV: ClipboardChord = { op: 'paste', via: 'ctrl' }
+  const clip = (c: Partial<{ text: string; hasImage: boolean; files: number }>) => ({ text: '', hasImage: false, files: 0, ...c })
+  const local = { isMac: true, uploads: false, imageKey: '\x16' }
+  const ssh = { isMac: true, uploads: true, imageKey: '\x16' }
+  const win = { isMac: false, uploads: false, imageKey: '\x1bv' }
+  const linux = { isMac: false, uploads: false, imageKey: '\x16' }
+  // Finder's Cmd+C on a file: the bare name as text, the file, and its icon as an image.
+  const finder = clip({ text: 'Screenshot 1.png', hasImage: true, files: 1 })
+  check('Finder files on a local tab: their full paths, not the bare names', pasteAction(cmdV, finder, local), 'type-paths')
+  check('Finder files on an SSH tab that sends uploads: sent to the machine', pasteAction(cmdV, finder, ssh), 'upload-files')
+  check('Explorer files on a local Windows tab with bare Ctrl+V: their paths, not ^V', pasteAction(ctrlV, clip({ files: 1 }), win), 'type-paths')
+  check('text is pasted', [pasteAction(cmdV, clip({ text: 'x' }), local), pasteAction(ctrlV, clip({ text: 'x' }), win)], ['text', 'text'])
+  check('an image-only clipboard with Cmd+V is handed over', pasteAction(cmdV, clip({ hasImage: true }), local), 'image')
+  check('Cmd+V with nothing on the clipboard is taken and does nothing', pasteAction(cmdV, clip({}), local), 'nothing')
+  check('Windows Claude reads Alt+V, so bare Ctrl+V hands the image over', pasteAction(ctrlV, clip({ hasImage: true }), win), 'image')
+  check('Linux bare Ctrl+V with an image is xterm’s ^V, and a draft', pasteAction(ctrlV, clip({ hasImage: true }), linux), 'xterm-image')
+  check('Linux bare Ctrl+V with nothing is xterm’s', pasteAction(ctrlV, clip({}), linux), 'xterm')
+  /*
+   * macOS bare Ctrl+V is Claude Code's own image chord. On an SSH tab xterm's
+   * ^V made the far claude read the FAR clipboard ("No image found"), while
+   * Cmd+V and the menu sent the image.
+   */
+  check('macOS SSH tab, image on the clipboard: Ctrl+V sends it, as Cmd+V does', pasteAction(ctrlV, clip({ hasImage: true }), ssh), 'image')
+  check('macOS SSH tab, copied files: Ctrl+V sends them', pasteAction(ctrlV, finder, ssh), 'upload-files')
+  check('macOS SSH tab, text: Ctrl+V stays ^V (vim’s visual block, readline)', pasteAction(ctrlV, clip({ text: 'x' }), ssh), 'xterm')
+  // Rich content copied from a page carries text AND an image: text wins, so ^V, never an upload.
+  check('macOS SSH tab, text and an image: Ctrl+V stays ^V, nothing is uploaded', pasteAction(ctrlV, clip({ text: 'x', hasImage: true }), ssh), 'xterm-image')
+  check('macOS local tab, image: Ctrl+V stays ^V, Claude’s own paste — and a draft', pasteAction(ctrlV, clip({ hasImage: true }), local), 'xterm-image')
+  check('macOS local tab, files: Ctrl+V stays ^V', pasteAction(ctrlV, clip({ files: 1, text: 'a.png' }), local), 'xterm')
+
+  console.log('\nthe right-click menu’s Paste')
+  check('files on a local tab: enabled, and says what it types', pasteMenuItem(clip({ files: 1, text: 'a.png' }), false), { label: 'Paste file path', disabled: false })
+  check('several on a local tab', pasteMenuItem(clip({ files: 3 }), false).label, 'Paste 3 file paths')
+  check('files on an SSH tab that sends uploads', [pasteMenuItem(clip({ files: 1 }), true).label, pasteMenuItem(clip({ files: 2 }), true).label], ['Paste file', 'Paste 2 files'])
+  check('text, then an image, then nothing (disabled)', [pasteMenuItem(clip({ text: 'x', hasImage: true }), false), pasteMenuItem(clip({ hasImage: true }), false), pasteMenuItem(clip({}), false)], [{ label: 'Paste', disabled: false }, { label: 'Paste image', disabled: false }, { label: 'Paste', disabled: true }])
+
+  console.log('\na clipboard chord pressed on the chrome, after a click left focus on a button')
+  const button = { hasTerminal: true, overlayOpen: false, editable: false, inPane: false, pageSelection: false, defaultPrevented: false }
+  check('a paste on a chrome button goes to the terminal in front', chromeTakesChord(cmdV, button), true)
+  check('a copy there copies the terminal’s selection', chromeTakesChord(cmdC, button), true)
+  check('but never a copy while the page itself has text selected', chromeTakesChord(cmdC, { ...button, pageSelection: true }), false)
+  check('a paste is still the terminal’s with page text selected', chromeTakesChord(cmdV, { ...button, pageSelection: true }), true)
+  check('never from a field, which pastes for itself', chromeTakesChord(cmdV, { ...button, editable: true }), false)
+  check('never from inside a pane (the terminal, its find bar, its strips)', chromeTakesChord(cmdV, { ...button, inPane: true }), false)
+  check('never over an overlay, with no terminal, or once something took the key', [chromeTakesChord(cmdV, { ...button, overlayOpen: true }), chromeTakesChord(cmdV, { ...button, hasTerminal: false }), chromeTakesChord(cmdV, { ...button, defaultPrevented: true })], [false, false, false])
+
+  console.log('\nthe wires (gotcha 31)')
+  const read = (rel: string): string => readFileSync(new URL(rel, import.meta.url), 'utf8')
+  const tv = read('../src/renderer/src/components/TerminalView.tsx')
+  const app = read('../src/renderer/src/App.tsx')
+  check('TerminalView reads the chord through clipboardChord, never e.key alone', /const chord = clipboardChord\(e, IS_MAC\)/.test(tv) && !/const key = e\.key\.toLowerCase\(\)/.test(tv), true)
+  check('every chord is carried out by one function, decided by copyAction and pasteAction', /switch \(copyAction\(chord, sel, term\.hasSelection\(\)\)\)/.test(tv) && /const action = pasteAction\(chord, clip, pasteCtxRef\.current\(\)\)/.test(tv), true)
+  check('a taken chord is cancelled, so the browser’s own copy/paste never runs too', /if \(verdict === 'take'\) e\.preventDefault\(\)\s*return verdict === 'xterm'/.test(tv), true)
+  check('swallow-clear clears the selection so a second Ctrl+C interrupts', /case 'swallow-clear':\s*term\.clearSelection\(\)\s*return 'take'/.test(tv), true)
+  check('copy-clear copies and then clears the selection, so a second Ctrl+C interrupts', /case 'copy-clear':\s*window\.stoke\.clipboard\.writeText\(sel\)\s*term\.clearSelection\(\)\s*return 'take'/.test(tv), true)
+  check(
+    'the terminal registers that function for App’s route, as not from the key',
+    /registerClipboardKeys\(tab\.ptyId, \(chord\) => runClipboardChord\(chord, false\)\)/.test(tv) && /const verdict = runClipboardChord\(chord, true\)/.test(tv) && /offClipboardKeys\(\)/.test(tv),
+    true
+  )
+  /*
+   * xterm's ^V with an image is a draft only where xterm really gets the key.
+   * From App's chrome route an `xterm` answer sends nothing, so marking there
+   * flagged a draft with nothing pasted.
+   */
+  const runPaste = /runPasteRef\.current = \(chord, clip\) => \{([\s\S]*?)\n {2}\}/.exec(tv)?.[1] ?? ''
+  check(
+    'xterm’s own image ^V marks a draft only from the key handler',
+    runPaste.includes("case 'xterm-image':") && !/setTyped\(/.test(runPaste) && /if \(action === 'xterm-image' && fromKey\) setTyped\(tab\.ptyId, true\)/.test(tv),
+    true
+  )
+  check('the menu’s Paste is pasteMenuItem’s, through the same route', /\.\.\.pasteMenuItem\(menu\.clip, images\.on\)/.test(tv) && /runPasteRef\.current\(\{ op: 'paste', via: IS_MAC \? 'cmd' : 'ctrl-shift' \}, menu\.clip\)/.test(tv), true)
+  check(
+    'App hands a chrome chord to the terminal in front only through chromeTakesChord and runClipboardKeys',
+    /const chord = ptyId === null \? null : clipboardChord\(e, isMac\)/.test(app) &&
+      /const takes = chromeTakesChord\(chord, \{/.test(app) &&
+      /if \(takes && runClipboardKeys\(ptyId, chord\) === 'take'\) \{\s*e\.preventDefault\(\)\s*focusTerm\(ptyId\)/.test(app),
+    true
+  )
 }
 
 console.log(failures ? `\n${failures} failed` : '\nall pass')

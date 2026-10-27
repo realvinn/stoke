@@ -3,6 +3,8 @@
 import headless from '@xterm/headless'
 import { UnicodeGraphemesAddon } from '../node_modules/@xterm/addon-unicode-graphemes/lib/addon-unicode-graphemes.mjs'
 import { terminalHttpLink, terminalLinkRepairs, selectedTerminalLink, terminalLinkClick } from '../src/shared/terminalLinks.ts'
+import { bufferRows, joinBufferRows } from '../src/shared/clipboardText.ts'
+import { readFileSync } from 'node:fs'
 
 let failures = 0
 function check(name: string, got: unknown, want: unknown): void {
@@ -127,5 +129,49 @@ check('a plain click opens in Stoke on both desktop platforms', [terminalLinkCli
 check('platform browser modifiers and Shift open externally', [terminalLinkClick(url, { ...click, metaKey: true }, down, true), terminalLinkClick(url, { ...click, ctrlKey: true }, down, false), terminalLinkClick(url, { ...click, shiftKey: true }, down, true)], ['external', 'external', 'external'])
 check('selection, secondary clicks and Mac Ctrl-click cannot open a link', [terminalLinkClick(url, { ...click, clientX: 14 }, down, false), terminalLinkClick(url, { ...click, altKey: true }, down, true), terminalLinkClick(url, { ...click, ctrlKey: true }, down, true), terminalLinkClick(url, { ...click, button: 2 }, down, false)], [null, null, null, null])
 check('an activation without a press or with a non-web target is refused', [terminalLinkClick(url, click, null, false), terminalLinkClick('file:///etc/passwd', click, down, false)], [null, null])
+
+/*
+ * Copy screen (termRegistry's `screenOf` with `joinWrapped`), on the real
+ * buffer. It used to join every row's text with '\n', so a URL or command
+ * soft-wrapped at the pane's width came back split in two — the same rows a
+ * Shift-drag selection copies whole. `copied` is screenOf's own expression.
+ */
+console.log('\nCopy screen keeps soft-wrapped lines whole')
+const copied = (terminal: headless.Terminal): string => {
+  const buf = terminal.buffer.active
+  return joinBufferRows(bufferRows(buf, buf.viewportY, buf.viewportY + terminal.rows)).replace(/\n+$/, '')
+}
+{
+  const terminal = new headless.Terminal({ cols: 40, rows: 8, allowProposedApi: true })
+  try {
+    const cmd = `$ curl ${url}/end`
+    await write(terminal, `${cmd}\r\n$ `)
+    check('a command wrapped across two rows is one line, the next prompt the next', copied(terminal), `${cmd}\n$`)
+    check('the old row-by-row join split it — the control', (() => { const b = terminal.buffer.active; return b.getLine(0)!.translateToString(true) + '\n' + b.getLine(1)!.translateToString(true) })().includes(cmd), false)
+    terminal.reset()
+    await write(terminal, 'first line\r\n\r\nthird line   \r\n')
+    check('a real newline is kept, a blank line stays blank, trailing blanks go', copied(terminal), 'first line\n\nthird line')
+    terminal.reset()
+    // 39 letters, a space in the last column, then the rest: the space sits exactly at the wrap.
+    await write(terminal, `${'a'.repeat(39)} tail`)
+    check('a space at the wrap point survives (each row is not trimmed before it is joined)', copied(terminal), `${'a'.repeat(39)} tail`)
+  } finally { terminal.dispose() }
+}
+{
+  const terminal = new headless.Terminal({ cols: 10, rows: 4, allowProposedApi: true })
+  terminal.loadAddon(new UnicodeGraphemesAddon()); terminal.unicode.activeVersion = '15-graphemes'
+  try {
+    // Nine cells of ASCII, then a two-cell character: it cannot fit the last column and moves down a row.
+    await write(terminal, '123456789界末')
+    check('a wide character pushed to the next row leaves no space behind in the copy', copied(terminal), '123456789界末')
+    check('the buffer really does pad that cell — the control', terminal.buffer.active.getLine(0)!.translateToString(false), '123456789 ')
+  } finally { terminal.dispose() }
+}
+{
+  const reg = readFileSync(new URL('../src/renderer/src/lib/termRegistry.ts', import.meta.url), 'utf8')
+  const tv = readFileSync(new URL('../src/renderer/src/components/TerminalView.tsx', import.meta.url), 'utf8')
+  check('screenOf joins wrapped rows exactly as above when asked', /if \(opts\.joinWrapped\) return joinBufferRows\(bufferRows\(buf, buf\.viewportY, buf\.viewportY \+ term\.rows\)\)\.replace\(\/\\n\+\$\/, ''\)/.test(reg), true)
+  check('and Copy screen asks; the tab snapshot keeps its rows', /const text = screenOf\(tab\.ptyId, \{ joinWrapped: true \}\)/.test(tv), true)
+}
 console.log(failures ? `\n${failures} FAILED` : '\nall pass')
 process.exitCode = failures ? 1 : 0

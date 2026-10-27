@@ -10,18 +10,39 @@ import { selectedTerminalLink, terminalLinkClick, terminalLinkRepairs } from '@s
 import { rememberSshViewport, takeSshViewport } from '../lib/sshViewport'
 import type { ClipboardPeek } from '@shared/api'
 import type { SshHost, TerminalSettings, Theme, VoiceSettings } from '@shared/types'
-import { dropText, imagePasteKeys } from '@shared/drop'
+import { copiedFilesText, dropText, imagePasteKeys } from '@shared/drop'
+import {
+  clipboardChord,
+  copyAction,
+  osc52Write,
+  pasteAction,
+  pasteMenuItem,
+  pasteSafely,
+  selectionHasText,
+  typesDictation,
+  typingParts,
+  type ClipboardChord,
+  type PasteAction
+} from '@shared/clipboardText'
+import { SHORTCUT_TEXT_MAX } from '@shared/topBar'
 import { PRIVATE_ENDED_TEXT } from '@shared/privateChat'
 import { voiceSupported } from '@shared/voice'
 import { SizeClaimer, isGrid, sameGrid, type ClaimTrigger, type Grid } from '@shared/sizeClaim'
 import { CLI_OWNS_SPACE, SESSION_ENDED_WORDS, spaceOwner } from '@shared/voiceRoute'
 import { CORNER_FLOATS, FOOT_FLOATS, floatInset } from '@shared/paneFloats'
-import { attachSink, noteInput } from '../lib/ptyBus'
-import { setToastFloor } from '../lib/toasts'
+import { attachSink, noteInput, setTyped } from '../lib/ptyBus'
+import { setToastFloor, toast } from '../lib/toasts'
 import { recentlyUsed } from '../lib/lastInput'
 import { isButtonlessMotionReport } from '../lib/mouseReport'
 import { chordLabel, matchShortcut } from '../lib/shortcuts'
-import { registerFinder, registerTerm, screenOf, unregisterTerm } from '../lib/termRegistry'
+import {
+  registerClipboardKeys,
+  registerFinder,
+  registerTerm,
+  screenOf,
+  unregisterTerm,
+  type ClipboardKeyVerdict
+} from '../lib/termRegistry'
 import { findColors, terminalTheme } from '../lib/theme'
 import { agentMark, paneAgent } from '../lib/agentColor'
 import type { Tab } from '../types'
@@ -30,13 +51,25 @@ import { TerminalFind } from './TerminalFind'
 import { useSshImages } from './ImageSendStrip'
 import { useDictation } from './Dictation'
 
-/**
- * The largest OSC 52 payload Stoke will put on the clipboard, in base64
- * characters. A terminal write is untrusted input — anything the far machine
- * renders can ask for the clipboard — so the sequence is bounded rather than
- * trusted to be a sane size.
+/*
+ * The OSC 52 cap (`MAX_OSC52_BASE64`) and what a write puts on the clipboard
+ * live in shared/clipboardText.ts (`osc52Write`), where verify:drop runs them.
  */
-const MAX_OSC52_BASE64 = 200_000
+
+/** Said when a paste or a program's copy had control characters left out of it. */
+function noteCleaned(what: 'paste' | 'copy'): void {
+  toast(
+    what === 'paste'
+      ? {
+          title: 'Pasted without control characters',
+          description: 'The clipboard held terminal escapes. They were left out, so the paste could not type keys of its own.'
+        }
+      : {
+          title: 'Copied without control characters',
+          description: 'A program in this tab copied text holding terminal escapes. They were left out, so pasting it cannot type keys of its own.'
+        }
+  )
+}
 
 /**
  * Read once. The preload freezes `window.stoke` before any renderer module
@@ -240,12 +273,30 @@ export function TerminalView({
         const term = termRef.current
         if (!term || tab.status === 'exited') return SESSION_ENDED_WORDS
         /*
-         * paste() rather than a raw pty write, for the reason the clipboard
-         * path already documents: it wraps the text in bracketed-paste markers
-         * when the CLI has advertised DECSET 2004, so a transcript that came
-         * back with a newline in it does not submit the prompt early.
+         * A local Claude tab gets the words TYPED (`typesDictation`): Claude
+         * Code files a bracketed paste as `<pasted_content>`, and a message
+         * that is nothing but one — dictate, then Enter — is not acted on
+         * (gotcha 86). `pty.type` types them as the phone does, newlines as
+         * ESC CR, and presses no Enter. Noted as a draft here, since main
+         * writes them and onData never sees them.
          */
-        term.paste(text)
+        if (typesDictation(tab)) {
+          const parts = typingParts(text, SHORTCUT_TEXT_MAX)
+          if (!parts.length) return null
+          noteInput(tab.ptyId, parts.join(''))
+          for (const part of parts) {
+            if (!(await window.stoke.pty.type(tab.ptyId, part, false))) return SESSION_ENDED_WORDS
+          }
+          return null
+        }
+        /*
+         * Everywhere else paste() rather than a raw pty write, for the reason
+         * the clipboard path documents: it wraps the text in bracketed-paste
+         * markers when the program has advertised DECSET 2004, so a transcript
+         * with a newline in it does not submit the prompt early. Cleaned
+         * first, like every paste (`pasteSafely`).
+         */
+        pasteSafely(term, text)
         return null
       }
     }
@@ -272,27 +323,86 @@ export function TerminalView({
    */
   const pasteImageRef = useRef<() => void>(() => {})
   pasteImageRef.current = () => {
-    if (images.on) images.pasteClipboard()
-    else window.stoke.pty.write(tab.ptyId, imagePasteKeys(window.stoke.platform, tab.cliId, !!tab.hostId))
+    if (images.on) {
+      images.pasteClipboard()
+      return
+    }
+    /*
+     * Through noteInput, never a bare pty write: the agent puts the image in
+     * its prompt, which is a draft an automatic relaunch must not kill, and a
+     * write straight to the pty never reached the draft tracking at all
+     * (`looksTyped` counts the paste key alone as typing).
+     */
+    const keys = imagePasteKeys(window.stoke.platform, tab.cliId, !!tab.hostId)
+    noteInput(tab.ptyId, keys)
+    window.stoke.pty.write(tab.ptyId, keys)
   }
   /**
-   * Whether a bare Ctrl+V with an image must be taken from xterm, whose own
-   * answer is `\x16`: only when that would be the wrong thing.
+   * The context a paste chord is decided in (`pasteAction`): whether this tab
+   * sends uploads, and the agent's own image paste key. A ref, because the key
+   * handler is bound once per pty and the tab can change under it.
    */
-  const imageNeedsHandingRef = useRef<() => boolean>(() => false)
-  imageNeedsHandingRef.current = () =>
-    images.on || imagePasteKeys(window.stoke.platform, tab.cliId, !!tab.hostId) !== '\x16'
+  const pasteCtxRef = useRef(() => ({ isMac: IS_MAC, uploads: false, imageKey: '\x16' }))
+  pasteCtxRef.current = () => ({
+    isMac: IS_MAC,
+    uploads: images.on,
+    imageKey: imagePasteKeys(window.stoke.platform, tab.cliId, !!tab.hostId)
+  })
   /**
-   * Files a file manager copied, pasted on an SSH tab that sends uploads: they
-   * are sent to the machine and their far paths typed (gotcha 152), where
-   * typing what Finder also puts on as text — the bare names — named nothing
-   * there. False everywhere else, which leaves the paste exactly as it was.
+   * Files a file manager copied. An SSH tab that sends uploads sends them to
+   * the machine and types their far paths (gotcha 152); every other tab types
+   * their full LOCAL paths, as dropping them does (`copiedFilesText`) — what
+   * Finder also puts on as text is only the bare names, which named nothing in
+   * the session's folder, and Explorer puts on no text at all. False when no
+   * path could be read, for the caller to paste what else is there.
    */
-  const pasteFilesRef = useRef<(clip: ClipboardPeek) => boolean>(() => false)
-  pasteFilesRef.current = (clip) => {
-    if (!images.on || clip.files < 1) return false
-    images.pasteFiles()
+  const pasteFilesRef = useRef<(how: 'upload' | 'paths') => boolean>(() => false)
+  pasteFilesRef.current = (how) => {
+    if (how === 'upload') {
+      images.pasteFiles()
+      return true
+    }
+    const term = termRef.current
+    if (!term) return false
+    const typed = copiedFilesText(window.stoke.clipboard.filePathsSync(), tab.hostId ? 'linux' : window.stoke.platform)
+    if (!typed) return false
+    if ('refusal' in typed) toast({ tone: 'error', title: 'Nothing pasted', description: typed.refusal })
+    else pasteSafely(term, typed.text)
     return true
+  }
+  /**
+   * One paste, decided by `pasteAction` and carried out here: the key handler,
+   * the menu's Paste and App's route from a chrome button all come through it.
+   * Returns the action; only `xterm` and `xterm-image` leave the key to xterm,
+   * which only the key handler can hand it to (`runClipboardChord`).
+   */
+  const runPasteRef = useRef<(chord: ClipboardChord, clip: ClipboardPeek) => PasteAction>(() => 'nothing')
+  runPasteRef.current = (chord, clip) => {
+    const term = termRef.current
+    const action = pasteAction(chord, clip, pasteCtxRef.current())
+    switch (action) {
+      case 'upload-files':
+        pasteFilesRef.current('upload')
+        break
+      case 'type-paths':
+        if (pasteFilesRef.current('paths')) break
+        // No path could be read after all (the clipboard moved): paste what else is there.
+        if (clip.text && term) {
+          if (pasteSafely(term, clip.text)) noteCleaned('paste')
+        } else if (clip.hasImage) pasteImageRef.current()
+        break
+      case 'text':
+        if (term && pasteSafely(term, clip.text)) noteCleaned('paste')
+        break
+      case 'image':
+        pasteImageRef.current()
+        break
+      case 'xterm-image':
+      case 'xterm':
+      case 'nothing':
+        break
+    }
+    return action
   }
 
   // Build the terminal once per pty. Theme and font changes are applied in
@@ -465,20 +575,15 @@ export function TerminalView({
      * terminal to *report* the clipboard, and everything a terminal renders is
      * untrusted: a hostile file printed with `cat` could otherwise read whatever
      * the user last copied, passwords included. Writing is the safe half, and
-     * the half anyone actually wants.
+     * the half anyone actually wants — once it cannot plant controls: the text
+     * is cleaned before it reaches the clipboard (`osc52Write`), or the next
+     * paste anywhere could end its own bracket and type a command.
      */
     term.parser.registerOscHandler(52, (data) => {
-      const semi = data.indexOf(';')
-      // `<Pc>;<Pd>` — Pc selects the clipboard and is ignored; Stoke has one.
-      if (semi < 0) return true
-      const payload = data.slice(semi + 1)
-      if (!payload || payload === '?' || payload.length > MAX_OSC52_BASE64) return true
-      try {
-        const bytes = Uint8Array.from(atob(payload), (c) => c.charCodeAt(0))
-        const text = new TextDecoder().decode(bytes)
-        if (text) window.stoke.clipboard.writeText(text)
-      } catch {
-        /* not valid base64: the sequence is malformed, so drop it */
+      const write = osc52Write(data)
+      if (write) {
+        window.stoke.clipboard.writeText(write.text)
+        if (write.cleaned) noteCleaned('copy')
       }
       return true
     })
@@ -581,129 +686,101 @@ export function TerminalView({
       window.stoke.pty.write(tab.ptyId, data)
     })
 
+    /*
+     * One copy or paste chord, decided by `copyAction`/`pasteAction`
+     * (shared/clipboardText.ts, held by verify:drop) and carried out here. The
+     * key handler below and App's route from a chrome button
+     * (`registerClipboardKeys`) both come through it, so a paste from either
+     * takes the same route: files, an image, cleaned text.
+     *
+     * `take`: Stoke acted, and the key is cancelled. The preventDefault is
+     * load-bearing: returning false only stops xterm processing the key; the
+     * browser still fires its own copy/paste event on xterm's hidden textarea,
+     * and xterm listens for it. Without it, Ctrl+V pasted twice - verified in
+     * the running app, where a three-line paste arrived as six lines.
+     * `xterm`: the key is xterm's (^C is SIGINT, ^V the agent's own paste).
+     * `browser`: neither acts — Cmd+C with nothing selected.
+     */
+    const runClipboardChord = (chord: ClipboardChord, fromKey: boolean): ClipboardKeyVerdict => {
+      if (chord.op === 'paste') {
+        /*
+         * xterm's paste() rather than a raw pty write. It normalises CRLF and
+         * wraps the text in bracketed-paste markers when - and only when - the
+         * CLI has actually advertised DECSET 2004. Writing raw made every
+         * newline in a multi-line paste act as Enter, so pasting a stack trace
+         * fired one prompt per line and Windows CRLF could submit twice. And
+         * cleaned first (`pasteSafely`): xterm brackets the text as it is, so a
+         * clipboard holding its own ESC[201~ ended the bracket and the rest
+         * arrived as typed keys, its next CR submitting them.
+         */
+        const action = runPasteRef.current(chord, window.stoke.clipboard.readSync())
+        /*
+         * xterm's own ^V is the agent's image paste, and the image then sits
+         * in its prompt: a draft. Only from the key handler — App's route from
+         * a chrome button has no xterm to hand the key to, so there nothing
+         * was pasted and nothing may be marked.
+         */
+        if (action === 'xterm-image' && fromKey) setTyped(tab.ptyId, true)
+        return action === 'xterm' || action === 'xterm-image' ? 'xterm' : 'take'
+      }
+      const sel = term.getSelection()
+      /*
+       * A selection can be visible and still be the empty string: xterm's
+       * `hasSelection` compares coordinates while `selectionText` trims blank
+       * cells (`SelectionService.ts:191-198`, `:205-250`), so a drag across
+       * the padding inside Claude Code's prompt box highlights real cells and
+       * yields "". Letting Chromium's own copy event run then overwrote the
+       * clipboard with an empty string (xterm's copy listener gates only on
+       * `hasSelection`), and a bare Ctrl+C sent ^C — clearing the draft or
+       * interrupting the turn under a highlight. Both are swallowed: copying
+       * nothing is a no-op, not a reason to lose what you had.
+       *
+       * Bare Ctrl+C copies only when something is selected, the way Windows
+       * Terminal behaves, and clears the selection after, so a second press
+       * interrupts: a selection left lying around would otherwise quietly stop
+       * Ctrl+C from interrupting Claude, the most pressed key in the app.
+       */
+      switch (copyAction(chord, sel, term.hasSelection())) {
+        case 'copy':
+          window.stoke.clipboard.writeText(sel)
+          return 'take'
+        case 'copy-clear':
+          window.stoke.clipboard.writeText(sel)
+          term.clearSelection()
+          return 'take'
+        case 'swallow':
+          return 'take'
+        case 'swallow-clear':
+          term.clearSelection()
+          return 'take'
+        case 'xterm':
+          return 'xterm'
+        case 'browser':
+          return 'browser'
+      }
+    }
+
     // Keep the OS clipboard shortcuts working; everything else goes to the PTY.
     term.attachCustomKeyEventHandler((e) => {
       if (e.type !== 'keydown') return true
-      const mod = e.ctrlKey && e.shiftKey
-      const cmd = e.metaKey && !e.ctrlKey
-      const isMac = IS_MAC
-      // A bare Ctrl chord, with no Shift and no Alt. Only meaningful off macOS,
-      // where Cmd carries the clipboard and Ctrl+C must stay SIGINT.
-      const bareCtrl = !isMac && e.ctrlKey && !e.shiftKey && !e.altKey
 
       // Swallow app shortcuts so they act on the window instead of being sent
       // to Claude as keystrokes. App.tsx handles them on the window listener.
-      if (matchShortcut(e, isMac)) return false
-
-      const key = e.key.toLowerCase()
+      if (matchShortcut(e, IS_MAC)) return false
 
       /*
-       * preventDefault on every branch that handles the clipboard itself.
-       * Returning false only stops xterm processing the key; the browser still
-       * fires its own copy/paste event on xterm's hidden textarea, and xterm
-       * listens for it. Without this, Ctrl+V pasted twice - verified in the
-       * running app, where a three-line paste arrived as six lines.
+       * The letter by `chordLetter` (inside `clipboardChord`), never `e.key`
+       * alone: on a Cyrillic or Greek layout Ctrl+C reports `с`, no branch
+       * matched, and xterm — which keys bare Ctrl by keyCode — sent ^C, an
+       * interrupt instead of a copy; Ctrl+V sent ^V.
        */
-      if ((mod || (isMac && cmd)) && key === 'c') {
-        const sel = term.getSelection()
-        if (sel) {
-          e.preventDefault()
-          window.stoke.clipboard.writeText(sel)
-          return false
-        }
-        /*
-         * A selection can be visible and still be the empty string: xterm's
-         * `hasSelection` compares coordinates while `selectionText` trims blank
-         * cells (`SelectionService.ts:191-198`, `:205-250`), so a drag across
-         * the padding inside Claude Code's prompt box highlights real cells and
-         * yields "". Returning here without preventDefault let Chromium's own
-         * copy event run, and xterm's copy listener gates on `hasSelection` —
-         * so the clipboard was overwritten with an empty string, destroying
-         * whatever was on it. Swallow the key instead: copying nothing is a
-         * no-op, not a reason to lose what you had.
-         */
-        if (term.hasSelection()) {
-          e.preventDefault()
-          return false
-        }
-        // No selection at all: let Ctrl+C through as SIGINT.
-        return !isMac || !cmd
-      }
-
-      /*
-       * Bare Ctrl+C copies only when something is selected, the way Windows
-       * Terminal behaves. The selection is cleared immediately after, so a
-       * second press interrupts: without that, a selection left lying around
-       * would quietly stop Ctrl+C from interrupting Claude, which is the most
-       * pressed key in the app and the worst thing to break.
-       */
-      if (bareCtrl && key === 'c') {
-        const sel = term.getSelection()
-        if (!sel) return true
-        e.preventDefault()
-        window.stoke.clipboard.writeText(sel)
-        term.clearSelection()
-        return false
-      }
-
-      /*
-       * term.paste() rather than a raw pty write. It normalises CRLF and wraps
-       * the text in bracketed-paste markers when - and only when - the CLI has
-       * actually advertised DECSET 2004. Writing raw made every newline in a
-       * multi-line paste act as Enter, so pasting a stack trace fired one
-       * prompt per line and Windows CRLF could submit twice.
-       */
-      if ((mod || (isMac && cmd)) && key === 'v') {
-        e.preventDefault()
-        const clip = window.stoke.clipboard.readSync()
-        // Copied files go to an SSH tab's machine, ahead of the names Finder also puts on as text.
-        if (pasteFilesRef.current(clip)) return false
-        if (clip.text) term.paste(clip.text)
-        /*
-         * An image-only clipboard used to be swallowed here on macOS: the key
-         * was consumed and nothing was written, and the Ctrl+V branch below
-         * that hands images to the CLI is gated off macOS. `\x16` is what
-         * Claude Code reads as "paste", and it then takes the image off the OS
-         * clipboard itself — no image bytes cross the PTY. On Windows its
-         * chord is Alt+V instead (`imagePasteKeys`).
-         */
-        else if (clip.hasImage) pasteImageRef.current()
-        return false
-      }
-
-      /*
-       * Plain Ctrl+V. Text is pasted here so the most common paste keystroke in
-       * the world does the obvious thing. An image-only clipboard instead falls
-       * through as \x16 to Claude Code, whose own handler reads the image off
-       * the OS clipboard - so image paste keeps working and no image bytes ever
-       * cross the PTY. Text wins when the clipboard carries both, which is what
-       * copying rich content from a page produces.
-       *
-       * An image is handed over here too rather than left to xterm's own \x16
-       * whenever that would be wrong: Claude Code on Windows reads Alt+V, and an
-       * SSH tab sends the image to the machine (`pasteImageRef`).
-       */
-      if (bareCtrl && key === 'v') {
-        const clip = window.stoke.clipboard.readSync()
-        if (clip.files > 0 && pasteFilesRef.current(clip)) {
-          e.preventDefault()
-          return false
-        }
-        if (clip.text) {
-          e.preventDefault()
-          term.paste(clip.text)
-          return false
-        }
-        if (clip.hasImage && imageNeedsHandingRef.current()) {
-          e.preventDefault()
-          pasteImageRef.current()
-          return false
-        }
-        return true
-      }
-
-      return true
+      const chord = clipboardChord(e, IS_MAC)
+      if (!chord) return true
+      const verdict = runClipboardChord(chord, true)
+      if (verdict === 'take') e.preventDefault()
+      return verdict === 'xterm'
     })
+    const offClipboardKeys = registerClipboardKeys(tab.ptyId, (chord) => runClipboardChord(chord, false))
 
     /*
      * Take the right-click before xterm can see it. Claude Code turns mouse
@@ -944,7 +1021,9 @@ export function TerminalView({
     const onContextMenu = (e: MouseEvent): void => {
       e.preventDefault()
       e.stopPropagation()
-      const selection = term.getSelection()
+      // Only line breaks between blank rows is as blank as "" (`selectionHasText`).
+      const raw = term.getSelection()
+      const selection = selectionHasText(raw) ? raw : ''
       setMenu({
         x: e.clientX,
         y: e.clientY,
@@ -961,6 +1040,35 @@ export function TerminalView({
     host.addEventListener('mousedown', onMouseDown, true)
     host.addEventListener('mouseup', onMouseDown, true)
     host.addEventListener('contextmenu', onContextMenu, true)
+
+    /*
+     * The copy and paste EVENTS, which reach xterm without passing the key
+     * handler: the Edit menu (Stoke sets no app menu, so Electron's default one
+     * is live — Edit › Copy and Paste on macOS), Shift+Insert, and Linux's
+     * middle-click paste of the primary selection.
+     *
+     * Copy: xterm's listener gates only on `hasSelection`, so with a blank-cell
+     * selection (see `runClipboardChord`) it wrote "" and wiped the clipboard,
+     * the case the key handler swallows. Stopped before xterm sees it — never
+     * preventDefault'ed, because a cancelled copy event writes its data, empty
+     * or not; uncancelled, the browser's own copy finds no page selection and
+     * leaves the clipboard alone.
+     *
+     * Paste: xterm's listener pastes the event's text as it is, so it is taken
+     * here and pasted cleaned. The event's own data, not a fresh read: a middle
+     * click pastes the primary selection, which is not the clipboard.
+     */
+    const onCopyEvent = (e: ClipboardEvent): void => {
+      if (!selectionHasText(term.getSelection())) e.stopPropagation()
+    }
+    const onPasteEvent = (e: ClipboardEvent): void => {
+      e.preventDefault()
+      e.stopPropagation()
+      const text = e.clipboardData?.getData('text/plain') ?? ''
+      if (pasteSafely(term, text)) noteCleaned('paste')
+    }
+    host.addEventListener('copy', onCopyEvent, true)
+    host.addEventListener('paste', onPasteEvent, true)
 
     /*
      * Last active wins (shared/sizeClaim.ts). While another machine's remote
@@ -1130,6 +1238,9 @@ export function TerminalView({
       host.removeEventListener('mousedown', onMouseDown, true)
       host.removeEventListener('mouseup', onMouseDown, true)
       host.removeEventListener('contextmenu', onContextMenu, true)
+      host.removeEventListener('copy', onCopyEvent, true)
+      host.removeEventListener('paste', onPasteEvent, true)
+      offClipboardKeys()
       detach()
       onInput.dispose()
       term.dispose()
@@ -1157,11 +1268,14 @@ export function TerminalView({
    * on a tab that has one.
    *
    * The walk itself lives in `termRegistry`'s `screenOf` now — the tab snapshot
-   * needs the identical text for every tab at once, so this calls the same
-   * helper rather than repeating it.
+   * needs the same screen for every tab at once, so this calls the same helper
+   * rather than repeating it. With `joinWrapped`, because this is text someone
+   * takes away: a long URL or command soft-wrapped across rows comes back in
+   * one piece, as a Shift-drag selection of the same rows already did, where
+   * the snapshot keeps its rows to draw them back as they were.
    */
   const copyScreen = (): void => {
-    const text = screenOf(tab.ptyId)
+    const text = screenOf(tab.ptyId, { joinWrapped: true })
     if (text) window.stoke.clipboard.writeText(text)
     termRef.current?.focus()
   }
@@ -1423,7 +1537,8 @@ export function TerminalView({
      */
     const text = dropText(paths, tab.hostId ? 'linux' : window.stoke.platform)
     if (!text) return
-    term.paste(text)
+    // `dropText` already refuses a name holding a control character (`isInsertable`); cleaned anyway, like every paste.
+    pasteSafely(term, text)
     term.focus()
   }
 
@@ -1520,27 +1635,14 @@ export function TerminalView({
             {
               // An image clipboard used to show a greyed-out Paste with no
               // explanation. The CLI reads the image itself on its paste key
-              // (`pasteImageRef`). Copied files on an SSH tab that sends
-              // uploads go to the machine, as Cmd/Ctrl+V sends them.
-              label:
-                images.on && menu.clip.files > 0
-                  ? menu.clip.files > 1
-                    ? `Paste ${menu.clip.files} files`
-                    : 'Paste file'
-                  : menu.clip.text
-                    ? 'Paste'
-                    : menu.clip.hasImage
-                      ? 'Paste image'
-                      : 'Paste',
+              // (`pasteImageRef`). Copied files go to the machine on an SSH tab
+              // that sends uploads, and are typed as their full paths on every
+              // other tab, as Cmd/Ctrl+V does both (`pasteMenuItem`).
+              ...pasteMenuItem(menu.clip, images.on),
               hint: IS_MAC ? '⌘V' : 'Ctrl+V',
-              disabled: !menu.clip.text && !menu.clip.hasImage && !(images.on && menu.clip.files > 0),
               onSelect: () => {
-                if (pasteFilesRef.current(menu.clip)) {
-                  termRef.current?.focus()
-                  return
-                }
-                if (menu.clip.text) termRef.current?.paste(menu.clip.text)
-                else if (menu.clip.hasImage) pasteImageRef.current()
+                // The primary chord's route, whatever the platform: the menu is never xterm's ^V.
+                runPasteRef.current({ op: 'paste', via: IS_MAC ? 'cmd' : 'ctrl-shift' }, menu.clip)
                 termRef.current?.focus()
               }
             },

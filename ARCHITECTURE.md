@@ -2491,6 +2491,15 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     every file) to the new default once (`upgradeHoldMs`). hydrate keeps
                     `remote.sttUrl` as a write-only mirror for one release, for older builds.
                     A new voice field needs its default AND a clampVoice line in one change
+  clipboardText.ts  the one rule for clipboard text in every terminal: `safePasteText` (no C0
+                    but TAB/LF/CR, no DEL or C1, so a clipboard's ESC[201~ cannot end a
+                    bracketed paste and type the rest), `pasteSafely`, `osc52Write` (write
+                    only, cleaned, capped), the layout-proof `chordLetter`/`clipboardChord`,
+                    `copyAction`/`pasteAction`, and `joinBufferRows`/`bufferRows` (Copy screen
+                    keeps soft-wrapped lines whole)
+  quickTerminalClipboard.ts  the quick terminal's copy/paste decisions: `quickTerminalPasteText`,
+                    `selectionIsBlank` (a blank-cell selection never wipes the clipboard) and
+                    `QuickTerminalPresses` (right-click pastes, or copies a selection)
   drop.ts           what a file dropped on the terminal types: the per-platform quoting,
                     the backslash form for several POSIX paths (`escapePath`, the one
                     Claude Code's splitter reads), the refusal for a name that cannot be

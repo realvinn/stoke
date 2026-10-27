@@ -997,8 +997,16 @@ export function moveKey<V>(map: Record<string, V>, from: string, to: string): Re
  * markers are escapes, its body is not). A bare Enter or Backspace is not.
  * Errs towards true, which only ever costs an automatic relaunch — the pill
  * stays.
+ *
+ * One exception to "keys are not typing": an agent's image paste key on its
+ * own — Ctrl+V (`\x16`), or ESC v, Claude Code's Alt+V on Windows
+ * (`imagePasteKeys`). Sent with an image on the clipboard it puts that image
+ * in the prompt box, a draft as real as text, and stripped as a control it
+ * read as nothing, so an automatic relaunch could kill a session with a pasted
+ * screenshot waiting to be sent.
  */
 export function looksTyped(data: string): boolean {
+  if (data === '\x16' || data === '\x1bv') return true
   const rest = data
     // OSC … BEL or ST
     .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')

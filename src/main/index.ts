@@ -5799,8 +5799,10 @@ function registerIpc(): void {
    * bytes ever have to cross the PTY.
    *
    * files is how many files a file manager copied, so an SSH tab sends them
-   * rather than typing their names (Finder puts each name on as text too). A
-   * count, never the paths: main reads those itself when the tab asks.
+   * rather than typing their names (Finder puts each name on as text too). The
+   * peek carries only the count: an SSH tab's upload has main read the paths
+   * itself, and a local tab asks for them separately (`clipboardFilePaths`,
+   * below) to type them, as a drop types a dropped file's path.
    */
   ipcMain.on(CH.clipboardRead, (e) => {
     const peek: ClipboardPeek = {
@@ -5809,6 +5811,17 @@ function registerIpc(): void {
       files: clipboardFiles().count
     }
     e.returnValue = peek
+  })
+  /*
+   * The paths behind the peek's `files`, for a paste on a tab that does not
+   * send uploads: typed as a drop types them (`copiedFilesText`), where the
+   * names Finder also puts on as text named nothing in the session's folder.
+   * Main still reads them itself; the renderer only types what it is given.
+   * Synchronous for the key handler's reason above: a later keystroke must not
+   * land ahead of the paths.
+   */
+  ipcMain.on(CH.clipboardFilePaths, (e) => {
+    e.returnValue = clipboardFiles()
   })
   ipcMain.on(CH.clipboardWrite, (_e, text: string) => {
     if (typeof text === 'string' && text) clipboard.writeText(text)

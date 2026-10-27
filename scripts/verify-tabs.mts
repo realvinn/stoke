@@ -889,6 +889,23 @@ check('arrows in application mode are not', looksTyped('\x1bOA\x1bOB'), false)
 check('a device-attributes reply is not', looksTyped('\x1b[?1;2c'), false)
 check('Alt+b (word back) is not — ESC and one character', looksTyped('\x1bb'), false)
 check('but text after an escape still is', looksTyped('\x1b[Dfix'), true)
+/*
+ * An image-only paste: the agent's paste key on its own puts the screenshot in
+ * its prompt box, a draft as real as text. Read as a bare control it counted as
+ * nothing, so an automatic relaunch could kill the session with it waiting.
+ */
+check('an image paste key alone is — Ctrl+V, the agent reads the image', looksTyped('\x16'), true)
+check('and ESC v, Claude Code’s Alt+V on Windows', looksTyped('\x1bv'), true)
+{
+  const tv = readFileSync(new URL('../src/renderer/src/components/TerminalView.tsx', import.meta.url), 'utf8')
+  check(
+    'a local image paste is written through noteInput, never a bare pty write (gotcha 82)',
+    /const keys = imagePasteKeys\(window\.stoke\.platform, tab\.cliId, !!tab\.hostId\)\s*noteInput\(tab\.ptyId, keys\)\s*window\.stoke\.pty\.write\(tab\.ptyId, keys\)/.test(tv),
+    true
+  )
+  // Marked where the key reaches xterm (`fromKey`); App's chrome route hands xterm nothing (verify:shortcuts).
+  check('and xterm’s own ^V with an image marks the draft too', /if \(action === 'xterm-image' && fromKey\) setTyped\(tab\.ptyId, true\)/.test(tv), true)
+}
 
 console.log('\ncycling the strip wraps rather than stopping')
 check('next from the middle', cycleTab(five, 'c', 1), 'd')

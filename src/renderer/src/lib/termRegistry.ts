@@ -1,4 +1,5 @@
 import type { Terminal } from '@xterm/xterm'
+import { bufferRows, joinBufferRows, type ClipboardChord } from '@shared/clipboardText'
 
 /**
  * The live terminals, so anything outside a TerminalView can read one.
@@ -80,6 +81,31 @@ export function hasActiveFinder(): boolean {
   return finders.size > 0
 }
 
+/*
+ * Each terminal's own copy and paste, for a chord pressed OUTSIDE it: App's
+ * unclaimed-key route (`chromeTakesChord`) after a click left focus on a chrome
+ * button. Registered per pty with the key handler's own action, so a paste
+ * from there takes exactly the route Cmd/Ctrl+V takes in the terminal — files,
+ * images, cleaned text. The answer is the key handler's: `take` means it acted
+ * (the caller cancels the key); anything else means it would have left the key
+ * to xterm or the browser, which from a button reaches neither.
+ */
+export type ClipboardKeyVerdict = 'take' | 'xterm' | 'browser'
+const clipboardKeys = new Map<string, (chord: ClipboardChord) => ClipboardKeyVerdict>()
+
+/** Register a terminal's clipboard-chord action; returns the unregister. */
+export function registerClipboardKeys(ptyId: string, run: (chord: ClipboardChord) => ClipboardKeyVerdict): () => void {
+  clipboardKeys.set(ptyId, run)
+  return () => {
+    if (clipboardKeys.get(ptyId) === run) clipboardKeys.delete(ptyId)
+  }
+}
+
+/** Run a clipboard chord in the terminal on `ptyId`; null when none is mounted. */
+export function runClipboardKeys(ptyId: string, chord: ClipboardChord): ClipboardKeyVerdict | null {
+  return clipboardKeys.get(ptyId)?.(chord) ?? null
+}
+
 /** Open (or re-focus) the find bar of the terminal in front; false when there is none. */
 export function openActiveFinder(): boolean {
   const open = [...finders.values()].pop()
@@ -97,11 +123,19 @@ export function openActiveFinder(): boolean {
  *
  * `translateToString(true)` trims each line's trailing blanks, which is the
  * difference between a screen and a screen padded to 200 columns.
+ *
+ * Row for row by default: the tab snapshot draws it back as a ghost of the
+ * screen (`.paused-screen`, `white-space: pre`), where a joined line would run
+ * off the card and every row under it would move up. `joinWrapped` is for TEXT
+ * someone takes away (Copy screen): a soft-wrapped row continues the line above
+ * it (`joinBufferRows`), so a long URL or command printed at a shell comes back
+ * whole instead of with a newline at the pane's width.
  */
-export function screenOf(ptyId: string): string {
+export function screenOf(ptyId: string, opts: { joinWrapped?: boolean } = {}): string {
   const term = terms.get(ptyId)
   if (!term) return ''
   const buf = term.buffer.active
+  if (opts.joinWrapped) return joinBufferRows(bufferRows(buf, buf.viewportY, buf.viewportY + term.rows)).replace(/\n+$/, '')
   const lines: string[] = []
   for (let row = 0; row < term.rows; row++) {
     lines.push(buf.getLine(buf.viewportY + row)?.translateToString(true) ?? '')

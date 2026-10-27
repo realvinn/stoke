@@ -3,6 +3,7 @@ import type { Terminal } from '@xterm/xterm'
 import type { ISearchOptions, SearchAddon } from '@xterm/addon-search'
 import type { FindConsent, TranscriptFindHit, TranscriptFindResult } from '@shared/transcriptFind'
 import { PRIVATE_FIND_TEXT } from '@shared/privateChat'
+import { pasteSafely } from '@shared/clipboardText'
 import type { Tab } from '../types'
 import { relativeTime, shortPath } from '../lib/format'
 import {
@@ -264,9 +265,11 @@ export function TerminalFind({ tab, term, search, colors, initialQuery, openSeq,
   }
 
   const pasteToken = (hit: TranscriptFindHit): void => {
-    // paste(), so bracketed paste applies exactly as for any paste. Typed into
-    // the prompt, never sent: the user presses Enter.
-    term.paste(hit.token)
+    // pasteSafely(), so bracketed paste applies exactly as for any paste and a
+    // token found in a transcript cannot carry its own ESC[201~ (the text came
+    // from a file the session wrote). Typed into the prompt, never sent: the
+    // user presses Enter.
+    pasteSafely(term, hit.token)
     term.focus()
   }
 

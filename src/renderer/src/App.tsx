@@ -133,7 +133,8 @@ import { matchShortcut, typeThroughKey } from './lib/shortcuts'
 import { newTab } from './lib/newTab'
 import { profileIdForCwd } from './lib/projectProfile'
 import { closedTabFor, fromStored, screensFrom, toStored, restorableTabs } from './lib/restore'
-import { focusTerm, hasActiveFinder, openActiveFinder, screenOf, termSizeHint } from './lib/termRegistry'
+import { focusTerm, hasActiveFinder, openActiveFinder, runClipboardKeys, screenOf, termSizeHint } from './lib/termRegistry'
+import { chromeTakesChord, clipboardChord } from '@shared/clipboardText'
 import { findConversation, findOwner, findTargetOf, paletteFindHint } from './lib/terminalFind'
 import {
   autoRelaunchKey,
@@ -5184,6 +5185,36 @@ export function App(): React.JSX.Element {
           coming back through here.
         */
         const ptyId = typeThroughTargetRef.current
+        /*
+          The clipboard chords, which `typeThroughKey` refuses with every other
+          chord: from a chrome button, Cmd/Ctrl+V pasted into the button —
+          nothing — and a selection still showing in the terminal could not be
+          copied. Handed to the terminal in front's own action
+          (`runClipboardKeys`), so files, images and cleaned text go exactly
+          where Cmd/Ctrl+V in the terminal sends them. `chromeTakesChord` keeps
+          fields, the panes themselves and a page selection out.
+        */
+        const chord = ptyId === null ? null : clipboardChord(e, isMac)
+        if (chord && ptyId !== null) {
+          const target = e.target instanceof Element ? e.target : null
+          const selection = window.getSelection()
+          const takes = chromeTakesChord(chord, {
+            hasTerminal: true,
+            overlayOpen: overlayRef.current,
+            editable:
+              !!target &&
+              (['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName.toUpperCase()) ||
+                (target instanceof HTMLElement && target.isContentEditable)),
+            inPane: !!target?.closest('.term-pane, .remote-pane'),
+            pageSelection: !!selection && !selection.isCollapsed && selection.toString() !== '',
+            defaultPrevented: e.defaultPrevented
+          })
+          if (takes && runClipboardKeys(ptyId, chord) === 'take') {
+            e.preventDefault()
+            focusTerm(ptyId)
+          }
+          return
+        }
         const send = typeThroughKey(
           {
             key: e.key,
