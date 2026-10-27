@@ -1,11 +1,10 @@
 import { createRequire } from 'node:module'
 import { join, resolve } from 'node:path'
 import type { IPty } from '@lydell/node-pty'
-import { cliFor, type CodingCliId } from '../shared/codingClis.ts'
 import { atomicJson, terminalHome, type TerminalConfig } from './config.ts'
 import { ScreenMirror } from '../main/screenMirror.ts'
 import { terminalSpawnSpec } from './platform.ts'
-import { createChat, executableFor, launchArgs, type Chat } from './sessionMeta.ts'
+import { createChat, executableFor, launchArgs, sessionLabel, type SessionKind, type Chat } from './sessionMeta.ts'
 
 export interface LiveChat {
   chat: Chat
@@ -27,13 +26,13 @@ export class LocalSessions {
     home = terminalHome()
   ) { this.onOutput = onOutput; this.onExit = onExit; this.home = home }
 
-  create(agent: CodingCliId, cwd: string, model: string, prompt = ''): Chat {
+  create(agent: SessionKind, cwd: string, model: string, prompt = ''): Chat {
     return createChat(agent, cwd, model, prompt)
   }
 
   start(chat: Chat, config: TerminalConfig, prompt = '', resume = false, override?: { file: string; args: string[] }, environment = process.env): LiveChat {
     const file = override?.file || executableFor(chat.agent, config)
-    if (!file) throw new Error(`${cliFor(chat.agent).label} is not on PATH. Install it from ${cliFor(chat.agent).home}, or set agents.${chat.agent}.executable in /config.`)
+    if (!file) throw new Error(`${sessionLabel(chat.agent)} executable is not available on PATH.`)
     const args = override?.args ?? launchArgs(chat, config, prompt, resume)
     const env: NodeJS.ProcessEnv = { ...environment, TERM_PROGRAM: 'Stoke', STOKE_TERMINAL: '1' }
     delete env.ELECTRON_RUN_AS_NODE

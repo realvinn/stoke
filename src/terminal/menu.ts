@@ -2,8 +2,8 @@ import stringWidth from 'string-width'
 import type { MenuForm } from './forms.ts'
 import { composerView } from './input.ts'
 
-export type MenuSection = 'chats' | 'agents' | 'models' | 'remote' | 'settings' | 'help' | 'commands'
-export const MENU_SECTIONS: MenuSection[] = ['chats', 'agents', 'models', 'remote', 'settings', 'help']
+export type MenuSection = 'new' | 'chats' | 'agents' | 'models' | 'remote' | 'settings' | 'help' | 'commands'
+export const MENU_SECTIONS: MenuSection[] = ['new', 'chats', 'agents', 'models', 'remote', 'settings', 'help']
 export interface MenuItem { id: string; title: string; subtitle: string; detail: string[] }
 export interface MenuView {
   section: MenuSection
@@ -53,7 +53,7 @@ const THEMES = {
   ocean: { accent: '\x1b[38;2;130;191;210m', muted: '\x1b[38;2;140;146;158m', selected: '\x1b[48;2;39;57;68m\x1b[38;2;224;236;240m', border: '\x1b[38;2;73;80;91m' },
   terminal: { accent: '\x1b[36m', muted: '\x1b[2m', selected: '\x1b[7m', border: '\x1b[2m' }
 }
-const LABELS: Record<MenuSection, string> = { chats: 'Chats', agents: 'Agents', models: 'Models', remote: 'Connections', settings: 'Settings', help: 'Help', commands: 'Commands' }
+const LABELS: Record<MenuSection, string> = { new: 'New', chats: 'Sessions', agents: 'Agents', models: 'Models', remote: 'Connections', settings: 'Settings', help: 'Help', commands: 'Commands' }
 
 export function renderWelcome(agent: string, model: string, cwd: string, themeName: keyof typeof THEMES, columns: number, promptSupported: boolean): string {
   const theme = THEMES[themeName]
@@ -84,8 +84,8 @@ export function renderMenu(view: MenuView, columns: number, rows: number): strin
   const current = items[selected]
   const lines: string[] = []
   const line = (text: string, style = ''): void => { lines.push(paint(style, fit(text, width))) }
-  line(' ● stoke     /     your agents, one workspace', theme.accent + '\x1b[1m')
-  line(` ${view.context || view.active || 'Local workspace'}     F5 / Esc: back to chat`, theme.muted)
+  line(' ● stoke     /     your terminal workspace', theme.accent + '\x1b[1m')
+  line(` ${view.context || view.active || 'Local workspace'}     F5 / Esc: back to terminal`, theme.muted)
   const nav = MENU_SECTIONS.map((section) => ` ${LABELS[section]} `)
   if (stringWidth(nav.join(' ')) < width) {
     const text = nav.map((label, i) => paint(MENU_SECTIONS[i] === view.section ? theme.selected + '\x1b[1m' : theme.muted, label)).join(' ')
@@ -128,7 +128,7 @@ export function renderMenu(view: MenuView, columns: number, rows: number): strin
     const offset = Math.max(0, selected - visible + 1)
     const details = current ? [current.title, current.subtitle, '', ...current.detail] : view.section === 'remote' && !view.items.length
       ? ['No connections configured', 'Add a connection under remotes in /config.', '', 'SSH hosts and OpenCode servers are supported.', '', 'Press / and enter config to see the file.']
-      : ['No matches', 'Try another search, or Ctrl+N to start a chat.']
+      : ['No matches', 'Try another search, or F2 to open New.']
     const detailRows = details.flatMap((text) => wrap(text, Math.max(1, rightWidth - 3)))
     for (let row = 0; row < bodyRows; row++) {
       const index = offset + Math.floor(row / 2), item = items[index]
@@ -141,9 +141,9 @@ export function renderMenu(view: MenuView, columns: number, rows: number): strin
     }
   }
   line('─'.repeat(width), theme.border)
-  line(view.form ? ` ${view.form.error || 'Changes apply when you save.'}` : view.notice ? ` ${view.notice}` : ` ${items.length} ${LABELS[view.section].toLowerCase()} · ${view.active || 'Your running chats stay available here.'}`, view.notice || view.form?.error ? theme.accent : theme.muted)
-  line(view.form ? ' Tab next · ←→ choices · Ctrl+U clear · Ctrl+S save · Esc cancel' : view.section === 'remote' ? ' Enter connect · Ctrl+A add · Ctrl+E edit · Ctrl+D remove · Ctrl+T test' : view.section === 'models' ? ' Enter select · Ctrl+A custom model · Ctrl+N new chat' : view.section === 'settings' ? ' Enter change · Ctrl+S settings · Ctrl+N new chat' : ' ↑↓ browse · Enter open · Ctrl+N new chat · / command', theme.muted)
-  line(view.form ? ' Ctrl+S saves this form · Esc cancels without saving' : ' Ctrl+P commands · Tab sections · Ctrl+F chats · Ctrl+R connections · Ctrl+S settings', theme.muted)
+  line(view.form ? ` ${view.form.error || 'Changes apply when you save.'}` : view.notice ? ` ${view.notice}` : ` ${items.length} ${LABELS[view.section].toLowerCase()} · ${view.active || 'Your shells and agents keep running.'}`, view.notice || view.form?.error ? theme.accent : theme.muted)
+  line(view.form ? ' Tab next · ←→ choices · Ctrl+U clear · Ctrl+S save · Esc cancel' : view.section === 'remote' ? ' Enter connect · Ctrl+A add · Ctrl+E edit · Ctrl+D remove · Ctrl+T test' : view.section === 'models' ? ' Enter select · Ctrl+A custom model · F2 new' : view.section === 'settings' ? ' Enter change · Ctrl+S settings · F2 new' : ' ↑↓ browse · Enter open · F2 new · / command', theme.muted)
+  line(view.form ? ' Ctrl+S saves this form · Esc cancels without saving' : ' F3/F4 switch · F6 detach · F9 settings · Tab sections · / command', theme.muted)
   // Every row is bounded to leave the final terminal column unused: no wraps
   // or extra bottom-row newline to scroll the menu off screen.
   return '\x1b[?25l\x1b[H' + lines.slice(0, height).join('\r\n') + '\x1b[0m' + cursor

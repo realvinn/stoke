@@ -3,9 +3,8 @@ import { closeSync, mkdirSync, openSync } from 'node:fs'
 import { createConnection, type Socket } from 'node:net'
 import { join, resolve } from 'node:path'
 import { ScreenMirror } from '../main/screenMirror.ts'
-import type { CodingCliId } from '../shared/codingClis.ts'
 import { configPath, terminalHome, type TerminalConfig } from './config.ts'
-import { createChat, executableFor, launchArgs, type Chat } from './sessionMeta.ts'
+import { createChat, executableFor, launchArgs, type SessionKind, type Chat } from './sessionMeta.ts'
 import { MAX_SESSION_FRAME, processAlive, readServerInfo } from './sessionProtocol.ts'
 import { verifyAgentIdentity } from './agentAdapter.ts'
 
@@ -27,6 +26,7 @@ export class Sessions {
   private readonly home: string
   private socket: Socket | null = null
   private token = ''
+  private shells = false
   private sequence = 0
   private pending = new Map<number, { resolve(value: unknown): void; reject(error: Error): void; apply?: (value: unknown) => void; timer: ReturnType<typeof setTimeout> }>()
   private connecting: Promise<boolean> | null = null
@@ -36,7 +36,7 @@ export class Sessions {
   constructor(output: (session: LiveChat, data: string) => void, exited: (session: LiveChat) => void, home = terminalHome()) {
     this.output = output; this.exited = exited; this.home = resolve(home)
   }
-  create(agent: CodingCliId, cwd: string, model: string, prompt = ''): Chat { return createChat(agent, cwd, model, prompt) }
+  create(agent: SessionKind, cwd: string, model: string, prompt = ''): Chat { return createChat(agent, cwd, model, prompt) }
 
   ready(start = true): Promise<boolean> {
     this.connecting ??= this.connect(start)
@@ -55,6 +55,7 @@ export class Sessions {
             socket.once('connect', () => { clearTimeout(timer); this.socket = socket; resolve() })
           })
           this.token = info.token
+          this.shells = Array.isArray(info.features) && info.features.includes('shells')
           this.listen(this.socket!)
           await this.request('list', {}, (value) => { for (const record of value as Snapshot[]) this.add(record) })
           return true
@@ -147,13 +148,15 @@ export class Sessions {
   start(chat: Chat, config: TerminalConfig, prompt = '', resume = false, override?: { file: string; args: string[] }): LiveChat {
     const existing = this.live.get(chat.id)
     if (existing && !existing.exited) return existing
+    if (chat.agent === 'shell' && !this.shells) throw new Error('The running session service predates shell support. Existing sessions are safe. When finished with them, run stoke server stop, then reopen Stoke.')
     const file = override?.file ?? executableFor(chat.agent, config)
     if (!file) throw new Error(`${chat.agent} is not on PATH. Configure its executable in ${configPath()}.`)
     const args = override?.args ?? launchArgs(chat, config, prompt, resume)
     const session = this.add({ chat, exited: false, cols: process.stdout.columns || 80, rows: process.stdout.rows || 24, snapshot: '' })
-    const launch = (override ? Promise.resolve() : verifyAgentIdentity(chat.agent, file)).then(() => {
+    const launch = (override || chat.agent === 'shell' ? Promise.resolve() : verifyAgentIdentity(chat.agent, file)).then(() => {
       if (this.closed) throw new Error('Launch cancelled because this UI detached.')
-      return this.request('start', { chat, config, prompt, resume, override: { file, args }, environment: process.env, cols: process.stdout.columns || 80, rows: process.stdout.rows || 24 })
+      const launchConfig = this.shells || config.ui.startup !== 'terminal' ? config : { ...config, ui: { ...config.ui, startup: 'composer' } }
+      return this.request('start', { chat, config: launchConfig, prompt, resume, override: { file, args }, environment: process.env, cols: process.stdout.columns || 80, rows: process.stdout.rows || 24 })
     })
     this.starting.set(chat.id, launch)
     void launch.catch((error) => {

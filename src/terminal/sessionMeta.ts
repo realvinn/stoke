@@ -6,22 +6,30 @@ import { isModelId } from '../shared/modelId.ts'
 import { terminalHome, type TerminalConfig } from './config.ts'
 import { findExecutable } from './platform.ts'
 
+export type SessionKind = CodingCliId | 'shell'
+export const sessionLabel = (agent: SessionKind): string => agent === 'shell' ? 'Shell' : cliFor(agent).label
+
 export interface Chat {
   id: string
-  agent: CodingCliId
+  agent: SessionKind
   cwd: string
   title: string
   createdAt: number
   model: string
   nativeId?: string
 }
-export function executableFor(agent: CodingCliId, config: TerminalConfig): string | null {
+export function executableFor(agent: SessionKind, config: TerminalConfig): string | null {
+  if (agent === 'shell') return shellExecutable()
   const custom = config.agents[agent]?.executable
   const names = custom ? [custom] : binNamesFor(cliFor(agent), process.platform)
   return findExecutable(names)
 }
 
 export function launchArgs(chat: Chat, config: TerminalConfig, prompt = '', resume = false): string[] {
+  if (chat.agent === 'shell') {
+    if (prompt || resume) throw new Error('An ended shell cannot be resumed. Start a new shell in its folder.')
+    return []
+  }
   const cli = cliFor(chat.agent)
   const args = [...(config.agents[chat.agent]?.args ?? [])]
   if (chat.model) {
@@ -61,15 +69,21 @@ export function history(home = terminalHome()): Chat[] {
       if (typeof chat.id === 'string' && isSafeResumeId(chat.id) && typeof chat.cwd === 'string' &&
           typeof chat.title === 'string' && typeof chat.model === 'string' &&
           Number.isFinite(chat.createdAt) && typeof chat.agent === 'string' &&
-          cliFor(chat.agent).id === chat.agent &&
+          (chat.agent === 'shell' || cliFor(chat.agent).id === chat.agent) &&
           (chat.nativeId === undefined || isSafeResumeId(chat.nativeId))) chats.push(chat)
     } catch { /* A broken chat record must not hide the rest of history. */ }
   }
   return chats.sort((a, b) => b.createdAt - a.createdAt)
 }
 
-export function createChat(agent: CodingCliId, cwd: string, model: string, prompt = ''): Chat {
+export function createChat(agent: SessionKind, cwd: string, model: string, prompt = ''): Chat {
   const id = randomUUID()
-  return { id, agent, cwd, model, title: prompt.slice(0, 90) || `${cliFor(agent).label} chat`, createdAt: Date.now(),
+  return { id, agent, cwd, model, title: prompt.slice(0, 90) || (agent === 'shell' ? 'Shell' : `${cliFor(agent).label} chat`), createdAt: Date.now(),
     ...(agent === 'claude' ? { nativeId: id } : {}) }
+}
+
+/** Treat SHELL/ComSpec as a path, never as a command string or shell expression. */
+export function shellExecutable(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): string | null {
+  const candidates = platform === 'win32' ? [env.ComSpec || env.COMSPEC || 'cmd.exe', 'powershell.exe'] : [env.SHELL || '/bin/sh', '/bin/sh']
+  return findExecutable(candidates, env, platform)
 }

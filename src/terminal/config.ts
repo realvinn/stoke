@@ -27,9 +27,9 @@ export const configSchema = z.object({
   remotes: z.record(z.string().regex(/^[a-zA-Z0-9_-]+$/), remote).default({}),
   ui: z.object({
     theme: z.enum(['ember', 'ocean', 'terminal']).default('ember'),
-    startup: z.enum(['composer', 'menu']).default('composer'),
+    startup: z.enum(['terminal', 'composer', 'menu']).default('terminal'),
     menuKey: z.enum(['f5', 'f6', 'ctrl-backslash']).default('f5')
-  }).strict().default({ theme: 'ember', startup: 'composer', menuKey: 'f5' })
+  }).strict().default({ theme: 'ember', startup: 'terminal', menuKey: 'f5' })
 }).strict()
 export type TerminalConfig = z.infer<typeof configSchema>
 export const terminalHome = (): string => process.env.STOKE_TERMINAL_HOME ? resolve(process.env.STOKE_TERMINAL_HOME) : join(homedir(), '.stoke', 'terminal')
@@ -82,5 +82,6 @@ export const exampleConfig = {
   version: 1,
   agent: 'opencode',
   agents: { opencode: { model: '', models: [], args: [] }, claude: { model: '', models: [], args: [] } },
-  remotes: {}
+  remotes: {},
+  ui: { startup: 'terminal', theme: 'terminal', menuKey: 'f5' }
 }

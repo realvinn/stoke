@@ -11,6 +11,7 @@ import stringWidth from 'string-width'
 import { MENU_SECTIONS, menuItems, renderMenu } from '../src/terminal/menu.ts'
 import { stripVTControlCharacters } from 'node:util'
 import { history, launchArgs, Sessions } from '../src/terminal/sessions.ts'
+import { createChat, shellExecutable } from '../src/terminal/sessionMeta.ts'
 import { createConnection } from 'node:net'
 import { readServerInfo, processAlive } from '../src/terminal/sessionProtocol.ts'
 
@@ -61,6 +62,33 @@ try {
     assert.equal(readConfig(join(temp, 'absent.json')).agent, 'claude')
     writeFileSync(join(temp, 'bad.json'), '{ broken')
     assert.throws(() => readConfig(join(temp, 'bad.json')), /Invalid Stoke config/)
+  })
+  check('shell startup uses a real executable and cannot replay an ended shell as a resume', () => {
+    assert.equal(configSchema.parse({}).ui.startup, 'terminal')
+    assert.equal(configSchema.parse({ ui: { startup: 'composer' } }).ui.startup, 'composer')
+    const shell = createChat('shell', temp, '')
+    assert.deepEqual(launchArgs(shell, cfg), [])
+    assert.equal(shell.nativeId, undefined)
+    assert.throws(() => launchArgs(shell, cfg, 'accidental command'), /ended shell/)
+    assert.throws(() => launchArgs(shell, cfg, '', true), /ended shell/)
+    assert.ok(shellExecutable())
+    if (process.platform !== 'win32') assert.equal(shellExecutable({ SHELL: '/missing/shell --bad' }), '/bin/sh')
+  })
+  check('multiplexer shortcuts handle fragmented VT and Windows physical keys without consuming pasted keys', () => {
+    const shortcuts = [['\x1bOQ', 'new', 113], ['\x1bOR', 'previous', 114], ['\x1bOS', 'next', 115], ['\x1b[17~', 'detach', 117], ['\x1b[20~', 'settings', 120]] as const
+    for (const [sequence, action, vk] of shortcuts) {
+      for (let split = 1; split < sequence.length; split++) {
+        const input = new AgentInput()
+        assert.deepEqual(input.take(sequence.slice(0, split)), { forward: '', detach: false })
+        assert.equal(input.take(sequence.slice(split)).action, action)
+      }
+      const physical = new ConsoleInput().take(`\x1b[${vk};0;0;1;0;1_`, true)
+      assert.equal(new AgentInput().take(physical).action, action)
+      const paste = `\x1b[200~${sequence}\x1b[201~`
+      assert.deepEqual(new AgentInput().take(paste), { forward: paste, detach: false })
+    }
+    assert.equal(new AgentInput('f6').take('\x1b[17~').menu, true)
+    assert.equal(new AgentInput().take('\x1b[1;5Q').forward, '\x1b[1;5Q')
   })
   const manager = new Sessions(() => {}, () => {}, temp)
   check('multiline prompts render on one row without changing the submitted text', () => {
@@ -162,7 +190,7 @@ process.stdout.on('resize', () => console.log('AGENT_SIZE:' + process.stdout.col
   } else writeFileSync(fixture, fixtureCode)
   chmodSync(fixture, 0o755)
   const file = join(temp, 'config.json')
-  const config = { version: 1, agent: 'opencode', agents: {
+  const config = { version: 1, ui: { startup: 'composer' }, agent: 'opencode', agents: {
     opencode: { executable: fixture }, claude: { executable: fixture }
   }, remotes: { lab: { kind: 'opencode', url: 'http://127.0.0.1:4096' } } }
   writeFileSync(file, JSON.stringify(config))
@@ -198,8 +226,8 @@ process.stdout.on('resize', () => console.log('AGENT_SIZE:' + process.stdout.col
       assert.match(output, /"node":null/)
       assert.doesNotMatch(output, /AGENT_INPUT:/) // The Enter which launched it is not relayed.
     })
-    const menuOutput = await send('\x1b[15~', 'Search chats:')
-    await send('hello', 'Search chats: hello')
+    const menuOutput = await send('\x1b[15~', 'Search sessions:')
+    await send('hello', 'Search sessions: hello')
     await send('\x12', 'Search connections:')
     await send('\x1b[15~', 'AGENT_READY:')
     check('F5 opens searchable Stoke navigation without forwarding the shortcut or ending the agent', () => {
@@ -213,7 +241,8 @@ process.stdout.on('resize', () => console.log('AGENT_SIZE:' + process.stdout.col
     await send('\x1b', 'stoke · opencode')
     await send('/agent claude\r', 'Selected Claude Code')
     await send('/models sonnet\r', 'Model for the next chat: sonnet')
-    await send('/new\r', 'AGENT_READY:')
+    await send('/new\r', 'Search new:')
+    await send('\x1b[B\r', 'AGENT_READY:')
     check('agent switching starts a separate chat with the selected model', () => {
       assert.match(output, /"args":\["--model","sonnet","--session-id","[a-f0-9-]+"\]/)
       assert.equal(history(join(temp, 'state')).length, 2)
@@ -227,7 +256,7 @@ process.stdout.on('resize', () => console.log('AGENT_SIZE:' + process.stdout.col
     await send(`/attach ${first}\r`, 'AGENT_READY:')
     const input = await send('still here\r', 'AGENT_INPUT:')
     check('older live chats reattach with their screen and accept input', () => assert.match(input, /still here/))
-    await send('\x1b[15~', 'Search chats:')
+    await send('\x1b[15~', 'Search sessions:')
     await send('\x07', 'Search agents:')
     await send('Claude Code', 'Search agents: Claude Code')
     await send('\r', 'AGENT_READY:')
@@ -237,11 +266,11 @@ process.stdout.on('resize', () => console.log('AGENT_SIZE:' + process.stdout.col
     await send('/chats\r', 'Use /attach NUMBER')
     const original = history(join(temp, 'state')).findIndex((c) => c.agent === 'opencode') + 1
     await send(`/attach ${original}\r`, 'AGENT_READY:')
-    await send('EXIT_NOW', 'Chat exited (0)')
+    await send('EXIT_NOW', 'Session exited (0)')
     await send('/remote lab\r', 'AGENT_READY:')
     check('remote OpenCode uses the real attach client', () => assert.match(output, /"args":\["attach","http:\/\/127.0.0.1:4096"\]/))
     await send('\x1d', 'Returned to Stoke')
-    await send('\x1b[15~', 'Search chats:')
+    await send('\x1b[15~', 'Search sessions:')
     await send('\x13', 'Search settings:')
     await send('Default agent\r', 'Agent ID')
     await send('\x15claude\x13', 'Default agent saved:')
@@ -320,6 +349,88 @@ process.stdout.on('resize', () => console.log('AGENT_SIZE:' + process.stdout.col
     })
     check('a second UI reattaches the original process without creating a duplicate chat', () => assert.equal(history(join(temp, 'state')).length, count))
   } finally { if (!exited) terminal.kill() }
+
+  // Real shells, not the agent fixture: process-local state proves a reattach
+  // returns to the same shell rather than replaying commands into a replacement.
+  const shellHome = join(temp, 'shell-state'), shellConfig = join(temp, 'shell-config.json')
+  writeFileSync(shellConfig, JSON.stringify({ ui: { startup: 'terminal' } }))
+  const shellEnv = { ...env, STOKE_TERMINAL_HOME: shellHome, STOKE_CONFIG: shellConfig,
+    ...(process.platform === 'win32' ? {} : { SHELL: '/bin/sh' }) }
+  const shellUI = () => {
+    const child = spawn(process.execPath, [join(root, 'src/terminal/index.ts')], { cwd: temp, cols: 100, rows: 30, env: shellEnv })
+    let text = '', ended = false
+    child.onData((data) => { text += data })
+    child.onExit(() => { ended = true; if (process.platform === 'win32') try { child.kill() } catch { /* released */ } })
+    return {
+      child,
+      async wait(expected: string, offset = 0) {
+        const deadline = Date.now() + 8000
+        while (!stripVTControlCharacters(text.slice(offset)).includes(expected)) {
+          if (Date.now() > deadline || ended) throw new Error(`Shell waiting for ${expected}: ${text.slice(-2000)}`)
+          await new Promise((r) => setTimeout(r, 20))
+        }
+      },
+      async send(command: string, expected: string) { const offset = text.length; child.write(command); await this.wait(expected, offset) },
+      async detached() { const deadline = Date.now() + 5000; while (!ended) { if (Date.now() > deadline) throw new Error('Shell UI did not detach'); await new Promise((r) => setTimeout(r, 20)) } }
+    }
+  }
+  const value = (n: string) => process.platform === 'win32' ? `set STOKE_SHELL_TEST=${n}\r` : `STOKE_SHELL_TEST=${n}\r`
+  const showValue = process.platform === 'win32' ? 'echo VALUE_%STOKE_SHELL_TEST%\r' : `printf 'VALUE_%s\\n' "$STOKE_SHELL_TEST"\r`
+  const shellOwner = new Sessions(() => {}, () => {}, shellHome)
+  let shellA: ReturnType<typeof shellUI> | undefined, shellB: ReturnType<typeof shellUI> | undefined
+  try {
+    shellA = shellUI()
+    await shellA.wait('F2 New')
+    shellA.child.write(value('first'))
+    await shellA.send(showValue, 'VALUE_first')
+    await shellA.send('\x1bOQ', 'Search new:')
+    await shellA.send('\r', 'F2 New') // Shell is the first New action.
+    shellA.child.write(value('second'))
+    await shellA.send(showValue, 'VALUE_second')
+    await shellA.send('\x1bOR', 'F2 New')
+    await shellA.send(showValue, 'VALUE_first')
+    await shellA.send('\x1bOS', 'F2 New')
+    await shellA.send(showValue, 'VALUE_second')
+    await shellA.send('\x1b[20~', 'Search settings:')
+    await shellA.send('\x1b', 'F2 New')
+    shellA.child.write('\x1b[17~')
+    await shellA.detached()
+    assert.equal(history(shellHome).length, 2)
+    check('plain Stoke starts shells; New, previous/next, Settings and detach preserve each shell state', () => {})
+    shellB = shellUI()
+    await shellB.wait('F2 New')
+    await shellB.send(showValue, 'VALUE_second')
+    assert.equal(history(shellHome).length, 2, 'plain launch must resume the last live shell without duplicating it')
+    // A lost terminal must not kill the detached PTY owner.
+    shellB.child.kill()
+    await shellB.detached()
+    shellB = shellUI()
+    await shellB.wait('F2 New')
+    await shellB.send(showValue, 'VALUE_second')
+    shellB.child.write('\x1b[17~')
+    await shellB.detached()
+    check('shell variables survive UI loss and plain Stoke resumes the original process', () => {})
+    assert(await shellOwner.ready(false))
+    // An older service is retained, never auto-killed to upgrade the protocol.
+    const infoFile = join(shellHome, 'server.json')
+    const info = JSON.parse(readFileSync(infoFile, 'utf8'))
+    writeFileSync(infoFile, JSON.stringify({ ...info, features: undefined }))
+    const older = new Sessions(() => {}, () => {}, shellHome)
+    try {
+      assert(await older.ready(false))
+      assert.throws(() => older.start(createChat('shell', temp, ''), cfg), /predates shell support/)
+      assert.equal([...older.live.values()].filter((s) => !s.exited).length, 2)
+    } finally { older.close(); writeFileSync(infoFile, JSON.stringify(info)) }
+    check('upgrading never terminates a service with existing sessions to enable shells', () => {})
+  } finally {
+    try { shellA?.child.kill() } catch { /* already detached */ }
+    try { shellB?.child.kill() } catch { /* already detached */ }
+    const shellInfo = readServerInfo(shellHome)
+    if (await shellOwner.ready(false)) await shellOwner.shutdown()
+    shellOwner.close()
+    const deadline = Date.now() + (process.platform === 'win32' ? 8000 : 3000)
+    while (shellInfo && processAlive(shellInfo.pid) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 30))
+  }
 
   check('config init creates a private file once and never overwrites an existing config', () => {
     const configFile = join(temp, 'new/config.json')

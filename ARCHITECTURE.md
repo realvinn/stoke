@@ -14,6 +14,31 @@ in a terminal, because it *is* a terminal. The cost is that Stoke cannot introsp
 conversation directly; it reads Claude Code's own files instead (see
 [Reading Claude's state](#reading-claudes-state)).
 
+## Standalone terminal
+
+`src/terminal/index.ts` is the native terminal interface, separate from Electron.
+Plain `stoke` attaches the last live session (the private `last-session.json`
+selection), or starts a normal shell. F2 opens New, F3/F4 cycle live terminals,
+F5 searches sessions, F6 detaches and F9 opens settings. Explicit composer/menu
+startup preferences remain supported. `--cli` opens the requested real agent.
+
+`sessionClient.ts` attaches over a private authenticated Unix socket or Windows
+named pipe to `sessionServer.ts`; `localSessions.ts` owns the actual PTYs and
+`ScreenMirror` snapshots, including bounded scrollback. Closing the interface or
+losing SSH keeps shells and agents alive in that service. `sessionMeta.ts`
+distinguishes shells from provider agents: shell launches use SHELL/ComSpec as
+an executable path, without provider arguments or identity probes. Saved ended
+shells open a new shell in their original folder; no commands are replayed.
+Service metadata advertises shell support without changing the existing wire
+protocol. A new client keeps older services intact, allows their agent sessions,
+and explains a manual upgrade before starting shells. It never stops live work
+to replace a daemon. Service/OS shutdown still ends processes. Split panes and a
+persistent status bar are not implemented. See [terminal usage](docs/terminal.md).
+
+`verify-terminal.mts` exercises agent routing plus real-shell variables across
+switching, detach, forced UI loss and automatic resume. Native archive tests
+also launch the bundled shell and open the F5 menu on every release target.
+
 ## Processes
 
 ```mermaid

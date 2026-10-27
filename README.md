@@ -69,11 +69,14 @@ curl -fsSL https://stoke.vinn.dev/install.sh | STOKE_VERSION=1.0.0-beta.13 sh
 Run from a terminal outside Stoke; installing closes the existing app cleanly.
 
 The terminal unifier is now available as a [development preview](docs/terminal.md):
-run `npm run terminal -- --cli opencode .` from this checkout. It includes agent
-and model selection, live chat switching, native session resume, config files,
+run `npm run terminal` from this checkout to resume your last live terminal or
+start a normal shell. F2 opens New (shells, agents and connections), F3/F4 switch
+sessions, F5 searches, F6 detaches and F9 opens settings.
+Use `npm run terminal -- --cli opencode .` to open an agent directly. It includes
+model selection, live session switching, native agent resume, config files,
 OpenCode server attachment and SSH connections. `npm run pack:terminal` builds
 a standalone CLI package without Electron. `npm run dist:terminal` builds a
-portable archive with its own Node runtime. Live chats survive closing the UI;
+portable archive with its own Node runtime. Shells and agents survive closing the UI or losing SSH;
 `stoke sessions`, `stoke attach ID` and `stoke doctor` work from the shell.
 Native CI targets macOS, Windows and Linux on x64 and ARM64; macOS ARM64 is
 locally validated. New macOS builds default the `stoke`

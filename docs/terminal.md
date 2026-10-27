@@ -1,13 +1,16 @@
 # Stoke terminal preview
 
-Stoke is a terminal shell around your installed coding agents. **F5** opens the
-Stoke menu from inside an agent: searchable chats on the left, selected chat
-details and shortcut hints on the right, plus Agents and Connections sections.
-Press F5 or Escape again to return to the same running chat. Type a message,
-pick an agent with `/agent`, choose a model with `/models`, and switch chats
-without closing the agent processes. OpenCode stays OpenCode: its own interface,
-login, providers, tools, permissions, MCP and slash commands run inside Stoke.
-Stoke does not replace those agents with an API chat client.
+Plain `stoke` resumes your last live terminal, or starts your normal shell if none
+is running. Shells and agents live in a private background service, so closing
+SSH or detaching Stoke leaves their processes running. Run `stoke` again to return.
+Use `stoke DIR` to resume a session in that folder or start a shell there.
+
+**F2** opens New: Shell, your selected agent, another agent, remote connections or
+settings. **F3/F4** switch live sessions, **F5** opens searchable sessions,
+**F6** detaches Stoke, and **F9** opens settings. Agents retain their own interface,
+login, tools, permissions and slash commands. `stoke --cli opencode` opens that
+agent directly. This is the shell-first foundation; split panes and a persistent
+status bar are not implemented yet.
 
 Standalone CLI archives are published with beta releases for macOS, Windows
 and Linux on x64 and ARM64. The website’s ordinary installers still install
@@ -81,13 +84,12 @@ choose a separate `STOKE_BIN_DIR` rather than silently overwriting it.
 
 You do not need to exit Claude or any other agent to switch. Press F5 (Fn+F5
 on Macs that reserve the function row for system controls). Type to search,
-use Up/Down to select and Enter to open. Tab cycles Chats, Agents and Connections.
-Ctrl+F selects chats, Ctrl+G agents, Ctrl+R connections, Ctrl+S Settings and Ctrl+N starts a chat
-with the currently selected agent. Choosing an agent starts a separate native
+use Up/Down to select and Enter to open. Tab cycles New, Sessions, Agents, Models, Connections, Settings and Help.
+Ctrl+F selects chats, Ctrl+G agents, Ctrl+R connections, Ctrl+S Settings and Ctrl+N opens New. Choosing an agent starts a separate native
 session and preserves your running chats. Press `/` with an empty menu search
 to open the command prompt. `/menu` also opens this navigation.
 
-The workspace includes **Chats, Agents, Models, Connections, Settings and Help**.
+The workspace includes **New, Sessions, Agents, Models, Connections, Settings and Help**.
 Chat rows show their agent and whether the session is running; details wrap in
 the right pane. Tab and Shift+Tab move between sections. Ctrl+U clears a search.
 Ctrl+P opens a searchable command palette from the Stoke prompt or menu.
@@ -95,9 +97,10 @@ Inside an agent, open F5 first so the agent retains its own Ctrl+P binding.
 
 In **Settings**, edit the default agent and selected agent's default model,
 switch between Ember, Ocean and your terminal's own colors, choose whether to
-start at the composer or menu, and reload the config file. Changes are saved
+resume a terminal, open the menu or use the message composer, and reload the config file. Changes are saved
 locally and preserve other settings. `NO_COLOR` disables color styling.
-Settings also offers F6 or Ctrl+Backslash as an additional menu shortcut;
+Settings also offers F6 or Ctrl+Backslash as an additional menu shortcut
+(choosing F6 overrides its detach binding);
 F5 remains available.
 
 In **Connections**, choose **Add connection…** or press Ctrl+A. Enter a name,
@@ -112,16 +115,17 @@ health; SSH proxy and jump routes are reported as requiring an actual connection
 In **Models**, choose an existing shortcut or **Add a model…** to save a model
 ID. Selection applies to the next chat; it does not change a running agent.
 
-Type a message to start an interactive Claude Code, Codex or OpenCode chat.
-For the other registered agents, `/new` opens their real interface, where you can
-type the first message. Their startup prompt flags have not been adapted yet.
+From the Stoke command prompt (Ctrl+]), type a message to start an interactive
+Claude Code, Codex or OpenCode chat. New → Choose another agent opens any other
+registered agent’s real interface. Shell commands belong in a shell terminal.
 
 | Stoke command | Behavior |
 | --- | --- |
 | `/agent` or `/agent opencode` | List agents and PATH availability, or select an agent for the next chat |
 | `/models` or `/models provider/model` | Show configured model shortcuts, or set the next chat's model |
 | `/models default` | Let the agent choose its model |
-| `/new` | Open a new native agent session |
+| `/new` | Choose a shell, agent or remote connection |
+| `/shell` | Open your normal shell in the current workspace folder |
 | Left on an empty Stoke prompt | Show older Stoke terminal chats |
 | `/chats` or `/search words` | List or filter chat titles, agents and folders |
 | `/attach 2` | Return to a running chat, or resume a saved chat with a recorded native ID |
@@ -158,7 +162,7 @@ replace the executable Stoke launches.
 {
   "version": 1,
   "agent": "opencode",
-  "ui": { "theme": "ember", "startup": "composer", "menuKey": "f5" },
+  "ui": { "theme": "ember", "startup": "terminal", "menuKey": "f5" },
   "agents": {
     "opencode": {
       "model": "",
@@ -196,21 +200,22 @@ server, tunnel or headless Hub login. They do not start a network listener.
 Metadata lives under `~/.stoke/terminal/chats`, one private file per chat.
 `STOKE_TERMINAL_HOME` overrides that directory. Vendor credentials and transcripts
 stay in their original locations. A per-user background service owns the live
-PTYs. Quitting or closing the interface leaves those agents running, and another
+PTYs. Quitting or closing the interface leaves those shells and agents running, and another
 Stoke invocation can attach to them. One attached terminal owns keyboard input
 at a time. The local service uses a private Unix socket or Windows named pipe
 and an authentication token; it opens no TCP listener. It exits after 30 seconds
 with no connected interfaces or running agents. Restarting the service or OS
-ends its agent processes.
+ends its shell and agent processes. An ended shell cannot restore process memory;
+selecting its saved entry opens a new shell in the original folder.
 
 Use `stoke sessions [--json]`, `stoke attach ID`, and
 `stoke server start|status|stop` from scripts or a normal shell. `server stop`
-ends all service-owned agents; `/stop` ends one chat. `stoke doctor [--json]`
+ends all service-owned shells and agents; `/stop` ends one chat. `stoke doctor [--json]`
 checks config validity, agent paths, runtime, native PTY operation and service
 status without dumping credentials, environment variables or transcripts.
 `stoke connect NAME --check [--json]` checks a saved connection's TCP endpoint.
 
-Claude sessions started with `/new` or an initial message record an exact native
+Claude sessions started from New or an initial message record an exact native
 ID and can be resumed after restart. OpenCode, Codex and other agents' newly
 created native IDs are not observed yet: their saved metadata is searchable, but
 use `/continue` or `/resume NATIVE_ID` to reopen the vendor conversation. A live
@@ -220,13 +225,15 @@ Imported desktop chats and full transcript search are not implemented yet.
 Still to build: a common Stoke transcript/composer UI across agent protocols,
 native session discovery for the remaining agents, desktop history/account
 integration, Hub/device login and Stoke phone sharing,
-a published terminal installer. The current shell hands
+a website installer that selects the terminal by default. Stoke hands
 focus to each vendor's native interface rather than normalizing its messages.
 
 `npm run verify:terminal` checks real PTY routing with fake agents, config
 validation, native argument plans, Unicode editing, paste, resize, live chat
 switching, resume metadata, service authentication and detach/reattach. It makes
-no provider requests. `verify:terminal-platform` checks executable arguments and
+no provider requests. Real-shell checks also verify F2/F3/F4/F6/F9, isolated shell
+variables, session persistence after UI loss, last-session resume and safe older-service handling.
+`verify:terminal-platform` checks executable arguments and
 platform helpers; `verify:terminal-release` extracts the portable archive and
 checks its bundled runtime, real PTY UI and installer. Native CI runs these on
 all six targets. Actual vendor login and remote authentication remain separate.
@@ -236,3 +243,11 @@ The bare `/agent`, `/models`, and `/remote` commands open searchable pickers.
 Left on an empty Stoke prompt opens chat search; Tab on an empty prompt or `/`
 opens the command picker. Multiline pastes keep their line breaks (shown as `↵`
 in Stoke's one-row prompt), and failed launches leave the prompt available to edit.
+
+Existing configurations that explicitly choose `ui.startup: "composer"` or `"menu"`
+keep that preference. In Settings → Start screen choose **Resume session / shell**
+to use the new default. If a running service predates shell support, Stoke keeps
+its sessions and explains the upgrade: finish those sessions first, then run
+`stoke server stop` and reopen Stoke. That command ends all sessions; it is never
+run automatically to upgrade a live service. Persistence covers SSH/UI loss,
+not a VPS reboot or power loss.

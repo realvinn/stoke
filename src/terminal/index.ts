@@ -1,17 +1,17 @@
-import { existsSync, realpathSync, statSync, writeFileSync, mkdirSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
+import { existsSync, readFileSync, realpathSync, statSync, writeFileSync, mkdirSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
 import { emitKeypressEvents, type Key } from 'node:readline'
 import { PassThrough } from 'node:stream'
 import { CODING_CLIS, cliFor, isCodingCliId, isSafeResumeId, type CodingCliId } from '../shared/codingClis.ts'
 import { isModelId } from '../shared/modelId.ts'
-import { configPath, configSchema, exampleConfig, readConfig, selectedAgent, updateConfig, type TerminalConfig } from './config.ts'
-import { executableFor, history, Sessions, type Chat, type LiveChat } from './sessions.ts'
+import { atomicJson, terminalHome, configPath, configSchema, exampleConfig, readConfig, selectedAgent, updateConfig, type TerminalConfig } from './config.ts'
+import { executableFor, history, sessionLabel, Sessions, type Chat, type LiveChat } from './sessions.ts'
 import { AgentInput, ConsoleInput, composerView, nextCursor, previousCursor } from './input.ts'
 import { MENU_SECTIONS, menuItems, renderMenu, renderWelcome, type MenuItem, type MenuSection, type MenuView } from './menu.ts'
 import { formKey, insertFormText, type FormField } from './forms.ts'
 import { z } from 'zod'
 
-const HELP = `Stoke — your agents, in one terminal
+const HELP = `Stoke — persistent shells and agents, in one terminal
 
 Usage: stoke [DIR] [--cli AGENT] [--config FILE]
        stoke config init
@@ -21,7 +21,8 @@ Usage: stoke [DIR] [--cli AGENT] [--config FILE]
        stoke connect NAME [--check] [--json]
        stoke server start|status|stop
 
-Type a message to start a chat. /new opens the selected agent without a message.
+Plain stoke resumes your last live session, or starts a normal shell.
+F2 opens New: shell, agent or remote connection. --cli AGENT opens that agent.
   /agent [ID]       search or switch coding agents (starts a separate chat)
   /models [ID]      choose a model for the next chat; default resets it
   /chats [FILTER]   list older chats; Left on an empty prompt opens the chat picker
@@ -32,15 +33,17 @@ Type a message to start a chat. /new opens the selected agent without a message.
   /settings        edit defaults, appearance and startup behavior
   /connections     manage saved SSH hosts and OpenCode servers
   /config [reload] show the config path/example, or reload it
-  /new             start a new chat with the selected agent and model
+  /new             choose a shell, agent or remote connection
+  /shell           start a normal shell in this folder
   /stop NUMBER     stop a running chat
   /help            these commands
   /quit            detach this UI; chats keep running in the local service
   /detach          detach this UI; use stoke attach to return later
 
-F5 opens the Stoke menu from any agent; F5 / Esc returns to the same chat.
+F2 New · F3/F4 switch sessions · F6 detach · F9 settings.
+F5 opens the Stoke menu from any shell or agent; F5 / Esc returns to the same chat.
 In the menu: type to search, Tab switches sections, Enter opens a selection.
-Ctrl+F chats · Ctrl+G agents · Ctrl+R connections · Ctrl+N new chat.
+Ctrl+F chats · Ctrl+G agents · Ctrl+R connections · Ctrl+N opens New.
 Ctrl+] also returns to Stoke; the agent keeps running.
 Agent slash commands and arrow keys belong to that agent while it has focus.
 Vendor login, permissions, MCP and settings remain in the real agent CLI.
@@ -161,8 +164,9 @@ async function main(): Promise<void> {
     if (attached === session) {
       attached = null
       out(SHELL_MODES)
-      say(`Chat exited (${session.exitCode}). /chats to return to your history.`)
-      prompt()
+      say(`Session exited (${session.exitCode}). /chats to return to your history.`)
+      if (session.chat.agent === 'shell') openMenu('chats')
+      else prompt()
     }
   })
   await sessions.ready()
@@ -170,7 +174,8 @@ async function main(): Promise<void> {
     if (session.exited) throw new Error('That process has exited. Use /attach to resume a saved chat.')
     if (menu) { menu = null; out(SHELL_MODES) }
     line = ''; cursor = 0
-    say('F5 opens the Stoke menu · Ctrl+] command prompt · Your chat stays running.')
+    try { atomicJson(join(terminalHome(), 'last-session.json'), { id: session.chat.id }) } catch { /* Read-only state must not prevent attaching a live terminal. */ }
+    say('F2 New · F3/F4 switch · F5 menu · F6 detach · F9 settings')
     attached = session
     agentInput = new AgentInput(config.ui.menuKey)
     session.screen.resize(process.stdout.columns || 80, process.stdout.rows || 24)
@@ -192,6 +197,20 @@ async function main(): Promise<void> {
     const chat = visibleChats[Number(value) - 1]
     if (!chat) throw new Error('No chat at that number. Use /chats first.')
     return chat
+  }
+  const startShell = (folder = cwd): void => attach(sessions.start(sessions.create('shell', folder, ''), config))
+  const switchSession = (direction: number): void => {
+    const live = [...sessions.live.values()].filter((s) => !s.exited)
+    if (!live.length) { openMenu('new'); return }
+    const current = attached ?? menu?.returnTo
+    const index = live.findIndex((s) => s === current)
+    attach(live[(Math.max(0, index) + direction + live.length) % live.length])
+  }
+  const restoreChat = (chat: Chat): void => {
+    const live = sessions.live.get(chat.id)
+    if (live && !live.exited) attach(live)
+    else if (chat.agent === 'shell') startShell(chat.cwd)
+    else attach(sessions.start(chat, config, '', true))
   }
   const start = (text = ''): void => attach(sessions.start(sessions.create(agent, cwd, model, text), config, text))
   const execute = (text: string): void => {
@@ -225,12 +244,11 @@ async function main(): Promise<void> {
           say(`Model for the next chat: ${model || 'agent default'}. Existing chats keep their model.`)
         }
         break
-      case '/new': if (value) throw new Error('/new takes no arguments; type a message to start with a prompt.'); start(); break
+      case '/new': if (value) throw new Error('/new takes no arguments. Select an option in New.'); openMenu('new'); break
+      case '/shell': startShell(); break
       case '/chats': case '/search': listChats(value); break
       case '/attach': {
-        const chat = chatNumber(value), live = sessions.live.get(chat.id)
-        if (live && !live.exited) attach(live)
-        else attach(sessions.start(chat, config, '', true))
+        restoreChat(chatNumber(value))
         break
       }
       case '/resume': {
@@ -256,7 +274,7 @@ async function main(): Promise<void> {
         if (!value) { openMenu('remote'); break }
         const remote = config.remotes[value]
         if (!remote) throw new Error('Unknown connection. Add it to remotes in /config, then /config reload.')
-        const remoteAgent = remote.kind === 'opencode' ? 'opencode' : agent
+        const remoteAgent = remote.kind === 'opencode' ? 'opencode' : 'shell'
         const file = remote.kind === 'ssh' ? 'ssh' : executableFor('opencode', config)
         if (!file) throw new Error('OpenCode is not on PATH.')
         const chat = sessions.create(remoteAgent, cwd, '')
@@ -288,18 +306,25 @@ async function main(): Promise<void> {
   }
   const itemsFor = (section: MenuSection): MenuItem[] => {
     if (section === 'commands') return [
-      ...MENU_SECTIONS.map((id) => ({ id, title: ({ chats: 'Search chats', agents: 'Choose an agent', models: 'Choose a model', remote: 'Remote connections', settings: 'Settings', help: 'Help', commands: 'Commands' })[id], subtitle: 'Open workspace section', detail: ['Enter opens this section.', 'Use F5 to return to a running chat.'] })),
-      { id: '/new', title: 'New chat', subtitle: 'Ctrl+N · selected agent and model', detail: ['Start a separate chat without closing existing sessions.'] },
+      ...MENU_SECTIONS.map((id) => ({ id, title: ({ new: 'New terminal or agent', chats: 'Search sessions', agents: 'Choose an agent', models: 'Choose a model', remote: 'Remote connections', settings: 'Settings', help: 'Help', commands: 'Commands' })[id], subtitle: 'Open workspace section', detail: ['Enter opens this section.', 'Use F5 to return to a running chat.'] })),
+      { id: '/shell', title: 'New shell', subtitle: 'Normal interactive shell', detail: ['Start a separate shell without closing existing sessions.'] },
       { id: '/continue', title: 'Continue latest conversation', subtitle: 'Use the agent’s native history', detail: ['Continue the most recent conversation in this folder.'] },
       { id: 'doctor', title: 'Run diagnostics', subtitle: 'Platform, PTY, configuration and installed agents', detail: ['Checks run locally. No agent provider requests are made.', 'For script output, run stoke doctor --json.'] },
       { id: '/detach', title: 'Detach this terminal', subtitle: 'Chats keep running locally', detail: ['Return later with stoke sessions and stoke attach ID.', 'Stop all sessions explicitly with stoke server stop.'] }
     ]
+    if (section === 'new') return [
+      { id: 'shell', title: 'Shell', subtitle: 'Normal terminal · keeps running when you disconnect', detail: [cwd, '', 'Start your default shell in this folder.', 'Use F3/F4 to switch sessions; F6 to detach Stoke.'] },
+      { id: 'agent', title: cliFor(agent).label, subtitle: 'New agent session · selected model', detail: [model || 'Agent default model', cwd, '', 'The real agent runs in its own terminal.'] },
+      { id: 'agents', title: 'Choose another agent…', subtitle: 'Installed coding agents', detail: ['Open the agent picker.'] },
+      { id: 'remote', title: 'Remote connection…', subtitle: 'SSH hosts and OpenCode servers', detail: ['Open saved connections or add a host.'] },
+      { id: 'settings', title: 'Settings', subtitle: 'Appearance, startup and defaults', detail: [configPath()] }
+    ]
     if (section === 'chats') return history().map((chat) => {
       const live = sessions.live.get(chat.id)
-      return { id: chat.id, title: chat.title, subtitle: `${cliFor(chat.agent).label} · ${live && !live.exited ? 'running' : 'saved'}`,
-        detail: [chat.cwd, `Model: ${chat.model || 'agent default'}`, '',
+      return { id: chat.id, title: chat.title, subtitle: `${sessionLabel(chat.agent)} · ${live && !live.exited ? 'running' : 'saved'}`,
+        detail: [chat.cwd, chat.agent === 'shell' ? 'Interactive shell' : `Model: ${chat.model || 'agent default'}`, '',
           live && !live.exited ? 'Enter returns to this chat. Its process stays running while you use Stoke.' :
-            chat.nativeId ? 'Enter resumes this saved conversation.' : 'No exact session ID saved. Use /continue in this agent to open its latest chat.',
+            chat.agent === 'shell' ? 'This shell has ended. Enter opens a new shell in its original folder.' : chat.nativeId ? 'Enter resumes this saved conversation.' : 'No exact session ID saved. Use /continue in this agent to open its latest chat.',
           '', 'Ctrl+G: choose another agent', 'Ctrl+R: remote connections', 'Ctrl+N: new chat'] }
     })
     if (section === 'agents') return CODING_CLIS.map((cli) => ({ id: cli.id, title: cli.label,
@@ -315,14 +340,14 @@ async function main(): Promise<void> {
       { id: 'default-agent', title: 'Default agent', subtitle: cliFor(selectedAgent(config)).label, detail: ['Choose the agent Stoke selects on startup.', '', 'An explicit --cli option takes precedence.', '', 'Enter to edit.'] },
       { id: 'default-model', title: `Default model · ${cliFor(agent).label}`, subtitle: config.agents[agent]?.model || 'Agent default', detail: ['Set the model used for new chats with this agent.', '', 'Leave blank to let the agent choose.', '', 'Enter to edit.'] },
       { id: 'theme', title: 'Appearance', subtitle: config.ui.theme, detail: ['Ember · warm copper accents', 'Ocean · soft blue accents', 'Terminal · your terminal’s own colors', '', 'Enter cycles the theme. NO_COLOR disables colors.'] },
-      { id: 'startup', title: 'Start screen', subtitle: config.ui.startup === 'menu' ? 'Stoke menu' : 'Message composer', detail: ['Choose what appears when Stoke starts.', '', 'Enter switches between the menu and composer.'] },
+      { id: 'startup', title: 'Start screen', subtitle: config.ui.startup === 'terminal' ? 'Resume session / shell' : config.ui.startup === 'menu' ? 'Stoke menu' : 'Message composer', detail: ['Choose what appears when Stoke starts.', '', 'Enter cycles terminal, menu and composer.'] },
       { id: 'menu-key', title: 'Extra menu shortcut', subtitle: config.ui.menuKey === 'f5' ? 'F5 only' : config.ui.menuKey === 'f6' ? 'F5 and F6' : 'F5 and Ctrl+\\', detail: ['F5 always opens Stoke.', 'Add F6 or Ctrl+\\ if your terminal reserves F5.', '', 'Enter cycles the extra shortcut. Applies when you return to an agent.'] },
       { id: 'file', title: 'Configuration file', subtitle: existsSync(configPath()) ? 'Saved locally' : 'Created when you save your first setting', detail: [configPath(), '', 'Changes from these menus are saved here.', 'Vendor credentials remain in the agent’s own login store.'] },
       { id: 'reload', title: 'Reload configuration', subtitle: 'Read changes made outside Stoke', detail: ['Reload this file after editing it in another program.', '', 'Running chats keep their launch settings.'] },
       { id: 'shortcuts', title: 'Keyboard shortcuts', subtitle: 'Navigation, agent focus and commands', detail: ['Enter opens the keyboard reference.'] }
     ]
     if (section === 'help') return [
-      { id: 'navigation', title: 'Move around Stoke', subtitle: 'F5, Tab and search', detail: ['F5 opens Stoke from any agent.', 'F5 / Esc returns to the same running chat.', 'Tab / Shift+Tab switch sections.', 'Type to filter; Up/Down select; Enter opens.', 'Ctrl+F chats · Ctrl+G agents', 'Ctrl+R connections · Ctrl+S settings', 'Ctrl+N starts a new chat.'] },
+      { id: 'navigation', title: 'Move around Stoke', subtitle: 'F5, Tab and search', detail: ['F2 New · F3/F4 switch sessions', 'F5 / Esc returns to the same running chat.', 'Tab / Shift+Tab switch sections.', 'Type to filter; Up/Down select; Enter opens.', 'Ctrl+F chats · Ctrl+G agents', 'Ctrl+R connections · Ctrl+S settings', 'F2 / Ctrl+N opens New.'] },
       { id: 'connections', title: 'Connect to another computer', subtitle: 'SSH hosts and OpenCode servers', detail: ['Connections → Add connection…', 'SSH: enter a host or ~/.ssh/config alias.', 'The host needs the stoke terminal command on PATH.', 'OpenCode: enter the server’s HTTP(S) URL.', 'Authentication uses SSH or OpenCode’s native flow.', '', 'Stoke Hub login and phone sharing are not part of this terminal preview.'] },
       { id: 'models', title: 'Agents and models', subtitle: 'Your real agents, their own permissions', detail: ['Selecting an agent starts a separate chat.', 'Models apply to the next chat, not one already running.', 'The agent owns its login, permissions, tools and slash commands.', '', 'Ctrl+] returns to the Stoke command prompt.', 'Type /help there to list commands.'] },
       { id: 'history', title: 'Chat history and resume', subtitle: 'What stays running and what is saved', detail: ['Live chats stay running when this UI closes.', 'Use stoke sessions and stoke attach ID to return.', 'Each attachment takes keyboard control for that chat.', 'Use /stop to end one chat, or stoke server stop to end all.', 'Claude chats with recorded IDs can resume after the service stops.', 'Other agents use /continue or /resume NATIVE_ID.', '', 'Desktop history import is still to come.'] }
@@ -337,7 +362,7 @@ async function main(): Promise<void> {
     attached = null
     if (!menu) out(SHELL_MODES + '\x1b[?1049h\x1b[2J')
     menu = { section, query: '', selected: 0, items: itemsFor(section), notice: '',
-      active: returnTo ? `${cliFor(returnTo.chat.agent).label}: ${returnTo.chat.title}` : '', returnTo }
+      active: returnTo ? `${sessionLabel(returnTo.chat.agent)}: ${returnTo.chat.title}` : '', returnTo }
     formAction = null
     prompt()
   }
@@ -358,8 +383,11 @@ async function main(): Promise<void> {
       if (menu.section === 'chats') {
         const chat = history().find((entry) => entry.id === item.id)
         if (!chat) throw new Error('This chat is no longer in history.')
-        const live = sessions.live.get(chat.id)
-        attach(live && !live.exited ? live : sessions.start(chat, config, '', true))
+        restoreChat(chat)
+      } else if (menu.section === 'new') {
+        if (item.id === 'shell') startShell()
+        else if (item.id === 'agent') start()
+        else openMenu(item.id as MenuSection)
       } else if (menu.section === 'agents') {
         if (!isCodingCliId(item.id)) return
         agent = item.id; model = config.agents[agent]?.model ?? ''
@@ -481,7 +509,7 @@ async function main(): Promise<void> {
       config = updateConfig((latest) => { latest.ui.theme = themes[(themes.indexOf(latest.ui.theme) + 1) % themes.length] })
       if (menu) { menu.items = itemsFor('settings'); menu.notice = `Appearance saved: ${config.ui.theme}.` }
     } else if (id === 'startup') {
-      config = updateConfig((latest) => { latest.ui.startup = latest.ui.startup === 'menu' ? 'composer' : 'menu' })
+      config = updateConfig((latest) => { latest.ui.startup = ({ terminal: 'menu', menu: 'composer', composer: 'terminal' } as const)[latest.ui.startup] })
       if (menu) { menu.items = itemsFor('settings'); menu.notice = 'Start screen saved for the next launch.' }
     } else if (id === 'menu-key') {
       const keys = ['f5', 'f6', 'ctrl-backslash'] as const
@@ -527,6 +555,12 @@ async function main(): Promise<void> {
       }
       prompt(); return
     }
+    if (!paste && !menu?.form) {
+      if (key.name === 'f2') { openMenu('new'); return }
+      if (key.name === 'f3' || key.name === 'f4') { switchSession(key.name === 'f3' ? -1 : 1); return }
+      if (key.name === 'f9') { openMenu('settings'); return }
+      if (key.name === 'f6' && config.ui.menuKey !== 'f6') { quit(); return }
+    }
     if (!paste && menu) {
       if (menu.form) {
         const action = formKey(menu.form, str, key)
@@ -535,9 +569,8 @@ async function main(): Promise<void> {
         prompt(); return
       }
       if (key.name === 'f5' || config.ui.menuKey === 'f6' && key.name === 'f6' || config.ui.menuKey === 'ctrl-backslash' && key.sequence === '\x1c' || key.name === 'escape' || key.ctrl && key.name === 'c') closeMenu()
-      else if (key.ctrl && key.name === 'n') {
-        try { start() } catch (error) { menu.notice = clean(error instanceof Error ? error.message : String(error)) }
-      } else if (key.ctrl && key.name === 'f') openMenu('chats')
+      else if (key.ctrl && key.name === 'n') openMenu('new')
+      else if (key.ctrl && key.name === 'f') openMenu('chats')
       else if (key.ctrl && key.name === 'g') openMenu('agents')
       else if (key.ctrl && key.name === 'r') openMenu('remote')
       else if (key.ctrl && key.name === 's') openMenu('settings')
@@ -606,7 +639,7 @@ async function main(): Promise<void> {
       line = commandHistory[historyIndex] ?? ''; cursor = line.length
     } else if (key.name === 'tab') {
       if (!line || line === '/') { openMenu('commands'); return }
-      const commands = ['/commands', '/menu', '/detach', '/stop', '/agent', '/models', '/chats', '/attach', '/remote', '/connections', '/settings', '/config', '/new', '/continue', '/resume', '/help', '/quit']
+      const commands = ['/commands', '/menu', '/detach', '/stop', '/agent', '/models', '/chats', '/attach', '/remote', '/connections', '/settings', '/config', '/new', '/shell', '/continue', '/resume', '/help', '/quit']
       const matches = commands.filter((c) => c.startsWith(line))
       if (matches.length === 1) { line = matches[0] + ' '; cursor = line.length }
       else { say(''); say(matches.join('  ')) }
@@ -629,6 +662,13 @@ async function main(): Promise<void> {
     if (input.forward) attached.pty.write(input.forward)
     if (input.detach) {
       if (input.menu) { openMenu('chats'); return }
+      if (input.action) {
+        if (input.action === 'new') openMenu('new')
+        else if (input.action === 'settings') openMenu('settings')
+        else if (input.action === 'detach') quit()
+        else switchSession(input.action === 'previous' ? -1 : 1)
+        return
+      }
       attached = null
       out(SHELL_MODES)
       say('Returned to Stoke. Your chat is still running. /chats to switch; /agent to choose another agent.')
@@ -641,14 +681,23 @@ async function main(): Promise<void> {
     }
   })
   out(SHELL_MODES)
-  out(renderWelcome(cliFor(agent).label, model, clean(cwd), config.ui.theme, process.stdout.columns || 80, ['claude', 'codex', 'opencode'].includes(agent)))
-  prompt()
-  if (requestedChat) {
-    const chat = requestedChat
-    const live = sessions.live.get(chat.id)
-    attach(live && !live.exited ? live : sessions.start(chat, config, '', true))
-  } else if (remoteName) execute(`/remote ${remoteName}`)
-  else if (config.ui.startup === 'menu') openMenu('chats')
+  if (requestedChat) restoreChat(requestedChat)
+  else if (remoteName) execute(`/remote ${remoteName}`)
+  else if (chosen) start()
+  else if (config.ui.startup === 'terminal') {
+    let last = ''
+    try { last = JSON.parse(readFileSync(join(terminalHome(), 'last-session.json'), 'utf8')).id } catch { /* First launch or corrupt selection: choose a live session. */ }
+    const live = [...sessions.live.values()].filter((s) => !s.exited && (!folderSet || s.chat.cwd === cwd))
+    const previous = live.find((s) => s.chat.id === last) ?? live.at(-1)
+    if (previous) attach(previous)
+    else {
+      try { startShell() } catch (error) { openMenu('new'); const current = menu as MenuView | null; if (current) current.notice = errorText(error); prompt() }
+    }
+  } else if (config.ui.startup === 'menu') openMenu('chats')
+  else {
+    out(renderWelcome(cliFor(agent).label, model, clean(cwd), config.ui.theme, process.stdout.columns || 80, ['claude', 'codex', 'opencode'].includes(agent)))
+    prompt()
+  }
 }
 
 void main().catch((error) => {

@@ -10,7 +10,7 @@ import { LocalSessions, type LiveChat } from './localSessions.ts'
 import { MAX_SESSION_FRAME, processAlive, readServerInfo, sameToken, serverInfoPath, SESSION_PROTOCOL, socketPrefix } from './sessionProtocol.ts'
 
 const chatSchema = z.object({
-  id: z.string().uuid(), agent: z.string().refine(isCodingCliId), cwd: z.string(), title: z.string().max(200),
+  id: z.string().uuid(), agent: z.string().refine((v): v is import('./sessionMeta.ts').SessionKind => v === 'shell' || isCodingCliId(v)), cwd: z.string(), title: z.string().max(200),
   createdAt: z.number(), model: z.string().max(200), nativeId: z.string().refine(isSafeResumeId).optional()
 })
 const requestSchema = z.object({
@@ -138,6 +138,6 @@ export async function runSessionServer(home = terminalHome()): Promise<void> {
   process.once('SIGINT', shutdown)
   await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(endpoint, resolve) })
   if (process.platform !== 'win32') chmodSync(endpoint, 0o600)
-  atomicJson(serverInfoPath(home), { protocol: SESSION_PROTOCOL, pid: process.pid, endpoint, token })
+  atomicJson(serverInfoPath(home), { protocol: SESSION_PROTOCOL, pid: process.pid, endpoint, token, features: ['shells'] })
   scheduleIdle()
 }

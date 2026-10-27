@@ -46,9 +46,8 @@ try {
     const timer = setTimeout(() => { child.kill(); reject(new Error(`Extracted CLI failed: ${data.slice(-2000)}`)) }, 10_000)
     child.onData((text) => {
       data += text
-      if (!menu && data.includes('stoke ·')) { menu = true; child.write('\x1b[15~') }
-      if (menu && !quit && data.includes('Search chats:')) { quit = true; child.write('\x1b[15~') }
-      else if (quit && data.includes('Search chats:') && text.includes('stoke ·')) child.write('/quit\r')
+      if (!menu && data.includes('F2 New')) { menu = true; child.write('\x1b[15~') }
+      if (menu && !quit && data.includes('Search sessions:')) { quit = true; child.write('\x1b[17~') }
     })
     child.onExit(({ exitCode }) => { clearTimeout(timer); if (process.platform === 'win32') try { child.kill() } catch { /* already released */ }; if (exitCode === 0 && quit) resolve(); else reject(new Error(`Extracted CLI exit ${exitCode}: ${data.slice(-1000)}`)) })
   })

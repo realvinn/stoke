@@ -5,7 +5,7 @@ import { terminalHome } from './config.ts'
 
 export const SESSION_PROTOCOL = 1
 export const MAX_SESSION_FRAME = 16 * 1024 * 1024
-export interface ServerInfo { protocol: number; pid: number; endpoint: string; token: string }
+export interface ServerInfo { protocol: number; pid: number; endpoint: string; token: string; features?: string[] }
 export const serverInfoPath = (home = terminalHome()): string => join(home, 'server.json')
 export const socketPrefix = (home: string): string => process.platform === 'win32'
   ? `\\\\.\\pipe\\stoke-${homeKey(home)}-` : `/tmp/stoke-${process.getuid?.() ?? 0}-${homeKey(home)}-`

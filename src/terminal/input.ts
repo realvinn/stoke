@@ -31,7 +31,7 @@ export class ConsoleInput {
       const [vk, , uc, down, control, repeat] = Array.from({ length: 6 }, (_, j) => fields[j] ? Number(fields[j]) : j === 5 ? 1 : 0)
       if (![vk, uc, down, control, repeat].every(Number.isSafeInteger) || uc > 65535 || repeat > 65535 || down > 1) { result += record[0]; continue }
       if (repeat > 1024) { result += record[0]; continue } // Keep unreasonable repeat records encoded, without allocating an expanded paste.
-      const shortcut = ((vk === 116 || vk === 117) && !(control & 31)) || uc === 29 || uc === 28
+      const shortcut = ([113, 114, 115, 116, 117, 120].includes(vk) && !(control & 31)) || uc === 29 || uc === 28
       if (preservePhysical && vk !== 0 && !shortcut) { result += record[0]; continue }
       if (!down || !repeat) continue
       const shift = !!(control & 16), alt = !!(control & 3), ctrl = !!(control & 12)
@@ -72,12 +72,19 @@ export class AgentInput {
   /** A lone Escape still belongs to the agent after the caller's sequence timeout. */
   flush(): string { const value = this.pending; this.pending = ''; return value }
 
-  take(data: string): { forward: string; detach: boolean; menu?: boolean } {
+  take(data: string): { forward: string; detach: boolean; menu?: boolean; action?: 'new' | 'previous' | 'next' | 'settings' | 'detach' } {
     data = this.pending + data
     this.pending = ''
     let forward = ''
     const start = '\x1b[200~', end = '\x1b[201~'
     const shortcuts = ['\x1b[15~', '\x1b[15;1~', '\x1b[[E', ...(this.menuKey === 'f6' ? ['\x1b[17~', '\x1b[17;1~'] : [])]
+    const actions = new Map<string, 'new' | 'previous' | 'next' | 'settings' | 'detach'>([
+      ...['\x1bOQ', '\x1b[12~', '\x1b[1;1Q', '\x1b[[B'].map((s) => [s, 'new'] as const),
+      ...['\x1bOR', '\x1b[13~', '\x1b[1;1R', '\x1b[[C'].map((s) => [s, 'previous'] as const),
+      ...['\x1bOS', '\x1b[14~', '\x1b[1;1S', '\x1b[[D'].map((s) => [s, 'next'] as const),
+      ['\x1b[20~', 'settings'], ['\x1b[20;1~', 'settings'],
+      ...(this.menuKey === 'f6' ? [] : [['\x1b[17~', 'detach'], ['\x1b[17;1~', 'detach']] as const)
+    ])
     for (let i = 0; i < data.length; i++) {
       const char = data[i]
       if (!this.pasting && char === '\x1c' && this.menuKey === 'ctrl-backslash') return { forward, detach: true, menu: true }
@@ -85,7 +92,9 @@ export class AgentInput {
         const rest = data.slice(i)
         const shortcut = shortcuts.find((sequence) => rest.startsWith(sequence))
         if (shortcut) { this.recent = ''; return { forward, detach: true, menu: true } }
-        if (shortcuts.some((sequence) => sequence.startsWith(rest))) { this.pending = rest; break }
+        const action = [...actions].find(([sequence]) => rest.startsWith(sequence))
+        if (action) { this.recent = ''; return { forward, detach: true, action: action[1] } }
+        if ([...shortcuts, ...actions.keys()].some((sequence) => sequence.startsWith(rest))) { this.pending = rest; break }
       }
       if (char === '\x1d' && !this.pasting) {
         this.recent = ''
