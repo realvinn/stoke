@@ -47,13 +47,16 @@ which is the single list the release workflow's matrix is built from too, so the
 disagree. There is no universal Mac build for the same reason: electron-builder packs both
 slices from one `node_modules`, so one of them always gets the wrong terminal.
 
-**Linux x64 is now built and has still never been run.** `npm run dist:linux` and a
+**Linux x64 is built, and runs only in CI's non-gating probes.** `npm run dist:linux` and a
 `ubuntu-latest` job produce an AppImage — the only Linux format electron-updater can install
 without elevation — and `electron-builder.yml` sets `toolsets.appimage` so it carries the
 static FUSE-3 runtime instead of the legacy one that needs libfuse2 and will not start on a
-default Ubuntu 24.04. But nothing in this repo has ever *run* on Linux: not the PTY layer, not
-`cli.ts`'s login-shell probe, not the docked browser. Treat a Linux release as experimental,
-and `--appimage-extract-and-run` is the escape hatch inside a container.
+default Ubuntu 24.04. On every push, ci.yml's probe packages linux-x64 with `--dir` and drives
+it over CDP with stub agents (`scripts/probe-e2e.mts`), and two `debian:bookworm` legs install
+the PUBLISHED AppImage as root through this branch's install.sh and boot it to a renderer, with
+FUSE and without (`scripts/probe/debian.sh`). All three passed on ffa9975 (2026-10-27). That is
+Stoke's side under stub agents, never a real `claude`, and none of it gates a push. Treat a Linux
+release as experimental, and `--appimage-extract-and-run` is the escape hatch inside a container.
 
 ## Windows
 

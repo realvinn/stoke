@@ -1129,10 +1129,10 @@ export function SelfUpdateSettings({
               more={
                 <>
                   GitHub&rsquo;s &ldquo;latest release&rdquo; excludes prereleases, so with this off
-                  a beta is invisible rather than declined. And because the updater ships inside the
-                  app, this only governs what <em>this</em> build is offered from now on — it cannot
-                  reach back and make an older install see a beta it has already passed over, so the
-                  first beta after turning this on is still a manual download.
+                  a beta is invisible rather than declined. Turned on, it takes effect at the next
+                  check, with no restart: the newest beta is offered from then on. Because the updater
+                  ships inside the app, it cannot reach back to an older install that predates this
+                  option; that one needs the beta downloaded by hand.
                 </>
               }
             >

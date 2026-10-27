@@ -5,8 +5,96 @@ a desktop app for claude code. one window instead of a pile of terminals.
 it runs the real `claude` command underneath, so skills, mcp, plugins and slash
 commands all work exactly like they do in a terminal.
 
-windows and mac. a linux appimage is built too, but nothing here has ever
-been run on linux — treat it as experimental.
+mac (apple silicon and intel) and windows (x64 and arm64). linux gets an x64
+appimage: ci builds it and drives the packaged app on every push, but that is
+most of the running it has had, so treat it as experimental.
+
+## download
+
+the newest builds are betas. github only ever marks a stable release as
+"latest", so the plain install line and the "latest" release both give you the
+last stable one, which is older. for the current app, run this from a terminal
+(not one inside stoke):
+
+```bash
+curl -fsSL https://stoke.vinn.dev/install-beta.sh | sh     # mac, linux, git bash
+```
+
+```bat
+powershell -ExecutionPolicy Bypass -c "irm https://stoke.vinn.dev/install-beta.ps1 | iex"
+```
+
+the second one is windows, typed into command prompt or either powershell. then
+open settings › updates and tick **offer beta releases**. leave it off and that
+copy stays on the beta it installed until the next stable release: with it off
+the updater only asks github for the latest stable, and that is older than your
+beta, so it reports you're up to date.
+
+stoke drives a coding agent you sign in to yourself — claude code, or one of the
+others it supports. if none is installed, it offers to install one.
+
+the latest stable release instead:
+
+```bash
+curl -fsSL https://stoke.vinn.dev | sh          # mac, linux
+```
+
+```bat
+powershell -ExecutionPolicy Bypass -c "irm https://stoke.vinn.dev | iex"
+```
+
+more on what these do, and the knobs, under [the install lines](#the-install-lines).
+
+### which file do i want?
+
+or skip the terminal: every build is on
+[releases](https://github.com/realvinn/stoke/releases). the newest one, at the
+top, is marked pre-release — that's the current beta. the one marked latest is
+the last stable release. each release has about thirty files, and you want one:
+
+| you have | download |
+| --- | --- |
+| a mac with apple silicon (m1 or later) | `Stoke-<version>-arm64.dmg` |
+| an intel mac | `Stoke-<version>-x64.dmg` |
+| a windows pc | `Stoke-<version>-x64-setup.exe` |
+| a windows pc on arm (snapdragon, surface pro x) | `Stoke-<version>-arm64-setup.exe` |
+| linux, x64 | `Stoke-<version>.AppImage` |
+
+not sure which mac? apple menu › about this mac says either "chip: apple m…" or
+an intel processor. which windows? settings › system › about, "system type".
+
+ignore the rest. `latest*.yml` and `*.blockmap` are for the updater, and so is
+the mac `Stoke-<version>-<arch>.zip`. `Stoke-<version>-<arch>-win.zip` is a
+portable windows copy with no installer (see [build an installer](#build-an-installer)).
+`stoke-cli-*` is the [standalone terminal cli](docs/terminal.md), only if you want
+that without the desktop app. there is no linux arm64 desktop build.
+
+### opening a downloaded build the first time
+
+the first time you open a browser download, mac and windows warn you, because
+neither has a reason to trust these builds yet, and linux needs the file made
+executable:
+
+- **mac:** open the dmg, drag stoke into applications, open it. macos refuses
+  it once: the app is signed with stoke's own certificate rather than an apple
+  developer id, and apple hasn't notarized it. press done, then open system
+  settings › privacy & security, scroll down to the line about stoke, press
+  **open anyway** and confirm with your password. gatekeeper asks once per
+  install, not on every update.
+- **windows:** the installer isn't code-signed, so smartscreen says "windows
+  protected your pc". press **more info**, then **run anyway**. edge may ask
+  whether to keep the download first.
+- **linux:** `chmod +x Stoke-<version>.AppImage`, then run it. if it says
+  `No suitable fusermount binary found`, install fuse3 (`sudo apt install fuse3`
+  on debian or ubuntu). as root it also needs `--no-sandbox`.
+
+the install lines skip the mac and windows warnings: what `curl` and the
+powershell script download carries no quarantine or mark-of-the-web flag, so
+gatekeeper and smartscreen never look, and the script checks every byte against
+the release's own sha512 instead. on linux they do the `chmod` and write a
+`stoke` launcher that adds `--no-sandbox` for root; fuse3 is still yours to
+install if it's missing. that's convenient, and it's exactly why the script is
+worth reading first — the links are at the end of [the install lines](#the-install-lines).
 
 ## what you get
 
@@ -22,41 +110,22 @@ been run on linux — treat it as experimental.
 - it writes up your work into notion and clickup, if you let it. see below
 - api keys in settings, so a launch from the dock or start menu has them:
   an anthropic console key, openrouter, or any anthropic-compatible gateway,
-  plus openai and xai keys for codex and grok. they are stored in plain text
-  in stoke's own settings.json, like the rest of your settings
+  plus openai and xai keys for codex and grok. they are sealed in a
+  `secrets.json` beside stoke's settings, with the macos keychain, windows
+  dpapi or a linux keyring; settings › backup & transfer says which
 
-## install it
+## the install lines
 
-```bash
-curl -fsSL https://stoke.vinn.dev | sh          # mac, linux
-```
+the windows ones work typed into command prompt, windows powershell or
+powershell 7 alike. already in powershell, the short forms are
+`irm https://stoke.vinn.dev | iex` and `irm https://stoke.vinn.dev/install-beta.ps1 | iex`
+— but `irm` is a powershell word, so in command prompt either one alone says
+`'irm' is not recognized`. in git bash the mac/linux line works too: it notices
+windows and hands over to the powershell one, keeping the beta if you asked for it.
 
-```bat
-powershell -ExecutionPolicy Bypass -c "irm https://stoke.vinn.dev | iex"
-```
-
-that last one is for windows, and it works typed into command prompt, windows
-powershell or powershell 7 alike. already in powershell, the short form is
-`irm https://stoke.vinn.dev | iex` — but `irm` is a powershell word, so in
-command prompt that alone says `'irm' is not recognized`. in git bash the
-mac/linux line works too: it notices windows and hands over to the powershell one.
-
-that resolves the latest release, checks every byte against the sha512 in the
+each line resolves the release, checks every byte against the sha512 in the
 release's own update manifest, and puts the app where it goes. run the same line
 again to upgrade. `STOKE_DRY_RUN=1` does all of it except the installing.
-
-To install the newest published beta, use the beta URL. The plain command above
-selects the latest stable release. On macOS, Linux or Git Bash:
-
-```bash
-curl -fsSL https://stoke.vinn.dev/install-beta.sh | sh
-```
-
-In Windows PowerShell:
-
-```powershell
-irm https://stoke.vinn.dev/install-beta.ps1 | iex
-```
 
 For automation, the ordinary installers still accept `--beta` / `-Beta` or
 `STOKE_CHANNEL=beta`. `STOKE_VERSION` wins when you need one exact published
@@ -221,35 +290,40 @@ start over. leave profiles you don't report on switched off.
 
 ## heads up
 
-mac is real now — it gets built, launched and used, and ci builds it on every
-tag. these bits of it still haven't been proven:
+where things stand, so nothing here surprises you:
 
-- the window chrome. every screenshot so far was taken from inside the page, so
-  the title bar and the gap the traffic lights sit in have never actually been
-  looked at
-- finding `claude` when stoke is opened from the finder or the dock. that case
-  asks your login shell where its PATH is, and every launch so far already had
-  one handed to it by the terminal that started it
-- the ⌘ shortcuts. the buttons behind them have been clicked plenty of times;
-  the keystrokes themselves have never been pressed
-- reading your plan limits off your account. on mac that token lives in the
-  login keychain and stoke only looks in `~/.claude/.credentials.json`, so the
-  call fails — the meter still fills in, because it reads the same numbers out
-  of the running session instead
-- updating itself. the ci build is ad-hoc signed and macos won't swap an ad-hoc
-  build for a downloaded one, so the download button stays greyed out and sends
-  you to the releases page until there's a developer id to sign with
-
-the windows half of the one-liner is in the same position, only more so:
-`install/install.ps1` has never been run, and has never been *parsed* by any
-powershell, because there is none on the machine it was written on. the mac and
-linux half has been driven end to end against a real release.
-
-one thing worth knowing about installing this way rather than downloading the
-dmg: `curl` attaches no quarantine attribute, so the app gets past the gatekeeper
-prompt a browser download would have shown you. the build is signed but not
-notarized by apple, and the windows installer isn't signed at all. that's
-convenient and it's exactly why the script is worth reading first.
+- **mac updates itself.** every release is signed with the same self-signed
+  `Stoke` certificate, and that is what macos checks before it swaps in a
+  downloaded update, so the in-app update works without an apple developer id.
+  two things that certificate doesn't buy. notarization: a browser download
+  needs **open anyway** once (see [opening a downloaded build the first
+  time](#opening-a-downloaded-build-the-first-time)). and a team id: after an
+  update macos may ask for your login password before stoke can read its
+  keychain item, and "always allow" holds only until the next update, because
+  without a team id the keychain ties that answer to the exact build. if stoke
+  seems slow to open after an update, look for that dialog.
+- **windows has run it.** the windows installer and portable zip aren't
+  code-signed, so a browser download meets smartscreen. `install/install.ps1`
+  first ran on real windows on 2026-09-21. ci now types the documented line into
+  command prompt, windows powershell, powershell 7 and git bash, on x64 and
+  arm64, against this branch's scripts; against the live site it installs from
+  command prompt and windows powershell, on x64 only. both run weekly, and on
+  every change to the installer.
+- **keys are sealed** (see [what you get](#what-you-get)). the exception is a
+  machine with no key store, like a linux box without gnome keyring or kwallet:
+  there stoke keeps the keys in settings.json in plain text, as older versions
+  did, and says so in settings › backup & transfer rather than call electron's
+  fallback protected.
+- **what no automated run has seen yet.** on mac: the window's own title bar —
+  the traffic lights (a screenshot only ever shows the page, never the native
+  chrome; the room the css leaves for them is measured) and its switch into full
+  screen (the signal from macos that flips it is only read), finding `claude`
+  when stoke is opened from the finder or the dock with no terminal to hand it a
+  PATH (the failure path is measured; the login-shell probe succeeding there
+  isn't), and ⌘ shortcuts from a real keyboard (the tests send synthetic key
+  events). on windows: the context meter and tab dots with a
+  real `claude` choosing git bash or powershell for its hooks, and a machine with
+  no git for windows. ci runs the hook under both shells, with a stand-in cli.
 
 ## checks
 

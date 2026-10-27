@@ -44,6 +44,7 @@ import {
   rmSync,
   writeFileSync
 } from 'node:fs'
+import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -63,6 +64,7 @@ import { forwardHttp } from '../worker/hub-edge.ts'
 import { parseStokeArgs, stokeHelp } from '../src/shared/stokeArgs.ts'
 import { LINUX_WRAPPER_MARK } from '../src/shared/stokeCommand.ts'
 import { shArtBlock, ps1ArtBlock, extractBlock } from './gen-installer-art.mts'
+import { TARGETS } from './targets.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const SH = join(root, 'install', 'install.sh')
@@ -1703,6 +1705,145 @@ ok('it names where the AppImage does go', htmlText.includes('~/.local/bin/stoke.
 ok('it no longer says Linux builds arrive "from the next release onwards"', !/next release onwards/.test(htmlText))
 ok('nor that the installer calls Linux experimental, which it does not', !/the installer says so too/.test(htmlText))
 ok('it documents the stoke command', htmlText.includes('stoke .') && htmlText.includes('stoke --help'))
+
+console.log('\nREADME and the page send a friend to a download that exists')
+/*
+ * The page linked `tree/main/install`, which is a 404: the repo's only branch
+ * is `beta`. `HEAD` follows whatever the default branch is, so a link written
+ * that way cannot rot when a branch is renamed or retired.
+ */
+const repoRefs = [...(htmlText + readmeText).matchAll(/github\.com\/realvinn\/stoke\/(?:tree|blob)\/([^/"'\s)]+)/g)].map((m) => m[1])
+check('every link into the repo is branch-free (tree/HEAD), never a branch that may not exist', repoRefs.filter((r) => r !== 'HEAD'), [])
+/*
+ * The beta lines are what a friend needs while the newest builds are betas —
+ * GitHub's "latest" and the plain line only ever pick a stable release. The
+ * Windows one is the cmd-safe form, read out of the beta body the Worker
+ * really serves, not retyped here.
+ */
+const betaPs1Line = /^STOKE_PS1_LINE='([^']+)'$/m.exec(betaShText)?.[1] ?? ''
+ok('README gives the beta Windows line in the form cmd.exe can run', betaPs1Line.includes('install-beta.ps1') && readmeText.includes(betaPs1Line), betaPs1Line)
+ok('and the beta sh line', readmeText.includes('curl -fsSL https://stoke.vinn.dev/install-beta.sh | sh'))
+/*
+ * A beta install with "Offer beta releases" off asks GitHub for the latest
+ * STABLE release and so is never offered the next beta (selfUpdate.ts sets
+ * allowPrerelease from betaUpdates). README tells a friend to tick it, by the
+ * label the sheet really draws (RemoteSettings.tsx), which must also be the
+ * one Settings search finds it by (settingsIndex.ts, gotcha 138). README is
+ * prose, so its phrases are read with whitespace folded: a rewrap is not a lie.
+ */
+const readmeFlat = readmeText.replace(/\s+/g, ' ')
+const settingsIndexText = readFileSync(join(root, 'src', 'shared', 'settingsIndex.ts'), 'utf8')
+const remoteSettingsText = readFileSync(join(root, 'src', 'renderer', 'src', 'components', 'RemoteSettings.tsx'), 'utf8')
+const betaRowLabel = /id: 'updates\.beta', page: 'updates', label: '([^']+)'/.exec(settingsIndexText)?.[1] ?? ''
+const betaDrawnLabel = /data-setting="updates\.beta"[\s\S]*?className="field-label">([^<]+)</.exec(remoteSettingsText)?.[1]?.trim() ?? ''
+ok('the beta row draws the label Settings search finds it by', betaDrawnLabel !== '' && betaDrawnLabel === betaRowLabel, `drawn "${betaDrawnLabel}", indexed "${betaRowLabel}"`)
+ok('README names the beta-updates setting by the label the sheet draws', betaDrawnLabel !== '' && readmeFlat.toLowerCase().includes(`settings › updates and tick **${betaDrawnLabel.toLowerCase()}**`), betaDrawnLabel)
+/*
+ * The "which file do I want?" table, held to electron-builder.yml's own names
+ * and to every target a release builds (targets.mjs, gotcha 67): a new target
+ * or a renamed artifact turns this red until the table says so. The dmg is the
+ * Mac download (the zip is the updater's).
+ *
+ * The name is electron-builder's own rule, transcribed rather than assumed
+ * (app-builder-lib platformPackager.js `artifactPatternConfig` and
+ * `expandArtifactNamePattern`, util/macroExpander.js, builder-util arch.js
+ * `getArtifactArchName`):
+ * - the pattern is the TARGET's block, else the platform's, else the top level,
+ *   else the target's default (gotcha 95), so a `dmg.artifactName` renames the
+ *   dmg whatever `mac.artifactName` says, and without `nsis.artifactName` the
+ *   installer would take `win.artifactName`'s `-win` name;
+ * - only a DEFAULT pattern drops the default arch (x64), and a dropped arch
+ *   takes its separator with it. That is why the Linux x64 AppImage carries no
+ *   arch (gotcha 71): nothing names it. dmg and AppImage may drop it, nsis never;
+ * - an x64 AppImage that does carry its arch says `x86_64`.
+ */
+const require = createRequire(import.meta.url)
+let builder: any = {}
+try {
+  builder = require('js-yaml').load(builderYml) ?? {}
+} catch (error) {
+  ok('electron-builder.yml parses as YAML', false, String(error))
+}
+const productName: string = typeof builder.productName === 'string' ? builder.productName : ''
+function downloadNameFor(t: { platform: string; arch: string }): string {
+  const kind =
+    t.platform === 'darwin'
+      ? { target: 'dmg', block: 'mac', ext: 'dmg', dropsDefaultArch: true, fallback: '${productName}-${version}-${arch}.${ext}' }
+      : t.platform === 'win32'
+        ? // NsisTarget.installerFilenamePattern: a literal suffix, only off the default arch.
+          { target: 'nsis', block: 'win', ext: 'exe', dropsDefaultArch: false, fallback: '${productName} Setup ${version}' + (t.arch === 'x64' ? '' : `-${t.arch}`) + '.${ext}' }
+        : { target: 'appImage', block: 'linux', ext: 'AppImage', dropsDefaultArch: true, fallback: '${productName}-${version}-${arch}.${ext}' }
+  const forced: unknown = builder[kind.target]?.artifactName || builder[kind.block]?.artifactName || builder.artifactName
+  const defaultArch = t.platform === 'darwin' ? (builder.mac?.defaultArch ?? 'x64') : 'x64'
+  const archName = !forced && kind.dropsDefaultArch && t.arch === defaultArch ? null : kind.ext === 'AppImage' && t.arch === 'x64' ? 'x86_64' : t.arch
+  let pattern = typeof forced === 'string' && forced !== '' ? forced : kind.fallback
+  if (archName === null) for (const sep of ['-', ' ', '_', '/']) pattern = pattern.replace(sep + '${arch}', '')
+  return pattern
+    .replaceAll('${productName}', productName)
+    .replaceAll('${version}', '<version>')
+    .replaceAll('${arch}', archName ?? '')
+    .replaceAll('${ext}', kind.ext)
+}
+const wantedDownloads = TARGETS.map(downloadNameFor)
+ok('electron-builder.yml names every download the table derives', productName !== '' && wantedDownloads.every((n) => n.startsWith(`${productName}-<version>`) && !n.includes('${')), wantedDownloads.join(', '))
+check('README\'s download table lists the file for every target a release builds', wantedDownloads.filter((n) => !readmeText.includes('`' + n + '`')), [])
+ok('and it links the releases page', readmeText.includes('https://github.com/realvinn/stoke/releases'))
+/*
+ * Every in-page link in README lands on a heading. GitHub's slug: lower case,
+ * punctuation dropped (hyphens kept), spaces to hyphens.
+ */
+const readmeSlugs = new Set(
+  [...readmeText.matchAll(/^#{1,6} (.+)$/gm)].map((m) => m[1].trim().toLowerCase().replace(/[^\p{L}\p{N}\s_-]/gu, '').replace(/\s/g, '-'))
+)
+check('every #anchor link in README names a heading that exists', [...readmeText.matchAll(/\]\(#([^)]+)\)/g)].map((m) => m[1]).filter((a) => !readmeSlugs.has(a)), [])
+/*
+ * The "heads up" section said, until 2026-10-27, three things the code had
+ * since made false: that a Mac cannot update itself (codesign.ts: the releases
+ * are signed with the one "Stoke" certificate), that install.ps1 had never run
+ * (it has on windows.yml's runners since 2026-09-21, gotcha 100), and that keys
+ * sit in settings.json in plain text (secrets.ts seals them). A reader deciding
+ * whether to install believes the README; keep it from saying them again.
+ *
+ * These are TRIPWIRES, not checks on meaning: prose can say a false thing in
+ * more ways than a pattern lists. The first version matched only the old exact
+ * words, and review showed three rewordings passing it. So each now looks at
+ * one sentence at a time (whitespace folded) for the claim's shape: a Mac
+ * named before a "cannot"-family word before "update", install.ps1 before a
+ * "never"/"not" before "run". The keys rule is structural instead: "plain text"
+ * may only appear in a paragraph or bullet that names the one case where it is
+ * true, a machine with no key store (`judgeProtection`, shared/secrets.ts).
+ */
+const readmeSentences = readmeFlat.split(/(?<=[.!?])\s+/)
+const sentencesLike = (re: RegExp): string[] => readmeSentences.filter((s) => re.test(s))
+check(
+  'README never says a Mac cannot update itself (tripwire, one sentence at a time)',
+  sentencesLike(/won't swap an ad-hoc|until there's a developer id to sign with|\bmac(?:os)?\b.*\b(?:cannot|can't|can ?not|won't|will not|doesn't|does not|never|unable to)\b.*\bupdat/i),
+  []
+)
+check(
+  'nor that install.ps1 has not been run (tripwire, one sentence at a time)',
+  sentencesLike(/install\.ps1.*\b(?:never|not|hasn't|hadn't)\b.*\b(?:run|ran|tested|tried|executed)\b/i),
+  []
+)
+const readmeBlocks = readmeText.split(/\n\s*\n|\n(?=- )/).map((b) => b.replace(/\s+/g, ' ').trim())
+check(
+  'and mentions keys in plain text only beside the no-key-store case it is true for',
+  readmeBlocks.filter((b) => /plain ?text/i.test(b) && !/no key store/i.test(b)),
+  []
+)
+/*
+ * "The newest builds are betas" is why the download section sends a friend to
+ * the beta lines; once a stable release is cut it is false, and nothing else
+ * would notice. Tied to package.json's version, the build this tree makes: a
+ * stable version turns this red until README stops saying it, and a
+ * prerelease one needs README to say it.
+ */
+const packageVersion: string = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version ?? ''
+check(
+  `README says the newest builds are betas exactly while package.json's version (${packageVersion}) is a prerelease`,
+  /\bthe newest builds are betas\b/i.test(readmeFlat),
+  packageVersion.includes('-')
+)
 
 console.log(failures ? `\n${failures} FAILED` : '\nall pass')
 process.exitCode = failures ? 1 : 0
