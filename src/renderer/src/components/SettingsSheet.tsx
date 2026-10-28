@@ -1363,6 +1363,7 @@ export function SettingsSheet({
                 onRemoteBar={(remoteBar) => onPatch({ remoteBar })}
                 chatIndexOn={settings.chatIndex === 'on'}
                 redactOn={settings.chatIndexOptions.redact}
+                connectionLog={settings.hub.connectionLog}
                 onOpenChatHistory={(row) =>
                   // The redaction tick sits at the foot of "Where Stoke looks": shown, not focused — that row's first control is a source.
                   row === 'redact'

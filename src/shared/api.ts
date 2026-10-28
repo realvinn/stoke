@@ -1030,6 +1030,18 @@ export interface StokeApi {
       setSharing(on: boolean): Promise<HubResult>
       revokeGrant(deviceId: string): Promise<HubResult>
       /**
+       * "Keep a connection log" on this computer: when connections to the
+       * other computers open, drop and reconnect, in `<userData>/connections.log`
+       * (ids, times, counts and tags, never text). Answers whether the file
+       * exists now.
+       */
+      setConnectionLog(on: boolean): Promise<HubResult<{ exists: boolean; bytes: number }>>
+      connectionLogState(): Promise<{ exists: boolean; bytes: number }>
+      /** Show the log file in Finder / Explorer / the file manager. */
+      showConnectionLog(): Promise<HubResult>
+      /** Put both log files' text on the clipboard (main writes it; the text never crosses). */
+      copyConnectionLog(): Promise<HubResult<{ bytes: number }>>
+      /**
        * Chat history on the owner's other computers (spec 2026-10-03 §3): one
        * result per computer, never merged — its hits (folder NAME, text
        * redacted there) or why there are none. Empty while the query is

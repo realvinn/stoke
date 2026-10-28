@@ -106,6 +106,8 @@ interface AccountSyncProps {
   chatIndexOn: boolean
   /** `settings.chatIndexOptions.redact`: and its "Leave out anything that looks like an API key". */
   redactOn: boolean
+  /** `settings.hub.connectionLog`: "Keep a connection log" (main writes it; this only draws it). */
+  connectionLog: boolean
   /**
    * Settings › Chat history, for the shared-chats row's "Turn on Chat history
    * first." — on the row holding the redaction tick when that is what is missing.
@@ -113,7 +115,7 @@ interface AccountSyncProps {
   onOpenChatHistory?: (row?: 'redact') => void
 }
 
-export function AccountSyncSettings({ onBack, remoteBar, onRemoteBar, chatIndexOn, redactOn, onOpenChatHistory }: AccountSyncProps): React.JSX.Element {
+export function AccountSyncSettings({ onBack, remoteBar, onRemoteBar, chatIndexOn, redactOn, connectionLog, onOpenChatHistory }: AccountSyncProps): React.JSX.Element {
   const [view, setView] = useState<HubView>(emptyHubView())
   const [loaded, setLoaded] = useState(false)
   const [now, setNow] = useState(Date.now())
@@ -174,12 +176,15 @@ export function AccountSyncSettings({ onBack, remoteBar, onRemoteBar, chatIndexO
             remoteBar={remoteBar}
             onRemoteBar={onRemoteBar}
             chats={<ShareChats view={view} chatIndexOn={chatIndexOn} redactOn={redactOn} onOpenChatHistory={onOpenChatHistory} />}
+            log={<ConnectionLogRow on={connectionLog} />}
           />
           <RecoveryKit view={view} />
         </>
       )}
       {/* Drawn in every phase, so search always lands on it; outside the vault it says what is missing. */}
       {view.phase !== 'active' && <ShareChats view={view} chatIndexOn={chatIndexOn} redactOn={redactOn} onOpenChatHistory={onOpenChatHistory} />}
+      {/* On, the log goes on writing out here too (its start line, sleep, wake, screen lock): its switch stays in reach (gotcha 171). */}
+      {view.phase !== 'active' && connectionLog && <ConnectionLogRow on={connectionLog} />}
       {view.phase !== 'off' && (view.phase !== 'signed-out' || (view.device !== null && view.email !== '')) && <SignOut view={view} />}
     </div>
   )
@@ -960,8 +965,9 @@ const REMOTE_BAR_CHOICES: { id: RemoteBarMode; label: string; hint: string }[] =
 function OtherMachinesSettings({
   remoteBar,
   onRemoteBar,
-  chats
-}: Pick<AccountSyncProps, 'remoteBar' | 'onRemoteBar'> & { chats: React.ReactNode }): React.JSX.Element {
+  chats,
+  log
+}: Pick<AccountSyncProps, 'remoteBar' | 'onRemoteBar'> & { chats: React.ReactNode; log: React.ReactNode }): React.JSX.Element {
   const remote = useHubRemote()
   const { busy, note, run } = useRun()
   return (
@@ -1026,6 +1032,76 @@ function OtherMachinesSettings({
           </button>
         </div>
       )}
+      {log}
+      <Status note={note} />
+    </div>
+  )
+}
+
+/*
+ * "Keep a connection log": this computer's own switch (`hub.connectionLog`,
+ * default off, never synced), written by main alone (gotcha 57) and read here
+ * from settings. Main keeps `<userData>/connections.log` while it is on
+ * (src/main/hub/connectionLog.ts); Show and Copy appear once the file exists,
+ * and neither its path nor its text comes to this page — main shows the file
+ * and fills the clipboard itself.
+ */
+function ConnectionLogRow({ on }: { on: boolean }): React.JSX.Element {
+  const { busy, note, run } = useRun()
+  const [exists, setExists] = useState(false)
+  const hintId = useId()
+  useEffect(() => {
+    let live = true
+    void window.stoke.hub.remote.connectionLogState().then((s) => {
+      if (live) setExists(s.exists)
+    }, () => undefined)
+    return () => {
+      live = false
+    }
+  }, [on])
+  return (
+    <div className="field" data-hub="connection-log-row" data-setting="account.connection-log">
+      <label className="check-row">
+        <input
+          type="checkbox"
+          checked={on}
+          disabled={busy !== null}
+          aria-describedby={hintId}
+          data-hub="connection-log"
+          onChange={(e) =>
+            run('log', async () => {
+              const r = await window.stoke.hub.remote.setConnectionLog(e.target.checked)
+              if (r.ok) setExists(r.exists)
+              return r
+            })
+          }
+        />
+        <span>
+          <span>Keep a connection log</span>
+          <span className="field-hint" id={hintId}>
+            Records when connections to your other computers open, drop and reconnect, in a file on this computer, so a drop
+            can be traced. It never records what you type or see, names, or keys. Off by default.
+          </span>
+        </span>
+      </label>
+      {exists && (
+        <div className="btn-row">
+          <button className="btn" disabled={busy !== null} data-hub="connection-log-show" onClick={() => run('log-show', () => window.stoke.hub.remote.showConnectionLog())}>
+            Show log file
+          </button>
+          <button
+            className="btn"
+            disabled={busy !== null}
+            data-hub="connection-log-copy"
+            onClick={() =>
+              run('log-copy', () => window.stoke.hub.remote.copyConnectionLog(), () => ({ tone: 'success', text: 'The connection log is on the clipboard.' }))
+            }
+          >
+            Copy log
+          </button>
+        </div>
+      )}
+      {on && <span className="field-hint">Turn it on on your other computers too: a drop is explained only from both ends.</span>}
       <Status note={note} />
     </div>
   )

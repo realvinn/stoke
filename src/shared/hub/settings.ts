@@ -65,6 +65,15 @@ export interface HubSettings {
    * is memory only (`HubRemote`). Never synced.
    */
   chatGrants: Record<string, ChatGrant>
+  /**
+   * "Keep a connection log" — this computer's own, default OFF, never synced
+   * (`hub` is in LOCAL_KEYS, like `grants`). On, main writes
+   * `<userData>/connections.log` (src/main/hub/connectionLog.ts): when the
+   * connections to the owner's other computers open, drop and reconnect, as
+   * ids, times, counts and tags, never text (shared/hub/connectionTrace.ts).
+   * Read on every event, so it takes effect at once.
+   */
+  connectionLog: boolean
 }
 
 /** The one standing a device can hold for this computer's chat history. */
@@ -80,7 +89,8 @@ export const HUB_SETTINGS_DEFAULTS: HubSettings = {
   shareSessions: false,
   grants: {},
   shareChats: false,
-  chatGrants: {}
+  chatGrants: {},
+  connectionLog: false
 }
 
 const str = (v: unknown, max = 512): string => (typeof v === 'string' ? v.slice(0, max) : '')
@@ -124,7 +134,8 @@ export function hydrateHubSettings(raw: unknown): HubSettings {
     grants,
     // Only the literal `true`: a junk value reads as off, never as consent.
     shareChats: r.shareChats === true,
-    chatGrants
+    chatGrants,
+    connectionLog: r.connectionLog === true
   }
 }
 

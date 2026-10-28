@@ -70,6 +70,30 @@ export interface RelayChannelOptions {
   events: ChannelEvents
   /** Tests only: a fixed ephemeral seed and handshake nonce. */
   fixed?: { eph?: Uint8Array; nonce?: Uint8Array }
+  /** The clock `lastFrameAt` reads (`HubRemote`'s); `Date.now` unless said. */
+  now?: () => number
+}
+
+/** A close frame's reason may be at most this many bytes of UTF-8 (RFC 6455 §5.5); `ws` and browsers throw on more. */
+export const CLOSE_REASON_BYTES = 123
+
+/**
+ * `reason` cut to whole characters that fit a close frame. Cut by characters
+ * (the old `slice(0, 120)`), a reason naming a long or non-Latin device passed
+ * 123 bytes, `ws` threw, and the throw was swallowed: the socket was left
+ * half-closed under a channel that had already moved on (CLAUDE.md gotcha 172).
+ */
+export function closeFrameReason(reason: string): string {
+  let out = ''
+  let bytes = 0
+  for (const ch of reason) {
+    const cp = ch.codePointAt(0) ?? 0
+    const n = cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4
+    if (bytes + n > CLOSE_REASON_BYTES) break
+    out += ch
+    bytes += n
+  }
+  return out
 }
 
 export type ChannelState = 'idle' | 'handshake' | 'open' | 'closed'
@@ -89,6 +113,12 @@ export class RelayChannel {
   /** Frames sealed and opened, for a log line: never their content. */
   sent: number
   received: number
+  /** Their bytes on the wire, sealed, as per-relay totals for the connection log: never per frame. */
+  sentBytes: number
+  receivedBytes: number
+  /** When the last frame went or came (`now`): how quiet the relay was when it closed. */
+  lastFrameAt: number
+  private readonly clock: () => number
 
   constructor(o: RelayChannelOptions) {
     this.o = o
@@ -104,10 +134,19 @@ export class RelayChannel {
     this.partChars = 0
     this.sent = 0
     this.received = 0
+    this.sentBytes = 0
+    this.receivedBytes = 0
+    this.clock = o.now ?? Date.now
+    this.lastFrameAt = this.clock()
   }
 
   get state(): ChannelState {
     return this.st
+  }
+
+  /** The relay this channel runs over: random per relay, the id the hub's own log names it by. */
+  get relay(): string {
+    return this.o.relay
   }
 
   /**
@@ -155,6 +194,8 @@ export class RelayChannel {
     const plain = this.recvCipher?.open(data) ?? null
     if (!plain) return this.fail('a frame did not open: dropped, repeated, reordered or changed on the way')
     this.received++
+    this.receivedBytes += data.length
+    this.lastFrameAt = this.clock()
     const text = fromUtf8(plain)
     const frame = text === null ? null : parseRelayInner(text)
     if (!frame) return this.fail('a frame was not a relay frame')
@@ -185,6 +226,8 @@ export class RelayChannel {
         if ((this.o.io.bufferedAmount?.() ?? 0) + sealed.length > 4 * 1024 * 1024) throw new Error('the remote connection is not keeping up; reconnect to refresh the screen')
         this.o.io.send(sealed)
         this.sent++
+        this.sentBytes += sealed.length
+        this.lastFrameAt = this.clock()
       }
       return true
     } catch (err) {
@@ -201,7 +244,7 @@ export class RelayChannel {
     this.recvCipher = null
     this.parts = []
     try {
-      this.o.io.close(code, reason.slice(0, 120))
+      this.o.io.close(code, closeFrameReason(reason))
     } catch {
       /* the socket is already gone */
     }

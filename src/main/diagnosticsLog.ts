@@ -171,8 +171,9 @@ export class DiagnosticsLog {
   private draining: Promise<void> | null = null
   private head: { line: Promise<string>; fallback: string } | null = null
 
-  constructor(dir: string, fs: LogFs = nodeLogFs, cap: number = LOG_CAP_BYTES, clock: () => number = Date.now) {
-    this.file = join(dir, LOG_NAME)
+  /** `name`: the file in `dir` (`LOG_NAME` unless said); the connection log (hub/connectionLog.ts) is a second one. */
+  constructor(dir: string, fs: LogFs = nodeLogFs, cap: number = LOG_CAP_BYTES, clock: () => number = Date.now, name: string = LOG_NAME) {
+    this.file = join(dir, name)
     this.rotated = `${this.file}.1`
     this.fs = fs
     this.cap = cap

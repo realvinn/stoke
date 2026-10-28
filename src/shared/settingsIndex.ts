@@ -653,6 +653,7 @@ export const SETTING_ROWS: readonly SettingRow[] = [
   { id: 'hosts.ssh-keys', page: 'hosts', label: 'SSH keys', keywords: ['share ssh key', 'private key', 'transfer ssh', 'id_ed25519', 'default ssh key', 'install key', 'configured servers'] },
   { id: 'account.devices', page: 'account', label: 'Your devices', keywords: ['remove device', 'revoke', 'rename device', 'computers'], fallback: 'account.overview' },
   { id: 'account.other-machines', page: 'account', label: 'Other machines', keywords: ['remote sessions', 'open sessions elsewhere', 'share sessions', 'relay', 'let my other devices see and open my sessions'], fallback: 'account.overview' },
+  { id: 'account.connection-log', page: 'account', label: 'Keep a connection log', keywords: ['connection log', 'connections.log', 'log file', 'show log file', 'copy log', 'drops', 'disconnects', 'reconnecting', 'remote tab keeps dropping', 'diagnostics', 'troubleshoot'], fallback: 'account.overview' },
   {
     id: 'account.share-chats',
     page: 'account',

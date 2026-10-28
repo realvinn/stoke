@@ -115,7 +115,28 @@ export const RELAY_IDLE_MS = 10 * 60_000
 export const RELAY_PING_MS = 4 * 60_000
 /** No `pong` within this after a ping: the other end is not serving the channel, and the guest closes it. */
 export const RELAY_PONG_WAIT_MS = 60_000
+/**
+ * After this computer wakes from sleep, every open remote tab is pinged at
+ * once (`HubRemote.wake`) and closed if no `pong` comes within this: a link
+ * that died while asleep reconnects in seconds instead of sitting frozen
+ * until the next `RELAY_PING_MS` round plus its `RELAY_PONG_WAIT_MS`.
+ */
+export const RELAY_WAKE_PONG_MS = 10_000
 export const RELAY_OPEN_TTL_MS = 60_000
+/**
+ * How long a guest waits, from its relay socket's open to the end of the
+ * handshake, for the other machine to pick the relay up. Without it a relay
+ * the host never joined held the tab on "Connecting…" until the hub's own
+ * `RELAY_OPEN_TTL_MS` plus its sweep, about 91 s (275 times between Oct 4
+ * and Oct 27 in the NUC's hub.log); of 4,914 joins in that time the slowest
+ * took 2.3 s. Expiry closes the channel ("the other machine did not pick
+ * up"), which is a counted try, and the next try asks for a fresh relay. The
+ * host's "let this device in?" question comes after the handshake, so this
+ * never cuts it. CLAUDE.md gotcha 173.
+ */
+export const RELAY_JOIN_WAIT_MS = 10_000
+/** The relay WebSocket's own upgrade deadline (`ws` `handshakeTimeout`), as presence has: a hung upgrade becomes a counted try. */
+export const RELAY_HANDSHAKE_MS = 20_000
 export const RELAYS_PER_ACCOUNT = 8
 /** How long the host's "let this device in?" question waits before it refuses. */
 export const RELAY_ASK_MS = 60_000

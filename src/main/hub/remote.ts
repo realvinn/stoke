@@ -98,8 +98,10 @@ import {
   isPtyId,
   keyFingerprint,
   RELAY_ASK_MS,
+  RELAY_JOIN_WAIT_MS,
   RELAY_PING_MS,
   RELAY_PONG_WAIT_MS,
+  RELAY_WAKE_PONG_MS,
   relayFrameVerdict,
   type HubGrant,
   type RelayInnerFrame,
@@ -108,6 +110,7 @@ import {
 } from '../../shared/hub/relay.ts'
 import type { PhoneSocket } from '../remote/socket.ts'
 import { VirtualSocket } from '../remote/socket.ts'
+import { closeReasonFields, errorCodeOf, reasonText, type TraceFields, type TraceFn } from '../../shared/hub/connectionTrace.ts'
 import { RelayChannel } from './channel.ts'
 import { openStatus, randomB64u, sealStatus } from './crypto.ts'
 
@@ -128,7 +131,8 @@ export interface RelaySocket {
   close(code?: number, reason?: string): void
   on(event: 'open', fn: () => void): unknown
   on(event: 'message', fn: (data: unknown, binary: boolean) => void): unknown
-  on(event: 'close', fn: (code: number) => void): unknown
+  /** `reason`: the close frame's, as `ws` hands it (a Buffer) or a browser (a string); only its tag is ever logged. */
+  on(event: 'close', fn: (code: number, reason?: unknown) => void): unknown
   on(event: 'error', fn: (err: Error) => void): unknown
 }
 
@@ -218,8 +222,18 @@ export interface HubRemoteDeps extends RemoteMachineDeps {
   /** Give (`true`) or take back a device's chats "Always". Main refuses to give one while the tick is off. */
   setChatGrant(device: string, on: boolean): Promise<void>
   log(message: string, err?: unknown): void
+  /**
+   * The opt-in connection log (hub/connectionLog.ts, "Keep a connection log"):
+   * the guest's and the host's relay lifecycle, as ids, times, counts and tags
+   * only — never a title, a name, a reason's text or a frame's content
+   * (`traceFields` keeps nothing else). Absent: nothing is traced (the account
+   * website passes none).
+   */
+  trace?: TraceFn
   /** Tests only: the guest's keepalive, in real milliseconds (`RELAY_PING_MS`, `RELAY_PONG_WAIT_MS`). */
   keepAlive?: { pingMs: number; pongWaitMs: number }
+  /** Tests only: the guest's join deadline, in real milliseconds (`RELAY_JOIN_WAIT_MS`). */
+  joinWaitMs?: number
   snapshotWaitMs?: number
   /** Tests only: the guest's chats timings, in real milliseconds (`CHATS_IDLE_MS`, `CHATS_WAIT_MS`, `CHATS_RETRY_MS`). */
   chatsTiming?: { idleMs?: number; waitMs?: number; retryMs?: number; requestMs?: number }
@@ -276,6 +290,10 @@ interface GuestTab {
   /** The keepalive while the channel is open, and the wait for its pong. */
   ping: ReturnType<typeof setInterval> | null
   pongWait: ReturnType<typeof setTimeout> | null
+  /** When the ping now owed went (`now`), for the connection log's round trip; 0 when none is owed. */
+  pingAt: number
+  /** When the current connect began (`now`), for the connection log. */
+  connectAt: number
   closed: boolean
   rendererReady: boolean
   rendererOwners: Set<number | string>
@@ -504,6 +522,15 @@ export class HubRemote {
     }
   }
 
+  /** One line for the opt-in connection log (`HubRemoteDeps.trace`); never throws into a connection. */
+  private tr(event: string, fields?: TraceFields): void {
+    try {
+      this.d.trace?.(event, fields)
+    } catch {
+      /* the log never breaks a connection */
+    }
+  }
+
   /* ======================================================== presence */
 
   /** The presence socket opened: tell the others about this machine at once. */
@@ -536,10 +563,45 @@ export class HubRemote {
   }
 
   onOnline(online: string[]): void {
+    const before = this.online
     this.presenceKnown = true
     this.online = [...online]
     for (const id of Object.keys(this.statuses)) if (!this.online.includes(id)) delete this.statuses[id]
+    const open = [...this.tabs.values()].filter((t) => !t.closed)
+    this.tr('presence-online', { count: this.online.length, offlineTabs: open.filter((t) => !this.online.includes(t.device)).length })
     this.emit()
+    this.revive(before)
+  }
+
+  /**
+   * A machine that has just come online (it was not in `before`) gets back
+   * every remote tab here that was waiting on it: given up on ("lost", after
+   * `MAX_TRIES`), or waiting out a backoff. Without this a host that slept
+   * past the tries left its tabs on "Could not reach …" until the owner
+   * pressed Try again. Never a closed, refused or ended tab, nor one ended for
+   * good (this computer out of the vault, or the host gone from its chain);
+   * the tries start again, and `connect`'s own claim covers re-entry (gotcha 20).
+   * `presenceClosed` empties `online`, so after a presence reconnect every
+   * online device counts as just come online here (gotcha 173).
+   */
+  private revive(before: readonly string[]): void {
+    if (!this.d.context()) return
+    let moved = false
+    for (const t of [...this.tabs.values()]) {
+      if (t.closed || t.connecting || t.channel) continue
+      if (!this.online.includes(t.device) || before.includes(t.device)) continue
+      const waiting = t.state === 'lost' || (t.state === 'reconnecting' && t.timer !== null)
+      if (!waiting || !this.holds(t.device, null)) continue
+      if (t.timer) clearTimeout(t.timer)
+      t.timer = null
+      this.tr('relay-revive', { tab: t.id, peer: t.device, state: t.state, tries: t.tries })
+      t.tries = 0
+      t.state = 'connecting'
+      t.message = null
+      moved = true
+      void this.connect(t)
+    }
+    if (moved) this.emit()
   }
 
   /** Another device's sealed status, as the hub forwarded it. */
@@ -694,6 +756,8 @@ export class HubRemote {
       hint: null,
       ping: null,
       pongWait: null,
+      pingAt: 0,
+      connectAt: 0,
       closed: false,
       rendererReady: !waitForRenderer,
       rendererOwners: new Set(),
@@ -765,6 +829,7 @@ export class HubRemote {
     t.terminalOpened = channel.send({ t: 'ws-open', id: PTY_SOCKET, path: `/ws?ptyId=${encodeURIComponent(t.ptyId)}` })
     if (t.terminalOpened) t.snapshotWait = setTimeout(() => {
       t.snapshotWait = null
+      if (!t.closed && t.channel === channel) this.tr('relay-snapshot-timeout', { tab: t.id, relay: channel.relay, peer: t.device })
       if (!t.closed && t.channel === channel) channel.close(`The chat on ${this.nameOf(t.device)} did not send its terminal screen. Other chats may still be available.`)
     }, this.d.snapshotWaitMs ?? 15_000)
   }
@@ -832,6 +897,7 @@ export class HubRemote {
       this.emit()
       return
     }
+    this.tr('relay-retry', { tab: t.id, peer: t.device, state: t.state, tries: t.tries })
     t.tries = 0
     t.state = 'connecting'
     t.message = null
@@ -843,6 +909,7 @@ export class HubRemote {
   close(tabId: string, reconnecting = false): void {
     const t = this.tabs.get(tabId)
     if (!t) return
+    this.tr('relay-tab-close', { tab: t.id, peer: t.device, state: t.state })
     t.closed = true
     this.clearSnapshotWait(t)
     if (t.timer) clearTimeout(t.timer)
@@ -874,13 +941,35 @@ export class HubRemote {
         this.emit()
         return
       }
-      if (!this.online.includes(t.device)) throw new Error(`${this.nameOf(t.device)} is not online.`)
-      const { relay } = await this.d.createRelay(t.device)
+      t.connectAt = this.d.now()
+      this.tr('relay-connect', { tab: t.id, peer: t.device, try: t.tries })
+      if (!this.online.includes(t.device)) {
+        this.tr('relay-create-failed', { tab: t.id, peer: t.device, err: 'offline-local' })
+        throw new Error(`${this.nameOf(t.device)} is not online.`)
+      }
+      let relay: string
+      try {
+        ;({ relay } = await this.d.createRelay(t.device))
+      } catch (err) {
+        // The hub's error code only, never its sentence.
+        this.tr('relay-create-failed', { tab: t.id, peer: t.device, err: errorCodeOf(err), ms: this.d.now() - t.connectAt })
+        throw err
+      }
+      this.tr('relay-created', { tab: t.id, peer: t.device, relay, ms: this.d.now() - t.connectAt })
       if (!current()) return
       const socket = await this.d.openRelay(relay)
       if (!current()) {
         socket.close(1000, 'the tab was closed')
         return
+      }
+      /** When the socket opened (0 before), and how it closed when the hub or the edge closed it. */
+      let openedAt = 0
+      let shut: { code: number; reason: string } | null = null
+      /** The join deadline (F2): from the socket's open to the end of the handshake. */
+      let joinWait: ReturnType<typeof setTimeout> | null = null
+      const stopJoinWait = (): void => {
+        if (joinWait) clearTimeout(joinWait)
+        joinWait = null
       }
       const channel = new RelayChannel({
         role: 'guest',
@@ -890,9 +979,13 @@ export class HubRemote {
         peer: t.device,
         peerKey: (id) => this.d.context()?.active.find((a) => a.id === id && a.id !== ctx.me.id)?.sign ?? null,
         io: { send: (data) => socket.send(data), bufferedAmount: () => socket.bufferedAmount ?? 0, close: (code, reason) => socket.close(code, reason) },
+        now: () => this.d.now(),
         events: {
           onOpen: () => {
+            // The other machine picked the relay up: the deadline is done with, so its question ("let this device in?") is never cut.
+            stopJoinWait()
             if (!current()) return
+            this.tr('relay-handshake', { tab: t.id, relay, ms: this.d.now() - (openedAt || t.connectAt) })
             this.keepAlive(t, channel, current)
             channel.send({ t: 'attach', ptyId: t.ptyId })
             t.hint = setTimeout(() => {
@@ -907,6 +1000,23 @@ export class HubRemote {
             if (current()) this.guestFrame(t, channel, f)
           },
           onClose: (reason) => {
+            stopJoinWait()
+            const now = this.d.now()
+            this.tr('relay-close', {
+              side: 'guest',
+              relay,
+              peer: t.device,
+              tab: t.id,
+              by: shut ? 'remote' : 'local',
+              code: shut?.code,
+              ...closeReasonFields(shut ? shut.reason : reason),
+              lifeMs: now - (openedAt || t.connectAt),
+              quietMs: now - channel.lastFrameAt,
+              tx: channel.sent,
+              rx: channel.received,
+              txB: channel.sentBytes,
+              rxB: channel.receivedBytes
+            })
             if (t.channel === channel) {
               t.channel = null
               this.stopKeepAlive(t)
@@ -916,11 +1026,30 @@ export class HubRemote {
         }
       })
       t.channel = channel
-      socket.on('open', () => channel.start())
+      const opened = (): void => {
+        if (openedAt) return
+        openedAt = this.d.now()
+        this.tr('relay-socket-open', { tab: t.id, relay, ms: openedAt - t.connectAt })
+        joinWait = setTimeout(() => {
+          joinWait = null
+          if (!current() || channel.state === 'open' || channel.state === 'closed') return
+          this.tr('relay-join-timeout', { tab: t.id, relay, peer: t.device, ms: this.d.now() - openedAt })
+          channel.close('the other machine did not pick up')
+        }, this.d.joinWaitMs ?? RELAY_JOIN_WAIT_MS)
+        joinWait.unref?.()
+        channel.start()
+      }
+      socket.on('open', opened)
       socket.on('message', (data, binary) => channel.receive(binary ? toBytes(data) : String(data), binary))
-      socket.on('close', () => channel.close('the relay closed'))
-      socket.on('error', () => undefined)
-      if (socket.readyState === 1) channel.start()
+      socket.on('close', (code, why) => {
+        // Only a close the socket brought: our own close (the channel already closed) is `by=local` (gotcha 172).
+        if (channel.state !== 'closed') shut = { code, reason: reasonText(why) }
+        channel.close('the relay closed')
+      })
+      socket.on('error', (err) => {
+        if (current()) this.tr('relay-socket-error', { tab: t.id, relay, err: errorCodeOf(err) })
+      })
+      if (socket.readyState === 1) opened()
     } catch (err) {
       if (current()) this.lost(t, err instanceof Error ? err.message : String(err))
     } finally {
@@ -932,6 +1061,7 @@ export class HubRemote {
     switch (f.t) {
       case 'ready':
         if (t.hint) clearTimeout(t.hint)
+        this.tr('relay-ready', { tab: t.id, relay: channel.relay, mode: f.mode })
         t.state = 'open'
         t.message = null
         // Only a host that says its own tab follows takes a resize from here (relay.ts `ready`).
@@ -953,6 +1083,8 @@ export class HubRemote {
       case 'refused':
         this.clearSnapshotWait(t)
         if (t.hint) clearTimeout(t.hint)
+        // Its code at most: the host's sentence is free text.
+        this.tr('relay-refused', { tab: t.id, relay: channel.relay, peer: t.device, refusal: f.code })
         t.state = 'refused'
         t.message = f.reason.slice(0, 300)
         t.gen++
@@ -970,6 +1102,7 @@ export class HubRemote {
         if (!msg || typeof msg !== 'object' || typeof (msg as { type?: unknown }).type !== 'string') return
         if ((msg as {type:string}).type === 'attached' || (msg as {type:string}).type === 'exit') {
           this.clearSnapshotWait(t)
+          if ((msg as { type: string }).type === 'attached') this.tr('relay-attached', { tab: t.id, relay: channel.relay, ms: this.d.now() - t.connectAt, tries: t.tries })
           t.tries = 0
         }
         if (t.sink) t.sink.frame(msg as RemoteTabFrame)
@@ -993,6 +1126,8 @@ export class HubRemote {
       case 'pong':
         if (t.pongWait) clearTimeout(t.pongWait)
         t.pongWait = null
+        if (t.pingAt) this.tr('relay-rtt', { tab: t.id, relay: channel.relay, ms: this.d.now() - t.pingAt })
+        t.pingAt = 0
         return
       default:
         return
@@ -1013,9 +1148,12 @@ export class HubRemote {
       if (!current() || channel.state !== 'open') return this.stopKeepAlive(t)
       if (t.pongWait) return // the last one is still owed: its own timer decides
       if (!channel.send({ t: 'ping' })) return
+      t.pingAt = this.d.now()
       t.pongWait = setTimeout(() => {
         t.pongWait = null
-        if (current() && channel.state === 'open') channel.close('the other machine stopped answering')
+        if (!current() || channel.state !== 'open') return
+        this.tr('relay-pong-timeout', { tab: t.id, relay: channel.relay, peer: t.device, ms: this.d.now() - t.pingAt })
+        channel.close('the other machine stopped answering')
       }, pongWaitMs)
     }, pingMs)
     t.ping.unref?.()
@@ -1026,6 +1164,38 @@ export class HubRemote {
     if (t.pongWait) clearTimeout(t.pongWait)
     t.ping = null
     t.pongWait = null
+    t.pingAt = 0
+  }
+
+  /**
+   * This computer woke from sleep (powerMonitor `resume`, through
+   * `HubService.wake`): every open remote tab is pinged now and given
+   * `pongWaitMs` (`RELAY_WAKE_PONG_MS`, 10 s) for its pong. A link that died
+   * while asleep — its socket half-open, nothing to say so — otherwise looked
+   * open with a frozen screen until the next keepalive round and its own wait,
+   * up to about five minutes; now it is closed in seconds and reconnects as
+   * any lost link does. A tab already owed a pong is asked again on the
+   * shorter wait. Only tabs: a chats relay lives as long as one search.
+   */
+  wake(pongWaitMs: number = RELAY_WAKE_PONG_MS): void {
+    let open = 0
+    for (const t of [...this.tabs.values()]) {
+      const channel = t.channel
+      if (t.closed || !channel || channel.state !== 'open') continue
+      if (t.pongWait) clearTimeout(t.pongWait)
+      t.pongWait = null
+      if (!channel.send({ t: 'ping' })) continue
+      open++
+      t.pingAt = this.d.now()
+      const gen = t.gen
+      t.pongWait = setTimeout(() => {
+        t.pongWait = null
+        if (t.closed || t.gen !== gen || t.channel !== channel || channel.state !== 'open') return
+        this.tr('relay-pong-timeout', { tab: t.id, relay: channel.relay, peer: t.device, ms: this.d.now() - t.pingAt, wake: true })
+        channel.close('the other machine stopped answering')
+      }, pongWaitMs)
+    }
+    this.tr('relay-wake', { open })
   }
 
   private lost(t: GuestTab, reason: string): void {
@@ -1040,16 +1210,19 @@ export class HubRemote {
     if (t.tries > MAX_TRIES) {
       t.state = 'lost'
       t.message = `Could not reach ${this.nameOf(t.device)}: ${reason}`
+      this.tr('relay-lost', { tab: t.id, peer: t.device, tries: t.tries, state: t.state, ...closeReasonFields(reason) })
       this.emit()
       return
     }
     t.state = 'reconnecting'
     t.message = reason
     if (t.timer) clearTimeout(t.timer)
+    const delayMs = reconnectDelayMs(t.tries - 1, Math.random())
+    this.tr('relay-lost', { tab: t.id, peer: t.device, tries: t.tries, delayMs, state: t.state, ...closeReasonFields(reason) })
     t.timer = setTimeout(() => {
       t.timer = null
       void this.connect(t)
-    }, reconnectDelayMs(t.tries - 1, Math.random()))
+    }, delayMs)
     this.emit()
   }
 
@@ -1062,11 +1235,17 @@ export class HubRemote {
   /** The hub says `guest` asked for a relay to this machine. */
   async onRelay(relay: string, guest: string): Promise<void> {
     const ctx = this.d.context()
+    this.tr('host-relay-notice', { relay, peer: guest, hosted: this.hosted.size })
     if (!ctx || guest === ctx.me.id || !ctx.active.some((a) => a.id === guest)) {
+      this.tr('host-relay-skip', { relay, peer: guest, why: 'not-device' })
       this.d.log(`hub remote: a relay from ${guest} was not taken (not an active device of this account)`)
       return
     }
-    if (this.hosted.has(relay) || this.hosted.size >= HOSTED_MAX) return
+    if (this.hosted.has(relay) || this.hosted.size >= HOSTED_MAX) {
+      // Silent before the log: either shows at the hub only as "the other end never joined".
+      this.tr('host-relay-skip', { relay, peer: guest, why: this.hosted.has(relay) ? 'repeat' : 'max', hosted: this.hosted.size })
+      return
+    }
     // Claimed before the first await (gotcha 20): a repeated frame cannot open it twice.
     const h: HostRelay = {
       relay,
@@ -1091,6 +1270,7 @@ export class HubRemote {
     try {
       socket = await this.d.openRelay(relay)
     } catch (err) {
+      this.tr('host-relay-open-failed', { relay, peer: guest, err: errorCodeOf(err) })
       this.d.log('hub remote: could not open a relay a device asked for', err)
       this.hosted.delete(relay)
       return
@@ -1099,6 +1279,8 @@ export class HubRemote {
       socket.close(1000, 'closed')
       return
     }
+    let openedAt = socket.readyState === 1 ? this.d.now() : 0
+    let shut: { code: number; reason: string } | null = null
     const channel = new RelayChannel({
       role: 'host',
       relay,
@@ -1107,21 +1289,52 @@ export class HubRemote {
       peer: guest,
       peerKey: (id) => this.d.context()?.active.find((a) => a.id === id && a.id !== ctx.me.id)?.sign ?? null,
       io: { send: (data) => socket.send(data), bufferedAmount: () => socket.bufferedAmount ?? 0, close: (code, reason) => socket.close(code, reason) },
+      now: () => this.d.now(),
       events: {
         onOpen: () => {
+          this.tr('host-handshake', { relay, peer: guest, ms: this.d.now() - (openedAt || h.since) })
           h.guestKey = channel.peerSignKey
           h.phase = 'attach'
-          h.wait = setTimeout(() => channel.close('no session was named'), ATTACH_WAIT_MS)
+          h.wait = setTimeout(() => {
+            this.tr('host-attach-timeout', { relay, peer: guest })
+            channel.close('no session was named')
+          }, ATTACH_WAIT_MS)
         },
         onFrame: (f) => void this.hostFrame(h, channel, f),
-        onClose: () => this.endHosted(h)
+        onClose: (reason) => {
+          const now = this.d.now()
+          this.tr('host-relay-close', {
+            side: 'host',
+            relay,
+            peer: guest,
+            by: shut ? 'remote' : 'local',
+            code: shut?.code,
+            ...closeReasonFields(shut ? shut.reason : reason),
+            lifeMs: now - (openedAt || h.since),
+            quietMs: now - channel.lastFrameAt,
+            tx: channel.sent,
+            rx: channel.received,
+            txB: channel.sentBytes,
+            rxB: channel.receivedBytes
+          })
+          this.endHosted(h)
+        }
       }
     })
     h.channel = channel
     channel.start()
+    socket.on('open', () => {
+      openedAt ||= this.d.now()
+    })
     socket.on('message', (data, binary) => channel.receive(binary ? toBytes(data) : String(data), binary))
-    socket.on('close', () => channel.close('the relay closed'))
-    socket.on('error', () => undefined)
+    socket.on('close', (code, why) => {
+      if (channel.state !== 'closed') shut = { code, reason: reasonText(why) }
+      channel.close('the relay closed')
+    })
+    socket.on('error', (err) => {
+      // Before the open it is the upgrade that failed: once swallowed, now the line that says the host tried.
+      this.tr(openedAt ? 'host-relay-error' : 'host-relay-open-failed', { relay, peer: guest, err: errorCodeOf(err) })
+    })
   }
 
   private async hostFrame(h: HostRelay, channel: RelayChannel, f: RelayInnerFrame): Promise<void> {
@@ -1244,6 +1457,7 @@ export class HubRemote {
       hostName: ctx.me.label,
       now
     })
+    this.tr('host-decision', { relay: h.relay, peer: h.guest, kind: 'session', decision: decision.t === 'allow' ? 'serve' : decision.t, via: decision.t === 'allow' ? decision.via : undefined })
     if (decision.t === 'refuse') return this.refuse(h, channel, decision.reason)
     if (decision.t === 'allow') return this.serve(h, channel, decision.mode, decision.via)
     for (const a of this.asks.values()) {
@@ -1370,6 +1584,7 @@ export class HubRemote {
       hostName: ctx.me.label,
       now
     })
+    this.tr('host-decision', { relay: h.relay, peer: h.guest, kind: 'chats', decision: decision.t === 'allow' ? 'serve' : decision.t, via: decision.t === 'allow' ? decision.via : undefined, refusal: decision.t === 'refuse' ? decision.code : undefined })
     if (decision.t === 'refuse') return this.refuse(h, channel, decision.reason, decision.code)
     if (decision.t === 'allow') return this.serveChats(h, channel, decision.via)
     for (const a of this.asks.values()) {
@@ -1598,6 +1813,7 @@ export class HubRemote {
 
   private endHosted(h: HostRelay): void {
     if (h.phase === 'closed') return
+    this.tr('host-relay-end', { relay: h.relay, peer: h.guest, phase: h.phase, kind: h.kind ?? undefined, ms: this.d.now() - h.since, sockets: h.sockets.size })
     const wasOnce = h.via === 'once' && h.ptyId !== null
     const wasChatsOnce = h.kind === 'chats' && h.via === 'once' && h.phase === 'serving'
     h.phase = 'closed'
@@ -1972,7 +2188,7 @@ export class HubRemote {
               if (!current() || p.state !== 'connecting') return
               p.state = 'waiting'
               p.message = `Waiting for ${p.label} to allow it…`
-              this.wake(p)
+              this.wakeWaiters(p)
               this.emit()
             }, ASKING_HINT_MS)
           },
@@ -2007,7 +2223,7 @@ export class HubRemote {
         p.state = 'open'
         p.message = null
         p.code = null
-        this.wake(p)
+        this.wakeWaiters(p)
         this.emit()
         return
       case 'refused': {
@@ -2048,7 +2264,7 @@ export class HubRemote {
     ch?.close(message)
     for (const settle of [...p.pending.values()]) settle(null)
     p.pending.clear()
-    this.wake(p)
+    this.wakeWaiters(p)
     this.emit()
   }
 
@@ -2063,11 +2279,11 @@ export class HubRemote {
     ch?.close(why)
     for (const settle of [...p.pending.values()]) settle(null)
     p.pending.clear()
-    this.wake(p)
+    this.wakeWaiters(p)
     if (this.chatPeers.get(p.device) === p) this.chatPeers.delete(p.device)
   }
 
-  private wake(p: ChatPeer): void {
+  private wakeWaiters(p: ChatPeer): void {
     for (const w of [...p.waiters]) w()
   }
 

@@ -166,6 +166,7 @@ import { readSshConfigHosts } from './ssh.ts'
 import { endRemoteSession, listRemoteSessions } from './sshSessions.ts'
 import { clipboardFiles, readClipboardPeek, registerSshImageHandlers } from './sshImages.ts'
 import { installDiagnostics } from './diagnostics.ts'
+import { connectionLogState, connectionTrace, copyConnectionLog, installConnectionLog, installHubWake, showConnectionLog } from './connections.ts'
 import { DesktopSshFiles } from './desktopSshFiles.ts'
 import { hostPersists, isSafeRemoteSessionName, mintRemoteSessionName } from '../shared/sshPersist.ts'
 import { shouldOfferKey } from '../shared/sshAuth.ts'
@@ -5321,6 +5322,8 @@ function registerIpc(): void {
           page.destroy()
         },
         log: (message, err) => (err ? console.error(`[stoke] ${message}`, err) : console.warn(`[stoke] ${message}`)),
+        // "Keep a connection log": written only while `hub.connectionLog` is on (connections.ts).
+        trace: connectionTrace,
         /*
          * "Other machines": this computer's sessions and the phone server's
          * own handlers, through the relay instance above — the host's grant
@@ -5443,6 +5446,14 @@ function registerIpc(): void {
   ipcMain.handle(CH.hubRemoteDrop, async () => (await hubService()).remoteDropGuests())
   ipcMain.handle(CH.hubSetSharing, async (_e, on: unknown) => (await hubService()).setSharing(on === true))
   ipcMain.handle(CH.hubRevokeGrant, async (_e, device: unknown) => (await hubService()).revokeGrant(str(device)))
+  // "Keep a connection log": main writes the setting and the file; the path and the text never cross.
+  ipcMain.handle(CH.hubSetConnectionLog, async (_e, on: unknown) => {
+    const r = await (await hubService()).setConnectionLog(on === true)
+    return r.ok ? { ...r, ...(await connectionLogState()) } : r
+  })
+  ipcMain.handle(CH.hubConnectionLogState, () => connectionLogState())
+  ipcMain.handle(CH.hubShowConnectionLog, () => showConnectionLog())
+  ipcMain.handle(CH.hubCopyConnectionLog, () => copyConnectionLog())
   // Chat history across computers (hub/remote.ts). A sidebar keystroke never STARTS the hub client.
   ipcMain.handle(CH.hubSearchChats, (_e, q: unknown) => hubClient?.searchChats(str(q)) ?? [])
   ipcMain.handle(CH.hubOpenRemoteChat, (_e, device: unknown, source: unknown, nativeId: unknown) =>
@@ -6187,6 +6198,10 @@ if (!app.requestSingleInstanceLock(launchRequest ? { stokeCli: launchRequest } :
      * waits on `secretsSettled()` (store.ts `initSecretStore`).
      */
     void initSecretStore()
+    // "Keep a connection log" (connections.ts): its first line now if it is on, and sleep/wake/lock lines while it is.
+    installConnectionLog()
+    // After a sleep, every open remote tab is checked at once (HubRemote.wake).
+    installHubWake(() => hubClient?.wake())
     onSecretsOpenState((state) => {
       send(CH.secretStoreState, state)
       // The opened settings, for a renderer that was handed an earlier copy.

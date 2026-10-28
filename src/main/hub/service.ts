@@ -106,7 +106,8 @@ import {
   type RecoveryWrap,
   type VaultWrap
 } from '../../shared/hub/protocol.ts'
-import { keyFingerprint, RELAY_MAX_FRAME_BYTES, type HubGrant } from '../../shared/hub/relay.ts'
+import { keyFingerprint, RELAY_HANDSHAKE_MS, RELAY_MAX_FRAME_BYTES, type HubGrant } from '../../shared/hub/relay.ts'
+import type { TraceFn } from '../../shared/hub/connectionTrace.ts'
 import { parseHubStorage, type HubStorage } from '../../shared/hub/storage.ts'
 import { HubPresence, type PresenceSocket } from './presence.ts'
 import { CHATS_REDACTION_BLOCK, emptyRemoteView, isAttachAnswer, type HubRemoteView, type RemoteChatOpen, type RemoteChatsResult } from '../../shared/hub/remote.ts'
@@ -187,6 +188,12 @@ export interface HubServiceDeps {
   remote?: RemoteMachineDeps
   /** Open a signed relay socket; default `ws`. */
   relaySocket?: (url: string, headers: Record<string, string>) => Promise<RelaySocket>
+  /**
+   * The opt-in connection log's hook (hub/connectionLog.ts, `hub.connectionLog`),
+   * handed to "Other machines" and to presence: ids, times, counts and tags
+   * only. Absent: nothing is traced.
+   */
+  trace?: TraceFn
   accounts?: Pick<AccountSync, 'snapshot' | 'apply'>
 }
 
@@ -428,7 +435,8 @@ export class HubService {
           shareChats: () => this.settings().hub.shareChats,
           chatGrants: () => this.settings().hub.chatGrants,
           setChatGrant: (device, on) => this.setChatGrant(device, on),
-          log: (message, err) => this.log(message, err)
+          log: (message, err) => this.log(message, err),
+          trace: deps.trace
         })
       : null
     this.chatConsentAt = null
@@ -2831,7 +2839,8 @@ export class HubService {
         if (wasOpen) this.remote?.presenceClosed()
         this.emit()
       },
-      error: (error) => this.log('hub: presence interrupted; reconnecting', error)
+      error: (error) => this.log('hub: presence interrupted; reconnecting', error),
+      trace: this.deps.trace
     })
     this.presenceConnection.start()
   }
@@ -2969,7 +2978,7 @@ export class HubService {
     const headers = signRequest({ method: 'GET', pathFromV1, device: dev.id, signPriv: dev.keys.signPriv, token: dev.token, body: '', now: this.now() })
     if (this.deps.relaySocket) return this.deps.relaySocket(url, headers)
     const { WebSocket } = await import('ws')
-    return new WebSocket(url, { headers, maxPayload: RELAY_MAX_FRAME_BYTES + 1024 }) as unknown as RelaySocket
+    return new WebSocket(url, relaySocketOptions(headers)) as unknown as RelaySocket
   }
 
   /** One device's standing on THIS machine (T0: `hub.grants`, never synced); null takes it away. */
@@ -3097,6 +3106,24 @@ export class HubService {
     this.remote?.endChatSearch()
   }
 
+  /**
+   * "Keep a connection log" on this computer (`hub.connectionLog`, never
+   * synced). Main's connection log reads it on every event, so it takes
+   * effect at once; turning it on writes the log's first line.
+   */
+  async setConnectionLog(on: boolean): Promise<HubResult> {
+    await this.commitHub({ connectionLog: on === true })
+    return { ok: true }
+  }
+
+  /**
+   * This computer woke from sleep: every open remote tab is checked now
+   * (`HubRemote.wake`), so one that died asleep reconnects in seconds.
+   */
+  wake(): void {
+    this.remote?.wake()
+  }
+
   /** "Let my other devices see and open my sessions" on this computer. */
   async setSharing(on: boolean): Promise<HubResult> {
     await this.commitHub({ shareSessions: on === true })
@@ -3159,6 +3186,17 @@ export class HubService {
   remoteSessionsChanged(): void {
     this.remote?.sessionsChanged()
   }
+}
+
+/**
+ * The relay WebSocket's options: the signed headers, a frame cap just past the
+ * hub's, and an upgrade deadline (`RELAY_HANDSHAKE_MS`), as presence has — an
+ * upgrade that hangs (an edge or a tunnel that takes the connection and never
+ * answers) is a counted try instead of "Connecting…" with no end. `verify:hub-reconnect`
+ * runs a real `ws` with these against a server that never answers.
+ */
+export function relaySocketOptions(headers: Record<string, string>, handshakeMs: number = RELAY_HANDSHAKE_MS): { headers: Record<string, string>; maxPayload: number; handshakeTimeout: number } {
+  return { headers, maxPayload: RELAY_MAX_FRAME_BYTES + 1024, handshakeTimeout: handshakeMs }
 }
 
 /** For the suite: a plan's upload count without the network. */

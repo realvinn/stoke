@@ -431,6 +431,17 @@ export const CH = {
   /** "Let my other devices see and open my sessions" on this computer. */
   hubSetSharing: 'hub:set-sharing',
   hubRevokeGrant: 'hub:revoke-grant',
+  /**
+   * "Keep a connection log" (src/main/hub/connectionLog.ts): turn it on or off
+   * here (`hub.connectionLog`, main writes it), whether its file exists, show
+   * the file in the OS's file browser, and put both files' text on the
+   * clipboard. The path and the text stay in main; only `{ exists, bytes }`
+   * crosses.
+   */
+  hubSetConnectionLog: 'hub:set-connection-log',
+  hubConnectionLogState: 'hub:connection-log-state',
+  hubShowConnectionLog: 'hub:show-connection-log',
+  hubCopyConnectionLog: 'hub:copy-connection-log',
   /*
    * Chat history across the owner's computers (spec 2026-10-03 §3). What
    * crosses is per-computer results (`RemoteChatsResult`: hits with a folder
