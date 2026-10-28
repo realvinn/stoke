@@ -237,6 +237,12 @@ node hub/dist/stoke-hub.mjs health --url https://stoke.vinn.dev/hub
 this step, `stoke.vinn.dev/hub/…` is answered by the installer — a web page, or `install.sh` to
 curl — and `health` says "not a Stoke hub".
 
+The same deploy serves the account website (`stoke.vinn.dev/remote*`, built by
+`build:account-remote`), which every "Pair phone to account" link opens. Check it too:
+`curl -s https://stoke.vinn.dev/remote/ | grep -o '<title>[^<]*'` must say `Stoke account`. If it
+says anything else, the installer is answering, and a pairing link lands on the Stoke home page:
+that was the case from beta.15 until 2026-10-28, when the website first went live.
+
 If `health` says the address "answered with a web page (HTTP 200)", that is a Cloudflare
 challenge (gotcha 71): add a WAF skip rule for
 `http.host eq "stoke.vinn.dev" and starts_with(http.request.uri.path, "/hub/")`, or make sure Bot

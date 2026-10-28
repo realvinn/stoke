@@ -36,10 +36,12 @@
   // tunnel in the ProTech account, stoke-hub-origin.protechitsolutions.com.au,
   // which existed only because cloudflared's cert.pem was ProTech's.
   //
-  // What is LIVE is version 651d7a93 (2026-10-28): commit 85386bf's code with
-  // this origin. The `/remote*` route and the assets above have never been
-  // deployed, so `npm run deploy:hub-edge` from a newer tree also publishes
-  // the account website at stoke.vinn.dev/remote/ for the first time.
+  // The account website (`/remote*` and the assets above) first went live on
+  // 2026-10-28, version 6ece9563, deployed from 64d3276's tree. Until then
+  // stoke.vinn.dev/remote/ was answered by the installer, so a "Pair phone to
+  // account" link opened the Stoke home page. The version before it, 651d7a93,
+  // is the hub path alone (85386bf's code with this origin): the rollback if
+  // the website ever has to come down.
   "vars": { "HUB_ORIGIN": "https://hub-origin.vinn.dev" },
 
   "observability": { "enabled": true }
