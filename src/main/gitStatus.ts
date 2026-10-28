@@ -101,7 +101,7 @@ function withDeadline<T>(work: Promise<T>, ms: number): Promise<T | 'late'> {
   return Promise.race([work, late]).finally(() => clearTimeout(timer))
 }
 
-interface Located {
+export interface Located {
   root: string
   gitDir: string
   head: string
@@ -109,7 +109,7 @@ interface Located {
 }
 
 /** Find the work tree, its git dir and HEAD with no process at all. Null outside a repository. */
-async function locate(path: string): Promise<Located | null> {
+export async function locateRepo(path: string): Promise<Located | null> {
   const real = await realpath(path).catch(() => resolve(path))
   const root = await gitRootOf(real)
   if (!root) return null
@@ -127,6 +127,46 @@ async function locate(path: string): Promise<Located | null> {
 }
 
 /**
+ * The switches every git Stoke runs in a repository it does not own must
+ * lead with (gotcha 147): no optional locks (no index write, so no
+ * `post-index-change` hook), `core.fsmonitor=false`, and every filter the
+ * REPO defines emptied (`filterOverrides`). Null when the filter config cannot
+ * be read safely; the caller then runs nothing. One copy of the rule, read by
+ * the title bar's status and by Work mode's listing (plugins/workMode.ts).
+ *
+ * Which filters the repo defines comes from `git config`, which reads config
+ * and runs nothing. Exit 1 with no output is "none found".
+ */
+export async function safeGitArgs(git: string, root: string, env: NodeJS.ProcessEnv, timeoutMs: number): Promise<string[] | null> {
+  const cfg = await run(git, ['--no-optional-locks', '-C', root, 'config', '--null', '--show-scope', '--name-only', '--get-regexp', '^filter\\.'], {
+    env,
+    timeout: timeoutMs,
+    maxBuffer: 1024 * 1024
+  })
+  let overrides: string[] | null
+  if (!cfg.error || (cfg.error.code === 1 && !cfg.error.killed && !cfg.stdout)) {
+    overrides = filterOverrides(cfg.stdout)
+  } else if (typeof cfg.error.code === 'number' && !cfg.error.killed) {
+    /*
+     * A git older than 2.26 has no `--show-scope`. List the names alone and
+     * empty every filter, the user's own included: a wrong "changed" on an
+     * LFS file is the price of running nothing from the repo.
+     */
+    const bare = await run(git, ['--no-optional-locks', '-C', root, 'config', '--null', '--name-only', '--get-regexp', '^filter\\.'], {
+      env,
+      timeout: timeoutMs,
+      maxBuffer: 1024 * 1024
+    })
+    overrides =
+      !bare.error || (bare.error.code === 1 && !bare.stdout)
+        ? filterOverrides(bare.stdout.split('\0').filter(Boolean).map((k) => `unknown\0${k}`).join('\0') + '\0')
+        : null
+  } else overrides = null
+  if (overrides === null) return null
+  return ['--no-optional-locks', '-c', 'core.fsmonitor=false', ...overrides]
+}
+
+/**
  * One reading of `path`. Never throws: every failure is a reading that says
  * what it could not find out.
  */
@@ -134,7 +174,7 @@ export async function readGitStatus(path: string, deps: GitDeps): Promise<GitSta
   const now = deps.now ?? Date.now
   const t = { find: FIND_DEADLINE_MS, config: CONFIG_TIMEOUT_MS, status: STATUS_TIMEOUT_MS, ...deps.timeouts }
 
-  const found = await withDeadline(locate(path).catch(() => null), t.find)
+  const found = await withDeadline(locateRepo(path).catch(() => null), t.find)
   if (found === 'late') return { ...NO_REPO, error: 'the folder did not answer in time', at: now() }
   if (!found) return { ...NO_REPO, at: now() }
 
@@ -154,50 +194,12 @@ export async function readGitStatus(path: string, deps: GitDeps): Promise<GitSta
   if (!git) return { ...base, error: 'git was not found', at: now() }
   const env = gitEnv(await deps.env())
 
-  /*
-   * Which filters the repo defines, to empty them for the status. `git config`
-   * reads config and runs nothing. Exit 1 with no output is "none found".
-   */
-  const cfg = await run(git, ['--no-optional-locks', '-C', found.root, 'config', '--null', '--show-scope', '--name-only', '--get-regexp', '^filter\\.'], {
-    env,
-    timeout: t.config,
-    maxBuffer: 1024 * 1024
-  })
-  let overrides: string[] | null
-  if (!cfg.error || (cfg.error.code === 1 && !cfg.error.killed && !cfg.stdout)) {
-    overrides = filterOverrides(cfg.stdout)
-  } else if (typeof cfg.error.code === 'number' && !cfg.error.killed) {
-    /*
-     * A git older than 2.26 has no `--show-scope`. List the names alone and
-     * empty every filter, the user's own included: a wrong "changed" on an
-     * LFS file is the price of running nothing from the repo.
-     */
-    const bare = await run(git, ['--no-optional-locks', '-C', found.root, 'config', '--null', '--name-only', '--get-regexp', '^filter\\.'], {
-      env,
-      timeout: t.config,
-      maxBuffer: 1024 * 1024
-    })
-    overrides =
-      !bare.error || (bare.error.code === 1 && !bare.stdout)
-        ? filterOverrides(bare.stdout.split('\0').filter(Boolean).map((k) => `unknown\0${k}`).join('\0') + '\0')
-        : null
-  } else overrides = null
-  if (overrides === null) return { ...base, error: 'the repository’s filter settings could not be read safely', at: now() }
+  const prefix = await safeGitArgs(git, found.root, env, t.config)
+  if (prefix === null) return { ...base, error: 'the repository’s filter settings could not be read safely', at: now() }
 
   const st = await run(
     git,
-    [
-      '--no-optional-locks',
-      '-c',
-      'core.fsmonitor=false',
-      ...overrides,
-      '-C',
-      found.root,
-      'status',
-      '--porcelain=v2',
-      '--branch',
-      '--ignore-submodules=dirty'
-    ],
+    [...prefix, '-C', found.root, 'status', '--porcelain=v2', '--branch', '--ignore-submodules=dirty'],
     { env, timeout: t.status, maxBuffer: STATUS_MAX_BUFFER }
   )
   if (st.error) return { ...base, error: describeGitError(st), at: now() }

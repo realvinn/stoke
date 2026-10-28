@@ -20,13 +20,13 @@ export type PaletteRow =
   | { kind: 'action'; hit: ActionHit }
 
 /**
- * Something the palette can DO rather than open: today only a new private
- * chat (shared/privateChat.ts). Found by its label or the words people use for
+ * Something the palette can DO rather than open: a new private chat
+ * (shared/privateChat.ts), or Work mode. Found by its label or the words people use for
  * the thing — "temporary", "incognito" — and only for a query: the empty
  * palette is "Find a project" and lists projects alone.
  */
 export interface PaletteAction {
-  id: 'private'
+  id: 'private' | 'work-mode'
   label: string
   /** The line under it: what it does. */
   hint: string
@@ -42,6 +42,19 @@ export const PALETTE_ACTIONS: readonly PaletteAction[] = [
     words: ['private', 'temporary', 'incognito', 'ghost', 'scratch']
   }
 ]
+
+/** Work mode, the pretend IDE: listed only while its plugin is enabled (`paletteActions`). */
+export const WORK_MODE_ACTION: PaletteAction = {
+  id: 'work-mode',
+  label: 'Work mode',
+  hint: 'A pretend IDE that types this project’s code',
+  words: ['work', 'ide', 'editor', 'pretend', 'fake', 'boss', 'typing', 'vscode']
+}
+
+/** The actions the palette offers now: the standing ones, and Work mode while its plugin is on. */
+export function paletteActions(on: { workMode: boolean }): readonly PaletteAction[] {
+  return on.workMode ? [...PALETTE_ACTIONS, WORK_MODE_ACTION] : PALETTE_ACTIONS
+}
 
 export interface ActionHit {
   action: PaletteAction

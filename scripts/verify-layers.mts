@@ -111,7 +111,8 @@ const OVERLAY_COVERED: Record<string, string> = {
   'components/CommandPalette.tsx': 'paletteOpen',
   'components/SettingsSheet.tsx': 'settingsOpen',
   'components/AgentPicker.tsx': 'agentPickerOpen',
-  'components/BusyDialog.tsx': 'busyPrompt'
+  'components/BusyDialog.tsx': 'busyPrompt',
+  'components/WorkMode.tsx': 'workModeOpen'
 }
 
 const app = readFileSync(join(rendererDir, 'App.tsx'), 'utf8')

@@ -168,3 +168,20 @@
   font-size: 12px;
   line-height: 1.4;
 }
+
+/* Work mode's panel (components/WorkModePanel.tsx): its check rows lie flat beside their box. */
+.plugins-settings .wm-settings .check-row {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  font-size: inherit;
+}
+.wm-settings-types {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.plugins-settings .wm-settings-chars input {
+  min-width: 0;
+  width: 5rem;
+}

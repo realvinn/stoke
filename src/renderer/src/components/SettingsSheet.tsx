@@ -33,6 +33,7 @@ import {
   nodeIdOf,
   pathOf,
   resolveSettingsTarget,
+  rowById,
   sameLocation,
   searchSettings,
   settingsEntries,
@@ -69,6 +70,7 @@ import type { CodingCliDetection, CodingCliId } from '@shared/codingClis'
 import { WorklogSettings } from './WorklogSettings'
 import { WorkPanel } from './WorkPanel'
 import { PluginsSettings } from './PluginsSettings'
+import type { WorkModeEntry } from './WorkModePanel'
 import { usePlugins } from '../lib/usePlugins'
 
 /**
@@ -225,6 +227,8 @@ interface Props {
    * the bar itself.
    */
   onCustomiseTitleBar: () => void
+  /** Work mode's folder (the tab in front) and its Open, for Plugins › Work mode. App's: it owns the overlay. */
+  workMode?: WorkModeEntry
   onClose: () => void
 }
 
@@ -256,12 +260,17 @@ export function SettingsSheet({
   sshKeys,
   chats,
   onCustomiseTitleBar,
+  workMode,
   onClose
 }: Props): React.JSX.Element {
   const { view: plugins } = usePlugins()
   const themes: Theme[] = [...BUILT_IN_THEMES, ...settings.customThemes]
   const [loc, setLoc] = useState<SettingsLocation>(() => resolveSettingsTarget(initialSection))
-  const [pluginSelection, setPluginSelection] = useState('')
+  // A jump to a plugin's own row (Work mode's) opens that plugin's details, where the row is drawn.
+  const [pluginSelection, setPluginSelection] = useState(() => {
+    const row = initialRow ? rowById(initialRow.id) : undefined
+    return row?.page === 'plugins' ? (row.plugin ?? '') : ''
+  })
 
   /*
    * The agents the menu lists: Claude Code, then every installed one — plus
@@ -295,7 +304,7 @@ export function SettingsSheet({
    */
   const go = useCallback(
     (next: SettingsLocation, row?: SettingsRowTarget | null, focus = false): void => {
-      setPluginSelection('')
+      setPluginSelection(row && next.page === 'plugins' ? (rowById(row.id)?.plugin ?? '') : '')
       const up = ancestorsOf(next)
       if (up.length) onExpand(up, true)
       // The same page keeps its object, so going where you already are moves nothing.
@@ -1337,7 +1346,7 @@ export function SettingsSheet({
               <ProfilesSettings settings={settings} onPatch={onPatch} onCreated={onProfileCreated} section={jump?.row.id} sectionRevision={jump?.seq} />
             )}
 
-            {loc.page === 'plugins' && <PluginsSettings defaultProject={defaultCwd} initialPlugin={pluginSelection} />}
+            {loc.page === 'plugins' && <PluginsSettings defaultProject={defaultCwd} initialPlugin={pluginSelection} workMode={workMode} />}
 
             {loc.page === 'worklog' && (
               <>

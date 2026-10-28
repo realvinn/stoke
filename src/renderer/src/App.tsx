@@ -165,6 +165,7 @@ import {
   tabsToClose,
   profileClosePlan,
   profileCwd,
+  workModeFolder,
   type CloseSide,
   type PendingOrigin,
   type RelaunchPlan
@@ -203,6 +204,19 @@ type CampfireModule = typeof import('./components/Campfire')
 const GrokBotWorkspace = lazy(() => import('./components/GrokBotWorkspace')
   .then(module => ({ default: module.GrokBotWorkspace }))
   .catch(() => ({ default: () => <p role="alert">The Grok Bot view could not load. Restart Stoke to try again.</p> })))
+/*
+ * Work mode, the pretend IDE: a chunk of its own (with its sample website and
+ * highlighter), fetched only on the first open. A chunk that will not load
+ * leaves at once rather than unmount the window (the Campfire rule above).
+ */
+type WorkModeModule = typeof import('./components/WorkMode')
+const WorkMode = lazy(() => import('./components/WorkMode')
+  .then(module => ({ default: module.WorkMode }))
+  .catch(() => ({ default: WorkModeUnavailable })))
+const WorkModeUnavailable: WorkModeModule['WorkMode'] = ({ onDone }) => {
+  useEffect(() => onDone(), [onDone])
+  return null
+}
 const Campfire = lazy(() =>
   import('./components/Campfire')
     .then((m) => ({ default: m.Campfire }))
@@ -294,6 +308,18 @@ const NO_REVEAL: RevealInfo = { inset: 0, onEntry: false }
 export function App(): React.JSX.Element {
   const plugins = usePluginAppearance()
   const grokBotEnabled = plugins ? plugins.entries.some(entry => entry.manifest.id === 'grok-bot' && entry.installed && entry.enabled) : null
+  const workModeEnabled = plugins ? plugins.entries.some(entry => entry.manifest.id === 'work-mode' && entry.installed && entry.enabled) : null
+  /**
+   * Work mode (components/WorkMode.tsx): the folder it reads, chosen at the
+   * press, and a key so a second open is a fresh mount. Overlay state, never a
+   * tab: it covers the shell and changes nothing in it.
+   */
+  const [workMode, setWorkMode] = useState<{ cwd: string | null; key: number } | null>(null)
+  const workModeRef = useRef(false)
+  workModeRef.current = workMode !== null
+  const openWorkMode = (cwd: string | null): void => {
+    if (workModeEnabled) setWorkMode((cur) => cur ?? { cwd, key: Date.now() })
+  }
   const platform = window.stoke.platform
   const isMac = platform === 'darwin'
 
@@ -4652,7 +4678,8 @@ export function App(): React.JSX.Element {
   // The busy dialog and the agent picker are overlays like the other two: the
   // docked browser has to come off the window while one is up, or it paints
   // over it (gotcha 14).
-  const overlayOpen = paletteOpen || settingsOpen || agentPickerOpen || busyPrompt !== null
+  const workModeOpen = workMode !== null
+  const overlayOpen = paletteOpen || settingsOpen || agentPickerOpen || busyPrompt !== null || workModeOpen
   const seededBrowser = useRef(false)
 
   /*
@@ -5291,6 +5318,8 @@ export function App(): React.JSX.Element {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
+      // Work mode takes every key itself (its own capture listener); this is the backstop.
+      if (workModeRef.current) return
       if (e.target instanceof Element && e.target.closest('[data-quick-terminal]')) return
       const action = matchShortcut(e, isMac)
       if (!action) {
@@ -5463,6 +5492,9 @@ export function App(): React.JSX.Element {
     }
     window.addEventListener('keydown', onKey)
     const offNativeTabs = window.stoke.window.onTabShortcut(action => {
+      // Main takes these chords in before-input-event, so no DOM listener sees them: in Work mode they would
+      // close or switch the tab behind it. Main stops sending them once `workMode.active` lands; this covers the gap.
+      if (workModeRef.current) return
       if (action.type === 'newTab') openNewTab()
       else if (action.type === 'reopenTab') reopenTab()
       else if (action.type === 'closeTab') { const id = activeTabIdRef.current; if (id) requestCloseTab(id) }
@@ -7039,8 +7071,9 @@ export function App(): React.JSX.Element {
           onPickAction={(action) => {
             setPaletteOpen(false)
             if (action.id === 'private') void startPrivate()
+            else if (action.id === 'work-mode') openWorkMode(workModeFolder(activeTab, launchTarget?.path ?? null))
           }}
-          actionBlocked={privateBlocked}
+          actionBlocked={(id) => (id === 'private' ? privateBlocked : null)}
           onClose={() => setPaletteOpen(false)}
         />
       )}
@@ -7083,6 +7116,14 @@ export function App(): React.JSX.Element {
             setTopBarEditing(true)
           }}
           chats={{ status: chatStatus, detection: chatDetection }}
+          workMode={{
+            cwd: workModeFolder(activeTab, launchTarget?.path ?? null),
+            onOpen: () => {
+              setPreviewTheme(null)
+              setSettingsOpen(false)
+              openWorkMode(workModeFolder(activeTab, launchTarget?.path ?? null))
+            }
+          }}
           sshKeys={{
             enrollingHostId: sshEnrolling,
             onSetUpKey: (hostId) => {
@@ -7113,6 +7154,19 @@ export function App(): React.JSX.Element {
       )}
 
       {busyDialog}
+
+      {workMode && (
+        <Suspense fallback={null}>
+          <WorkMode
+            key={workMode.key}
+            cwd={workMode.cwd}
+            platform={platform}
+            fullScreen={fullScreen}
+            stop={workModeEnabled === false}
+            onDone={() => setWorkMode(null)}
+          />
+        </Suspense>
+      )}
 
       {/*
         Last in the tree and highest in z, so it sits over whatever the launch

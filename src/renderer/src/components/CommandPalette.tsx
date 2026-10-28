@@ -5,11 +5,11 @@ import type { CodingCliId } from '@shared/codingClis'
 import { searchSettings, settingsEntries, type SettingsHit } from '@shared/settingsIndex'
 import { relativeTime } from '../lib/format'
 import { rankForPalette } from '../lib/projectSearch'
-import { paletteRows, searchPaletteActions, SETTINGS_IN_PALETTE, type PaletteAction, type PaletteRow } from '../lib/paletteRows'
+import { paletteActions, paletteRows, searchPaletteActions, SETTINGS_IN_PALETTE, type PaletteAction, type PaletteRow } from '../lib/paletteRows'
 import { FIND_PALETTE_LABEL, paletteFindHint, paletteFindMatch } from '../lib/terminalFind'
 import { chordLabel } from '../lib/shortcuts'
 import { Highlight } from './Highlight'
-import { IconGear, IconGhost, IconSearch } from './Icons'
+import { IconCode, IconGear, IconGhost, IconSearch } from './Icons'
 
 interface Props {
   projects: Project[]
@@ -30,10 +30,10 @@ interface Props {
    * no transcript.
    */
   findHint?: string
-  /** Run an action row (a new private chat). Absent lists no actions. */
+  /** Run an action row (a new private chat, Work mode). Absent lists no actions. */
   onPickAction?: (action: PaletteAction) => void
-  /** Why an action cannot run now (Claude Code is not), shown on its row; the row is then inert. */
-  actionBlocked?: string | null
+  /** Why an action cannot run now (a private chat: Claude Code is not runnable), shown on its row; the row is then inert. */
+  actionBlocked?: (id: PaletteAction['id']) => string | null
   onClose: () => void
 }
 
@@ -66,7 +66,7 @@ export function CommandPalette({
   onFind,
   findHint = paletteFindHint('transcript'),
   onPickAction,
-  actionBlocked = null,
+  actionBlocked = () => null,
   onClose
 }: Props): React.JSX.Element {
   const { view: plugins } = usePlugins()
@@ -84,15 +84,16 @@ export function CommandPalette({
   const entries = useMemo(() => settingsEntries({ agents: settingsAgents, accountAgents: settingsAccountAgents, enabledPlugins: plugins?.entries.filter(entry => entry.enabled).map(entry => entry.manifest.id) ?? [], platform: window.stoke.platform }), [agentsKey, accountsKey, plugins])
   const hasFind = !!onFind
   const hasActions = !!onPickAction
+  const workMode = !!plugins?.entries.some((entry) => entry.manifest.id === 'work-mode' && entry.installed && entry.enabled)
   const rows = useMemo((): Row[] => {
     const listed = paletteRows(
       rankForPalette(projects, query),
       searchSettings(entries, query).slice(0, SETTINGS_IN_PALETTE),
-      hasActions ? searchPaletteActions(query) : []
+      hasActions ? searchPaletteActions(query, paletteActions({ workMode })) : []
     )
     const find = hasFind ? paletteFindMatch(query) : null
     return find ? [{ kind: 'find', ranges: find }, ...listed] : listed
-  }, [projects, entries, query, hasFind, hasActions])
+  }, [projects, entries, query, hasFind, hasActions, workMode])
 
   useEffect(() => {
     setIndex(0)
@@ -110,7 +111,7 @@ export function CommandPalette({
     if (row.kind === 'find') onFind?.()
     else if (row.kind === 'project') onPick(row.hit.project)
     else if (row.kind === 'setting') onPickSetting(row.hit)
-    else if (!actionBlocked) onPickAction?.(row.hit.action)
+    else if (!actionBlocked(row.hit.action.id)) onPickAction?.(row.hit.action)
   }
 
   return (
@@ -172,16 +173,16 @@ export function CommandPalette({
                 className="palette-item"
                 data-kind="action"
                 data-active={i === index}
-                aria-disabled={actionBlocked ? true : undefined}
+                aria-disabled={actionBlocked(row.hit.action.id) ? true : undefined}
                 onMouseEnter={() => setIndex(i)}
                 onClick={() => commit(i)}
               >
                 <span className="palette-item-name truncate">
                   <Highlight text={row.hit.action.label} ranges={row.hit.ranges} />
                 </span>
-                <span className="palette-item-path truncate">{actionBlocked ?? row.hit.action.hint}</span>
+                <span className="palette-item-path truncate">{actionBlocked(row.hit.action.id) ?? row.hit.action.hint}</span>
                 <span className="palette-item-time palette-item-kind" aria-hidden="true">
-                  <IconGhost />
+                  {row.hit.action.id === 'work-mode' ? <IconCode /> : <IconGhost />}
                 </span>
               </button>
             ) : row.kind === 'project' ? (

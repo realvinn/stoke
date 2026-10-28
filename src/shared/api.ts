@@ -1,6 +1,7 @@
 import type { SshMergeGroup } from './sshRoutes.ts'
 import type { PluginsView, PluginRunResult } from './pluginPackages.ts'
 import type { GrokBotView, GrokBotSource, GrokBotDesktopProfile, GrokBotAccountCommand, GrokBotOperation, GrokBotResult } from './grokBot.ts'
+import type { WorkModeOptions, WorkModeScan, WorkModeSource } from './workMode.ts'
 import type { InstallKind } from './installKind'
 import type { RevealInfo } from './fullScreenReveal'
 
@@ -1183,6 +1184,18 @@ export interface StokeApi {
     run(id: string, action: string, project: string | null): Promise<PluginRunResult>
     onOpen(cb: (id: string) => void): () => void
     pending(consume?: boolean): Promise<string | null>
+  }
+  /**
+   * Work mode, the pretend IDE: the project's code read in main, read-only and
+   * redacted (main/plugins/workMode.ts). `cwd` null means the sample website.
+   */
+  workMode: {
+    scan(cwd: string | null): Promise<WorkModeScan>
+    source(cwd: string | null): Promise<WorkModeSource>
+    pick(cwd: string | null, types: string[]): Promise<WorkModeScan>
+    options(patch: Partial<WorkModeOptions>): Promise<WorkModeOptions>
+    /** While on, main takes no tab or window chord from this window (`switchWindow`). */
+    active(on: boolean): void
   }
   grokBot: {
     read(): Promise<GrokBotView>

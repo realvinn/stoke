@@ -409,6 +409,13 @@ const api: StokeApi = {
     onOpen: (cb) => on<[string]>(CH.pluginsOpen, cb),
     pending: (consume) => ipcRenderer.invoke(CH.pluginsPending, consume)
   },
+  workMode: {
+    scan: (cwd) => ipcRenderer.invoke(CH.workModeScan, cwd),
+    source: (cwd) => ipcRenderer.invoke(CH.workModeSource, cwd),
+    pick: (cwd, types) => ipcRenderer.invoke(CH.workModePick, cwd, types),
+    options: (patch) => ipcRenderer.invoke(CH.workModeOptions, patch),
+    active: (on) => ipcRenderer.send(CH.workModeActive, on === true)
+  },
   grokBot: {
     read: () => ipcRenderer.invoke(CH.grokBotRead),
     install: () => ipcRenderer.invoke(CH.grokBotInstall),

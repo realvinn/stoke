@@ -3,8 +3,18 @@ import { PLUGIN_MARKETPLACE, PLUGIN_CATALOG } from '@shared/pluginPackages'
 import { usePlugins } from '../lib/usePlugins'
 import { GrokBotPanel } from './GrokBotPanel'
 import { WorkPanel } from './WorkPanel'
+import { WorkModePanel, type WorkModeEntry } from './WorkModePanel'
 import '../styles/plugins.css'
-export function PluginsSettings({ defaultProject, initialPlugin = '' }: { defaultProject: string; initialPlugin?: string }): React.JSX.Element {
+export function PluginsSettings({
+  defaultProject,
+  initialPlugin = '',
+  workMode
+}: {
+  defaultProject: string
+  initialPlugin?: string
+  /** Work mode's folder and its Open, from App (the tab in front, chosen there). */
+  workMode?: WorkModeEntry
+}): React.JSX.Element {
   const { view, error: loadError } = usePlugins()
   const [selected, setSelected] = useState(initialPlugin)
   useEffect(() => { setSelected(initialPlugin) }, [initialPlugin])
@@ -110,6 +120,11 @@ export function PluginsSettings({ defaultProject, initialPlugin = '' }: { defaul
                       >
                         Details
                       </button>
+                      {item.manifest.id === 'work-mode' && item.enabled && workMode && (
+                        <button disabled={busy} onClick={workMode.onOpen}>
+                          Open
+                        </button>
+                      )}
                     </>
                   ) : (
                     <button
@@ -179,6 +194,8 @@ export function PluginsSettings({ defaultProject, initialPlugin = '' }: { defaul
               <p className="plugin-muted">
                 {entry.manifest.id === 'grok-bot'
                   ? 'Runs the pinned unofficial CLI and uses only the account session you select. Imported credentials stay encrypted on this device.'
+                  : entry.manifest.id === 'work-mode'
+                    ? 'Shows real code from the project in front, read-only: nothing is written, run or sent. It never opens secret-named, ignored, data or config files, and it masks text shaped like a key, so use it where you would be fine showing that code. With no project, it types a bundled sample website.'
                   : entry.manifest.id === 'work'
                     ? 'Local tasks and plans, with optional Notion and draft connections you configure.'
                     : entry.manifest.permissions.includes('local-code')
@@ -226,6 +243,9 @@ export function PluginsSettings({ defaultProject, initialPlugin = '' }: { defaul
           )}
           {entry.enabled && entry.manifest.id === 'grok-bot' && <GrokBotPanel />}
           {entry.enabled && entry.manifest.id === 'work' && <WorkPanel />}
+          {entry.enabled && entry.manifest.id === 'work-mode' && (
+            <WorkModePanel cwd={workMode?.cwd ?? null} onOpen={workMode?.onOpen ?? (() => {})} />
+          )}
           {entry.enabled && !entry.builtin && (
             <section className="plugin-panel">
               <h3>{entry.manifest.panel.title}</h3>

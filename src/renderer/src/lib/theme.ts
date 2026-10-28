@@ -31,6 +31,11 @@ export function applyTheme(theme: Theme): void {
   for (const [key, value] of Object.entries(theme.colors ?? {})) {
     root.style.setProperty(cssVar(key), value)
   }
+  // The terminal palette too, as --ansi-* (`brightMagenta` -> --ansi-bright-magenta): Work mode's syntax colours
+  // read the bright slots, which the ladder solves for contrast on the page in both appearances (gotcha 43).
+  for (const [key, value] of Object.entries(theme.terminal ?? {})) {
+    root.style.setProperty('--ansi-' + cssVar(key).slice(2), value)
+  }
   root.dataset.appearance = theme.appearance
   root.style.colorScheme = theme.appearance
 }

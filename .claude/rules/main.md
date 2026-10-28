@@ -1251,3 +1251,42 @@ the edge Worker, Windows, Linux. **Open, for the owner:** a host whose presence 
 `relayCreate` and the guest's upgrade is told neither time (the guest retries after 10 s), and a
 half-dead presence takes every retry's notice into the same dead socket until its own heartbeat
 finds out.
+
+## 179. To read a project's files for show: list a repo with git only, judge each read's realpath by the name rules, and cap a listing after them
+
+**Found 2026-10-28, in review of Work mode's reader (`src/main/plugins/workMode.ts`, `WorkModeReader`).**
+Work mode shows a project's real files in the window, so what it may open is decided by name
+(`workModePathClass`) and every read is held to that. Three ways around it, each fixed with a check
+shown red first:
+
+- **A walk cannot honour `.gitignore`, and an ignored file is where a project keeps its local
+  secrets** (a `config.local`, a `wp-config.php`, a settings file). `listFolder` fell back to the
+  bounded walk whenever git's listing failed or came back empty, which in a repo meant reading ignored
+  files: on the builder's code a probe read the ignored file with an unsafe filter config, in a fresh
+  `git init`, with git missing, and past the deadline; only a working listing kept it out. In a repo
+  the reader now lists with git only, `ls-files -z --cached --others --exclude-standard` behind
+  `safeGitArgs` (gotcha 147's switches; `--exclude-standard` only reads ignore files, and the suite's
+  trap repo still fires no fsmonitor hook, clean filter or index hook with `--others`). A listing that
+  cannot run is `'unreadable'`, one past its deadline `'slow'` (`killed` first, gotcha 25), and either
+  means the sample, never a walk. A folder that is not a repo still walks.
+- **A parent link inside the folder passes realpath containment.** A tracked `src/conf/settings.ts`
+  whose `src/conf` was later swapped for a link to `../secrets` (or `../.private`) is still listed by
+  `ls-files`, its realpath is inside the project, and `O_NOFOLLOW` guards only the last component, so
+  the reader opened `secrets/settings.ts`, which the name rules never allow (a canary reached the
+  renderer over IPC in the built app). `readOne` judges the realpath by the same rules too:
+  `workModePathClass(relative(real, resolved)) !== 'read'` is refused.
+- **A cap applied before the path rules is spent on what the rules throw away.** `gitList` stopped at
+  `WM_LIST_MAX` before judging paths, and git prints untracked paths first and the index sorted, so a
+  non-ignored or committed `node_modules` (or `Pods/`) sorting before `src/` used the 50,000 up and the
+  project's own code was never reached (`["empty", []]` for 50,001 dependency paths and 2 sources).
+  The cheap rules run inside the loop now, before anything counts.
+
+The rule, for anything that reads a folder to SHOW it: **in a repository list with git only, with
+gotcha 147's flags; judge each read's realpath by the same name rules as the path it was listed
+under; count a listing's cap only over paths the rules let through.** verify:work-mode holds each
+against a real git and real links ("an ignored file is never read…", "in a repository with no git
+to list it…", "…nor past the listing's deadline", "…nor when the repo's filter config cannot be
+emptied safely", "a parent link to a secret-named or hidden folder inside the project is never
+followed", "dependency paths sorting first never use up the listing's cap"), and the review's
+mutations (no `--others`, a walk on a null listing, late read as unreadable, no realpath class, the cap
+before the rules) each turned it red.

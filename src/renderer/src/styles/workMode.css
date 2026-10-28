@@ -1,0 +1,872 @@
+/*
+ * Work mode: a pretend IDE over the whole window (components/WorkMode.tsx).
+ *
+ * Every colour is a custom property (CLAUDE.md conventions): the chrome reads
+ * the theme's own tokens, and the syntax colours the theme's terminal palette,
+ * which lib/theme.ts writes as --ansi-* (the bright slots carry the most
+ * contrast in both appearances, gotcha 43). No hex anywhere in this file;
+ * verify:work-mode holds that.
+ *
+ * Opaque on purpose: an IDE does not show the wallpaper. It COVERS the shell
+ * and never hides it, so no terminal is resized behind it (gotcha 105's lesson).
+ */
+
+.wm {
+  --wm-lh: calc(var(--term-size, 13px) * 1.55);
+  --wm-activity-w: 3rem;
+  --wm-explorer-w: 15rem;
+  --wm-status-h: 1.5rem;
+  --wm-tabs-h: 2.25rem;
+  --wm-panel-h: 11.5rem;
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-takeover);
+  display: grid;
+  grid-template-rows: var(--titlebar-h) minmax(0, 1fr) auto var(--wm-status-h);
+  grid-template-columns: var(--wm-activity-w) var(--wm-explorer-w) minmax(0, 1fr);
+  grid-template-areas:
+    'title title title'
+    'activity explorer editors'
+    'activity explorer panel'
+    'status status status';
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: var(--fs-sm);
+  outline: none;
+  user-select: none;
+  cursor: default;
+}
+
+@media (max-width: 1100px) {
+  .wm {
+    --wm-explorer-w: 11rem;
+  }
+}
+
+.wm :where(button) {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  padding: 0;
+}
+
+/* ------------------------------------------------------------ title strip */
+
+.wm-title {
+  grid-area: title;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-12);
+  padding-inline: var(--space-8);
+  background: var(--bg-sunken);
+  border-bottom: 1px solid var(--border-subtle);
+  -webkit-app-region: drag;
+}
+
+.wm-title[data-platform='darwin'] {
+  padding-left: var(--traffic-lights-w);
+}
+
+.wm-title[data-platform='darwin'][data-fullscreen] {
+  padding-left: var(--space-8);
+}
+
+.wm-title[data-platform='win32'] {
+  padding-right: calc(100% - env(titlebar-area-width, 100%) + var(--space-8));
+}
+
+.wm-title button {
+  -webkit-app-region: no-drag;
+}
+
+.wm-menus {
+  display: flex;
+  gap: var(--space-4);
+  min-width: 0;
+  overflow: hidden;
+}
+
+.wm-menus button {
+  padding: var(--space-4) var(--space-8);
+  border-radius: var(--r-sm);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.wm-menus button:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.wm-command {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-8);
+  width: clamp(14rem, 34vw, 32rem);
+  height: 1.625rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--bg);
+  color: var(--text-muted);
+  --icon-size: var(--icon-sm);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.wm-title-right {
+  justify-self: end;
+  color: var(--text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+/* ----------------------------------------------------------- activity bar */
+
+.wm-activity {
+  grid-area: activity;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  background: var(--bg-sunken);
+  border-right: 1px solid var(--border-subtle);
+  min-height: 0;
+}
+
+.wm-act {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: var(--wm-activity-w);
+  height: var(--wm-activity-w);
+  color: var(--text-faint);
+  --icon-size: 1.375rem;
+  box-shadow: inset 2px 0 0 transparent;
+}
+
+.wm-act[data-active] {
+  color: var(--text);
+  box-shadow: inset 2px 0 0 var(--accent-ink);
+}
+
+.wm-act:hover {
+  color: var(--text);
+}
+
+.wm-act-gap {
+  flex: 1;
+}
+
+.wm-act-badge {
+  position: absolute;
+  right: 0.375rem;
+  bottom: 0.4375rem;
+  display: grid;
+  place-items: center;
+  min-width: 1rem;
+  height: 1rem;
+  padding: 0 0.1875rem;
+  border-radius: var(--r-full);
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font-size: 0.625rem;
+  font-weight: 650;
+  line-height: 1;
+}
+
+/* --------------------------------------------------------------- explorer */
+
+.wm-explorer {
+  grid-area: explorer;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg-sunken);
+  border-right: 1px solid var(--border-subtle);
+}
+
+.wm-explorer-head {
+  display: flex;
+  align-items: center;
+  height: var(--wm-tabs-h);
+  padding: 0 var(--space-16);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  flex: none;
+}
+
+.wm-explorer-project {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  height: 1.375rem;
+  padding: 0 var(--space-8);
+  color: var(--text);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  flex: none;
+  white-space: nowrap;
+  overflow: hidden;
+  --icon-size: var(--icon-xs);
+}
+
+.wm-tree {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding-bottom: var(--space-16);
+}
+
+.wm-node {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  width: 100%;
+  height: 1.375rem;
+  padding-left: calc(var(--space-12) + var(--wm-depth, 0) * 0.75rem);
+  padding-right: var(--space-8);
+  color: var(--text-muted);
+  text-align: left;
+  white-space: nowrap;
+  --icon-size: var(--icon-xs);
+}
+
+.wm-node:hover {
+  background: var(--surface-hover);
+}
+
+.wm-node[data-active] {
+  background: var(--surface-selected);
+  color: var(--text);
+}
+
+.wm-node-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.wm-node-chevron {
+  flex: none;
+  width: var(--icon-xs);
+  color: var(--text-faint);
+  transition: rotate 120ms var(--ease);
+}
+
+.wm-node[data-open] .wm-node-chevron {
+  rotate: 90deg;
+}
+
+.wm-node-badge {
+  margin-left: auto;
+  color: var(--warning);
+  font-size: var(--fs-xs);
+  font-weight: 650;
+}
+
+/* The file glyph: a small square of the language's colour (the syntax set). */
+.wm-glyph {
+  flex: none;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 0.125rem;
+  background: var(--text-faint);
+}
+
+.wm-glyph[data-ext='ts'],
+.wm-glyph[data-ext='tsx'],
+.wm-glyph[data-ext='mts'],
+.wm-glyph[data-ext='cts'],
+.wm-glyph[data-ext='go'],
+.wm-glyph[data-ext='dart'],
+.wm-glyph[data-ext='c'],
+.wm-glyph[data-ext='h'],
+.wm-glyph[data-ext='cpp'],
+.wm-glyph[data-ext='cs'] {
+  background: var(--ansi-bright-blue);
+}
+
+.wm-glyph[data-ext='js'],
+.wm-glyph[data-ext='jsx'],
+.wm-glyph[data-ext='mjs'],
+.wm-glyph[data-ext='cjs'],
+.wm-glyph[data-ext='py'],
+.wm-glyph[data-ext='json'],
+.wm-glyph[data-ext='kt'] {
+  background: var(--ansi-bright-yellow);
+}
+
+.wm-glyph[data-ext='css'],
+.wm-glyph[data-ext='scss'],
+.wm-glyph[data-ext='less'],
+.wm-glyph[data-ext='sass'],
+.wm-glyph[data-ext='swift'] {
+  background: var(--ansi-bright-cyan);
+}
+
+.wm-glyph[data-ext='html'],
+.wm-glyph[data-ext='htm'],
+.wm-glyph[data-ext='rs'],
+.wm-glyph[data-ext='rb'],
+.wm-glyph[data-ext='java'],
+.wm-glyph[data-ext='scala'] {
+  background: var(--ansi-bright-red);
+}
+
+.wm-glyph[data-ext='vue'],
+.wm-glyph[data-ext='sh'],
+.wm-glyph[data-ext='bash'],
+.wm-glyph[data-ext='zsh'],
+.wm-glyph[data-ext='lua'] {
+  background: var(--ansi-bright-green);
+}
+
+.wm-glyph[data-ext='svelte'],
+.wm-glyph[data-ext='php'],
+.wm-glyph[data-ext='ex'],
+.wm-glyph[data-ext='exs'],
+.wm-glyph[data-ext='sql'] {
+  background: var(--ansi-bright-magenta);
+}
+
+.wm-glyph[data-ext='md'] {
+  background: var(--text-muted);
+}
+
+.wm-glyph[data-ext='dir'] {
+  background: transparent;
+  width: 0;
+}
+
+/* ---------------------------------------------------------------- editors */
+
+.wm-editors {
+  grid-area: editors;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  min-height: 0;
+  min-width: 0;
+}
+
+.wm-group {
+  display: grid;
+  grid-template-rows: var(--wm-tabs-h) 1.5rem minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg);
+}
+
+.wm-group + .wm-group {
+  border-left: 1px solid var(--border-subtle);
+}
+
+.wm-tabs {
+  display: flex;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--bg-sunken);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.wm-tab {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  flex: none;
+  max-width: 14rem;
+  padding: 0 var(--space-8) 0 var(--space-12);
+  border-right: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  box-shadow: inset 0 1px 0 transparent;
+  white-space: nowrap;
+}
+
+.wm-tab[data-active] {
+  background: var(--bg);
+  color: var(--text);
+}
+
+.wm-group[data-focused] .wm-tab[data-active] {
+  box-shadow: inset 0 1px 0 var(--accent-ink);
+}
+
+.wm-tab-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wm-tab-dir {
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+}
+
+.wm-tab-close {
+  display: grid;
+  place-items: center;
+  width: 1.125rem;
+  height: 1.125rem;
+  border-radius: var(--r-sm);
+  color: var(--text-faint);
+  --icon-size: var(--icon-xs);
+}
+
+.wm-tab-close:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.wm-tab-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.wm-crumbs {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  min-width: 0;
+  padding: 0 var(--space-12);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+  overflow: hidden;
+  --icon-size: var(--icon-xs);
+}
+
+.wm-crumb-sep {
+  color: var(--text-faint);
+}
+
+.wm-crumb-symbol {
+  color: var(--ansi-bright-blue);
+}
+
+/*
+ * Soft wrap: the code never scrolls sideways (WorkModeEditor, `wrapLayout`).
+ * The scrollbar's room is kept whether it shows or not, so the width the wrap
+ * is computed for never moves when a file grows past the view.
+ */
+.wm-code {
+  position: relative;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  min-height: 0;
+  font-family: var(--mono);
+  font-size: var(--term-size, 13px);
+  line-height: var(--wm-lh);
+  background: var(--bg);
+  cursor: text;
+}
+
+.wm-code::-webkit-scrollbar-thumb {
+  background: var(--surface-hover);
+}
+
+.wm-lines {
+  position: relative;
+  width: 100%;
+}
+
+/* One line of code: its visual rows stacked, the band behind all of them while the caret is on it. */
+.wm-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+}
+
+.wm-line[data-current] {
+  background: var(--surface);
+}
+
+.wm-row {
+  display: flex;
+  height: var(--wm-lh);
+  white-space: pre;
+}
+
+/* Measures the line height and a character's width (ten of them) in the code's own font. */
+.wm-probe {
+  position: absolute;
+  top: -1000px;
+  left: 0;
+  height: var(--wm-lh);
+  visibility: hidden;
+  white-space: pre;
+}
+
+.wm-gutter {
+  flex: none;
+  width: var(--wm-gutter, 4.5ch);
+  padding-right: 2ch;
+  text-align: right;
+  color: var(--text-faint);
+}
+
+.wm-line[data-current] .wm-gutter {
+  color: var(--text);
+}
+
+.wm-text {
+  position: relative;
+  min-width: 0;
+}
+
+.wm-guide {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--border-subtle);
+}
+
+.wm-mark {
+  display: inline-block;
+  width: 0;
+}
+
+.wm-caret {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 2;
+  width: 2px;
+  height: var(--wm-lh);
+  background: var(--text);
+  pointer-events: none;
+  transition: transform 90ms var(--ease);
+  animation: wm-blink 1.06s steps(1) infinite;
+}
+
+.wm-caret[data-aim] {
+  transition-duration: 220ms;
+}
+
+.wm-caret[data-still] {
+  animation: none;
+}
+
+.wm-group:not([data-focused]) .wm-caret {
+  opacity: 0.45;
+  animation: none;
+}
+
+@keyframes wm-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+.wm-t-keyword {
+  color: var(--ansi-bright-magenta);
+}
+
+.wm-t-string {
+  color: var(--ansi-bright-green);
+}
+
+.wm-t-number,
+.wm-t-constant,
+.wm-t-attr {
+  color: var(--ansi-bright-yellow);
+}
+
+.wm-t-comment {
+  color: var(--text-faint);
+  font-style: italic;
+}
+
+.wm-t-function {
+  color: var(--ansi-bright-blue);
+}
+
+.wm-t-type,
+.wm-t-property {
+  color: var(--ansi-bright-cyan);
+}
+
+.wm-t-tag,
+.wm-t-variable,
+.wm-t-regex {
+  color: var(--ansi-bright-red);
+}
+
+.wm-t-punct,
+.wm-t-operator {
+  color: var(--text-muted);
+}
+
+.wm-empty {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  color: var(--text-faint);
+  font-family: var(--sans);
+}
+
+/* ------------------------------------------------------------ bottom panel */
+
+.wm-panel {
+  grid-area: panel;
+  display: grid;
+  grid-template-rows: 2rem minmax(0, 1fr);
+  height: var(--wm-panel-h);
+  min-width: 0;
+  background: var(--bg);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.wm-panel-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: var(--space-16);
+  padding: 0 var(--space-16);
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.wm-panel-tabs span {
+  display: flex;
+  align-items: center;
+  box-shadow: inset 0 -1px 0 transparent;
+}
+
+.wm-panel-tabs span[data-active] {
+  color: var(--text);
+  box-shadow: inset 0 -1px 0 var(--accent-ink);
+}
+
+/* One terminal, or two side by side: the dev server, and `npm test` (WorkModeChrome's BottomPanel). */
+.wm-panel-terms {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  min-height: 0;
+}
+
+.wm-panel-terms[data-split] {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.wm-panel-terms[data-split] .wm-panel-body + .wm-panel-body {
+  border-left: 1px solid var(--border-subtle);
+}
+
+/* A terminal wraps a long line at its width, by the character, and never scrolls sideways. */
+.wm-panel-body {
+  overflow-x: hidden;
+  overflow-y: auto;
+  min-height: 0;
+  padding: var(--space-4) var(--space-16) var(--space-8);
+  font-family: var(--mono);
+  font-size: calc(var(--term-size, 13px) * 0.92);
+  line-height: 1.5;
+  color: var(--text-muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  tab-size: 8;
+}
+
+.wm-panel-line {
+  animation: wm-line-in 160ms var(--ease);
+}
+
+.wm-panel-line[data-kind='prompt'] {
+  color: var(--text);
+}
+
+.wm-panel-line[data-kind='ok'] {
+  color: var(--success);
+}
+
+.wm-panel-line[data-kind='info'] {
+  color: var(--accent-ink);
+}
+
+.wm-panel-line[data-kind='dim'] {
+  color: var(--text-faint);
+}
+
+@keyframes wm-line-in {
+  from {
+    opacity: 0;
+    translate: 0 0.25rem;
+  }
+}
+
+/* ------------------------------------------------------------- status bar */
+
+.wm-status {
+  grid-area: status;
+  display: flex;
+  align-items: center;
+  gap: var(--space-16);
+  padding: 0 var(--space-8);
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+  overflow: hidden;
+  --icon-size: var(--icon-xs);
+}
+
+.wm-status-item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+.wm-status-gap {
+  flex: 1;
+}
+
+/* ------------------------------------------------------------------ hint */
+
+.wm-hint {
+  position: absolute;
+  right: var(--space-16);
+  bottom: calc(var(--wm-status-h) + var(--space-12));
+  z-index: 3;
+  padding: var(--space-4) var(--space-12);
+  border: 1px solid var(--border);
+  border-radius: var(--r-full);
+  background: var(--bg-elevated);
+  color: var(--text);
+  box-shadow: var(--shadow-md);
+  font-size: var(--fs-sm);
+  pointer-events: none;
+  animation: wm-hint-in 180ms var(--ease);
+}
+
+@keyframes wm-hint-in {
+  from {
+    opacity: 0;
+    translate: 0 0.25rem;
+  }
+}
+
+/* ------------------------------------------------------------------ menu */
+
+.wm-menu {
+  position: absolute;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  width: 17rem;
+  max-height: calc(100vh - 4rem);
+  overflow: auto;
+  padding: var(--space-12);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--bg-elevated);
+  color: var(--text);
+  box-shadow: var(--shadow-md);
+  user-select: none;
+}
+
+.wm-menu-title {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.wm-menu label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+}
+
+.wm-menu input[type='checkbox'] {
+  accent-color: var(--accent);
+}
+
+.wm-menu-count {
+  margin-left: auto;
+  color: var(--text-faint);
+}
+
+.wm-menu-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-8);
+}
+
+.wm-stepper {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-8);
+}
+
+.wm-stepper button,
+.wm-menu-item {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  min-width: 1.5rem;
+  height: 1.5rem;
+}
+
+.wm-menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 var(--space-8);
+  text-align: left;
+}
+
+.wm-stepper button:hover,
+.wm-menu-item:hover {
+  background: var(--surface-hover);
+}
+
+.wm-menu-sep {
+  height: 1px;
+  background: var(--border-subtle);
+}
+
+.wm-kbd {
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+}
+
+/* ---------------------------------------------------------- reduced motion */
+
+/*
+ * Gotcha 72: every animation answers deliberately. The caret is a steady bar
+ * that jumps (no glide, no blink); the hint has no fade and goes by unmount,
+ * never by a keyframe resting at 0; panel lines do not slide. Smooth scrolling
+ * becomes instant in code (WorkModeEditor), since CSS cannot reach scrollTo.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .wm-caret,
+  .wm-caret[data-aim] {
+    animation: none;
+    transition: none;
+  }
+
+  .wm-hint,
+  .wm-panel-line {
+    animation: none;
+  }
+
+  .wm-node-chevron {
+    transition: none;
+  }
+}

@@ -42,7 +42,7 @@ Every suite runs alone as `npm run verify:<name>`: context, codex-context, statu
 usage, codex-resume, profiles, settings, secrets, hub, hub-server, hub-client, hub-presence,
 account-remote, hub-relay, connection-log, hub-reconnect, providers, claude-config, folders,
 search, settings-search, chat-sources, color, theme-gen, activity, worklog-gate, work-plugin, plugins, grok-bot,
-work-notion, work-drafts, work-session-notes, tabs, tab-overflow, tab-windows, topbar,
+work-mode, work-notion, work-drafts, work-session-notes, tabs, tab-overflow, tab-windows, topbar,
 quick-terminal, shell-layout, pty-exit, terminal-stall, git, launcher, launch-preflight, registry,
 restore, private, shortcuts, find, drop, fullscreen, layers, terminal-links, browser-url,
 browser-profiles, safari-import, chrome-import, voice, agents, accounts, account-sync, campfire,
@@ -215,6 +215,8 @@ rule file named on the group line.
   (`deliver`), and cut a close reason by UTF-8 bytes (`closeFrameReason`): ws throws past 123 and the socket stays CLOSING.
 - **173.** Expect a relay notice to be lost: the hub replays waiting ones on the host's next presence (`waitingFor`; a repeat is
   dropped by `hosted.has`), the guest quits at `RELAY_JOIN_WAIT_MS`, and after a presence reconnect every device reads as new.
+- **179.** To read a project's files for show, list a repo with git only (`ls-files --cached --others --exclude-standard`, 147's
+  flags; never a walk), judge each read's realpath by the name rules (`readOne`) and cap a listing after them (`gitList`).
 
 **Terminal** — `.claude/rules/terminal.md`
 - **5.** Never read the terminal from the DOM: WebGL paints a canvas, so `.xterm-rows` is empty.
@@ -248,6 +250,8 @@ rule file named on the group line.
   Stepping chords read pending state; `zoom` still steps from `settingsRef`.
 - **145.** Let one function decide a chord two features share and have every listener ask it (`findOwner`:
   focus picks the terminal's or the docked browser's Cmd+F); never a panel's window listener acting from any focus.
+- **178.** While a takeover turns main's tab chords off (`workModeWindows`), `preventDefault` every chord on every key
+  path, its own menus too (`workModeMenuKey`): an unhandled ⌘W reaches the default menu's Close Window, ending every session.
 
 **File drop** — `.claude/rules/drop.md`
 - **59.** On a file drop, take only drags carrying `Files` and `preventDefault` on `dragover`

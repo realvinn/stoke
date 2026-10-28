@@ -9,6 +9,8 @@ paths:
   - "src/renderer/src/lib/terminalFind.ts"
   - "src/renderer/src/components/BrowserPanel.tsx"
   - "scripts/verify-find.mts"
+  - "src/renderer/src/components/WorkMode.tsx"
+  - "src/shared/workMode.ts"
 ---
 
 # Keyboard chords
@@ -124,3 +126,32 @@ bar. Two more the same drive found, both now in `verify:find`:
 > the same exposure. In the same review the screen half was found stepping from row 0 —
 > `findNext` with no selection starts at the OLDEST line — so typing a query threw the viewport to
 > the top of the scrollback; it steps with `findPrevious` now (`screenCall`), newest first.
+
+## 178. A takeover that switches main's tab and window chords off must `preventDefault` every chord on every key path, its own menus too
+
+**Found 2026-10-28, in review of Work mode (`components/WorkMode.tsx`).** While Work mode is up, main's
+`switchWindow` stops taking tab and window chords from that window (`workModeWindows`), so the PAGE
+alone decides what a chord does. Electron hands a key the page leaves unhandled (no `preventDefault`)
+to the application menu, and Stoke sets none, so the default menu is live. Read in a sandbox's main
+with `Menu.getApplicationMenu()`: `File: Close Window[close] CommandOrControl+W`, `View: Reload
+CmdOrCtrl+R | Force Reload Shift+CmdOrCtrl+R | Toggle Developer Tools Alt+Command+I`. The window's
+`closed` handler runs `ptys?.shutdown()`, so a ⌘W there ends every session, and ⌘R reloads the
+renderer.
+
+The overlay's capture listener did `preventDefault` every key but the OS chords (`workModeKey`). Its
+own menu's branch returned early with no `preventDefault` for any key but Escape, so a ⌘W pressed
+with the menu open, a likely way to "close the menu", went to Close Window. Proven in the built app
+by a capture listener registered after Work mode's, reading the final `defaultPrevented`: on the
+builder's build ⌘W, ⌘R and ⇧⌘R in the menu's first checkbox read `false`; fixed, all `true`, and Tab
+stays `false`, so it still moves focus.
+
+The rule: **every key path in a takeover decides through one function and blocks what its controls
+do not use.** `workModeMenuKey(e, isMac)` answers `native` for the keys the menu's controls use (Tab,
+Space, Enter, the arrows, Home, End, unmodified), `pass` for the same OS chords as everywhere else
+(Quit, Hide, Minimise, full screen), and `block` for the rest. A new surface inside a takeover (a
+dialog, a field, another menu) needs the same branch. CDP cannot show the failure: synthetic key
+events carry no native event, so the default menu never receives them (gotcha 88's note), and only a
+later capture listener's `defaultPrevented` says what the page decided. The last hop, Chromium
+handing an unhandled key to the native menu, is Electron's documented behaviour and was not driven:
+a real OS keystroke could land in the owner's own windows. verify:work-mode holds the four tables
+(native keys, macOS and other blocked chords, OS chords still passing) and pins the menu branch.

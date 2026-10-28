@@ -455,6 +455,21 @@ const hasCustomEndpoint = (id: CodingCliId): boolean =>
  */
 export const SETTING_ROWS: readonly SettingRow[] = [
   { id: 'plugins.manager', page: 'plugins', label: 'Plugin manager', keywords: ['install', 'import', 'export', 'create', 'enable', 'disable', 'remove', 'marketplace'] },
+  /*
+   * Work mode's panel. The label avoids the words "work mode" on purpose: a
+   * label hit ranks with the palette's own "Work mode" action and beats it on
+   * kind order (`paletteRows`), where a keyword hit ranks below it. It avoids
+   * "key" too: a label hit on it pushed Phone access's Key out of a search for
+   * that word (verify:settings-search).
+   */
+  {
+    plugin: 'work-mode',
+    id: 'plugins.work-mode',
+    page: 'plugins',
+    label: 'Typing speed and file types',
+    keywords: ['work mode', 'pretend ide', 'fake editor', 'typing speed', 'characters per key', 'file types', 'file types to type', 'show build output now and then', 'build output', 'bottom panel', 'sample website', 'open work mode'],
+    fallback: 'plugins.manager'
+  },
   { id: 'accounts.overview', page: 'accounts', label: 'Account manager', keywords: ['all accounts', 'manage accounts', 'subscriptions', 'saved logins', 'multiple accounts'] },
   { id: 'accounts.stoke', page: 'accounts', label: 'Stoke sign-in', keywords: ['stoke account', 'connect devices', 'sign in to stoke', 'device approval', 'sync'] },
   { id: 'accounts.agents', page: 'accounts', label: 'Agent accounts overview', keywords: ['coding accounts', 'subscription sign-ins', 'api accounts', 'default login', 'existing cli login'] },

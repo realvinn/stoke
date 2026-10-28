@@ -1484,6 +1484,8 @@ const usedIn = new Map<string, Set<string>>()
 
 for (const theme of BUILT_IN_THEMES) {
   for (const key of Object.keys(theme.colors ?? {})) defined.add(cssVar(key))
+  // `applyTheme` writes the terminal palette in a loop too, as --ansi-<kebab> (Work mode's syntax colours read it).
+  for (const key of Object.keys(theme.terminal ?? {})) defined.add('--ansi-' + cssVar(key).slice(2))
 }
 
 for (const file of sourceFiles(SRC)) {

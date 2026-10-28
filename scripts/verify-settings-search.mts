@@ -119,6 +119,7 @@ console.log('every row the sheet marks is in the index, and every row in the ind
   const pagesOf: Record<string, string[]> = {
     'components/SettingsSheet.tsx': ['appearance', 'terminal', 'sessions', 'projects', 'updates'],
     'components/PluginsSettings.tsx': ['plugins'],
+    'components/WorkModePanel.tsx': ['plugins'],
     'components/ThemeEditor.tsx': ['appearance'],
     'components/ProfilesSettings.tsx': ['profiles'],
     'components/ProvidersSettings.tsx': ['providers'],
@@ -497,6 +498,7 @@ console.log('\nevery control the sheet labels is found by its label, on its own 
     'components/ProfilesSettings.tsx': ['profiles'],
     'components/ProvidersSettings.tsx': ['providers'],
     'components/ClaudeCodeSettings.tsx': ['claude-settings'],
+    'components/WorkModePanel.tsx': ['plugins'],
     'components/ChatHistorySettings.tsx': ['chats'],
     'components/VoiceSettings.tsx': ['voice'],
     'components/MicPicker.tsx': ['voice'],

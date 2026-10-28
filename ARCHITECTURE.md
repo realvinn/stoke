@@ -735,6 +735,52 @@ results after a folder, agent, account or settings change. Findings link to the 
 setup page. Authentication, model availability and runtime behavior remain the CLI's
 checks at launch; a configuration report never proves quota or sign-in.
 
+## Work mode
+
+A built-in plugin (`work-mode`, Settings › Plugins, off until enabled), unrelated to the Work
+boards above. Opened from the command palette ("Work mode") or its plugin row, it turns the
+window into a pretend IDE: an explorer, two editors side by side with tabs, a status bar and a
+build panel. Any key types the next few characters of a real file from the project in front
+(`charsPerKey`, 4 by default), keeping the file's own indentation and newlines; pointer movement
+aims the caret and adds whole lines. Esc pressed twice, within 800 ms, leaves.
+
+It is an overlay, never a tab kind: `components/WorkMode.tsx` is a lazy chunk App renders beside
+the shell's three rows, counted in `overlayOpen`, so the shell is `inert` (gotcha 88) and the
+docked browser's view is hidden (gotcha 14) while the shell keeps its exact size — no pty is
+resized. One capture listener on `window` takes every key; a few OS chords pass untouched
+(Cmd+Q/H/M, Cmd+\`, Ctrl+Cmd+F on a Mac, Alt+F4 and F11 elsewhere). Main stops taking the tab and
+window chords from that window while it is up (`workModeWindows`, checked first in
+`switchWindow`), and App's own listeners return early. After the leave the overlay draws nothing
+but keeps swallowing keys until the keyboard has been quiet for `PRESS_QUIET_MS`, so the rest of a
+burst never lands in the terminal that gets focus back.
+
+The text comes from main (`plugins/workMode.ts`, `WorkModeReader`, loaded on first use): read-only,
+async with a deadline on every step, from the front tab's folder chosen at the press
+(`workModeFolder`: never an SSH, Add-key or private tab's). A repo is listed with `git ls-files`
+(tracked files, and untracked ones it does not ignore) behind `safeGitArgs` (gotcha 147: a plain
+`ls-files` runs the repo's fsmonitor hook), and by nothing else: a walk cannot honour `.gitignore`,
+so a listing that cannot run means the sample. Anything that is not a repo is listed by a bounded
+walk that never follows a link. Both are judged in slices, and a type is ranked from at most
+`WM_RANK_POOL_MAX` paths, so a monorepo never holds main. Secret-named files, dependency and build
+output, lockfiles, binaries, data and config are never read (`workModePathClass`), and Markdown
+only once it is picked (offered when the project has it, never a default pick, `NEVER_DEFAULT`); a
+read must realpath inside the folder and pass the same name rules there, opens with `O_NOFOLLOW |
+O_NONBLOCK`, and caps size, lines and UTF-8. Every
+text goes through `redactSecrets` then `redactKeyShaped` before it leaves main: that masks text
+shaped like a key, not every password, so the copy says it shows real code. Nothing sent holds
+an absolute path. The left editor types the most-used picked type (`orderPicks`), the right the
+next. The editors soft-wrap (`wrapLayout`): a long line goes on over visual rows with no number,
+indented like itself, and nothing scrolls sideways. The bottom panel prints what the project's own
+tools would, stamped with the wall clock in order (`panelTime`); a JS project's tests run in a
+second, split terminal (`npm test`, vitest), with counts that add up and test files named after the
+project's own (`testFileFor`). Picks and options live in `<userData>/plugins/work-mode.json`, keyed by a hash
+of the folder; it is never synced or exported. With no project, or nothing readable of the picked
+types, it types a bundled original sample website (Fernway Outfitters,
+`assets/workModeSample/`). The typing model (`shared/workModeDoc.ts`) keeps what is on screen a
+subsequence of the real file's lines, each a prefix of its line; the highlighter
+(`shared/workModeHighlight.ts`) is a small hand-written lexer, lossless and linear, coloured from
+the theme's terminal palette (`--ansi-*`, written by `applyTheme`).
+
 ## The worklog agent
 
 `src/main/worklog/` turns finished work into Notion pages and ClickUp tasks. It is a **review
@@ -1012,8 +1058,8 @@ Linux arm64 is deliberately not built (`NOT_BUILT` in `scripts/targets.mjs`).
 
 ## Testing
 
-Verification lives in `scripts/`, one `verify-*` suite per subject — ninety-four of them now.
-Ninety-one are in `npm run check`, between the typecheck and the full build (of the other
+Verification lives in `scripts/`, one `verify-*` suite per subject — ninety-five of them now.
+Ninety-two are in `npm run check`, between the typecheck and the full build (of the other
 three, extract and security need a live instance and terminal-release checks terminal.yml's
 extracted release); `check` is the gate, and it is what "done" means here. They are `.mts` run
 straight through node's type-stripping with no build step; the window suites
@@ -1314,6 +1360,18 @@ npm run verify:terminal-stall # the scrim over a terminal that stopped answering
                               # tree kill with fakes, and a REAL pty whose hung child and its
                               # grandchild both trap SIGTERM: the forced stop leaves neither, the
                               # ordinary one is shown not to; the wire into TerminalView and App
+npm run verify:work-mode       # Work mode (the pretend IDE): what may be listed, read or only shown,
+                              # main's reader against real folders and a real git (secret-named,
+                              # dependency, over-cap, minified, NUL and FIFO files, links out by the
+                              # last part and by a parent, both redaction layers, gotcha 147's traps
+                              # shown live first, deadlines, picks by hash and most-used first,
+                              # Markdown offered and never a default), the typing model's
+                              # invariants over thousands of steps, soft wrap (every row fits, the
+                              # caret and the aim in visual rows), the session, the highlighter
+                              # (lossless, linear), keys, Esc twice, the tail, the pointer budget,
+                              # the build panel (wall clock in order, counts that add up, tests
+                              # only in the test terminal), the copy's promises, the bundled sample
+                              # website, and the wire by source text
 npm run verify:worklog-gate     # which sessions the worklog agent would watch
 npm run verify:worklog-runner   # prompt building, JSON parsing, titles, create-vs-update
 npm run verify:worklog-retry    # writes happen once, and a retry never duplicates a record
@@ -1667,6 +1725,15 @@ it never switches the desktop app, refreshes OAuth, or falls back to another log
 `verify:plugins` covers five saved native logins with only two gateway exports,
 zero key-store reads during discovery, missing/expired exports, all five imports
 after connection, and unchanged native login files.
+
+Work mode adds `src/shared/workMode.ts` (the path rules, picks, keys, the leave chord, the
+pointer budget, the build panel's lines and every constant), `src/shared/workModeDoc.ts` (the
+typing model and the session reducer), `src/shared/workModeHighlight.ts` (the lexer),
+`src/main/plugins/workMode.ts` (the read-only reader and `cleanForShow`), the lazy
+`components/WorkMode*.tsx` chunk with `styles/workMode.css` and `lib/workModeSample.ts` (the
+`?raw` sample website, never imported by App), `WorkModePanel.tsx` (Settings › Plugins) and
+`scripts/verify-work-mode.mts`. `gitStatus.ts` exports `locateRepo` and `safeGitArgs`, the one
+copy of gotcha 147's switches, for both callers.
 
 Launcher checks add `src/shared/launchPreflight.ts` (credential-free wire report),
 `src/main/launchPreflight.ts` (captured read-only configuration checks),

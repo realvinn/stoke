@@ -546,6 +546,12 @@ export const CH = {
   grokBotChooseProfile: 'plugins:grok-bot:choose-profile',
   grokBotChange: 'plugins:grok-bot:change',
   grokBotOperate: 'plugins:grok-bot:operate',
+  // Work mode, the pretend IDE (main/plugins/workMode.ts). No phone or hub route reaches these.
+  workModeScan: 'plugins:work-mode:scan',
+  workModeSource: 'plugins:work-mode:source',
+  workModePick: 'plugins:work-mode:pick',
+  workModeOptions: 'plugins:work-mode:options',
+  workModeActive: 'plugins:work-mode:active',
 
   // worklog
   workRead: 'work:read',

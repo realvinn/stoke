@@ -298,3 +298,11 @@ export const IconEyedropper = (p: SVGProps<SVGSVGElement>): React.JSX.Element =>
     <path d="M9 2.9l4.1 4.1M11.3 5.2l-6.8 6.8-2.2.6.6-2.2 6.8-6.8" />
   </Base>
 )
+
+/** A bell: notifications, as an IDE's status bar ends with one (Work mode). */
+export const IconBell = (p: SVGProps<SVGSVGElement>): React.JSX.Element => (
+  <Base {...p}>
+    <path d="M4.5 6.5a3.5 3.5 0 0 1 7 0c0 3.5 1.5 5 1.5 5H3s1.5-1.5 1.5-5z" />
+    <path d="M6.75 13.75a1.4 1.4 0 0 0 2.5 0" />
+  </Base>
+)

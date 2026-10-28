@@ -319,7 +319,17 @@ const windowSavedIds = new Map<number, string[]>()
 const transferTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const returningWindows = new Set<number>()
 function appWindows(): BrowserWindow[] { return [...(win ? [win] : []), ...detachedWindows.values()].filter(w => !w.isDestroyed()) }
+/**
+ * The windows (by `webContents.id`) whose renderer is in Work mode, the pretend
+ * IDE (components/WorkMode.tsx). Main takes none of their tab or window chords
+ * while it is up: they reach the page, where Work mode types with them, so a
+ * Cmd+W or Ctrl+Tab never closes or switches the tab behind it. Set by
+ * `workMode.active`, and dropped on a reload, a crash or a close, so a
+ * renderer that never said `active(false)` cannot leave a window's chords dead.
+ */
+const workModeWindows = new Set<number>()
 function switchWindow(owner: BrowserWindow, input: Electron.Input): boolean {
+  if (workModeWindows.has(owner.webContents.id)) return false
   const tabAction = tabShortcut({ ...input, isAutoRepeat: false }, isMac)
   if (tabAction) { if (!input.isAutoRepeat) owner.webContents.send(CH.winTabShortcut, tabAction); return true }
   const windows = appWindows(), delta = windowShortcut(input, isMac, windows.length)
@@ -331,7 +341,11 @@ function switchWindow(owner: BrowserWindow, input: Electron.Input): boolean {
   return true
 }
 function bindWindowSwitching(owner: BrowserWindow): void {
+  const id = owner.webContents.id
   owner.webContents.on('before-input-event', (event, input) => { if (switchWindow(owner, input)) event.preventDefault() })
+  owner.webContents.on('did-start-navigation', (details) => { if (details.isMainFrame && !details.isSameDocument) workModeWindows.delete(id) })
+  owner.webContents.on('render-process-gone', () => workModeWindows.delete(id))
+  owner.on('closed', () => workModeWindows.delete(id))
 }
 function appFrame(event: Electron.IpcMainEvent | Electron.IpcMainInvokeEvent): BrowserWindow | null {
   return appWindows().find(w => event.sender === w.webContents && event.senderFrame === w.webContents.mainFrame) ?? null
@@ -2791,7 +2805,7 @@ function pluginPackagesFor(): Promise<import('./plugins/packageManager.ts').Plug
   return pluginPackagesLoading ??= import('./plugins/packageManager.ts').then(({ PluginPackages }) => {
     pluginPackages = new PluginPackages({ root: join(app.getPath('userData'), 'plugins'), executable: process.execPath, environment: process.env,
       workEnabled: async () => (await (await workPluginFor()).read()).enabled,
-      builtinRevoke: (id) => { if (id === 'grok-bot') grokBotPlugin?.stop(); if (id === 'work') { workNotion?.pause(); workDrafts?.pause() } },
+      builtinRevoke: (id) => { if (id === 'grok-bot') grokBotPlugin?.stop(); if (id === 'work') { workNotion?.pause(); workDrafts?.pause() }; if (id === 'work-mode') workModeReader?.stop() },
       builtinToggle: async (id, enabled) => { if (id === 'work') { const view = await (await workPluginFor()).change({ kind: 'enable', enabled }); send(CH.workChanged, view) }; if (id === 'grok-bot' && !enabled) grokBotPlugin?.stop() },
       changed: view => send(CH.pluginsChanged, view)
     }); return pluginPackages
@@ -2804,6 +2818,22 @@ function grokBotFor(): Promise<import('./plugins/grokBot.ts').GrokBotPlugin> {
       openDesktop: () => shell.openExternal('grokbot://'),
       enabled: async () => (await pluginPackagesFor()).enabled('grok-bot'), changed: view => { send(CH.grokBotChanged, view); hubClient?.accountsChanged() }
     }); return grokBotPlugin
+  })
+}
+/*
+ * Work mode's reader (plugins/workMode.ts): loaded on the first Work mode
+ * request only (gotcha 40), with the title bar's own git deps (gotcha 147's
+ * switches live in gitStatus.ts's `safeGitArgs`). Read-only; its one file is
+ * `<userData>/plugins/work-mode.json`, picks keyed by a hash of the folder.
+ */
+let workModeReader: import('./plugins/workMode.ts').WorkModeReader | null = null
+let workModeLoading: Promise<import('./plugins/workMode.ts').WorkModeReader> | null = null
+function workModeFor(): Promise<import('./plugins/workMode.ts').WorkModeReader> {
+  return workModeLoading ??= import('./plugins/workMode.ts').then(({ WorkModeReader }) => {
+    workModeReader = new WorkModeReader({
+      userData: app.getPath('userData'), home: homedir(), platform: process.platform, git: gitBinary, env: gitRunEnv,
+      enabled: async () => (await pluginPackagesFor()).enabled('work-mode'), privateRoots
+    }); return workModeReader
   })
 }
 let pendingPlugin: string | null = null
@@ -5653,6 +5683,20 @@ function registerIpc(): void {
   })
   ipcMain.handle(CH.grokBotChange, async (event, command) => { pluginFrame(event); return (await grokBotFor()).change(command) })
   ipcMain.handle(CH.grokBotOperate, async (event, operation) => { pluginFrame(event); return (await grokBotFor()).operate(operation) })
+  // Work mode: the app's own frames only, and no phone or hub route (the reader never throws across IPC).
+  ipcMain.handle(CH.workModeScan, async (event, cwd) => { pluginFrame(event); return (await workModeFor()).scan(cwd) })
+  ipcMain.handle(CH.workModeSource, async (event, cwd) => { pluginFrame(event); return (await workModeFor()).source(cwd) })
+  ipcMain.handle(CH.workModePick, async (event, cwd, types) => { pluginFrame(event); return (await workModeFor()).pick(cwd, types) })
+  ipcMain.handle(CH.workModeOptions, async (event, patch) => { pluginFrame(event); return (await workModeFor()).options(patch) })
+  ipcMain.on(CH.workModeActive, (event, on) => {
+    const owner = appFrame(event)
+    if (!owner) return
+    if (on === true) {
+      workModeWindows.add(owner.webContents.id)
+      // The docked browser's view may hold the keyboard; the overlay is in this webContents.
+      owner.webContents.focus()
+    } else workModeWindows.delete(owner.webContents.id)
+  })
 
   ipcMain.handle(CH.workRead, async (event) => {
     if (!appFrame(event)) throw new Error('Open Work in Stoke.')

@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Fernway Outfitters — Gear for the long way round</title>
+    <meta
+      name="description"
+      content="Packs, shells and camp kitchens built to be repaired, not replaced."
+    />
+    <meta name="theme-color" content="#1f3a2e" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="styles.css" />
+    <script type="module" src="app.js"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="site-header" data-elevated="false">
+      <div class="site-header__inner">
+        <a class="brand" href="/" aria-label="Fernway Outfitters home">
+          <svg class="brand__mark" viewBox="0 0 32 32" aria-hidden="true">
+            <path d="M16 3 4 27h24L16 3Zm0 7 6.5 13h-13L16 10Z" />
+          </svg>
+          <span class="brand__name">Fernway</span>
+        </a>
+
+        <nav class="primary-nav" aria-label="Primary">
+          <ul class="primary-nav__list">
+            <li><a href="#catalog" aria-current="page">Shop</a></li>
+            <li><a href="#stories">Field notes</a></li>
+            <li><a href="#repair">Repairs</a></li>
+            <li><a href="#newsletter">Journal</a></li>
+          </ul>
+        </nav>
+
+        <form class="search" role="search" action="/search" method="get">
+          <label class="visually-hidden" for="search-input">Search the catalog</label>
+          <input
+            id="search-input"
+            class="search__input"
+            type="search"
+            name="q"
+            placeholder="Search packs, shells, stoves…"
+            autocomplete="off"
+          />
+          <button class="search__submit" type="submit" aria-label="Search">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="11" cy="11" r="7" />
+              <path d="m20 20-3.5-3.5" />
+            </svg>
+          </button>
+        </form>
+
+        <button
+          class="cart-toggle"
+          type="button"
+          aria-controls="cart-drawer"
+          aria-expanded="false"
+        >
+          <span>Cart</span>
+          <span class="cart-toggle__count" data-cart-count>0</span>
+        </button>
+      </div>
+    </header>
+
+    <main id="main">
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="hero__copy reveal">
+          <p class="eyebrow">Autumn field kit</p>
+          <h1 id="hero-title" class="hero__title">Gear for the long way round.</h1>
+          <p class="hero__lede">
+            Packs, shells and camp kitchens built to be repaired, not replaced. Every piece
+            ships with a spare-parts card and a lifetime of free stitching.
+          </p>
+          <div class="hero__actions">
+            <a class="btn btn-primary" href="#catalog">Shop the collection</a>
+            <a class="btn btn-ghost" href="#stories">Read the field notes</a>
+          </div>
+        </div>
+        <figure class="hero__art" aria-hidden="true">
+          <div class="hero__ridge hero__ridge--far"></div>
+          <div class="hero__ridge hero__ridge--near"></div>
+          <div class="hero__sun"></div>
+        </figure>
+      </section>
+
+      <section id="catalog" class="catalog" aria-labelledby="catalog-title">
+        <div class="section-head">
+          <h2 id="catalog-title">The catalog</h2>
+          <p class="section-head__note">
+            Free returns for 60 days. Repairs for as long as you own it.
+          </p>
+        </div>
+
+        <div class="chips" role="toolbar" aria-label="Filter by category">
+          <button class="chip" type="button" data-category="all" aria-pressed="true">All</button>
+          <button class="chip" type="button" data-category="packs" aria-pressed="false">
+            Packs
+          </button>
+          <button class="chip" type="button" data-category="shells" aria-pressed="false">
+            Shells
+          </button>
+          <button class="chip" type="button" data-category="camp" aria-pressed="false">Camp</button>
+          <button class="chip" type="button" data-category="small" aria-pressed="false">
+            Small goods
+          </button>
+        </div>
+
+        <p class="catalog__status" role="status" data-status>Loading the catalog…</p>
+        <ul class="product-grid" data-products></ul>
+
+        <template id="product-card">
+          <li class="card reveal">
+            <button class="card__media" type="button" data-quick-view>
+              <span class="visually-hidden">Quick view</span>
+            </button>
+            <div class="card__body">
+              <h3 class="card__title"></h3>
+              <p class="card__blurb"></p>
+              <div class="card__meta">
+                <span class="card__price"></span>
+                <span class="rating" aria-hidden="true"><span class="rating__fill"></span></span>
+              </div>
+              <button class="btn btn-small" type="button" data-add>Add to cart</button>
+            </div>
+          </li>
+        </template>
+      </section>
+
+      <section
+        id="stories"
+        class="stories"
+        aria-roledescription="carousel"
+        aria-label="Field notes from customers"
+      >
+        <div class="section-head">
+          <h2>Field notes</h2>
+          <div class="stories__controls">
+            <button class="icon-btn" type="button" data-prev aria-label="Previous">‹</button>
+            <button class="icon-btn" type="button" data-next aria-label="Next story">›</button>
+          </div>
+        </div>
+        <div class="stories__track" data-track>
+          <blockquote class="story" aria-roledescription="slide" aria-label="1 of 4">
+            <p>“Twelve seasons on one pack. They replaced a buckle and the hip belt foam.”</p>
+            <footer>Mara, Cairngorms</footer>
+          </blockquote>
+          <blockquote class="story" aria-roledescription="slide" aria-label="2 of 4">
+            <p>“The stove simmers. Actually simmers. Porridge without the burnt layer.”</p>
+            <footer>Teo, Dolomites</footer>
+          </blockquote>
+          <blockquote class="story" aria-roledescription="slide" aria-label="3 of 4">
+            <p>“Sideways rain on the ridge for two days, and the shell kept the map dry.”</p>
+            <footer>Ines, Picos de Europa</footer>
+          </blockquote>
+          <blockquote class="story" aria-roledescription="slide" aria-label="4 of 4">
+            <p>“Sent the tent back with a torn fly. It came back patched, with a note.”</p>
+            <footer>Sam, Tasmania</footer>
+          </blockquote>
+        </div>
+        <div class="stories__dots" data-dots></div>
+      </section>
+
+      <section id="newsletter" class="newsletter" aria-labelledby="newsletter-title">
+        <h2 id="newsletter-title">The Fernway journal</h2>
+        <p>One letter a month: routes, repairs and the occasional pattern for a stuff sack.</p>
+        <form class="newsletter__form" data-newsletter novalidate>
+          <div class="field">
+            <label for="email">Email address</label>
+            <input id="email" name="email" type="email" autocomplete="email" required />
+            <p class="field-error" id="email-error" hidden></p>
+          </div>
+          <label class="consent">
+            <input type="checkbox" name="consent" required />
+            <span>Send me the journal. I can leave with one click.</span>
+          </label>
+          <p class="field-error" id="consent-error" hidden></p>
+          <button class="btn btn-primary" type="submit">Subscribe</button>
+          <p class="newsletter__success" role="status" hidden>Thanks — check your inbox.</p>
+        </form>
+      </section>
+    </main>
+
+    <dialog id="quick-view" class="quick-view" aria-labelledby="quick-view-title">
+      <form method="dialog" class="quick-view__close">
+        <button class="icon-btn" aria-label="Close">×</button>
+      </form>
+      <div class="quick-view__media" data-qv-media></div>
+      <div class="quick-view__body">
+        <h2 id="quick-view-title" data-qv-title></h2>
+        <p class="quick-view__price" data-qv-price></p>
+        <p data-qv-blurb></p>
+        <div class="stepper" role="group" aria-label="Quantity">
+          <button type="button" data-step="-1" aria-label="One fewer">−</button>
+          <output data-qv-qty>1</output>
+          <button type="button" data-step="1" aria-label="One more">+</button>
+        </div>
+        <button class="btn btn-primary" type="button" data-qv-add>Add to cart</button>
+      </div>
+    </dialog>
+
+    <aside id="cart-drawer" class="cart-drawer" aria-label="Cart" data-open="false">
+      <div class="cart-drawer__head">
+        <h2>Your cart</h2>
+        <button class="icon-btn" type="button" data-cart-close aria-label="Close cart">×</button>
+      </div>
+      <ul class="cart-lines" data-cart-lines></ul>
+      <p class="cart-empty" data-cart-empty>Your cart is empty. The trail is not.</p>
+      <div class="cart-drawer__foot">
+        <p class="cart-subtotal">Subtotal <strong data-cart-subtotal>$0.00</strong></p>
+        <button class="btn btn-primary btn-block" type="button" data-checkout disabled>
+          Checkout
+        </button>
+      </div>
+    </aside>
+
+    <footer class="site-footer">
+      <div class="site-footer__cols">
+        <section>
+          <h2 class="site-footer__title">Fernway</h2>
+          <p>Made in small batches in a converted boat shed, since 2009.</p>
+        </section>
+        <section>
+          <h2 class="site-footer__title">Help</h2>
+          <ul>
+            <li><a href="/repairs">Repairs and spares</a></li>
+            <li><a href="/shipping">Shipping</a></li>
+            <li><a href="/sizing">Sizing guide</a></li>
+          </ul>
+        </section>
+        <section>
+          <h2 class="site-footer__title">Visit</h2>
+          <address>14 Quay Lane, Port Ellis</address>
+          <p>Open Thursday to Sunday, 9 till 5.</p>
+        </section>
+      </div>
+      <p class="site-footer__legal">© 2026 Fernway Outfitters. Built to last, priced fairly.</p>
+    </footer>
+  </body>
+</html>

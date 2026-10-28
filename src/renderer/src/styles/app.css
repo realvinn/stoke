@@ -202,6 +202,8 @@ button {
   /* The remote button's face (`.remote-fab-face`); the toaster steps over it. */
   --remote-fab-h: 1.625rem;
   --z-tooltip: 600;
+  /* A takeover over the whole window and every layer in it (Work mode, components/WorkMode.tsx). */
+  --z-takeover: 700;
 
   --dur-fast: 120ms;
   --dur: 180ms;

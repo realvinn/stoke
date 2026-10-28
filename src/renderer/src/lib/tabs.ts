@@ -1354,6 +1354,22 @@ export function openableFolder(tab: FolderTab): string | null {
 }
 
 /**
+ * The folder Work mode reads for the tab in front, chosen at the press, never
+ * at the reply (gotcha 176's rule). A session tab's own folder when it has one
+ * on this computer (`openableFolder`: never an SSH or Add-key tab's alias, never
+ * a private chat's scratch folder, gotcha 150); a New tab's chosen project; and
+ * nothing for another machine's session, a Grok Bot conversation or no tab —
+ * Work mode types its bundled sample then. A new tab kind must be answered here
+ * too.
+ */
+export function workModeFolder(tab: FolderTab | null, launchPath: string | null): string | null {
+  if (!tab) return null
+  if (tab.kind === 'new') return launchPath && ABSOLUTE_PATH.test(launchPath) ? launchPath : null
+  if (tab.kind === 'session') return openableFolder(tab)
+  return null
+}
+
+/**
  * What the tab menu shows for the folder item: nothing (`null`), an item that
  * opens `path`, or a disabled item with the `reason` the menu's footer gives.
  *

@@ -73,6 +73,21 @@ export const BUILTIN_PACKAGES: StokePluginPackage[] = [
     panel: { title: 'Grok Bot', text: 'Uses the unofficial grok-bot-cli by ScriptedAlchemy.', actions: [] },
     files: {},
     appearance: {}
+  },
+  {
+    format: 'stoke-plugin',
+    apiVersion: 1,
+    id: 'work-mode',
+    version: '1.0.0',
+    name: 'Work mode',
+    author: 'Stoke',
+    kind: 'builtin',
+    description:
+      'Two pretend editors that type the code of the project in front, a few characters per key. Read-only: nothing is written, run or sent.',
+    permissions: [],
+    panel: { title: 'Work mode', text: '', actions: [] },
+    files: {},
+    appearance: {}
   }
 ]
 
@@ -105,6 +120,7 @@ export const PLUGIN_CATALOG: PluginCatalogEntry[] = [
     category: 'Agents',
     source: 'https://github.com/ScriptedAlchemy/grok-bot-cli'
   },
+  { package: BUILTIN_PACKAGES[2], category: 'Fun', source: 'https://github.com/realvinn/stoke' },
   { package: SAMPLE_PLUGIN, category: 'Developer examples', source: 'https://github.com/realvinn/stoke' }
 ]
 
