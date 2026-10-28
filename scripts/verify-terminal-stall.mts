@@ -25,6 +25,7 @@ import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   NO_STALL,
   PING_DEADLINE_MS,
@@ -64,7 +65,9 @@ function check(name: string, got: unknown, want: unknown): void {
   else failures++
   console.log(`  ${ok ? 'PASS' : 'FAIL'} ${name}${ok ? '' : `\n         got  ${JSON.stringify(got)}\n         want ${JSON.stringify(want)}`}`)
 }
-const root = new URL('..', import.meta.url).pathname
+// fileURLToPath, never `.pathname`: on Windows that is '/D:/a/…', which join
+// turns into 'D:\D:\a\…' (windows-latest, run 40611922103).
+const root = fileURLToPath(new URL('..', import.meta.url))
 const read = (rel: string): string => readFileSync(join(root, rel), 'utf8')
 
 /* ---------------------------------------------------------- 1. classifiers */
