@@ -916,6 +916,15 @@ Two more facts from the same build, both driven in a plain Electron 43.2 with sc
   both in `will-quit`, a later `will-quit` listener holding main 3 s left only `start` and `quit`;
   on `quit`, the same run logged `main-stalled ms=2142` between them.
 
+> **Checked on 2026-10-28, driving the terminal stall scrim in the built app** (shared/terminalStall.ts,
+> `stoke-busy`). A real stall, an 8 s busy-wait run on main from its inspector, was seen by the
+> renderer as intended: it kept drawing (1079 frames during the stall) and its own log said
+> `stoke-busy` at +6.0 s, back to `not-responding` once main was free. But **CDP waits on main
+> too**, so no screenshot can be taken inside a real stall: one requested at +7.06 s came back at
+> +10.63 s, 0.1 s after main was free. To photograph the "Stoke is busy" card, hold back main's
+> answer to the renderer's ping instead (swap the `pty:ping` handler for one that answers 8 s
+> late, then restore it).
+
 ## 162. A sealed key reads `''` while the store is opening, and a key minted over that locks every phone out
 
 **Found 2026-10-27, moving the secret store's open off the boot path.** The blocking open
@@ -963,3 +972,84 @@ the Keychain off the main thread; whether the warm-up keeps later blocking calls
 count under Allow and under Always Allow; whether a Deny blocks main inside Chromium's async
 encryptor; DPAPI and libsecret. The owner has not decided on a "continue without keys" timeout:
 an unanswered dialog leaves settings and every launch waiting, with the notice up.
+
+## 163. An exited SSH pty reports pid 0, and `kill(-0)` is `kill(0)`: Stoke's own process group
+
+**Found 2026-10-28, in review of Force restart (`killProcessTree`, `src/main/processTree.ts`).**
+Force restart on a terminal that stopped answering kills the pty's whole process GROUP: SIGTERM to
+`-pid`, then SIGKILL after `FORCE_KILL_GRACE_MS`, because a node process with a blocked event loop
+never runs the SIGHUP/SIGTERM handlers Claude Code installs, and its MCP servers share its group.
+The first version signalled whatever `s.proc.pid` said, and three readings of that number are
+dangerous:
+
+- **0.** An SSH tab's pty (`spawnSshPty`, sshFallback.ts) reports pid 0 once its ssh has exited,
+  and between the two connections of a password retry. An ended session stays in `PtyManager`'s map
+  for `ENDED_RETENTION_MS` (gotcha 84), so a Reconnect confirm that races the ssh exit reached the
+  kill with pid 0. `process.kill(-0)` is `kill(0)`: the CALLER's own group, so SIGTERM, then
+  SIGKILL, to Stoke itself. `kill(-1)` is every process this user owns.
+- **An exited process's pid.** It may already be someone else's, on Windows within moments, and
+  `taskkill /T` would take that stranger's whole tree.
+- **A child that is not a group leader**, or a group Stoke is in. Signalling `-pid` there is wider
+  than the tab.
+
+`killablePid(pid, self, exited)` refuses all of them first (an integer above 1, not Stoke's pid or
+its parent's, not exited), and the group is used only when `ps` (`psGroups`) says the child LEADS
+it and Stoke's own group is a different one; otherwise the pid alone, weaker but never wider.
+`forceKill` in pty.ts hands it `() => s.exited`.
+
+**Ask `ps` BEFORE the first signal.** The other half of the same review: a rewrite that asked after
+sending the pty's own SIGHUP found nothing, because a leader that dies on SIGHUP is reaped within
+milliseconds, and its group (an MCP server that traps SIGHUP) was never signalled. Measured on a
+real pty in verify:terminal-stall: the trapping grandchild outlived the forced stop. A GROUP is
+still safe to signal after its leader has gone, since POSIX never reuses a process group id while
+the group has a member.
+
+The suite proves the guards through the real `PtyManager` and real `process.kill`; a regression's
+`kill(0)` lands in a detached child that first checks it leads its own group, so a mutation can
+only hit that child. Its reaper kills only pids whose command line carries the run's marker AND its
+scratch path. Not run on Windows (`taskkillTree`).
+
+**Not fixed, measured by the same run's driver:** quitting is not Force restart. `killAll()` on
+`before-quit` is node-pty's ordinary kill (SIGHUP to the child alone) and never escalates, so a
+child that traps both SIGHUP and SIGTERM kept the app process alive with no window for 30 s, until
+the stub's own timer ended it. A truly hung program would keep a windowless Stoke alive
+indefinitely. Left alone because quit ordering is fragile (gotchas 35, 90).
+
+## 168. A new hub refusal is a per-put result, never a new top-level error code
+
+**Found 2026-10-28, adding the per-account storage cap (`src/shared/hub/storage.ts`).** An older
+Stoke reads a hub answer through `readHubResponse`, which accepts an error body only when its code
+is one it knows (`isHubErrorBody`: `v.error in HUB_ERROR_STATUS`). Anything else is "That address
+refused the request … without saying why like a Stoke hub would", the not-a-hub answer. A new
+top-level `storage-full` would have told every beta.15–beta.19 client that its hub had stopped
+being a hub. So a put past the cap is a per-put `ItemPutResult` with `error: 'full'` (and `reason`,
+`storage`) inside an ordinary 200, beside the other puts of the same request, which are each
+decided on their own. Traced through beta.15's and beta.19's `upload` and run against both tags'
+clients: an unknown per-put error falls to the branch that only logs it, the pass ends with
+`failures = 0`, and the next try is the ordinary 5-minute pass with no backoff and no retry storm.
+
+Three more rules ride with it, each of which loses data or the count if broken:
+
+- **A re-seal is never refused for room.** After a revoke or a new Recovery Kit every item is put
+  again under the new epoch's key BEFORE the old copies are pruned, and old clients prune whatever
+  their re-seal puts answered. Judged against the cap alone, any account past half its cap would
+  lose vault items on a revoke. `storageBudget` gives the larger of the cap and (older epochs'
+  bytes + `RESEAL_SLACK_BYTES` per item); item ids are per-epoch HMACs, so the older epoch stays
+  whole until the prune and the room does not shrink mid-re-seal. Its cost, left for the owner: a
+  modified client that rotates and never prunes roughly doubles what it may hold per rotate, up to
+  the old ceiling of 5,000 items × 128 KiB.
+- **A delete must always pass.** The hub cannot tell a tombstone from an edit, and a tombstone over
+  an empty-string item is a byte LONGER than it, so a replace whose new ciphertext is no bigger
+  than `MAX_TOMBSTONE_CT_BYTES` is always taken (`storageVerdict`).
+- **The figure is `item_usage`, kept by three triggers on `items` in the write's own statement**
+  (hub/store.ts). Write `items` only with statements those triggers see: the upsert fires the
+  UPDATE trigger, and a delete or `pruneItems` the DELETE one, but `INSERT OR REPLACE`'s implied
+  delete fires no trigger without `recursive_triggers`, so it would double-count silently. An
+  older `hub.db` is counted once in place (`upgradeItemUsage`, one transaction; six processes
+  upgrading one file at once all ended equal to a full scan, and beta.19's own store writing after
+  the upgrade kept it exact).
+
+verify:hub, verify:hub-server and verify:hub-client hold each rule; 14 mutations (no cap check, no
+re-seal room, no tombstone room, `<` for `<=`, a trigger off, `full` as a whole-request error, a
+client that ignores `full` or retries at once, …) each turned a suite red. **Not run:** on the NUC,
+against its real `hub.db`, or on Linux.

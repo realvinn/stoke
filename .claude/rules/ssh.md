@@ -27,6 +27,12 @@ paths:
   - "scripts/verify-tabs.mts"
   - "scripts/verify-worklog-gate.mts"
   - "src/main/hub/sshKeys.ts"
+  - "src/main/sshRoutes.ts"
+  - "src/main/micTunnel.ts"
+  - "src/shared/micTunnel.ts"
+  - "src/shared/micStandIn.ts"
+  - "src/renderer/src/components/MicTunnel.tsx"
+  - "scripts/verify-mic-tunnel.mts"
 ---
 
 # SSH tabs
@@ -763,3 +769,82 @@ machine, git over ssh included.
 **Not explained by this:** gotcha 144's "Add key" tab whose ssh.exe never exited. A ConPTY
 `ssh -e none -t … "echo …"` against the scratch sshd exited in 1.2-1.3 s with and without the
 variable, and a POSIX far side (the owner's VPS) was not reachable from the rig.
+
+## 165. A new value option on an ssh argv must be `-o Key=value`, and a forwarded socket needs a fresh name per connection
+
+**Found 2026-10-28, building the lent microphone (`micForwardOption`, `buildSshArgs`'s `micForward`;
+shared/micTunnel.ts has the design).** The tab's ssh gets
+`-o RemoteForward=/tmp/stoke-mic.<token>.sock <local>`, a LOCAL option beside the keepalives,
+before the destination, never a word of the remote command (gotcha 19). Two traps decided its shape:
+
+- **`prepareSshRoute` (sshRoutes.ts) finds the destination by skipping the values of only the
+  options it knows take one: `-o -e -p -i -F -l -J`.** A `-R <spec>` would have had its spec read as
+  the HOST, and the route probe would have asked `ssh -G` about a socket path. `ssh -G` reads
+  `-o RemoteForward=…` exactly as it reads `-R` (verify:ssh runs real `ssh -G` on a lent kept plan
+  and a plain one). Any new value-taking flag either goes in as `-o` or joins that list.
+- **sshd never unlinks a forwarded socket** (`StreamLocalBindUnlink` defaults to `no`), and binds it
+  0600 (`StreamLocalBindMask` 0177). Measured through a real non-root sshd (OpenSSH 10.3 and a
+  Debian 9.2p1): the far socket stays after the connection ends, so a fixed name would make the next
+  connection's forward fail on the stale file. Every connection mints a fresh token
+  (`MicTunnels.prepare`), so stale sockets pile up in /tmp, one per connection; the stand-in skips
+  any that refuses or closes before audio.
+
+What the user's own ssh config can do to it, all measured with `ssh -G` or a real sshd:
+`ClearAllForwardings yes` clears this forward too, so the microphone is silently off for that host;
+`ExitOnForwardFailure yes` plus a server with `AllowStreamLocalForwarding no` fails the whole tab
+with exit 255 ("remote port forwarding failed for listen path …"), where without it ssh warns and
+connects. Stoke sets neither: overriding `ExitOnForwardFailure` would change the user's own
+LocalForwards. Behind a `ControlMaster`, the master keeps a mux client's forward bound after the tab
+goes, and connections to it get nothing (harmless). The local end is a socket in a private 0700
+folder (`MIC_LOCAL_PATH_MAX`: `sun_path` is 104 bytes on macOS, 108 on Linux), or
+`127.0.0.1:<port>` on Windows, which has never run.
+
+## 166. The lent microphone's gate is its security: any far process can connect, and the token is no secret there
+
+**Found 2026-10-28, building and reviewing the lent microphone (`micGateAdmit`, `MicTunnels`,
+`MIC_STAND_IN`).** Any process on the far machine running as that user can connect to
+`/tmp/stoke-mic.<token>.sock` as often as it likes, and the token is the socket's own name. The
+token stops nothing there; main checks it (`timingSafeEqual`, `MIC_TOKEN_WAIT_MS`) only so a
+connection is tied to the forward it came through. What stands between a looping far process and
+this room's microphone is the gate: audio flows only while the person here is plainly asking for it
+in THAT tab, with main's own reading of window focus, the tab in front, the terminal holding the
+keyboard and Stoke's dictation off.
+
+- **Held:** Space down with at least `MIC_HOLD_REPEATS` auto-repeats, the last within
+  `MIC_HOLD_FRESH_MS` (Claude Code itself waits for four repeats before it spawns `arecord`).
+- **Tap:** a connection within `MIC_TAP_WINDOW_MS` of an ISOLATED Space, one with no other key for
+  `MIC_ISOLATION_MS` before it, and no other key between it and the connection.
+- **One connection per press**, and a Space pressed during a stream never admits the next one.
+- **Stops:** any other key, a tab switch, window blur, Stop, the far side closing,
+  `MIC_END_GRACE_MS` after the release (or after the next Space, for a tap), `MIC_MAX_STREAM_MS`, a
+  backlog past `MIC_BACKLOG_MAX_BYTES`. A refusal closes the socket with no byte written.
+
+Never loosen it to "a Space was typed recently": measured through a real sshd with a far process
+connecting in a loop, typing a sentence gave it 0 bytes in 889 tries. **The residual, for the owner
+to decide (hold-only, a tap only with no key since Enter, or holding back the first second):** an
+isolated Space still admits ANY connection inside the window, and a loop that holds it got about
+1.4–1.7 s of audio per tap. The "Mic → host" strip shows the whole time.
+
+The stand-in `arecord` (micStandIn.ts, POSIX sh, run by verify:mic-tunnel under /bin/sh and dash
+with python3 and with perl) has rules of its own:
+
+- **Connect only to a socket that is a socket, not a link, and OWNED by this user** (`-S`, `! -L`,
+  `-O` in sh; `lstat` + `st_uid` in python3, `$>` in perl). Another local user who planted a socket
+  there could otherwise feed this `claude` dictated prompts. The suite runs the shipped python
+  connector with `os.geteuid` faked to another uid; in a Debian container, a world-connectable
+  socket owned by another user and made the newest was skipped with python3 and with perl.
+- **Mark the hand-over** (`STOKE_MIC_HANDED_OVER`, exported at the top). With no Stoke socket
+  answering it `exec`s the real `arecord`; if that is a wrapper that runs `arecord` by name, PATH
+  finds the stand-in again and one process loops for ever at full CPU. Re-entered with the mark,
+  it exits 1.
+- **Stream only the exact format Claude Code asks for** (`-f S16_LE -r 16000 -c 1 -t raw`), and let
+  the probe say yes with no socket at all: Claude memoises it per process, and a `claude` started
+  inside byobu before Stoke connected must still use a later connection.
+- **python3, else perl; never `nc -U`**: its variants disagree on half-close and on exiting at EOF.
+  perl prints "Wide character in print" before any `\x{…}` above 0xFF without `binmode`, so the
+  message's apostrophe is its UTF-8 bytes.
+
+The consent is THIS computer's: hub sync never publishes `micTunnel`, keeps the local value only
+for the same alias, and brings a synced-in host in with it off (shared/hub/settings.ts). For a
+suite: a pyenv or asdf `python3` on PATH is a bash shim that needs its own PATH, so a suite that
+runs the stand-in under a stripped PATH resolves the real interpreter first (`sys.executable`).

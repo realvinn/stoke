@@ -14,6 +14,13 @@ paths:
   - "src/shared/voice.ts"
   - "src/shared/voiceLevel.ts"
   - "src/shared/micDevice.ts"
+  - "src/shared/micTunnel.ts"
+  - "src/renderer/src/components/MicTunnel.tsx"
+  - "src/renderer/src/lib/micWorklet.js"
+  - "scripts/verify-mic-tunnel.mts"
+  - "src/shared/terminalStall.ts"
+  - "src/renderer/src/components/TerminalStallOverlay.tsx"
+  - "scripts/verify-terminal-stall.mts"
 ---
 
 # Terminal: xterm selection, links, OSC
@@ -385,6 +392,17 @@ were run against the old file from `HEAD` to confirm they fail there.
 >   find bar starts under it (`--find-ceiling`, shared/paneFloats.ts); both clear the scrollbar on
 >   `--float-right`. Reduced motion is unchanged: `pop` rests fully shown.
 
+> **Checked against the code on 2026-10-28** — an SSH tab is no longer always Stoke's. A host with
+> "Lend this computer's microphone" on (`SshHost.micTunnel`, shared/micTunnel.ts) lets the far
+> `claude`'s `/voice` record THIS computer's microphone through a forwarded socket (gotchas 165,
+> 166), and that CLI's hold detection is the held Space's repeat stream reaching the pty, exactly
+> what Stoke's dictation would take. So `spaceOwner(tab, claudeVoice, micLent)` gives a lending SSH
+> tab to the CLI whatever this computer's `/voice` says, ⇧⌘D there shows `micOwnsSpace`'s sentence
+> instead of arming, and `useMicTunnel`'s key listener only REPORTS keys to main: no
+> `preventDefault`, and no `stopPropagation` but the strip's own (verify:mic-tunnel reads the
+> listener's body for both). Unticking the host gives the tab back to Stoke's dictation. A hub
+> remote tab is still always Stoke's.
+
 ## 151. Two machines on one pty: a size claim needs a person, and the pane is watched by its border box
 
 **Built 2026-10-02, from the owner's "whichever is active we force it to that screen ratio".** A hub
@@ -451,3 +469,56 @@ desktop's tab refitting — when the last remote tab leaves.
 > host's grid as before. `verify:hub-relay` holds both sides (a host without the flag gets no resize
 > while keys still reach it), and dropping the gate, the flag, or the guest's reading of it each
 > turned it red.
+
+## 164. Claude Code turns mode 2031 on always, but answers the colour-scheme probe only on theme `auto`
+
+**Found 2026-10-28, in review of the terminal stall scrim (`src/shared/terminalStall.ts`).** The
+scrim says "<agent> isn't responding" when someone typed and nothing came back for `SILENT_MS`. A
+live program may legitimately print nothing for a key (Enter on an empty prompt, a letter at a
+permission dialog; an Ink renderer writes nothing for a frame that did not change), so before
+blaming it the scrim ASKS: a program with DEC mode 2031 on is sent `CSI ? 997 ; 1|2 n` (the class
+in force, so nothing repaints; gotcha 42), and a live Claude Code re-runs its OSC 11 query. The
+first version read an unanswered probe as proof of a hang, and **a single empty Enter showed the
+scrim** on the owner's machine.
+
+Read out of the installed 2.1.312 binary, never run: Claude Code turns 2031 on whenever it holds
+the terminal in raw mode (`themeReports`), but only `watchSystemTheme` listens for the report, and
+that runs only while its own theme is `auto`. The owner's is pinned to `dark`, so a probe is never
+answered, by a live Claude as much as a hung one. Mode 2031 being on says the program MAY answer,
+not that it will.
+
+So an unanswered probe counts only from a program that has answered one before: `probeAnswers`,
+set when an OSC 11 query arrives while a probe is out, and cleared whenever 2031 is turned on
+afresh (a new program, or Claude back from a shell escape) or off. Any other program, including one
+that cannot be asked at all, needs `UNPROBED_MIN_INPUTS` keystrokes in a row with nothing back, and
+among them both a printable character AND an Enter (`typedParts`): a live Claude echoes a character
+at its prompt and answers an Enter at a dialog, so only the two together owe something back. Two
+more inputs never count: anything xterm sends that a person did not type (mouse reports, the X10
+form's three printable payload bytes included, focus, paste markers, DA/CPR/OSC replies;
+`isTypedInput`), and anything typed while the last line looks like an echo-off secret prompt
+(`looksLikeSecretPrompt`, read per keystroke, never per output chunk: output is the hot path).
+
+Driven in the built app with stubs: a stub with 2031 on that ignores keys but answers the probe got
+no scrim in 9 s, and once hung, the scrim at +7.0 s (5 s of silence + `PROBE_WAIT_MS`); "Password: "
+with echo off and a typed secret got none in 8 s. **Unproven:** a real `claude` on theme `auto`
+answering the probe, and that Claude prints nothing on an empty Enter (assumed).
+
+## 167. A small `?url` asset becomes a `data:` URL, and the renderer's CSP refuses it as a worklet module
+
+**Found 2026-10-28, driving the lent microphone in the built app (`useMicTunnel`,
+components/MicTunnel.tsx).** The AudioWorklet that turns the microphone into 20 ms frames of 16 kHz
+S16LE (`lib/micWorklet.js`, plain JS, 2 KB) was imported as `'../lib/micWorklet.js?url'`. Vite
+inlines any asset under `build.assetsInlineLimit` (4 KB) as a base64 `data:` URL, and the
+renderer's CSP is `script-src 'self'`, which refuses a `data:` (or `blob:`) module:
+`audioWorklet.addModule` failed with "Unable to load a worklet's module". Nothing said so, because
+`startCapture` falls back to a ScriptProcessor on purpose, and the audio still arrived: every
+driven stream counted `worklets: 0, processors: 1`. A worklet harness that loaded the file from
+`file://` had passed; only the built renderer inlines.
+
+The import is now `'../lib/micWorklet.js?url&no-inline'`, so the build writes
+`assets/micWorklet-<hash>.js` and it loads from `'self'` (the driven streams then counted
+`worklets: 1, processors: 0`, and the captures read back as a clean 440 Hz tone). verify:mic-tunnel
+holds the import's suffix and the CSP's `script-src 'self'` alone; with `?url` put back on a scratch
+copy exactly that one check failed. The same applies to any script-like asset the renderer loads
+by URL: a Worker, a worklet, an injected script. Keep it `no-inline`, or prove it in the BUILT app,
+never only in dev or a harness.

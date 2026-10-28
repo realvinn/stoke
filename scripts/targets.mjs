@@ -143,8 +143,9 @@ export const TARGETS = [
  */
 export const NOT_BUILT = {
   'linux-arm64':
-    'Out of scope this round. Linux x64 is itself unexercised — no Stoke build has ever run on ' +
-    'Linux at all — so a second Linux arch would double a surface area nobody has booted once.',
+    'Out of scope this round. Linux x64 has run almost only in CI (the packaged probe and the ' +
+    'Debian install legs, all under stub agents), so a second Linux arch would double a surface ' +
+    'area that has barely been run outside a test.',
 }
 
 /** @param {string} key */

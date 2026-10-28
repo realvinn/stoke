@@ -43,14 +43,14 @@ usage, codex-resume, profiles, settings, secrets, hub, hub-server, hub-client, h
 account-remote, hub-relay, providers, claude-config, folders, search, settings-search,
 chat-sources, color, theme-gen, activity, worklog-gate, work-plugin, plugins, grok-bot,
 work-notion, work-drafts, work-session-notes, tabs, tab-overflow, tab-windows, topbar,
-quick-terminal, shell-layout, pty-exit, git, launcher, launch-preflight, registry, restore,
-private, shortcuts, find, drop, fullscreen, layers, terminal-links, browser-url, browser-profiles,
-safari-import, chrome-import, voice, agents, accounts, account-sync, campfire, cli, terminal,
-terminal-platform, stoke-args, updates, freeze, targets, probe, manifests, portable, winget,
-worklog-runner, worklog-retry, worklog-recall, worklog-autoscan, ssh, ssh-files, ssh-enroll,
-remote, phone-ui, phone-scroll, remote-composer, remote-draft, remote-recovery, installer-art,
-install, welcome, selection — the `check` chain — plus extract and security, which
-need a live instance (`verify:security <url> <token> --access`). `verify:selection` and the other
+quick-terminal, shell-layout, pty-exit, terminal-stall, git, launcher, launch-preflight, registry,
+restore, private, shortcuts, find, drop, fullscreen, layers, terminal-links, browser-url,
+browser-profiles, safari-import, chrome-import, voice, agents, accounts, account-sync, campfire,
+cli, terminal, terminal-platform, stoke-args, updates, freeze, targets, probe, manifests, portable,
+winget, worklog-runner, worklog-retry, worklog-recall, worklog-autoscan, ssh, mic-tunnel,
+ssh-files, ssh-enroll, remote, phone-ui, phone-scroll, remote-composer, remote-draft,
+remote-recovery, installer-art, install, welcome, selection — the `check` chain — plus extract and
+security, which need a live instance (`verify:security <url> <token> --access`). `verify:selection` and the other
 window suites `--list` names open a real Electron window and need a display (both Linux CI gates
 give them `xvfb-run`); `verify:context` reads
 this machine's real transcripts on purpose, so CI skips it (`npm run verify:ci -- --list`).
@@ -203,6 +203,10 @@ rule file named on the group line.
   right after `enable()` or `reset()`. Only a thread (`startWatchdog`) sees a hang ended by Force Quit; log on `quit`.
 - **162.** Read a sealed key only after `secretsSettled()`; never mint while `!secretsReadable()` or over a stored, unopened
   key (`remoteKeyVerdict`, `secretsStoredUnread`). Boot opens via async `prepare()`, never `load()`; `warmBlockingKeyStore`.
+- **163.** Signal only a pid `killablePid` allows (an integer above 1, not Stoke's, not exited): an exited SSH pty reports
+  pid 0, and `kill(-0)` is Stoke's own group. `killProcessTree` asks `ps` for the group before the first signal.
+- **168.** Refuse a hub put per put (`full`), never by a new top-level code (`isHubErrorBody`: an older client calls that
+  "not a hub"). Never refuse a re-seal or a delete for room (`storageBudget`); keep every item write in `item_usage`'s triggers.
 
 **Terminal** — `.claude/rules/terminal.md`
 - **5.** Never read the terminal from the DOM: WebGL paints a canvas, so `.xterm-rows` is empty.
@@ -219,10 +223,14 @@ rule file named on the group line.
 - **42.** Never pin Claude Code's `theme` in `--settings` (outranks `/theme`, misses SSH); on
   `auto` the CLI follows OSC 11, so set `term.options.theme` first, then send `CSI ?997;{1,2}n`
   only while mode 2031 is on.
-- **79.** Give a held Space one owner per tab (`spaceOwner`): Claude Code's `/voice` on a local
-  Claude tab, else Stoke's dictation, whose `spaceHold` takes every repeat and records only a hold.
+- **79.** Give a held Space one owner per tab (`spaceOwner`): Claude Code's `/voice` on a local Claude or a
+  mic-lending SSH tab (`micLent`), else Stoke's dictation, whose `spaceHold` takes every repeat and records only a hold.
 - **151.** Let a shared pty's grid follow USE only (`SizeClaimer`, `claimCounts`: a pane change counts
   just after a person acted, `recentlyUsed`), and watch the pane's BORDER box: scrollbars move the content box.
+- **164.** Count an unanswered 2031 probe as a hang only from a program that has answered one (`probeAnswers`): Claude
+  Code answers only on theme `auto`. Else wait for a character AND an Enter (`typedParts`), never at a secret prompt.
+- **167.** Import a worklet, Worker or other script asset as `?url&no-inline` (`useMicTunnel`): under 4 KB Vite makes it a
+  `data:` URL that `script-src 'self'` refuses, and the fallback hides it. Prove it in the BUILT app.
 
 **Keyboard chords** — `.claude/rules/keys.md`
 - **32.** Zoom-out must stay bare Cmd/Ctrl+`-` and refuse Shift: Ctrl+Shift+`-` is Ctrl+`_`, which
@@ -396,6 +404,10 @@ rule file named on the group line.
   (`inspectUploadFile`) and again at the open (`O_NOFOLLOW|O_NONBLOCK`); 0 bytes is a file; macOS: `NSFilenamesPboardType`.
 - **153.** Run every OpenSSH program without a terminal with `sshChildEnv()` and keep `OPENSSH_PARENT_VARS` in both `STRIP_ENV`s:
   a no-pty Windows ssh login's inherited `…_POSIX_FD_STATE` hangs ssh.exe on sync pipes after one write. Delete it, never blank it.
+- **165.** Add an ssh option that takes a value as `-o Key=value` (`prepareSshRoute` skips only `-o -e -p -i -F -l -J`'s), and
+  give a forwarded socket a fresh name per connection (`micForwardOption`): sshd never unlinks one.
+- **166.** Admit a lent-mic connection only through `micGateAdmit` (a held Space, or one isolated tap; one per press): any far
+  process can connect, and the token is no secret there. The stand-in takes only sockets it OWNS (`MIC_STAND_IN`).
 
 **Phone access** — `.claude/rules/phone.md`
 - **53.** Draw no QR for `connectTarget`'s `loopback` reach, mint the key only in start paths
@@ -608,6 +620,8 @@ rule file named on the group line.
   dated ahead): `claudeRoots` always reads `~/.claude/projects` too, so the owner's real chats get in.
 - **158.** Feed a driven dictation an oscillator through a page-level `getUserMedia` (`createMediaStreamDestination`):
   Chromium's fake microphone records silence here, under the recorder's 1 KB floor, so nothing is sent.
+- **169.** Click terminal text in a driven test only once two reads 300 ms apart agree and xterm's
+  `_core.linkifier.currentLink` holds the whole link (probe-e2e's URL step); never retry the click instead.
 - **Nested backticks inside a template literal end it early**, as a SyntaxError that points at the
   wrong place. Build anything injected into a page from an array of lines.
 - **A `.settings.json` missing from `$TMPDIR/stoke/statusline/` has two causes, both found and

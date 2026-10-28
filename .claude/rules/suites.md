@@ -340,3 +340,27 @@ Two guards ride with the pin in verify-remote-draft, because only screenshots ne
 change read stale values for a person with Reduce Motion on, for example the title bar's hidden
 measurer (`fitTopBar`, gotcha 155) and anything reading a theme's colours just after
 `applyTheme`. Observed only through the suites; no app path has been checked.
+
+> **Checked on 2026-10-28** — the Windows leg's verify:tab-overflow failure (runs 40520686629,
+> 40582687313: the strip at 285, the left scroll button still disabled) was this entry's second
+> case without reduced motion. `useTabOverflow` re-reads its edges from the strip's `scroll` event
+> and a `requestAnimationFrame`, and Chromium runs both only in its rendering steps, which a hidden
+> window on windows-latest barely has (verify:remote-draft printed 1 frame in 1 s there). The suite
+> read the button 100 ms after a scroll. Rehearsed on a Mac in a hidden window that stops painting
+> (`paintWhenInitiallyHidden: false`, `backgroundThrottling: true`): 0 to 4 frames a second and the
+> same failure at 291. So:
+> - **Wait on frame-driven state with a bounded poll that names what never happened**, never a
+>   fixed short sleep and a read. At one frame a second every such poll then passed in under a
+>   second; a mutant `useTabOverflow` with no scroll listener still failed by name. The same shape
+>   fixed verify:hub-server's graceful-shutdown check, which closed the hub 30 ms after starting a
+>   sign-in and, at load average 31, before the request had arrived: it now waits for Node's
+>   `http.server.request.start` diagnostics channel for that request.
+> - **On Windows the suite shows its window without focus** (`showInactive`, plus
+>   `disable-backgrounding-occluded-windows` at module scope), where it draws at full rate; Linux
+>   under Xvfb always was shown. macOS stays hidden: its hidden window drew 144 frames a second, and
+>   a shown one would come up over the owner's work on every `npm run check`. A 1 s frame probe
+>   prints what each run got.
+> - **`captureTestWindow` (scripts/capture-test-window.mts) is bounded over the whole capture**, the
+>   frame wait AND `capturePage`, which also never answers in a stopped window (still waiting at
+>   40 s), and throws `ScreenshotStalled` after 10 s. Every suite that screenshots through it is
+>   bounded now, not only verify:remote-draft, whose own wrapper is redundant but harmless.

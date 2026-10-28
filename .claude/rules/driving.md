@@ -195,6 +195,14 @@ sheet scrolls the `.settings-modal` itself**, which is `overflow: hidden` — th
 close button slide out of the dialog and stay out, in every later screenshot. A user cannot
 reach that state. Scroll `.settings-pane`'s own `scrollTop` instead.
 
+> **Checked on 2026-10-28, driving the lent microphone** (gotcha 166). Main's gate reads OS window
+> focus itself (`BrowserWindow.isFocused()`, `MicTunnelDeps.windowFocused`), so CDP's focus
+> emulation does not reach it, and a sandbox brought to the front did not stay there: the owner's
+> own running Stoke took the front back within about 7 s every time. The drive pinned it instead,
+> with an instance override of `isFocused` on that one window from the main inspector, and proved
+> the real reading separately by its refusal (fixture removed: refused "does not have focus").
+> Never steal focus in a loop to keep a sandbox in front: the owner's keystrokes can land in it.
+
 ## 128. A sandbox that dictates in a Claude tab inherits the owner's `/voice`, and a worktree agent may not move `HOME` to escape it
 
 **Stoke's dictation in a local Claude tab is decided by the owner's real `~/.claude/settings.json`.**
@@ -266,3 +274,28 @@ Two more things the same drive needed, for two sandbox Stokes on a loopback hub:
   it can be stopped by a PID whose command line names the scratch path.
 - `createVault`'s `group` counts the Kit's four-character groups after its prefix: confirm with
   `kit.split(/[\s-]+/)[group]`, not `[group - 1]` (the first is refused as "not group N").
+
+## 169. A driven click on terminal text must wait for the rows to stop moving and for xterm to hold the link
+
+**Found 2026-10-28, on the Windows x64 probe (`scripts/probe-e2e.mts`, the terminal-URL step).**
+The step read where a hard-wrapped URL's last cell was, then moved, pressed and released there.
+The padded layout's read came 38 ms into the step, the instant the stub's rows arrived, and the
+click committed nothing ("timed out after 20s waiting for the whole terminal URL to commit"); the
+plain layout's read came 1.4 s in and passed. A newline or a ConPTY repaint landing after the read
+moves the rows under a point already aimed. Inferred from those timings (the CI run kept no record
+of where the click landed), and rehearsed on a Mac with `--dev`: one scroll written into xterm
+right after the read failed the old step on both layouts with exactly that timeout.
+
+Two preconditions, proven before one press, never a retried click (a flaky click could then pass):
+
+- **The tail has stayed put across two reads 300 ms apart** (viewport, base, length, cursor, grid
+  and screen box included in what is compared).
+- **xterm itself holds the whole URL as the link under the pointer**:
+  `_core.linkifier.currentLink.link.text === url`. xterm activates a link on mouseup only if the
+  press found it current, and asks its providers only when the pointer enters a NEW cell, answering
+  from a per-row cache otherwise, so each try comes in from the row above, then onto the tail.
+  `_core` is private (TerminalView reaches it too); if xterm renames it the step fails saying so.
+
+On a miss it prints where it aimed against where the tail is now, the last browser state, and saves
+`04-terminal-<layout>-failure.png`. **Still open:** a scroll between the hover and the press fails
+it (rehearsed: a 19 px difference printed), the one window this does not close.

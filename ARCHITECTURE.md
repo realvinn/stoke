@@ -106,6 +106,20 @@ restart, Wait, Cancel — waits for the old process to exit before starting the 
 main pick `--resume` or `--session-id` against the disk (`resumeOrMint`), because `--resume` on
 an id with no transcript exits 1. Gotchas 81 and 82.
 
+**A terminal that stops answering says so, and says whose fault it is.** A tab's terminal puts a
+grey scrim over itself (`TerminalStallOverlay`, decided in `src/shared/terminalStall.ts`) in three
+cases: "Starting <agent>…" (or "Connecting to <host>…") while a fresh pty has printed nothing,
+shown after 300 ms and offering Force restart past 20 s; "<agent> isn't responding" when someone
+typed and nothing at all came back for 5 s, with Keep waiting and Force restart; and "Stoke is
+busy" when main itself did not answer the renderer's ping (`pty:ping`) inside 1 s, because every
+pty's output reaches the renderer through main, so a stalled main silences every terminal at once
+(the freeze log records main's stalls, gotcha 160). Before blaming a program the scrim asks one
+that answers colour-scheme reports (gotcha 164); xterm's own reports, and typing at an echo-off
+password prompt, never count. Force restart kills the pty's whole process group, SIGTERM then
+SIGKILL after 2 s (`stop(…, force)`, processTree.ts, gotcha 163), because a hung node never runs
+its signal handlers, then brings the tab back the way the relaunch pill or Start again would
+(`forceRestartRoute`). Quitting still uses the ordinary kill, which never escalates.
+
 Finding the executable matters more than it looks. On macOS a GUI app launched from Finder
 does **not** inherit the login shell's PATH, so `cli.ts` asks the login shell for it once
 (`$SHELL -ilc 'printf %s "$PATH"'`) and caches the result.
@@ -373,7 +387,13 @@ LAN one that asks for none and refuses anything carrying Cloudflare's headers. I
 contract's own rules rather than trusting clients (`verifyChain` on every append, `putVerdict` on
 every put, the pairing commitment), counts a device ACTIVE only when the chain lists its id WITH
 the key it signed in with (gotcha 140), takes every claim before its one await (scrypt), and relays
-frames between two sockets of one account without parsing them. The hub is reached publicly
+frames between two sockets of one account without parsing them. Each account may keep a capped
+number of bytes (25 MiB unless `STOKE_HUB_STORAGE_CAP` says otherwise, or the operator's
+`stoke-hub storage <email> --cap` for one account): every item envelope it stores, at every epoch,
+counted in `item_usage` by triggers in the write's own statement. A put past it is refused alone,
+as the per-put result `full` beside the puts that were taken, never as a request error, which an
+older Stoke would read as "not a hub"; shrinking and deleting always pass, and a re-seal gets room
+for the epoch it replaces (`storageBudget`, gotcha 168). The hub is reached publicly
 through a second Worker, `worker/hub-edge.ts`, on the route `stoke.vinn.dev/hub/*`; the installer
 Worker is not changed. The runbook for the NUC is `hub/README.md`.
 
@@ -412,7 +432,10 @@ has had the current Kit in hand (`kitHandlers`: made it, joined with it, or had 
 another) is removed only with a new Kit. A hub gone back in time is republished to from a device
 (§7.3), and only over a list that is an earlier copy of the device's own (`isPrefixOf`); the pin and
 the anchor go only with sign-out. Every walk of the change feed is paged and bounded (`feedStep`),
-and every answer is read under a 16 MiB cap. Still to build: `SshReach` on T3 hosts.
+and every answer is read under a 16 MiB cap. A put refused as `full` leaves the change on this
+computer for a later pass, never a retry at once; the panel shows "Storage: <used> of <cap>" from
+each answer's `storage`, and when the hub is full it says so and what to do
+(`storageFullSentence`). Still to build: `SshReach` on T3 hosts.
 
 REMOTE between the owner's devices ("Other machines", spec §6, H3) is `hub/remote.ts` inside the
 service, playing both parts. Over presence each device sends a STATUS sealed under the epoch's
@@ -771,6 +794,23 @@ what is still running there. The screen stays on xterm's normal buffer, so the w
 are Stoke's own, and every reconnect reprints the session's history into the new terminal before
 attaching (gotcha 126 records what tmux does to scrollback, and the seam that has to be exact).
 
+**The lent microphone** (`SshHost.micTunnel`, Settings › SSH hosts › "Lend this computer's
+microphone to Claude's /voice on this server") lets `/voice` in a `claude` on the host record THIS
+computer's microphone. Read out of the CLI's binary: on a machine with no sound card it records
+with `arecord` from PATH, raw 16 kHz S16LE mono on stdout. So the tunnel is three pieces, none of
+them in the remote command: the tab's ssh forwards a far socket, `/tmp/stoke-mic.<token>.sock`, to
+a listener main makes for that connection alone (`-o RemoteForward=`, a fresh token each time,
+gotcha 165); "Set up microphone there" installs a stand-in `arecord` in `~/.local/bin` that
+connects to the newest of those sockets it owns and copies the audio to stdout; and main's listener
+checks the token, then asks the gate whether the person here is talking to that tab right now (a
+held Space with repeats, or one isolated tap; one connection per press), because any process on
+the far machine can connect (gotcha 166). The renderer opens the microphone only for an admitted
+connection and shows "Mic → <host>" with Stop while it streams; another key, a tab switch, focus
+loss, Stop or the CLI's own hang-up ends it. Space on that tab is the CLI's, so Stoke's dictation
+is refused there (gotcha 79). The consent stays on this computer: hub sync never carries it.
+Proven with a real sshd and a captured 440 Hz tone; a real `claude` `/voice` on a host, Windows
+as the client and macOS's first microphone prompt have not run.
+
 The queue (`queue.ts`) is the safety property. Rejections are kept as tombstones rather than
 deleted, so "no, don't log that" is permanent — and because proposal ids are the sha1 of the
 dedupe key, updates were given their own key shape so the `create` key could stay byte-for-byte
@@ -920,8 +960,8 @@ Linux arm64 is deliberately not built (`NOT_BUILT` in `scripts/targets.mjs`).
 
 ## Testing
 
-Verification lives in `scripts/`, one `verify-*` suite per subject — ninety of them now.
-Eighty-seven are in `npm run check`, between the typecheck and the full build (of the other
+Verification lives in `scripts/`, one `verify-*` suite per subject — ninety-two of them now.
+Eighty-nine are in `npm run check`, between the typecheck and the full build (of the other
 three, extract and security need a live instance and terminal-release checks terminal.yml's
 extracted release); `check` is the gate, and it is what "done" means here. They are `.mts` run
 straight through node's type-stripping with no build step; the window suites
@@ -1141,7 +1181,8 @@ npm run verify:agents         # the coding agents: what is stored, what the laun
                               # chain, gotcha 129), Settings' project-scope rows under the
                               # same trust gate, the ticks' hydrate, and the 0600 files
 npm run verify:voice          # who owns a held Space: Claude Code's /voice or Stoke's
-                              # dictation (an SSH or remote tab is always Stoke's);
+                              # dictation (a remote tab is always Stoke's, an SSH tab too
+                              # unless its host lends the microphone);
                               # `spaceHold` (a tap types a space and never opens the
                               # microphone, a hold records, every REPEAT is taken in every
                               # phase and none starts it before the threshold); the hold's
@@ -1201,6 +1242,13 @@ npm run verify:freeze         # freeze telemetry on a fake app, clock and file s
                               # previous=unclean after a kill), the last lines on `quit`, and the
                               # boot wiring; the clipboard peek's per-platform table (types only,
                               # never a decode)
+npm run verify:terminal-stall # the scrim over a terminal that stopped answering: what counts as
+                              # typing (mouse, focus, paste markers, replies refused), password
+                              # prompts, every state on a fake clock (starting, slow, the main
+                              # ping's "Stoke is busy", the 2031 probe, Keep waiting, exit), the
+                              # tree kill with fakes, and a REAL pty whose hung child and its
+                              # grandchild both trap SIGTERM: the forced stop leaves neither, the
+                              # ordinary one is shown not to; the wire into TerminalView and App
 npm run verify:worklog-gate     # which sessions the worklog agent would watch
 npm run verify:worklog-runner   # prompt building, JSON parsing, titles, create-vs-update
 npm run verify:worklog-retry    # writes happen once, and a retry never duplicates a record
@@ -1219,6 +1267,19 @@ npm run verify:ssh            # ssh argv, ~/.ssh/config parsing, the remote tran
                               # through the real body; the copied-files parsers per platform;
                               # and the paste/drop queue (clipboard read when pressed, a failure
                               # holding the queue, Cancel ending only its own job) over a fake main
+npm run verify:mic-tunnel     # the lent microphone: the forward (`-o RemoteForward=`, only when
+                              # lent, before the destination, a fresh token per connection, never
+                              # the remote command, read as an option by `prepareSshRoute`);
+                              # every gate and stop rule on a fake clock (a typed sentence admits
+                              # nothing); main's listener on a real socket with a fake renderer
+                              # (token first, a refusal writes no byte, only the owner's frames,
+                              # every stop, the 0700 folder and 0600 socket); the stand-in
+                              # `arecord` run for real under /bin/sh and dash with python3 and perl
+                              # (owned sockets only, links and stale ones skipped, bytes intact,
+                              # SIGTERM, the fallback and its hand-over mark); the installer body
+                              # into a scratch HOME; the worklet's S16LE maths; Space's owner on a
+                              # lending tab; hub sync never carrying the consent; and the wire,
+                              # the worklet's `?url&no-inline` import and the CSP included
 npm run verify:ssh-enroll     # the password-prompt detector (POSIX and ConPTY-shaped streams),
                               # the login watch that gates a reconnect (a `su` or nested ssh
                               # after login is never "at the prompt"), the offer table,
@@ -1272,9 +1333,13 @@ npm run verify:hub-server     # the hub SERVER over real sockets on a temp data 
                               # pending refused, its own per-device lock doubling, no sign-in
                               # counter moved, one check in flight per device, through the
                               # Worker), revocation, size caps, the rate bucket, the edge Worker in front
-                              # of it, logs and the SQLite file free of every planted secret,
+                              # of it, the storage cap (the count exact across put, replace,
+                              # tombstone, prune and a direct write; the edge a byte either side;
+                              # shrinking and deleting past it; the per-account figure; a re-seal
+                              # past it; a restart; an older file upgraded in place, interrupted
+                              # or not), logs and the SQLite file free of every planted secret,
                               # graceful shutdown, and the `stoke-hub` command from source and
-                              # bundled (serve, invite, backup, reset-password, health, SIGTERM)
+                              # bundled (serve, invite, backup, reset-password, storage, health, SIGTERM)
 npm run verify:hub-client     # the hub CLIENT: what each tier offers and what never syncs (the
                               # phone key, the hub session, account keys, T4 outside a press),
                               # the pass plan (upload, apply, adopt, last-writer-wins with a note,
@@ -1524,7 +1589,11 @@ src/main/         Electron main process
   index.ts          lifecycle, window, every IPC handler
   pty.ts            PTY sessions, env sanitising, scrollback, fan-out. A session's
                     `sessionId` is where it is NOW (`rebind`); its `statusKey` is where its
-                    files are, and never moves. `stop()` kills and waits for the exit, capped at 3s
+                    files are, and never moves. `stop()` kills and waits for the exit, capped at 3s;
+                    `stop(…, force)` is Force restart's whole-group kill (processTree.ts)
+  processTree.ts    Force restart's kill: SIGTERM to the pty's process group, SIGKILL after 2 s
+                    if anything is left (a hung node never runs its handlers; its MCP servers
+                    share the group); Windows `taskkill /T /F`. verify:terminal-stall
   screenMirror.ts   a headless xterm per session, fed every byte, so `historyFor` hands a late
                     attach (the phone, another machine's remote tab, on every reconnect) the
                     screen as it is now, serialized, instead of the last 512 KB of raw output.
@@ -1857,7 +1926,10 @@ src/main/         Electron main process
                     (`persist: 'tmux'`): `buildPersistentCommand` (one `sh -c` that prints
                     the session's history then attaches its private tmux session),
                     `sshHostArgs` (refuses rather than connecting unkept), and the
-                    BatchMode list/kill argv and parser. Gotchas 29, 75, 126
+                    BatchMode list/kill argv and parser. A lending host's connection gets its
+                    `micForward` as `-o RemoteForward=` among the local options, and
+                    `buildMicSetupArgs` is the stand-in's one-shot install (BatchMode, or a
+                    tab for a password host). Gotchas 29, 75, 126, 165
   sshFallback.ts    interactive SSH PTY wrapper: one visible password/keyboard-interactive
                     retry after MaxAuthTries rejects too many keys, never after authentication
                     success, typed input or an existing password prompt. A lazy `ssh -G`
@@ -1908,6 +1980,18 @@ src/main/         Electron main process
   enrollRuns.ts     which enrollment tab a pty is, each proven once: on the tab printing that
                     the install ran to its end (`enrollInstallDone`) or on its exit, first
                     wins. Its own module so index.ts imports it statically, sshEnroll lazily
+  micTunnel.ts      the lent microphone, main's half: `MicTunnels`, one listener per SSH
+                    connection whose host lends it (a socket in a private 0700 folder, or
+                    127.0.0.1 on Windows), behind that connection's forward. `prepare` mints the
+                    token and the forward before the spawn, the lease attaches to the pty and is
+                    released on a failed start, the pty's exit and quit. A connection sends the
+                    token first; `micGateAdmit` then decides from the keys and pane state the
+                    renderer reports, a refusal is closed with no byte, an admission asks the
+                    tab's renderer to open the microphone and writes its frames until a stop
+                    rule fires. Also `registerMicTunnelIpc`, `installMicStandIn` (BatchMode; when
+                    that cannot log in, Settings opens a "Set up microphone on …" tab instead,
+                    the enroll path with `micSetupTabCommand`). No electron import. verify:mic-tunnel.
+                    Gotchas 165, 166
   sshTranscript.ts  pulls a remote session's JSONL back, so SSH sessions can be read;
                     `readRemoteTranscript` is the read alone (Find's "Just this once" keeps
                     nothing on disk), `keepRemoteTranscript` the cache write
@@ -2094,6 +2178,13 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     `DictationTarget` says who may arm it (`refusal`), how a tap's space is typed
                     and how a transcript reaches the session (`deliver`); words a session did
                     not take stay on the strip with why — Type it now, Copy, Discard. Gotcha 79
+  src/components/MicTunnel.tsx  `useMicTunnel`, the lent microphone in an SSH tab whose host
+                    lends it: REPORTS each key (a Space's down, repeats and up; anything else
+                    as "other"; never the key itself) and the pane's state to main through one
+                    `sendPane`, takes no key from the terminal, opens the microphone only when
+                    main says a connection was admitted (16 kHz, AudioWorklet, a ScriptProcessor
+                    if that is refused) and draws "Mic → <host>" with a level line and Stop in
+                    the dictation strip's corner (`.voice-strip`). Gotchas 79, 166, 167
   src/components/RemoteFab.tsx  a live remote link as a small floating button: a state dot and
                     a word or two, opening on hover, keyboard focus or a click into the whole
                     sentence and its buttons; every plain key stops at it (`typeThroughKey`).
@@ -2146,6 +2237,10 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     six caps (committed on blur/Enter, gotcha 63), Index now, Rebuild (imports
                     kept), Delete (waits for a running import); "Import an export…" and a drop zone (Files only, gotcha 59)
                     with each import, what it left in the index, and its Remove
+  src/components/TerminalStallOverlay.tsx  the grey scrim over a tab terminal that has not
+                    answered: Starting…, "<agent> isn't responding" (Keep waiting, Force restart
+                    with an inline confirm) and "Stoke is busy". `useTerminalStall` is its clock,
+                    the main ping and the 2031 probe; shared/terminalStall.ts decides
   src/components/TerminalFind.tsx  Find in a conversation (Cmd+F / Ctrl+Shift+F, the terminal's
                     right-click Find…, the palette's row): one bar floating inside the pane, so
                     the pty is never resized. xterm's SearchAddon over the screen and
@@ -2253,6 +2348,10 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
   src/lib/lastInput.ts  when someone last acted on this window (a trusted key, press or wheel,
                     or the window resized): a terminal pane changing size counts as use for a
                     shared pty's grid only just after one (`recentlyUsed`, gotcha 151)
+  src/lib/micWorklet.js  the lent microphone's AudioWorklet: Float32 in, 20 ms frames of 16 kHz
+                    signed 16-bit little-endian mono out (640 B), box-filtered from the device's
+                    rate when the context runs at it. Plain JS, loaded by URL as
+                    `?url&no-inline` so the CSP's `script-src 'self'` allows it (gotcha 167)
   src/lib/pressBurst.ts  the window's one record of the Enter/Space burst in progress,
                     registered first from main.tsx; the agent picker and a launcher armed by
                     the splash or picker closing ask it `activationAllowed`. Gotcha 88
@@ -2392,7 +2491,9 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     auth.ts (email, password hash format, invites, throttle), chain.ts (the
                     signed device list: `verifyChain`, `compareToPinned`), pairing.ts (commit,
                     six-digit code, Recovery Kit format), items.ts (path grammar, T1_KEYS,
-                    envelope, `putVerdict`, `decideConflict`), relay.ts (handshake, frames,
+                    envelope, `putVerdict`, `decideConflict`), storage.ts (the per-account
+                    storage cap: what counts, `storageVerdict` and the re-seal room
+                    `storageBudget`, `formatBytes`/`parseByteSize`), relay.ts (handshake, frames,
                     `attach` and `part`, RELAY_ROUTES, grants), remote.ts ("Other machines": the
                     status a device seals, `attachDecision`, `relayScopeVerdict`, the Allow once
                     grace, the views), edge.ts (`hubUrlVerdict`, the edge Worker's rules,
@@ -2433,6 +2534,9 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     acted), `claimVerdict` (debounced, held while the other side's resize
                     settles, never against its own echo), `SizeClaimer` on injected timers.
                     RemoteTerminal and TerminalView. verify:hub-relay. Gotcha 151
+  terminalStall.ts  is a terminal stuck, and is it the program or Stoke: typed input vs xterm's
+                    own reports, echo-off prompts, the main ping, the colour-scheme probe, the
+                    words, and how Force restart brings a tab back. Pure. verify:terminal-stall
   paths.ts          cwd -> project group. Pure, platform passed in, no node imports,
                     so the renderer runs the identical rule for the profile chip
   ladder.ts         the 12-step ladder every built-in theme is generated from. Fixed
@@ -2518,7 +2622,9 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     dictation — `spaceHold`, the reducer that makes a tap a space and only a
                     hold a recording (desktop and phone; the OS key-repeat never starts it
                     before the threshold), and the words for a refused microphone. An SSH or
-                    a remote tab is always Stoke's: its CLI is on another machine. On macOS a CLI in a
+                    a remote tab is Stoke's, since its CLI is on another machine, except an SSH tab
+                    whose host lends the microphone (`micLent`: that CLI records through Stoke, so
+                    Space is its own and ⇧⌘D is refused). On macOS a CLI in a
                     Stoke pty records AS Stoke (TCC's responsible process), so Stoke's one
                     Privacy switch is every CLI's. Gotcha 79
   voiceLevel.ts     the recording-volume line: `levelFromSamples` (RMS in dBFS, -60..0 ->
@@ -2528,6 +2634,18 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     id, else the same label under a re-minted id, else the default with a
                     notice), the pseudo-device filter, and `isVirtualCapture`, moved here
                     from main so a PICKED cable warns too. Claude's /voice has no device
+  micTunnel.ts      lending this computer's microphone to Claude Code's `/voice` on an SSH
+                    host, the pure rules: what the CLI does there (read from its binary), the
+                    token and socket names, `micForwardOption`, the gate (`micGateKey`,
+                    `micGatePane`, `micGateAdmit`, `micGateTick`) and every number in it, key
+                    classification (`micKeyOf`), the wire types, the installer body and
+                    `parseMicSetup`, and the sentences. verify:mic-tunnel. Gotchas 165, 166
+  micStandIn.ts     the stand-in `arecord` installed as `~/.local/bin/arecord` on the host
+                    (`MIC_STAND_IN`, POSIX sh from an array of lines): `--version`, the probe,
+                    and a recording that connects through python3, else perl, to the newest
+                    `/tmp/stoke-mic.*.sock` it OWNS, sends the token and copies the PCM to
+                    stdout; otherwise the real `arecord` once (`STOKE_MIC_HANDED_OVER`), or a
+                    sentence and exit 1. Gotcha 166
   speechProviders.ts  where Stoke's dictation can send a clip: `STT_PROVIDERS` (sidecar,
                     OpenAI, Groq, Deepgram, ElevenLabs, Mistral, AssemblyAI, Gemini, custom
                     OpenAI-compatible) with each one's URL, default model and list, auth
@@ -2564,7 +2682,8 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     platform passed in, so verify:drop runs it for every OS. Gotchas 59, 146
   paneFloats.ts     what floats over a terminal pane, by corner: the foot's (`FOOT_FLOATS`: the
                     image strip, the exit card), which the find bar stops above and the toasts
-                    clear, and the top-right's (`CORNER_FLOATS`: the dictation strip), which
+                    clear, and the top-right's (`CORNER_FLOATS`: the dictation strip, or the lent microphone's
+                    "Mic → <host>" strip in its place, both `.voice-strip`), which
                     keeps its place while the find bar starts under it (`floatInset`,
                     `--find-floor`/`--find-ceiling`). verify:find
   imageJobs.ts      `ImageJobs`, one SSH tab's queue of pastes and drops: the clipboard read
@@ -2824,7 +2943,9 @@ scripts/          the verify-*.mts suites, make-icon.cjs
   drive-account-remote.mts  Chromium driver for verify-account-remote's synthetic Hub:
                     pairing scrub, independent discovery, terminal input, wake and drafts
   capture-test-window.mts  software rendering on Linux and frame-ready screenshots for
-                    browser fixtures; empty captures and persistent Viz errors fail the suite
+                    browser fixtures; empty captures and persistent Viz errors fail the suite,
+                    and a window that has stopped drawing fails it by name (`ScreenshotStalled`,
+                    a 10 s deadline over the frame wait and `capturePage`, gotcha 161)
   check-release-assets.mjs  the publish gate: for every target in targets.mjs, the feed
                     its updater fetches must list a file its updater will accept, and that
                     file must be on disk. Derived from the matrix, so a new platform
@@ -2900,7 +3021,8 @@ install/          the one-line installer, and the page a browser gets instead
 hub/              Stoke Hub, the server the owner runs on the NUC (spec:
                   docs/superpowers/specs/2026-10-01-stoke-hub-selfhosted.md; runbook: README.md).
                   Imports src/shared/hub and src/main/hub/crypto.ts by relative .ts path
-  server.ts         `stoke-hub`: serve, invite, backup, reset-password, health. Refusals are
+  server.ts         `stoke-hub`: serve, invite, backup, reset-password, storage (each account's
+                    bytes and cap; `--cap` sets one account's own), health. Refusals are
                     thrown, never process.exit (stdout/stderr on a macOS pipe are async)
   app.ts            the HTTP routes, the auth pipeline (session, device signature, nonce,
                     active = chain id AND key), the chain/items/pairing/relay handlers,
@@ -2908,7 +3030,9 @@ hub/              Stoke Hub, the server the owner runs on the NUC (spec:
                     per-device counter and scrypt queue, no session), graceful close.
                     `startHub` is what verify:hub-server drives
   store.ts          the SQLite file: WAL, synchronous FULL, 0600; hashes of tokens and invites,
-                    never the values; VACUUM INTO for backups
+                    never the values; VACUUM INTO for backups; `item_usage`, each account's
+                    bytes per epoch kept by triggers in the write's own statement, made once
+                    in place for an older file (`upgradeItemUsage`)
   sockets.ts        presence registry and the relay broker (in memory, frames forwarded verbatim)
   limits.ts         `clientKey` (an IPv6 sender is its /64), the per-client bucket, the scrypt
                     semaphores (a proven device's apart), the one-sign-in-per-email claim
