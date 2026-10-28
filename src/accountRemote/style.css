@@ -1,5 +1,13 @@
 #app { display: flex; flex-direction: column; height: 100dvh; }
-.account-content { position: relative; flex: 1; min-height: 0; }
+/*
+ * A flex column, as #app is for Phone access: the shared views (.page, .session)
+ * size with `flex: 1; min-height: 0`, which a block parent ignores. As a block,
+ * the computers list grew to its content (1624px at 390x844 with 17 sessions),
+ * its `.scroll` had nothing to scroll and its `overscroll-behavior: contain`
+ * kept the swipe from the page, so nothing moved; a session drew at its content
+ * height and left the composer mid-screen.
+ */
+.account-content { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .account-notice { flex: none; padding: 10px 16px; background: var(--card); color: var(--text-muted); border-bottom: 1px solid var(--border); font-size: 13px; }
 .account-notice[hidden] { display: none; }
-.account-retry { margin: 16px; }
+.account-retry { margin: 16px; align-self: flex-start; }

@@ -2657,7 +2657,9 @@ button.crumb:hover {
   .pane .page .content {
     max-width: 820px;
   }
-  .back-btn {
+  /* The rail is the way back. The account website has no rail at this width,
+     so its session keeps the button (`.pane` is the rail's pane only). */
+  .pane .back-btn {
     display: none;
   }
   .sbar {
@@ -2894,6 +2896,10 @@ button.crumb:hover {
 .device-local { border-color: var(--accent-ink); }
 .device-refresh { flex-shrink: 0; }
 .devices-page .topbar-title { margin: 0; font-size: 16px; }
+/* No back link (the account website opens here): line the title up with the cards. */
+.devices-page .topbar > .topbar-title:first-child { margin-left: var(--space-12); }
+/* A back button that names where it goes: the account website's "Computers". */
+.back-btn[data-labelled] { width: auto; gap: 2px; padding: 0 10px 0 2px; color: var(--text); font: 600 15px/1 var(--sans); white-space: nowrap; }
 .session .link-strip[data-state='open'] .spinner,
 .session .link-strip[data-state='refused'] .spinner,
 .session .link-strip[data-state='lost'] .spinner { display: none; }

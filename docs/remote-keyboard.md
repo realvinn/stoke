@@ -5,7 +5,8 @@ Open a session in Stoke's remote website and tap the keyboard button beside the 
 Swipe down over the terminal to see earlier output; swipe up to return toward
 newer output. Full-screen agents that request mouse scrolling receive these
 swipes as scroll events, without taking focus from the message field. Ordinary
-terminal history keeps its native scrolling. Swipe sideways to pan a desktop
+terminal history (a shell, an agent that is not full screen, a view-only
+session) scrolls under the same swipe. Swipe sideways to pan a desktop
 layout wider than the phone. You can also open **More → Navigate** and use **Pg up / Pg dn**;
 those send Page Up/Down keys, which the running program handles.
 

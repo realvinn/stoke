@@ -113,7 +113,20 @@ export interface SessionScreen {
   destroy: () => void
 }
 
-export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () => void; remote?: { device: string } }): SessionScreen {
+/**
+ * Where Back goes, in words. Unset, the bar keeps its bare chevron, "Back to
+ * sessions" (Phone access, whose list is one tap away). The account website
+ * names its list: a chevron alone, on a page that opens on the computers list,
+ * read as a control with no purpose.
+ */
+export interface SessionBack {
+  /** Visible beside the chevron, short: the destination's name. */
+  label: string
+  /** The accessible name and tooltip. */
+  name: string
+}
+
+export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () => void; remote?: { device: string }; back?: SessionBack }): SessionScreen {
   const ac = new AbortController()
   const signal = ac.signal
   const cls = deviceClass()
@@ -139,7 +152,11 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
 
   /* --------------------------------------------------------------- header */
 
-  const back = iconButton('back', 'Back to sessions', { class: 'icon-btn back-btn' })
+  const backName = opts.back?.name ?? 'Back to sessions'
+  const back = opts.back
+    ? el('button', { type: 'button', class: 'icon-btn back-btn', 'data-labelled': 'true', 'aria-label': backName, title: backName },
+      icon('back'), el('span', { class: 'back-label', 'aria-hidden': 'true' }, opts.back.label))
+    : iconButton('back', backName, { class: 'icon-btn back-btn' })
   back.addEventListener('click', opts.onBack, { signal })
   const titleLine = el('span', { class: 'sbar-project' })
   const where = el('span', { class: 'sbar-where' })
@@ -847,6 +864,15 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
         }))
       } finally { touchScrolling = false }
     },
+    // Ordinary history (a shell, an inline agent, view only): xterm 6 has no
+    // touch scrolling of its own, so a swipe moves its buffer here.
+    scrollback: {
+      room: (direction) => {
+        const buffer = term.buffer.active
+        return direction < 0 ? buffer.viewportY > 0 : buffer.viewportY < buffer.baseY
+      },
+      scroll: (lines) => term.scrollLines(lines)
+    },
     signal
   })
   const keyBar = mountTerminalKeys(keys, {
@@ -1426,7 +1452,7 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
     const sessionId = row?.sessionId
     const canResume = !opts.remote && Boolean(cwd && sessionId && (!row || row.cli === 'claude') && !row?.host)
     const resume = el('button', { type: 'button', class: 'btn', 'data-variant': 'primary' }, 'Resume conversation')
-    const backBtn = el('button', { type: 'button', class: 'btn' }, 'Back to sessions')
+    const backBtn = el('button', { type: 'button', class: 'btn' }, backName)
     backBtn.addEventListener('click', opts.onBack)
     resume.addEventListener('click', () => {
       resume.disabled = true

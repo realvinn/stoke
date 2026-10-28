@@ -33,15 +33,18 @@ const password = 'correct horse battery staple'
 const email = 'remote@example.test'
 const backend = { isEncryptionAvailable: () => true, selectedBackend: () => 'gnome_libsecret', encrypt: (text: string) => Buffer.from(text), decrypt: (bytes: Buffer) => bytes.toString('utf8') }
 const until = async (what: string, predicate: () => boolean, ms = 12000): Promise<void> => { const end = Date.now() + ms; while (!predicate()) { assert(Date.now() < end, what); await new Promise(r => setTimeout(r, 30)) } }
-function computer(name: string, ptyId: string) {
+/** `more` extra sessions and `lines` of history before "ready": the page's phone checks need
+ * a list longer than the screen and a scrollback to swipe through. */
+function computer(name: string, ptyId: string, more = 0, lines = 0) {
   const root = join(temp, name); mkdirSync(root)
   let settings = hydrateSettings({ hub: { url: base, sync: { settings: false, hosts: false, keys: false, accounts: false } } })
   const listeners = new Set<(settings: Settings) => void>()
   const inputs: string[] = []
   const machine: RemoteMachineDeps = {
-    sessions: async () => [{ ptyId, project: name, title: `${name} chat`, status: 'busy', agentName: 'Codex', exited: false, lastActivityAt: Date.now(), context: null }],
+    sessions: async () => [{ ptyId, project: name, title: `${name} chat`, status: 'busy', agentName: 'Codex', exited: false, lastActivityAt: Date.now(), context: null },
+      ...Array.from({ length: more }, (_, i) => ({ ptyId: `${ptyId}-${i + 2}`, project: name, title: `${name} chat ${i + 2}`, status: 'idle' as const, agentName: 'Codex', exited: false, lastActivityAt: Date.now(), context: null }))],
     request: async () => ({ status: 200, body: [] }),
-    socket: (_path, socket) => { socket.send(JSON.stringify({ type: 'attached', history: `${name}: ready`, cols: 80, rows: 24 })); socket.on('message', raw => { const frame = JSON.parse(String(raw)); if (frame.type === 'submit') { inputs.push(frame.text); socket.send(JSON.stringify({ type: 'data', data: `${name}: ${frame.text}` })) } }) },
+    socket: (_path, socket) => { socket.send(JSON.stringify({ type: 'attached', history: [...Array.from({ length: lines }, (_, i) => `${name} history ${String(i + 1).padStart(3, '0')}`), `${name}: ready`].join('\r\n'), cols: 80, rows: 24 })); socket.on('message', raw => { const frame = JSON.parse(String(raw)); if (frame.type === 'submit') { inputs.push(frame.text); socket.send(JSON.stringify({ type: 'data', data: `${name}: ${frame.text}` })) } }) },
     emit: () => {}, frame: () => {}, typeOnly: true
   }
   const svc = new HubService({ userData: root, backend, platform: 'linux', hostname: name, appVersion: 'test', getSettings: () => settings, commit: patch => { settings = hydrateSettings({ ...settings, ...patch }); for (const fn of listeners) fn(settings); return settings }, hydrate: hydrateSettings, onSettingsChanged: fn => { listeners.add(fn); return () => listeners.delete(fn) }, emit: () => {}, pairPollMs: 30, remote: machine, ssh: { home: root, dir: join(root, '.ssh'), config: join(root, '.ssh/config') } })
@@ -88,7 +91,7 @@ try {
   assert.equal(browserRouteAllowed('POST', '/v1/chain'), false)
   assert.equal(browserRouteAllowed('GET', '/v1/items'), false)
 
-  const laptop = computer('Laptop', 'pty-laptop'), work = computer('WorkPC', 'pty-work'), pc = computer('PC', 'pty-pc')
+  const laptop = computer('Laptop', 'pty-laptop'), work = computer('WorkPC', 'pty-work'), pc = computer('PC', 'pty-pc', 11, 300)
   await laptop.svc.start()
   const invite = /(INV(?:-[0-9A-Z]{4}){6})/.exec(announced.join(''))![1]
   assert((await laptop.svc.signIn({ invite, email, password, label: 'Laptop' })).ok)

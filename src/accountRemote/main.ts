@@ -18,18 +18,45 @@ type SelectedSession = { device: string; pty: string; label: string; online: boo
 let selected: SelectedSession | null = null
 let previous: SelectedSession | null = null
 let route = ''
+/** The entry behind this session's is the computers list (it was opened from it). */
+let fromList = false
+/** A leave is on its way: the step back lands a task or more later, and two would go back two. */
+let leaving = false
 function showNote(text: string): void { notice.textContent = text; notice.hidden = !text }
+function routeParts(key: string): string[] {
+  try { return key.replace(/^#\/?/, '').split('/').map(decodeURIComponent) } catch { return ['devices'] }
+}
+const isSessionRoute = (key: string): boolean => { const parts = routeParts(key); return parts[0] === 'devices' && !!parts[1] && !!parts[2] }
+/**
+ * Back to the computers list. Opened from it, the list is the entry behind,
+ * so step back to it: setting the hash stacked a second list entry, and the
+ * browser's own Back (iOS's edge swipe) then reopened the session just left.
+ * Opened any other way (a reload, a saved link), replace the session's entry.
+ * Leaving only disconnects this phone; the session runs on in its computer.
+ * Once per leave (`leaving`, cleared by the render it causes): a second press,
+ * or a second "went offline" update, before the first lands would otherwise
+ * step back past the list, out of the site.
+ */
+function leaveSession(): void {
+  if (leaving) return
+  leaving = true
+  if (fromList) history.back()
+  else location.replace('#/devices')
+}
 function render(): void {
   if (!client) return
   const key = location.hash
   if (key === route && mounted) return
+  // The list as it was MOUNTED, whatever its hash: one reached with none at all
+  // (a bookmark, the address typed) has route '' like a first render does.
+  if (key !== route) fromList = !!mounted && !isSessionRoute(route)
+  leaving = false
   route = key; mounted?.destroy(); selected = null
-  let parts: string[]
-  try { parts = key.replace(/^#\/?/, '').split('/').map(decodeURIComponent) } catch { parts = ['devices'] }
-  if (parts[0] === 'devices' && parts[1] && parts[2]) {
+  const parts = routeParts(key)
+  if (isSessionRoute(key)) {
     const machine = client.view.machines.find(m => m.id === parts[1])
     selected = { device: parts[1], pty: parts[2], label: machine?.label ?? 'That computer', online: !!machine }
-    mounted = mountSession(parts[2], { wide: false, remote: { device: parts[1] }, onBack: () => { location.hash = '#/devices' } })
+    mounted = mountSession(parts[2], { wide: false, remote: { device: parts[1] }, back: { label: 'Computers', name: 'Back to your computers' }, onBack: leaveSession })
   } else mounted = mountDevices({ account: true })
   content.replaceChildren(mounted.root)
 }
@@ -59,7 +86,7 @@ async function boot(): Promise<void> {
       else if (selected.online && !client!.error && client!.view.available) {
         previous = selected
         showNote(`${selected.label} went offline. Choose a session on another online computer. Your draft is saved on this phone.`)
-        location.hash = '#/devices'
+        leaveSession()
       }
     }
     if (client!.error) showNote(client!.error)

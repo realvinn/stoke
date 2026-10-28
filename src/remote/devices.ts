@@ -75,7 +75,9 @@ function deviceCard(): DeviceCard {
 export function mountDevices(opts: { wide?: boolean; account?: boolean } = {}): { root: HTMLElement; destroy: () => void } {
   const abort = new AbortController()
   const signal = abort.signal
-  const back = el('a', { class: 'icon-btn', href: '#/', 'aria-label': 'Back to sessions' }, icon('back'))
+  // The account website opens on this list: there is no sessions page behind it,
+  // and a back link to `#/` only redrew this page and added a history entry.
+  const back = opts.account ? null : el('a', { class: 'icon-btn', href: '#/', 'aria-label': 'Back to sessions', title: 'Back to sessions' }, icon('back'))
   const refresh = el('button', { type: 'button', class: 'btn btn-sm device-refresh' }, icon('retry', 16), 'Refresh')
   const localName = machineName()
   const local = el('section', { class: 'device-card device-local', 'aria-label': 'Current device' },
@@ -87,7 +89,7 @@ export function mountDevices(opts: { wide?: boolean; account?: boolean } = {}): 
   const body = el('main', { class: 'scroll' }, el('div', { class: 'devices-content' }, ...(opts.account ? [] : [local]),
     el('h2', { class: 'section-head' }, opts.account ? 'Online computers' : 'Other devices'), message, devices))
   const root = el('section', { class: 'page devices-page', 'data-wide': opts.wide ? 'true' : undefined },
-    el('header', { class: 'topbar' }, back, el('h1', { class: 'topbar-title' }, opts.account ? 'Stoke account' : 'Devices'), el('span', { class: 'spacer' }), refresh), body)
+    el('header', { class: 'topbar' }, ...(back ? [back] : []), el('h1', { class: 'topbar-title' }, opts.account ? 'Stoke account' : 'Devices'), el('span', { class: 'spacer' }), refresh), body)
   const cards = new Map<string, DeviceCard>()
   let pending = false
   let received = false
