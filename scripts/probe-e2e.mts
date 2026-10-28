@@ -2296,18 +2296,59 @@ for (const layout of ['hardlink', 'paddedlink']) await step(`a click on a ${layo
   await typeLine(t.ptyId, `${layout} ${site.base}/whoami?terminal=${layout}&padding= ${cols}`)
   const link = await waitFor('the stub\'s hard link output', () => stubByPid('codex', t.pid, proj)?.events.find(e => e.kind === layout) ?? null, 10_000)
   const target = String(link.url)
-  const point = await waitFor('the hard-wrapped tail in the production terminal', () => ev<{ x: number; y: number; hardBoundary: boolean } | null>(`(() => {
-    const t = window.stokeTerminals.get(${JSON.stringify(t.ptyId)}), screen = t.element.querySelector('.xterm-screen').getBoundingClientRect();
-    return (${terminalLinkPoint.toString()})(t, ${JSON.stringify(target)}, screen, ${layout === 'paddedlink'});
-  })()`), 10_000)
+  // Where the URL's last cell is now, and what the terminal looked like when
+  // that was read. The stub records its event before it writes the rows, so
+  // the first read can land the instant they arrive: the scheduled Windows x64
+  // run (job 122466046695) found the padded tail 38 ms into the step, clicked
+  // it, and nothing ever committed, where the plain layout's read came 1.4 s in
+  // and passed. A newline or a ConPTY repaint arriving after such a read moves
+  // the rows under a point already aimed. Inferred from those timings; the run
+  // kept no reading of where the click landed, which the catch below now prints.
+  // Rehearsed on a Mac (--dev): one late scroll written into xterm right after
+  // the read failed the old step on both layouts with this run's exact timeout;
+  // this step passed both with two (one before the hover).
+  type TailPoint = { x: number; y: number; cellH: number; hardBoundary: boolean; at: number[] }
+  const locate = () => ev<TailPoint | null>(`(() => {
+    const t = window.stokeTerminals.get(${JSON.stringify(t.ptyId)}), screen = t.element.querySelector('.xterm-screen').getBoundingClientRect(), b = t.buffer.active;
+    const p = (${terminalLinkPoint.toString()})(t, ${JSON.stringify(target)}, screen, ${layout === 'paddedlink'});
+    return p && { ...p, cellH: screen.height / t.rows, at: [b.viewportY, b.baseY, b.length, b.cursorX, b.cursorY, t.cols, t.rows, screen.x, screen.y, screen.width, screen.height] };
+  })()`)
+  // So aim only at a tail that has stayed put across two reads 300 ms apart.
+  let lastRead = ''
+  const point = await waitFor('the hard-wrapped tail in the production terminal, unmoved across two reads', async () => {
+    const next = await locate(), key = JSON.stringify(next)
+    const settled = next && key === lastRead ? next : null
+    lastRead = key
+    return settled
+  }, 10_000)
   check('the terminal URL crosses an explicit hard line, not only normal soft wraps', point.hardBoundary === true)
+  // xterm activates a link on mouseup only if the press found it current
+  // (Linkifier `_handleMouseUp`), and it asks its providers only when the
+  // pointer enters a new cell, answering from a per-row cache while the row
+  // stays the same. So each try comes in from the row above, which is still
+  // the URL, then onto the tail, and the press waits until xterm itself holds
+  // the whole URL as the link under the pointer. `_core.linkifier` is xterm
+  // 6.0's own field (TerminalView reaches `_core` the same way).
+  const hovered = await waitFor('xterm to hold the whole URL as the link under the pointer at the tail', async () => {
+    const at = await locate()
+    if (!at) throw new Error('the URL is no longer in the viewport')
+    await ui!.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: at.x, y: at.y - at.cellH })
+    await ui!.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: at.x, y: at.y })
+    const held = await ev<{ reachable: boolean; text: string | null }>(`(() => { const l = window.stokeTerminals.get(${JSON.stringify(t.ptyId)})._core?.linkifier; return { reachable: !!l && 'currentLink' in l, text: l?.currentLink?.link?.text ?? null } })()`)
+    if (!held.reachable) throw new Error('xterm has no _core.linkifier.currentLink to read here')
+    if (held.text !== target) throw new Error(`the link under the pointer is ${held.text === null ? 'none' : JSON.stringify(held.text)}`)
+    return at
+  }, 10_000)
   await ev('(window.__stokeTerminalLinkOff = window.stoke.browser.onState(state => { window.__stokeTerminalLinkState = state }), true)')
   try {
-    await ui!.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y })
-    await sleep(150)
-    await ui!.send('Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', clickCount: 1, x: point.x, y: point.y })
-    await ui!.send('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', clickCount: 1, x: point.x, y: point.y })
-    const opened = await waitFor('the whole terminal URL to commit in Stoke', () => ev<BrowserState | null>(`window.__stokeTerminalLinkState?.url === ${JSON.stringify(target)} && !window.__stokeTerminalLinkState.loading ? window.__stokeTerminalLinkState : null`), 20_000)
+    await ui!.send('Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', clickCount: 1, x: hovered.x, y: hovered.y })
+    await ui!.send('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', clickCount: 1, x: hovered.x, y: hovered.y })
+    const opened = await waitFor('the whole terminal URL to commit in Stoke', () => ev<BrowserState | null>(`window.__stokeTerminalLinkState?.url === ${JSON.stringify(target)} && !window.__stokeTerminalLinkState.loading ? window.__stokeTerminalLinkState : null`), 20_000).catch(async error => {
+      console.log('  terminal link: aimed at', JSON.stringify(hovered), 'now', JSON.stringify(await locate().catch(e => String(e))))
+      console.log('  terminal link: last browser state', JSON.stringify(await ev('window.__stokeTerminalLinkState ?? null').catch(e => String(e))))
+      await shot(`04-terminal-${layout}-failure`)
+      throw error
+    })
     check('clicking the terminal tail preserves the full URL including its query', opened.url === target, opened.url)
     if (layout === 'paddedlink') await shot('04-terminal-padded-link')
   } finally {

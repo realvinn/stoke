@@ -7,6 +7,10 @@ import { resolve, join } from 'node:path'
 import { contrastRatio } from '../src/shared/color.ts'
 import { build } from 'vite'
 
+// On Windows the window is shown (see below), and a shown window that other
+// windows cover is backgrounded and stops drawing too. Before ready, at module scope.
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows')
+
 async function main(): Promise<void> {
   mkdirSync('out', { recursive: true })
   const temp = mkdtempSync(resolve('out/tab-overflow-'))
@@ -38,13 +42,39 @@ window.themes = BUILT_IN_THEMES.map(t => t.id);
     await build({ configFile: false, logLevel: 'error', define: { 'process.env.NODE_ENV': '"production"' }, resolve: { alias: { '@shared': resolve('src/shared') } }, esbuild: { jsx: 'automatic' }, build: { outDir: join(temp, 'bundle'), emptyOutDir: true, lib: { entry, name: 'fixture', formats: ['iife'], fileName: () => 'fixture.js', cssFileName: 'fixture' } } })
     writeFileSync(join(temp, 'index.html'), '<link rel="stylesheet" href="bundle/fixture.css"><style>.titlebar{height:var(--titlebar-h)}.titlebar[data-platform="win32"]{padding-right:148px}</style><div id="root"></div><script src="bundle/fixture.js"></script>')
     await app.whenReady()
+    // The overflow buttons need drawn frames. useTabOverflow re-reads its edges
+    // from the strip's `scroll` event and a requestAnimationFrame, and Chromium
+    // runs both only in its rendering steps. A hidden window on windows-latest
+    // crawls (verify:remote-draft printed 1 frame in 1 s there), and this suite
+    // read the button 100 ms after the right one scrolled: the strip at 285, the
+    // left button still disabled (runs 40520686629, 40582687313). Rehearsed on
+    // a Mac in a hidden window that stops painting (`paintWhenInitiallyHidden:
+    // false`, `backgroundThrottling: true`): 0 to 4 frames a second, the same
+    // failure at 291. So each wait on scroll-driven state is a bounded poll that
+    // names what never happened (in that rehearsal every one then passed, in
+    // under a second each), and on Windows the window is shown without focus,
+    // where it draws at full rate (Linux, under Xvfb, always was). macOS stays
+    // hidden: its hidden window drew 144 frames a second here, and a shown one
+    // would come up over the owner's work on every `npm run check`. The frame
+    // probe below prints what each run got.
     win = new BrowserWindow({ width: 940, height: 300, show: process.platform === 'linux', webPreferences: { backgroundThrottling: false } })
+    if (process.platform === 'win32') win.showInactive()
     const errors: string[] = []
     win.webContents.on('console-message', (event) => { if (event.level === 'error') errors.push(event.message) })
     await win.loadFile(join(temp, 'index.html'))
     const run = async (code: string) => { try { return await win!.webContents.executeJavaScript(code) } catch (error) { throw new Error(code, { cause: error }) } }
     const settle = () => new Promise((done) => setTimeout(done, 100))
     await settle()
+    // Bounded, and it cancels its last request, so a window that stopped drawing prints 0 rather than hanging.
+    const framesAfterLoad: number = await run(`new Promise(done=>{let n=0,id=0;const tick=()=>{n++;id=requestAnimationFrame(tick)};id=requestAnimationFrame(tick);setTimeout(()=>{cancelAnimationFrame(id);done(n)},1000)})`)
+    console.log(`the window drew ${framesAfterLoad} animation frames in the 1 s after it loaded (the scroll buttons' state needs frames)`)
+    const until = async (code: string, what: string, detail: () => Promise<unknown> = async () => '') => {
+      const deadline = Date.now() + 5_000
+      while (!(await run(code))) {
+        if (Date.now() > deadline) assert.fail(`${what} within 5 s: ${JSON.stringify(await detail())}. useTabOverflow hears a scroll only in a drawn frame, and this window drew ${framesAfterLoad} animation frames in the 1 s after it loaded`)
+        await new Promise((done) => setTimeout(done, 50))
+      }
+    }
     assert.deepEqual(errors, [], 'fixture mounts the real title bar without renderer errors')
     assert.equal(await run(`document.querySelector('[data-tab-id="1"] .tab-activity')?.dataset.state`), 'working', 'remote tabs draw activity dots too')
     // Nothing below may read the machine's own motion setting. app.css stills
@@ -97,7 +127,8 @@ window.themes = BUILT_IN_THEMES.map(t => t.id);
       await run(`document.documentElement.style.fontSize = '${scale}px'; window.setActive('0')`)
       await settle()
       assert.equal(await run(`!!document.querySelector('[aria-label="Scroll session tabs"]')`), true)
-      assert.equal(await run(`document.querySelector('[aria-label="Scroll tabs left"]').disabled`), true)
+      // At 25.6px this follows the previous pass's setActive('0') scrolling back.
+      await until(`document.querySelector('[aria-label="Scroll tabs left"]').disabled`, 'the left button never disabled at the start of the strip', () => run(`({scale: ${scale}, left: document.querySelector('.tablist').scrollLeft})`))
       assert.equal(await run(`(() => { const tabs = document.querySelector('.tabs').getBoundingClientRect(), actions = document.querySelector('.titlebar-actions').getBoundingClientRect(); return tabs.right <= actions.left && actions.right <= innerWidth - 140; })()`), true, 'usage and native controls have reserved space')
       assert.equal(await run(`getComputedStyle(document.querySelector('.usage-mini-track')).display`), 'none', 'compact usage hides the mini bar while preserving labels and percentages')
       assert.ok(await run(`document.querySelector('.usage-mini-left').textContent.includes('60')`))
@@ -105,11 +136,12 @@ window.themes = BUILT_IN_THEMES.map(t => t.id);
       await run(`document.querySelector('[aria-label="Scroll tabs right"]').click()`)
       await settle()
       assert.ok(await run(`document.querySelector('.tablist').scrollLeft`) > before, 'right button advances the strip')
-      const afterRight = await run(`({left: document.querySelector('.tablist').scrollLeft, disabled: document.querySelector('[aria-label="Scroll tabs left"]').disabled, width: document.querySelector('.tablist').clientWidth})`)
+      const strip = () => run(`({left: document.querySelector('.tablist').scrollLeft, disabled: document.querySelector('[aria-label="Scroll tabs left"]').disabled, width: document.querySelector('.tablist').clientWidth})`)
+      // The press that brings a tab back: the left button must come alive once the strip has moved.
+      await until(`!document.querySelector('[aria-label="Scroll tabs left"]').disabled`, 'the left button never enabled after the right button scrolled the strip', async () => ({ scale, before, afterRight: await strip() }))
+      const afterRight = await strip()
       await run(`document.querySelector('[aria-label="Scroll tabs left"]').click()`)
-      await settle()
-      const afterLeft = await run(`document.querySelector('.tablist').scrollLeft`)
-      assert.ok(afterLeft < afterRight.left, JSON.stringify({ scale, before, afterRight, afterLeft }))
+      await until(`document.querySelector('.tablist').scrollLeft < ${afterRight.left}`, 'the left button never moved the strip back', async () => ({ scale, before, afterRight, afterLeft: await run(`document.querySelector('.tablist').scrollLeft`) }))
       await run(`document.querySelector('.tablist').scrollLeft = 0`)
       await settle()
       assert.equal(await run(`document.querySelector('.tablist').dispatchEvent(new WheelEvent('wheel', { deltaY: 120, cancelable: true, bubbles: true }))`), false, 'ordinary mouse wheel is handled')
@@ -124,7 +156,7 @@ window.themes = BUILT_IN_THEMES.map(t => t.id);
       await settle()
       const geometry = await run(`(() => { const list=document.querySelector('.tablist').getBoundingClientRect(), tab=document.querySelector('[aria-selected="true"]').getBoundingClientRect(); return {list: {left:list.left,right:list.right}, tab: {left:tab.left,right:tab.right}, selected: document.querySelector('[aria-selected="true"]').dataset.tabId, scroll: {left:document.querySelector('.tablist').scrollLeft,width:document.querySelector('.tablist').scrollWidth,client:document.querySelector('.tablist').clientWidth},app:document.querySelector('.app').scrollLeft,body:document.body.scrollLeft}; })()`)
       assert.ok(geometry.tab.right <= geometry.list.right + 1 && geometry.tab.left >= geometry.list.left - 1, 'selected last tab is fully visible: ' + JSON.stringify({ scale, ...geometry }))
-      assert.equal(await run(`document.querySelector('[aria-label="Scroll tabs right"]').disabled`), true)
+      await until(`document.querySelector('[aria-label="Scroll tabs right"]').disabled`, 'the right button never disabled with the last tab in view', () => run(`({scale: ${scale}, left: document.querySelector('.tablist').scrollLeft, max: document.querySelector('.tablist').scrollWidth - document.querySelector('.tablist').clientWidth})`))
       await run(`window.setActive('0')`)
       await settle()
     }
