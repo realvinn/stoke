@@ -43,19 +43,28 @@ systemd units below — same binary, same listeners, same secret, different supe
 |---|---|
 | Node 24 (official tarball, SHA-256 checked) | `~/stoke-hub/node/` |
 | The hub bundle, data, edge secret, backups, logs | `~/stoke-hub/` (all `0700`/`0600`) |
-| cloudflared 2026.9.3 (SHA-256 checked) + config + tunnel credentials | `~/stoke-hub/bin/`, `~/stoke-hub/cloudflared/` |
-| Supervisors (restart on exit) | `run-hub.sh`, `run-tunnel.sh`, single-instance by `flock` |
+| cloudflared 2026.10.5 (SHA-256 checked) + the tunnel's token file | `~/stoke-hub/bin/`, `~/stoke-hub/cloudflared/personal.token` (`0600`) |
+| Supervisors (restart on exit) | `run-hub.sh`, `run-tunnel-token.sh`, single-instance by `flock` |
 | Start at boot, re-check every 5 min, trim logs | `ensure.sh`, from `vin`'s crontab |
 | Nightly `backup --keep 14` | `backup.sh`, 03:00 from the crontab |
 
 The listeners are the edge one on `127.0.0.1:8787` and the LAN one on the **tailnet address
-only** (`100.82.168.7:8788`). The tunnel is `stoke-hub` in the **ProTech** Cloudflare account,
-hostname `stoke-hub-origin.protechitsolutions.com.au` (the account `cloudflared` on the owner's
-Mac is signed in to); the `stoke-hub-edge` Worker on `stoke.vinn.dev/hub/*` lives in the
-personal account and forwards there with the edge secret (`wrangler.hub-edge.jsonc` says how to
-move the origin onto `vinn.dev`). If root ever becomes available, the systemd units below are
-the better home: they add `ProtectSystem`, `NoNewPrivileges` and `MemoryMax`, which a crontab
-supervisor cannot.
+only** (`100.82.168.7:8788`). The tunnel is `stoke-hub` in the **personal** Cloudflare account
+(the one that owns `vinn.dev` and the Worker), hostname `hub-origin.vinn.dev`. It is managed in
+Cloudflare, not in a file: its one rule (`hub-origin.vinn.dev`, path `^/hub/` →
+`http://127.0.0.1:8787`, everything else 404) was set through the API, and `run-tunnel-token.sh`
+runs `cloudflared tunnel --no-autoupdate run --token-file ~/stoke-hub/cloudflared/personal.token`
+— no `cert.pem`, no `config.yml`. The `stoke-hub-edge` Worker on `stoke.vinn.dev/hub/*` forwards
+there with the edge secret.
+
+Until 2026-10-28 the tunnel was in the **ProTech** account (`stoke-hub-origin.protechitsolutions.com.au`,
+`run-tunnel.sh` + `cloudflared/config.yml` + a credentials JSON), only because cloudflared's
+`cert.pem` was ProTech's. It is kept running for a week as the way back (point `HUB_ORIGIN` at it
+again and redeploy), then its `ensure.sh` line, files and the tunnel itself are removed.
+
+The NUC now has user systemd with lingering on, so user units could replace the crontab
+supervisors one day; root is still not available, so the systemd units below stay unused. They add
+`ProtectSystem`, `NoNewPrivileges` and `MemoryMax`, which a crontab supervisor cannot.
 
 ```sh
 ssh vin@protech-nuc
