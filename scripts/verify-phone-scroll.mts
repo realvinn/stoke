@@ -62,8 +62,8 @@ window.histBottom = () => { hist.scrollToBottom(); box.scrollTop = 0; };
 // The key bar as session.ts mounts it, beside a composer that keeps the phone's keyboard up.
 const keyRoot = document.getElementById('keys'), composer2 = document.getElementById('composer2');
 const sentKeys = [], keyEvents = [];
-// eofConfirmMs: a driven tap can reach the page 2 s after it was sent on a CI runner, so two of them outlast the shipped
-// 3 s (gotcha 180); the shipped value is asserted on its own (eofConfirmDefault).
+// eofConfirmMs: a driven tap reached the page 2 s after it was sent on a CI runner while this window was hidden (gotcha
+// 183), so two of them outlasted the shipped 3 s (gotcha 180); the shipped value is asserted on its own (eofConfirmDefault).
 mountTerminalKeys(keyRoot, { write: value => { sentKeys.push(value); return true; }, applicationCursorMode: () => false, signal: new AbortController().signal, eofConfirmMs: 20000 }).setEnabled(true);
 window.eofConfirmDefault = EOF_CONFIRM_MS;
 // The window, bubble phase: after every listener on the control itself has run.
@@ -85,7 +85,9 @@ window.exerciseHistory = async () => {
 };`)
     await build({ configFile: false, logLevel: 'error', resolve: { alias: { '@shared': resolve('src/shared') } }, build: { outDir: join(temp, 'bundle'), emptyOutDir: true, lib: { entry, name: 'fixture', formats: ['iife'], fileName: () => 'fixture.js', cssFileName: 'fixture' } } })
     writeFileSync(join(temp, 'index.html'), '<link rel="stylesheet" href="bundle/fixture.css"><div id="terminal" style="height:220px;width:400px"></div><textarea id="composer"></textarea><div id="box" style="height:150px;width:400px;overflow:auto;overscroll-behavior:contain"><div id="history"></div></div><div style="position:fixed;top:0;right:0;width:360px"><textarea id="composer2" rows="1"></textarea><div id="keys"></div></div><script src="bundle/fixture.js"></script>')
-    win = new BrowserWindow({ show: false, webPreferences: { backgroundThrottling: false } })
+    // Shown everywhere but macOS (gotcha 183): a touch dispatched into a hidden window answered after ~1 s on the
+    // Linux and Windows runners, the delay gotcha 180 measured here (59 s and 64 s a run hidden, 17 s shown).
+    win = new BrowserWindow({ show: process.platform !== 'darwin', webPreferences: { backgroundThrottling: false } })
     await win.loadFile(join(temp, 'index.html'))
     const result = await win.webContents.executeJavaScript('window.exercise()')
     assert.equal(result.consumed, true)
@@ -141,8 +143,9 @@ window.exerciseHistory = async () => {
       assert.equal(await win!.webContents.executeJavaScript('window.keyFocus()'), true, 'the composer has focus before the tap')
       if (mouse) for (const type of ['mousePressed', 'mouseReleased']) await dbg.sendCommand('Input.dispatchMouseEvent', { type, x: at.x, y: at.y, button: 'left', clickCount: 1 })
       else {
-        // A tap's two halves sent together, then both replies awaited. On the Linux runner a driven touch reaches this
-        // page 1.4-2 s after it is sent; sent one after the other's reply, the halves arrived 2 s apart (gotcha 180).
+        // A tap's two halves sent together, then both replies awaited. On the Linux runner a driven touch reached this
+        // page 1.4-2 s after it was sent while the window was hidden (gotcha 183); sent one after the other's reply, the
+        // halves arrived 2 s apart (gotcha 180).
         await Promise.all([
           dbg.sendCommand('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [at] }),
           dbg.sendCommand('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })

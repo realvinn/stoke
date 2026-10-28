@@ -141,7 +141,7 @@ async function keepsTheList(cdp: Debugger, run: Run, until: Until, top: number):
  */
 async function tapsKeepFocus(cdp: Debugger, run: Run): Promise<void> {
   await run(`(() => { window.__taps = []; for (const type of ['pointerdown', 'mousedown', 'click']) window.addEventListener(type, e => { if (e.target.closest && e.target.closest('.keys-toggle, .keys button')) window.__taps.push(type + (e.defaultPrevented ? ' cancelled' : '')) }) })()`)
-  // The window is hidden, so it has no system focus and Chromium holds focus events back; a
+  // On macOS the window is hidden, so it has no system focus and Chromium holds focus events back; a
   // focused page is emulated for these taps instead (nothing is shown over the owner's work).
   await cdp.sendCommand('Emulation.setFocusEmulationEnabled', { enabled: true })
   await run(`document.querySelector('.composer-input').focus()`)
@@ -191,13 +191,40 @@ async function goneOffline(run: Run, until: Until): Promise<void> {
 async function phone(win: BrowserWindow, run: (code: string) => Promise<any>, until: (code: string) => Promise<void>): Promise<void> {
   const cdp = win.webContents.debugger
   cdp.attach('1.3')
-  const metrics = (height: number) => cdp.sendCommand('Emulation.setDeviceMetricsOverride', { width: 390, height, deviceScaleFactor: 3, mobile: true })
+  /*
+   * Emulate a screen, then wait until the page's LAYOUT has it (gotcha 182). innerHeight takes the
+   * override at once; an element already laid out in viewport units keeps its old size until a later
+   * frame. On a macOS runner (2026-10-28) the list still ended at the window's real 816 px when
+   * innerHeight already said 844, and reached 844 27 ms later, so "bounded by the screen" failed on
+   * every runner whose real window is shorter than the phone (macOS 816, Windows 655) and passed under
+   * xvfb, whose window is the full 844. The wait is on a 100dvw x 100dvh probe of the suite's own, made
+   * and laid out BEFORE the override like the page's own elements: one made after it is laid out fresh,
+   * at the new size at once, and proves nothing (the first cut of this wait did exactly that).
+   */
+  const probe = 'suite-viewport-probe'
+  const screenIs = async (width: number, height: number, mobile = true): Promise<void> => {
+    await run(`(() => {
+      let p = document.getElementById('${probe}')
+      if (!p) {
+        p = document.createElement('div')
+        p.id = '${probe}'
+        Object.assign(p.style, { position: 'fixed', top: '0', left: '0', width: '100dvw', height: '100dvh', visibility: 'hidden', pointerEvents: 'none' })
+        document.body.append(p)
+      }
+      return p.getBoundingClientRect().height
+    })()`)
+    await cdp.sendCommand('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: mobile ? 3 : 1, mobile })
+    await until(`(() => {
+      const r = document.getElementById('${probe}')?.getBoundingClientRect()
+      return !!r && innerWidth === ${width} && innerHeight === ${height} && Math.round(r.width) === ${width} && Math.round(r.height) === ${height}
+    })()`)
+  }
   await cdp.sendCommand('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 })
-  await metrics(844)
+  await screenIs(390, 844)
   // A finger drag as dispatched touches; synthesizeScrollGesture's touch source sends no touchmove on Linux (gotcha 180).
   const swipe = (x: number, y: number, dy: number) => touchDrag((method, params) => cdp.sendCommand(method, params), x, y, dy)
   const settle = () => new Promise(done => setTimeout(done, 400))
-  await until(`document.querySelectorAll('.device-session[data-pty^="pty-pc"]').length === 12 && innerHeight === 844`)
+  await until(`document.querySelectorAll('.device-session[data-pty^="pty-pc"]').length === 12`)
   assert.equal(await run(`document.querySelectorAll('.devices-page .topbar a, .devices-page .topbar .icon-btn').length`), 0,
     'the computers list has no back control: the account site opens on it and nothing is behind it')
   const list = `document.querySelector('.devices-page main.scroll')`
@@ -225,11 +252,11 @@ async function phone(win: BrowserWindow, run: (code: string) => Promise<any>, un
   await tapsKeepFocus(cdp, run)
   // The on-screen keyboard, as Android resizes the content (interactive-widget=resizes-content).
   await run(`document.querySelector('.composer-input').focus()`)
-  await metrics(470); await settle(); await settle()
+  await screenIs(390, 470); await settle(); await settle()
   const typing = await run(`({ composer: Math.round(document.querySelector('.composer-input').getBoundingClientRect().bottom), session: Math.round(document.querySelector('.session').getBoundingClientRect().bottom), page: document.scrollingElement.scrollHeight })`)
   assert.ok(typing.composer <= 470 && typing.session === 470 && typing.page === 470, `with the keyboard up the composer stays above it: ${JSON.stringify(typing)}`)
   await run(`document.activeElement.blur()`)
-  await metrics(844); await settle()
+  await screenIs(390, 844); await settle()
   await run(`document.querySelector('.sbar .back-btn').click()`)
   await until(`location.hash === '#/devices' && !!document.querySelector('.device-session[data-pty="pty-pc-12"]')`)
   assert.equal(await run('history.length'), entries + 1, 'Back returns to the list entry instead of stacking another')
@@ -255,8 +282,7 @@ async function phone(win: BrowserWindow, run: (code: string) => Promise<any>, un
   await new Promise(done => setTimeout(done, 600))
   assert.equal(await run('location.hash'), '', 'Back pressed twice before it lands goes back once, never past the list')
   // A laptop browser: the account site has no rail to go back by, so its session keeps Back.
-  await cdp.sendCommand('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false })
-  await until(`innerWidth === 1280`)
+  await screenIs(1280, 800, false)
   await open()
   assert.equal(await run(`document.querySelector('.sbar .back-btn').getClientRects().length > 0`), true, 'at laptop width a session still shows Back')
   await run(`document.querySelector('.sbar .back-btn').click()`)
@@ -272,7 +298,13 @@ app.whenReady().then(async () => {
   let failed = false
   try {
     assert(process.env.STOKE_TEST_ACCOUNT_URL?.startsWith('http://127.0.0.1:'))
-    win = new BrowserWindow({ width: 390, height: 844, show: process.platform === 'linux', webPreferences: { backgroundThrottling: false } })
+    /*
+     * Shown everywhere but macOS (gotcha 183). On the windows-latest runner each touch dispatched into a
+     * HIDDEN window answered after ~1 s (3 s over the terminal), so the phone checks took ~160 s and the
+     * suite's 60 s limit killed this drive mid-swipe; shown, the same checks took 16 s with no call over
+     * 300 ms. A hidden macOS window takes them at once, so the Mac keeps its window out of the owner's way.
+     */
+    win = new BrowserWindow({ width: 390, height: 844, show: process.platform !== 'darwin', webPreferences: { backgroundThrottling: false } })
     const errors: string[] = []
     // The page logs each 503 it gets while the driver keeps the hub away on purpose (`hubAway`).
     win.webContents.on('console-message', event => { if (event.level === 'error' && !(hubAway && /status of 503/.test(event.message))) errors.push(event.message) })

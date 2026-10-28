@@ -420,8 +420,10 @@ passes the outer layer reaches the inner one.
 **Found 2026-10-28: CI's gating Verify job was red on four pushes in a row** (runs 40650955792,
 40658756289, 40664680841, 40687038232), every time on verify:account-remote's "a finger scrolls the
 list under a fixed bar to its last session", every time with the same reading,
-`{"top":0,"bar":0,"page":0,"row":1021}`. The macOS leg passed it. The suite swiped with CDP
-`Input.synthesizeScrollGesture` and `gestureSourceType: 'touch'`, Chromium's own synthetic gesture.
+`{"top":0,"bar":0,"page":0,"row":1021}`. The macOS leg passed it on the one run that reached it
+(c561409); on the other three it stopped a check earlier, at gotcha 182's layout lag. The suite
+swiped with CDP `Input.synthesizeScrollGesture` and `gestureSourceType: 'touch'`, Chromium's own
+synthetic gesture.
 
 The page was not at fault. A throwaway diagnostic on the same ubuntu runner (Electron 43.2, X11
 under `xvfb-run -a -s '-screen 0 1280x1024x24'`, branch `diag/linux-touch`, deleted after) drove a
@@ -468,6 +470,11 @@ Two smaller lessons from the same four red runs:
   diagnostic's plain overflow box is what turned "the list does not scroll on Linux" into "nothing
   scrolls from that gesture on Linux".
 
+> **Checked on 2026-10-28, later the same day** — the 1.4-2 s delivery delay above, "its cause was not
+> found", was verify:phone-scroll's HIDDEN window (gotcha 183). Shown, the same suite runs in 17 s on
+> the Linux runner against 59 s hidden; its window is now shown off macOS. Sending a tap's halves
+> together and the suite-only `eofConfirmMs` stay: both are right whatever the runner's delay.
+
 ## 181. A deadline shrunk to 1 ms against a real process is a race, not a test
 
 **Found twice, the second time because the first fix lived only in a code comment.** verify:git
@@ -493,3 +500,66 @@ SKIP: execFile cannot start a script there, and the timeout is the same code on 
 A 1 ms deadline is still fine where the check accepts either outcome: verify:work-mode's "with every
 deadline at 1 ms it resolves in under 500 ms and never throws … with a reason or some files" asserts
 only that nothing hangs, throws or leaks.
+
+## 182. An emulated screen reaches `innerHeight` at once and laid-out elements a frame later
+
+**Found 2026-10-28, on the non-gating macOS and Windows legs.** verify:account-remote's phone checks
+set `Emulation.setDeviceMetricsOverride` to a 390x844 phone, waited for `innerHeight === 844`, and at
+once read "the list is a scroller bounded by the screen". The macos-14 leg failed it three runs in
+four with `{"client":764,"scroll":1026,"bottom":816}`, the Windows leg with `"bottom":655`: each the
+REAL height of the suite's window there (844 less macOS's 28 px title bar; a window clamped to a
+1024x768 desktop's 720 px work area). The ubuntu gate passed every time, because under xvfb, with no
+window manager, the window's real height is 844.
+
+The emulation was not lost, only late for what was already on the page. Polled every 25 ms from the
+moment `innerHeight` said 844 (branch `diag/linux-touch`, deleted after):
+
+| runner | real window | first read | 27 ms later |
+|---|---|---|---|
+| macos-14 | 390x816 | `innerHeight`, `visualViewport` and `clientHeight` 844; `#app` (100dvh) and the list end at 816 | both at 844 |
+| windows-latest | 374x655 | the same, ending at 655 | both at 844 |
+
+On the owner's Mac the two agree from the first read, in a 568 px window and at a forced 1x scale,
+which is why every local run passed.
+
+The rule: **after any screen emulation, wait until an element laid out in viewport units BEFORE the
+override has the new size, never until `innerHeight` does** (`screenIs` in drive-account-remote.mts:
+a fixed, hidden 100dvw x 100dvh probe of the suite's own, made and measured first, then the
+override, then the wait). The first cut made the probe after the override, and it waited for
+nothing: an element made then is laid out fresh, at the new size at once, while the page's own still
+had the old one, and the same check failed with the same `816` and `655`. A probe of the suite's own,
+not the page's `#app`, because waiting on the element under test turns its failure into a timeout.
+Every emulation in that drive goes through `screenIs`: the 470 px "keyboard" and the 1280x800 laptop
+too. probe-e2e.mts, the only other driver that emulates, sleeps 200-300 ms after each override,
+which covers 27 ms but is a guess; left alone.
+
+Once the layout was read late enough (the diagnostic's own 6 s of polling), the Windows leg died with
+"Unhandled 'error' event" (ECONNRESET) and printed nothing of what the page had done. The suite's front
+proxy took WebSocket upgrades with no `error` listener on the upgraded socket, which is the caller's to
+guard once the http server hands it over. The reset came from the suite itself: its 60 s limit killed
+the page's Electron mid-swipe (gotcha 183), and Windows resets a killed process's connections. With a
+listener the same kill reports as an exit code of `null`, the suite's own kill, instead of a crash,
+which is how gotcha 183 was found.
+
+## 183. A touch dispatched into a hidden window answers after about a second off macOS, so show the window there
+
+**Found 2026-10-28, on the non-gating Windows leg.** With gotcha 182's layout wait in place,
+verify:account-remote still failed on windows-latest, now as `null !== 0` with no output: the suite's
+own 60 s limit had killed the page's Electron. Every call over 300 ms, timed on that runner (branch
+`diag/linux-touch`), showed where the time went. Each `Input.dispatchTouchEvent` into the drive's
+hidden window answered after 983 ms, steadily, over the device list, and after 2,983 ms over the
+terminal, so the two list swipes alone took 70 s and the phone checks 132-160 s in two runs. The same
+drive with its window shown, on the same runner image, finished the phone checks in 16 s with no call
+over 300 ms at all. A hidden window on the macos-14 runner and on the owner's Mac takes the same
+touches at once (the whole suite 26-31 s), which is why the window was hidden there in the first
+place: nothing is shown over the owner's work. The near-exact 1 s and 3 s read like timeouts, as if
+the browser gives up waiting for the hidden page's answer to each touch and hands it on; that is a
+reading of the numbers, not of Chromium's source.
+
+The rule: **drive touches only into a window that is shown, except on macOS** (`show:
+process.platform !== 'darwin'` in drive-account-remote.mts and verify-phone-scroll.mts). It holds on
+Linux too. verify:phone-scroll's window was hidden on every platform, and the 1.4-2 s touch delay
+gotcha 180 measured in it on the Linux runner, cause then unknown, was this one: the whole suite took
+59 s hidden and 17 s shown on ubuntu-latest, 64 s and 17 s on windows-latest, passing all four ways.
+Off macOS a shown window is a real window on a developer's screen for the length of the suite (under
+xvfb nobody sees it). Suites that dispatch no touches keep their windows hidden off Linux.

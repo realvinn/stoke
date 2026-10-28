@@ -237,6 +237,9 @@ try {
       if (head.length) upstream.write(head)
       socket.pipe(upstream); upstream.pipe(socket)
     })
+    // An upgraded socket is the suite's own to guard: when the page's Electron exits, Windows resets
+    // its connections, and the reset's ECONNRESET with no listener crashed the suite (2026-10-28).
+    socket.on('error', () => upstream.destroy())
     socket.on('close', () => upstream.destroy()); upstream.on('error', () => socket.destroy())
   })
   await new Promise<void>(done => front.listen(0, '127.0.0.1', done))

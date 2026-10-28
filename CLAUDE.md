@@ -621,6 +621,10 @@ rule file named on the group line.
   touchmove on Linux); send a tap's halves together, and widen a component's timer for a test (`eofConfirmMs`), never its shipped value.
 - **181.** Prove a deadline fires with a stand-in that cannot answer in time (`slow-git`, `exec sleep` for the one subcommand),
   never a real process under a 1 ms deadline: on the Linux runner git answered first.
+- **182.** After `Emulation.setDeviceMetricsOverride`, wait on a 100dvw x 100dvh probe laid out BEFORE it (`screenIs`), never on
+  `innerHeight`: laid-out elements lag a frame on CI runners. Give an upgraded socket its own `error` listener (Windows resets it).
+- **183.** Dispatch touches only into a SHOWN window off macOS (`show: process.platform !== 'darwin'`): hidden, each
+  `Input.dispatchTouchEvent` answers after ~1 s on the Linux and Windows runners (3 s over the terminal).
 
 ## Standing traps when driving the app
 
