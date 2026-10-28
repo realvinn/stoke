@@ -118,7 +118,19 @@ that answers colour-scheme reports (gotcha 164); xterm's own reports, and typing
 password prompt, never count. Force restart kills the pty's whole process group, SIGTERM then
 SIGKILL after 2 s (`stop(…, force)`, processTree.ts, gotcha 163), because a hung node never runs
 its signal handlers, then brings the tab back the way the relaunch pill or Start again would
-(`forceRestartRoute`). Quitting still uses the ordinary kill, which never escalates.
+(`forceRestartRoute`).
+
+**Quitting waits for the terminals, and ends the ones that will not go.** before-quit sends every
+pty child node-pty's ordinary kill (SIGHUP, which Claude Code answers by writing its transcript).
+A child that ignored it used to keep Stoke's process alive, windowless, for as long as it lived:
+node-pty's exit finalizer joins the thread waiting on that child inside Node's teardown, where no
+JS runs (gotcha 163). So `holdQuitForPtys` (ptyExitTracker.ts) holds the quit at `will-quit`,
+after every window has closed, while any child remains; a child still running after
+`FORCE_KILL_GRACE_MS` (2 s) has its tree killed behind `killablePid`, the whole wait ends at
+`QUIT_DEADLINE_MS` (3 s; 5 s on Windows, whose before-quit drain shares the same `settle`), and a
+kill the deadline cut short leaves one last SIGKILL. A child that exits on SIGHUP ends the wait at
+its exit, so a normal quit is as quick as before. The second quit re-runs before-quit, which
+therefore decides its drain once (gotcha 170).
 
 Finding the executable matters more than it looks. On macOS a GUI app launched from Finder
 does **not** inherit the login shell's PATH, so `cli.ts` asks the login shell for it once
@@ -395,10 +407,17 @@ as the per-put result `full` beside the puts that were taken, never as a request
 older Stoke would read as "not a hub"; shrinking and deleting always pass, and a re-seal gets room
 for the epoch it replaces (`storageBudget`, gotcha 168). The hub is reached publicly
 through a second Worker, `worker/hub-edge.ts`, on the route `stoke.vinn.dev/hub/*`; the installer
-Worker is not changed. The runbook for the NUC is `hub/README.md`.
+Worker is not changed. The runbook for the NUC is `hub/README.md`. Its log says who ended each
+socket: a `relay closed` line carries the raw close code beside the one both ends were sent, `by`
+(guest, host or hub, from `markHubEnded`, which marks every close the hub makes before making it),
+`noPong` for a ping round's cut, `missing` for an end that never joined, frames per end and how
+long the relay had been quiet; a `presence closed` line the same for a device's presence socket,
+matched to its upgrade's `request` line by `rid` (gotcha 172). And a host whose presence came back
+is told again of every relay still waiting for it (`waitingFor`, `relay notice replayed`), because
+the hub's first notice went over whatever socket the host had then (gotcha 173).
 
 The CLIENT is `src/main/hub/` beside the reference crypto, loaded lazily (gotcha 40) the first
-time Settings › Account & sync asks, or 4 s after a boot with a hub configured. `service.ts` is the
+time Settings › Accounts › Stoke asks, or 4 s after a boot with a hub configured. `service.ts` is the
 order things happen in: sign-in (an active device proves its sign-in by signature, spec §3.3), the
 vault's genesis only after the Recovery Kit is typed back, joining by the six digits (confirmed on
 BOTH screens: the joining device takes nothing until the owner presses "The codes match" there) or
@@ -420,7 +439,7 @@ offers, the pass plan, conflict notes, where a received key lands, the panel's v
 no vault key where the key store protects nothing); `sshKeys.ts` lists key pairs by their `.pub`,
 reads one private key when it is shared, and writes a received one with `wx` at 0600, appending
 an IdentityFile block (checked with `ssh -G -F` when the config is not the passwd home's).
-SSH key picker is available in both SSH hosts and Account & sync. It labels `id_ed25519` as
+SSH key picker is available in both SSH hosts and Accounts › Stoke. It labels `id_ed25519` as
 the default SSH key and lists saved servers whose local SSH configuration offers each key;
 these configuration lookups do not attempt server logins or read private keys. The picker
 reads each server's configuration once, with at most four lookups running at a time.
@@ -465,6 +484,30 @@ device it no longer holds, and takes back its grants. A guest pings through the 
 4 min, as the hub closes a relay that forwarded nothing for 10. Large frames go as `part`s: a full
 pty replay measures past the hub's 1 MiB frame cap (gotcha 142), and a status is cut to the
 sessions that fit the hub's 24 KiB cap before it is sealed and sent.
+
+A remote tab whose link drops RECONNECTS by itself, with backoff (`lost`, `reconnectDelayMs`),
+on a fresh relay each try, and four things keep that from stalling (gotcha 173). The guest gives
+a host `RELAY_JOIN_WAIT_MS` (10 s) from its socket's open to the handshake, then gives up on that
+relay and asks for a new one, where it used to wait out the hub's own close; the host's question to
+its owner comes after the handshake, so it is never cut. A host that comes online brings back every
+tab here that was waiting on it, given up on or in a backoff (`revive`, from `onOnline`), once and
+with its tries reset. Waking from sleep pings every open tab and gives it `RELAY_WAKE_PONG_MS`
+(10 s) to answer (`HubRemote.wake`, from powerMonitor `resume` through `installHubWake`), so a
+link that died asleep is closed in seconds instead of up to five minutes. And a relay socket's
+upgrade has its own deadline (`relaySocketOptions`, `RELAY_HANDSHAKE_MS`). A host skips a notice
+for a relay it already serves (`hosted.has`), which is what makes the hub's replay safe on every
+released client.
+
+"Keep a connection log" (Other machines, `hub.connectionLog`, off by default and never synced) is
+how a drop gets explained: on, `ConnectionLog` (hub/connectionLog.ts, wired in `connections.ts`)
+writes each relay's and presence socket's lifecycle on both sides, guest and host, plus sleep, wake
+and screen lock, to `<userData>/connections.log` (1 MB, one `.1`). What a line may hold is decided
+in one pure place, `traceFields` (shared/hub/connectionTrace.ts): event names from a fixed set, ids
+(a relay's in full, to match the hub's line; a device's cut to five characters; a tab as a local
+counter), times, counts, byte totals and close reasons as tags, never text (gotcha 171). Off, it
+creates and writes nothing. The setting is read on every event; Show log file and Copy log work in
+main, and only `{ exists, bytes }` reaches the renderer. A drop is explained from both ends, so the
+row asks for it on the other computers too.
 
 CHAT HISTORY across the owner's computers (spec 2026-10-03 §3) rides the same relays. A host's
 tick (`hub.shareChats`, default off, turned on only by `HubService.setShareChats` after a password
@@ -857,6 +900,15 @@ React 19, hand-written CSS, no component library.
   reachable from any suite (gotcha 31). The same hook reorders the title bar's chips in edit
   mode (`itemAttr: 'tbItem'`), whose widths differ, so neighbours are placed by their own
   widths (`previewLefts`), which for tabs is exactly the old slot lefts.
+- Opening an existing chat (a sidebar session row or hit, a chat-search hit, an Other machines
+  row) goes through one plan, `chatOpenPlan` in `lib/tabs.ts`. A tab that already holds it,
+  running or paused, comes forward; otherwise the chat takes the place of the New tab in front.
+  That is Settings › Sessions › "Open chats in the New tab you're on" (`reuseNewTab`, on by
+  default), which also closes the asking New tab when the chat is already open; off, a chat opens
+  in a tab of its own (or comes forward) and the New tab stays. The launcher's own controls always
+  use their New tab. An Other machines open picks its New tab at the press, not when the relay
+  answers, and each open claims its chat before the start, so a double click makes one tab
+  (gotcha 176).
 - `lib/ptyBus.ts` retains output per process and replays it on attach, which also makes the
   component safe under React StrictMode's double-mount. A replay past its 1 MB cap starts with
   the modes the dropped front had set (`ReplayModes`, gotcha 159).
@@ -960,8 +1012,8 @@ Linux arm64 is deliberately not built (`NOT_BUILT` in `scripts/targets.mjs`).
 
 ## Testing
 
-Verification lives in `scripts/`, one `verify-*` suite per subject — ninety-two of them now.
-Eighty-nine are in `npm run check`, between the typecheck and the full build (of the other
+Verification lives in `scripts/`, one `verify-*` suite per subject — ninety-four of them now.
+Ninety-one are in `npm run check`, between the typecheck and the full build (of the other
 three, extract and security need a live instance and terminal-release checks terminal.yml's
 extracted release); `check` is the gate, and it is what "done" means here. They are `.mts` run
 straight through node's type-stripping with no build step; the window suites
@@ -1071,7 +1123,11 @@ npm run verify:tabs           # which tab is selected after one is closed, where
                               # And the menus: which tabs have a folder here to reveal (never
                               # an SSH or Add-key tab, gotcha 18), and which tabs a profile
                               # chip's Close N tabs takes (never SSH, never a running turn,
-                              # never a tab whose Resume or relaunch is still in flight)
+                              # never a tab whose Resume or relaunch is still in flight).
+                              # And opening a chat (`chatOpenPlan`, `chatNewTab`): every tab
+                              # kind, the setting on and off, a remote open's New tab taken at
+                              # the press and a gone one appending; and each surface's source
+                              # for its plan call, holder and claim (gotcha 176)
 npm run verify:topbar         # the title bar's items: the default (on, folder + git) and the
                               # repair (kinds, ids, one folder and one git, shortcut caps,
                               # the whole block within one hub item), hydrate twice = once,
@@ -1242,6 +1298,15 @@ npm run verify:freeze         # freeze telemetry on a fake app, clock and file s
                               # previous=unclean after a kill), the last lines on `quit`, and the
                               # boot wiring; the clipboard peek's per-platform table (types only,
                               # never a decode)
+npm run verify:pty-exit       # a pty child's exit owned past its tab and window; and the quit:
+                              # `settleQuit` on fakes (the grace, the deadline, the tree kill, the
+                              # last resort behind `killablePid`), the shipped `systemQuitSettle`
+                              # bounds and last resort on real children, index.ts's wiring by text
+                              # (the hold, the Windows drain, before-quit's drain decided once),
+                              # then a real Electron with real ptys (`drive-pty-quit.mts`): a
+                              # normal child, a child and grandchild trapping SIGHUP and SIGTERM,
+                              # a slow one, and the no-hold control. Needs a display; its Electron
+                              # part skips on Windows (gotchas 163, 170)
 npm run verify:terminal-stall # the scrim over a terminal that stopped answering: what counts as
                               # typing (mouse, focus, paste markers, replies refused), password
                               # prompts, every state on a fake clock (starting, slow, the main
@@ -1339,7 +1404,15 @@ npm run verify:hub-server     # the hub SERVER over real sockets on a temp data 
                               # past it; a restart; an older file upgraded in place, interrupted
                               # or not), logs and the SQLite file free of every planted secret,
                               # graceful shutdown, and the `stoke-hub` command from source and
-                              # bundled (serve, invite, backup, reset-password, storage, health, SIGTERM)
+                              # bundled (serve, invite, backup, reset-password, storage, health, SIGTERM).
+                              # Who closed it: each `relay closed` and `presence closed` line's
+                              # raw code, `by`, `noPong`, `missing`, frames per end and quiet
+                              # time over real sockets (a drop, a 1005, a ping round's cut, a
+                              # refusal, never joined) and the broker's with fake sockets (a
+                              # failed delivery is the end it was going to, gotcha 172); and a
+                              # host told again of exactly the relays waiting for it, after its
+                              # welcome (gotcha 173). Its hub runs `pingMs`/`sweepMs` long, so a
+                              # slow run is never swept by the fake clock (gotcha 174)
 npm run verify:hub-client     # the hub CLIENT: what each tier offers and what never syncs (the
                               # phone key, the hub session, account keys, T4 outside a press),
                               # the pass plan (upload, apply, adopt, last-writer-wins with a note,
@@ -1401,7 +1474,25 @@ npm run verify:hub-relay      # "Other machines": two RelayChannels through an i
                               # and two HubRemotes: not sharing, ask, Allow once, Always (on the
                               # host only), Deny standing, every request re-checked behind
                               # HubRemote's back, the tick off closing relays, a removed device,
-                              # offline, idle. Each fix mutated back turns it red
+                              # offline, idle. A relay named three times (the hub's replay) opens
+                              # one host socket and one channel. Each fix mutated back turns it red
+npm run verify:connection-log # "Keep a connection log": off writes nothing (no file, no stat)
+                              # through a whole connect, drop and reconnect; on, two HubRemotes
+                              # and HubPresence through a fake hub write the guest's, host's and
+                              # presence's lines in order; 11 planted values (token, label, typed
+                              # text, hub URL, email, title, account id, full device ids) in no
+                              # byte of any log; rotation, the burst limit, the toggle at the next
+                              # event; every close reason the hub, the edge and the client send,
+                              # read out of their source, has a tag of its own; a real ws close's
+                              # Buffer reason; the row reachable outside the vault (gotcha 171)
+npm run verify:hub-reconnect  # how a remote tab gets back, with a fake hub on mock timers: the
+                              # join deadline (a dead host given up on, one just in time kept, the
+                              # host's question never cut), revive when a host comes online (once;
+                              # never a refused tab or a device gone from the chain), the upgrade
+                              # deadline on a real ws against a TCP server that never answers,
+                              # wake (a dead link found in seconds, a live one left, an owed pong
+                              # judged on the shorter wait), and a close reason past 123 bytes
+                              # still closing a real ws (gotchas 172, 173)
 npm run verify:install        # the one-line installer and the endpoint that serves it: the whole
                               # User-Agent matrix through the Worker's routing rule (PowerShell
                               # before anything browser-shaped, and HTML as the fallback), the
@@ -1521,9 +1612,13 @@ than errors*, which is exactly the class a typecheck cannot catch.
 
 Native terminal shutdown adds `src/main/ptyExitTracker.ts`: exact terminal objects
 remain owned through their exit callbacks and two event-loop turns, independently
-of closed tabs/windows. Windows quit waits up to five seconds before Node teardown;
-the deadline reports pending ownership without synthesizing exits. The standalone
-`verify:pty-exit` suite checks ordering, deadlines and real natural/killed PTY exits.
+of closed tabs/windows. Every quit waits on them through `PtyExitTracker.settle`
+(`settleQuit`): at `will-quit` on every platform (`holdQuitForPtys`), and in Windows'
+before-quit drain too; a child still running after the 2 s grace has its tree killed,
+nothing waits past `QUIT_DEADLINE_MS` (3 s; 5 s on Windows), and the deadline reports
+pending ownership without synthesizing exits (gotchas 163, 170). `verify:pty-exit` checks
+ordering, deadlines, real natural/killed PTY exits and the quit in a real Electron, driven by
+`scripts/drive-pty-quit.mts`.
 
 The Work module adds `src/main/plugins/work.ts` (durable local transitions),
 `src/shared/plugins.ts` (built-in manifest/lifecycle contract),
@@ -1593,7 +1688,9 @@ src/main/         Electron main process
                     `stop(…, force)` is Force restart's whole-group kill (processTree.ts)
   processTree.ts    Force restart's kill: SIGTERM to the pty's process group, SIGKILL after 2 s
                     if anything is left (a hung node never runs its handlers; its MCP servers
-                    share the group); Windows `taskkill /T /F`. verify:terminal-stall
+                    share the group); Windows `taskkill /T /F`. The quit's escalation uses it
+                    too (ptyExitTracker.ts, 300 ms between the two). verify:terminal-stall,
+                    verify:pty-exit
   screenMirror.ts   a headless xterm per session, fed every byte, so `historyFor` hands a late
                     attach (the phone, another machine's remote tab, on every reconnect) the
                     screen as it is now, serialized, instead of the last 512 KB of raw output.
@@ -1807,8 +1904,10 @@ src/main/         Electron main process
                     key written `wx` 0600 and an IdentityFile appended (`ssh -G -F` when the
                     config is not the passwd home's). Paths injectable
   hub/channel.ts    one end of an E2E relay: the handshake against keys THIS device's chain
-                    holds, per-direction AES-GCM with counters, `part` frames. Transport
-                    agnostic, no electron import. verify:hub-relay
+                    holds, per-direction AES-GCM with counters, `part` frames, byte and
+                    last-frame counters for the connection log. A close reason is cut to 123
+                    UTF-8 bytes (`closeFrameReason`; ws throws past that, gotcha 172). Transport
+                    agnostic, no electron import. verify:hub-relay, verify:hub-reconnect
   hub/remote.ts     "Other machines" (HubRemote): the sealed presence status, remote tabs (the
                     guest, with its keepalive and `resize` when used), and relays asked of this
                     machine (the host: the owner's question, grants, the scope, relayed requests
@@ -1819,7 +1918,19 @@ src/main/         Electron main process
                     `searchChats`/`openRemoteChat` over one chats relay per machine. No electron
                     import. Private website guest sinks own separate relays, stay out of
                     desktop tabs and preserve host grants and capability bounds.
-                    verify:hub-relay
+                    Getting back after a drop: the join deadline, `revive` when a host comes
+                    online, `wake` after sleep; a repeated relay notice skipped (`hosted.has`).
+                    Its optional `trace` hook feeds the connection log (gotchas 171-173).
+                    verify:hub-relay, verify:hub-reconnect, verify:connection-log
+  hub/presence.ts   one reconnecting presence connection (`HubPresence`): every callback
+                    belongs to an attempt, with heartbeat and backoff; traces its open, round trip, close
+                    (code, reason tag, lifetime), retries and errors (code only).
+                    verify:hub-presence, verify:connection-log
+  hub/connectionLog.ts  "Keep a connection log" (`ConnectionLog`): `<userData>/connections.log`
+                    through `DiagnosticsLog` under its own name (1 MB, one `.1`), the setting
+                    read on every event, nothing created while off, `log-start` whenever it is
+                    turned on, tab ids as a local counter, `EventLimiter` bursts. No electron
+                    import. verify:connection-log (gotcha 171)
   hub/chatShare.ts  what another computer may read of this one's chat history: the relay
                     instance's two routes (`answerChatsRoute`) over `sharedChats`, which redacts
                     every string again (the patterns, then shared/keyShaped.ts's net, before and
@@ -1903,9 +2014,15 @@ src/main/         Electron main process
                     renderer-gone/child-gone, suspend/resume, main-loop `stall` lines
                     (`LoopSampler`, its own timer: gotcha 160), and `main-stalled` from a
                     watchdog worker thread while main is still held. Rate-limited, nothing
-                    personal in a line. verify:freeze
+                    personal in a line. Its writer also keeps `connections.log` (the 5th
+                    constructor argument names the file). verify:freeze
   diagnostics.ts    the thin Electron wiring for it: `installDiagnostics()`, first in
                     `whenReady`, above `initSecretStore()` so a block there is measured
+  connections.ts    the connection log's Electron wiring: the one `ConnectionLog`
+                    (`connectionTrace`, handed to HubService as `trace`), powerMonitor's
+                    suspend/resume/lock lines, Show (`shell.showItemInFolder`) and Copy
+                    (`clipboard.writeText`, in main: the text never reaches the renderer),
+                    and `installHubWake` (resume → `HubService.wake`)
   portableUpdate.ts a portable Windows copy updating itself: gathers the facts
                     installKind.ts decides on, downloads the release's -<arch>-win.zip
                     checked against latest.yml's sha512, unpacks it beside the running
@@ -2200,7 +2317,7 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     `RemoteHostFab`; a tab another machine is attached to carries the remote
                     tab's two arrows (TitleBar `hostedBy`)
   src/components/HubJoinPrompt.tsx  on a device in the vault, a `.main-col` strip: "<device>
-                    asks to join your vault". Review opens Account & sync, where the codes are
+                    asks to join your vault". Review opens Accounts › Stoke, where the codes are
                     compared; nothing is approved from the strip
   src/components/ImageSendStrip.tsx  `useSshImages`: an image pasted (Cmd/Ctrl+V, the
                     menu's Paste image), files copied in Finder/Explorer and pasted, or
@@ -2270,14 +2387,16 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     Code's points at its three pages instead of an endpoint) and
                     `ClaudeLaunchDefaults` (the four launch defaults, still `settings.defaults`,
                     gotcha 57)
-  src/components/AccountSyncSettings.tsx  Settings › Account & sync: Stoke Hub's panel — the
+  src/components/AccountSyncSettings.tsx  Settings › Accounts › Stoke: Stoke Hub's panel — the
                     address, sign-in or invite sign-up, the vault and its Recovery Kit (shown once,
                     file or print, a group typed back), joining by the code or the Kit, what syncs,
                     SSH keys (share one, install by a press), conflict notes, devices (rename,
                     remove with the Kit), Other machines (the share tick, the devices always
                     allowed, Disconnect), sharing chat history (ShareChats: on through
                     ConfirmPasswordSheet with the other devices ticked, Remove per device, off
-                    at once; drawn in every phase, `shareChatsRow` says why it is blocked), a
+                    at once; drawn in every phase, `shareChatsRow` says why it is blocked),
+                    "Keep a connection log" (`ConnectionLogRow`: Show log file and Copy log
+                    once the file exists; drawn outside the vault too while on, gotcha 171), a
                     new Kit, sign-out. Draws main's `HubView` and
                     `HubRemoteView` and presses `window.stoke.hub`; never writes `settings.hub`,
                     never sees a key
@@ -2500,7 +2619,9 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     `edgeVerdict`), settings.ts (the T0 `hub` block, `applySyncedSettings`,
                     `sshKeyTarget`), client.ts (the desktop client's rules: `localValues`,
                     `planSync`, `incomingFrom`, `sshKeyInstallPlan`, hub-state.json's shape, the
-                    panel's `HubView`)
+                    panel's `HubView`), connectionTrace.ts (all the connection log may write:
+                    `CONNECTION_EVENTS`, `traceFields`' per-field rules, `closeReasonTag`,
+                    `errorCodeOf`, `hubViaOf`; gotcha 171)
   cfAccess.ts       Cloudflare Access without crypto: the team-domain and AUD clamps settings
                     hydrate through, the policy, the login-redirect parser Look it up reads,
                     the status and refusal words the panel shows. Gotcha 124
@@ -2942,6 +3063,12 @@ scripts/          the verify-*.mts suites, make-icon.cjs
                     checksums must exist and match before joining the release assets
   drive-account-remote.mts  Chromium driver for verify-account-remote's synthetic Hub:
                     pairing scrub, independent discovery, terminal input, wake and drafts
+  drive-pty-quit.mts  an Electron main that verify:pty-exit starts: real node-pty children,
+                    the real `PtyManager.shutdown()` in before-quit and the SHIPPED
+                    `holdQuitForPtys`; every step timestamped to a file, never stdout
+  hub-relay-fakes.mts  the fake hub and machines verify:connection-log and verify:hub-reconnect
+                    drive two `HubRemote`s through: it can cut one leg of a relay, lose or
+                    delay the host's notice, fail a relay's creation, or run a silent pty
   capture-test-window.mts  software rendering on Linux and frame-ready screenshots for
                     browser fixtures; empty captures and persistent Viz errors fail the suite,
                     and a window that has stopped drawing fails it by name (`ScreenshotStalled`,
@@ -3027,13 +3154,20 @@ hub/              Stoke Hub, the server the owner runs on the NUC (spec:
   app.ts            the HTTP routes, the auth pipeline (session, device signature, nonce,
                     active = chain id AND key), the chain/items/pairing/relay handlers,
                     "confirm it's you" (`authVerify`: a password check on its own
-                    per-device counter and scrypt queue, no session), graceful close.
+                    per-device counter and scrypt queue, no session), graceful close. The
+                    `presence closed` line, and on a presence open the replay of every relay
+                    still waiting for that host (`relay notice replayed`, gotcha 173).
+                    `HubConfig.pingMs`/`sweepMs` exist for suites on a fake clock (gotcha 174).
                     `startHub` is what verify:hub-server drives
   store.ts          the SQLite file: WAL, synchronous FULL, 0600; hashes of tokens and invites,
                     never the values; VACUUM INTO for backups; `item_usage`, each account's
                     bytes per epoch kept by triggers in the write's own statement, made once
                     in place for an older file (`upgradeItemUsage`)
-  sockets.ts        presence registry and the relay broker (in memory, frames forwarded verbatim)
+  sockets.ts        presence registry and the relay broker (in memory, frames forwarded verbatim).
+                    `markHubEnded` marks every socket the hub closes, so the close lines say
+                    who began it; `closeRelay` writes `relay closed` (raw code, by, noPong,
+                    missing, frames per end, quietMs); `waitingFor` lists the relays a host's
+                    returning presence is told of again (gotchas 172, 173)
   limits.ts         `clientKey` (an IPv6 sender is its /64), the per-client bucket, the scrypt
                     semaphores (a proven device's apart), the one-sign-in-per-email claim
   log.ts            JSON-lines log that redacts by field name and by value shape

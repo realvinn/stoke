@@ -364,3 +364,51 @@ measurer (`fitTopBar`, gotcha 155) and anything reading a theme's colours just a
 >   frame wait AND `capturePage`, which also never answers in a stopped window (still waiting at
 >   40 s), and throws `ScreenshotStalled` after 10 s. Every suite that screenshots through it is
 >   bounded now, not only verify:remote-draft, whose own wrapper is redundant but harmless.
+
+## 174. A server a suite starts runs its real timers against the suite's fake clock
+
+**Found 2026-10-28: verify:hub-server failed "nor did a sign-in counter move through the second
+lockout" twice in the shared tree, both under heavy load (runs of 115 s and 3:39), and passed in a
+scratch copy at normal load (46 s).** The hub sweeps old rows on a real `setInterval` of `SWEEP_MS`
+(60 s), while the suite's clock is fake and by then 45 minutes ahead. Any run slower than a minute
+let the real timer fire, and the sweep, judging by the fake clock, deleted the per-IP throttle rows
+the check compares (25 `ip:…/64` rows gone): exactly what a lockout regression looks like. Proven on
+HEAD's own code: a copy with `SWEEP_MS = 1_000` failed exactly that check. `HubConfig.sweepMs`
+(default `SWEEP_MS`, so production is unchanged) is set to an hour in the suite's main hub and its
+storage-cap hub, as `pingMs` already was; with the default forced to 1 s the suite then passes.
+
+The rule: **every real timer a server starts gets a config override, and a suite that runs that
+server on a fake clock sets it.** A timer the suite does not control fires only on a slow run, which
+means a CI runner or a loaded machine, and reads as a flaky product bug. When a suite gains a fake
+clock, grep the server for `setInterval` and `setTimeout`.
+
+## 175. A mutation that stays green is a finding about the suite, not proof the guard is redundant
+
+**Collected 2026-10-28 from five groups' mutation runs, each on a scratch copy of the tree.** Four
+shapes let a guard be deleted with every suite green. Each was found because a mutant survived, and
+each was fixed with a check, never by deleting the guard:
+
+- **A suite whose fakes carry their own constants never tests the shipped ones.** verify:pty-exit
+  drove `settleQuit` with fake deps, so `deadlineMs: 30_000` in `systemQuitSettle` and a no-op
+  shipped `lastResort` both stayed green. It now asserts `systemQuitSettle(platform)`'s bounds for
+  darwin, linux and win32, and runs the REAL last resort against two children it starts itself.
+- **A harness that crashed passes "nothing was removed".** The stand-in `arecord`'s python owner
+  check (micStandIn.ts), mutated out, stayed green: the harness's wrapper defined a global `real`
+  that clashed with the connector's own, so the connector crashed (a Traceback), and "another
+  user's socket is kept" held vacuously. The harness now also requires the connector to run
+  to its own end (exit 1, no Traceback). Any check that asserts an absence must also assert the code
+  reached the place where it would have acted.
+- **Two layers hide each other.** A guard built twice survives any single mutation of either: the
+  connection log's tag table and its field rule (gotcha 171), the join deadline's timer cleared at
+  the handshake AND checked against the channel's state (gotcha 173). Give each layer its own unit
+  check, and show the end-to-end check red with both off.
+- **A source-text check must pin each holder, not just the call.** verify:tabs read that
+  `resumeSession` asks `chatOpenPlan`, and a mutant that stopped passing the paused card as the
+  plan's holder (a paused chat picked in the sidebar would start a second `claude` on its
+  transcript) stayed green, as did one where `openChat` never released its claim. Both are pinned
+  now (gotcha 176).
+
+One mutant stays green honestly. Perl's "no pattern" mutation in the stand-in is EQUIVALENT: the
+perl loop's own token regex already skips such names before `gone` is reached. Record an equivalent
+mutant as one, with the reason, rather than writing a check that cannot fail; only a fixture that
+passes the outer layer reaches the inner one.

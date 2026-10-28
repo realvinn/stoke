@@ -643,3 +643,43 @@ mutated back to red (15 mutations, 1–3 checks each). Not driven: Windows and L
 > strip is the bar's CEILING: it keeps its place and the bar starts under it (`--find-ceiling`,
 > measured the same way while the bar is open). Driven: strip 12–49 px from the pane's top, the bar
 > from 57, right edges together on `--float-right`, clear of xterm's scrollbar.
+
+## 176. Every way to open an existing chat must ask one plan, or a New tab is left behind and a chat can run twice
+
+**Found 2026-10-28, from the owner's "I am on new tab and click on a chat it should change that new
+tab not open new tab (make that a setting)".** The chat-open code had not changed since beta.18, and
+a chat that was NOT open already did take the New tab's place. What the owner hit was one of the
+other paths: a chat already in a tab (very common right after a restart, when every restored tab is
+a paused card) went to that tab and left the empty New tab behind, and Other machines always
+appended. The sidebar closed the New tab only when the launcher passed `fromTabId`, and each
+surface read `activeNewTabId` from its own render-old closure.
+
+Now every surface that opens an existing chat asks `chatOpenPlan` (lib/tabs.ts): the sidebar's
+session rows and search hits through `resumeSession`, chat search through `openChat`, Other
+machines through `openRemoteSession`. The New tab it may use up is `chatNewTab`'s: the one in front
+while `reuseNewTab` is on (Settings › Sessions, "Open chats in the New tab you're on", on by
+default), or the launcher's own `from` whatever the setting, and only ever a tab of kind `new`. A
+tab already holding the chat, running or a paused card (which resumes where it is, with its own
+model and title), is gone to, and the New tab closes. Three rules ride with it:
+
+- **An async open picks its New tab at the press, never at the reply.** `openRemoteSession` waits
+  on a hub relay. A New tab the person moved to meanwhile is never taken, and one that has gone
+  means append (`replaceOrAppend`, with `reuse: false` and the `from` taken at the press).
+- **Claim before the start** (`chatStartingRef`, per session id, released in `.finally`; gotcha
+  51's shape). `resumeSession` had no claim: by the code, a double click replaced the New tab and
+  then appended a second `claude` on the same transcript. With the claim, a real double click and
+  two `click()`s in one task each made one tab and one `--resume` in the built app.
+- **A source check pins each holder** (gotcha 175): the paused card as `holder`, and `openChat`'s
+  release, each had a mutant that stayed green until verify:tabs read them.
+
+Left as decided: the launcher's own controls (Recent, Continue) always use their New tab, and the
+new-session surfaces (the sidebar's "+", Open SSH, `stoke DIR`) always did and are unchanged;
+Reopen closed tab appends; a phone Resume is not the desk's choice. Only Codex can say a running tab
+already holds its chat (`agentResumeId`), so another agent's chat opened twice from search still
+makes two tabs. `reuseNewTab` is portable, so it rides hub sync, and beta.15–beta.19 skip
+`t1/settings/reuseNewTab` with "hub: an item did not open (plaintext)", as they did for `topBar`
+and `contextRingStyle`. verify:tabs holds the plan (every tab kind, the press-versus-reply rule, a
+`from` that is gone) and reads each surface for its plan call, holder and claim; 23 mutations each
+turned a suite red. Driven in the built app on macOS, on and off: sidebar and chat-search opens, a
+chat already open, and Other machines between two sandbox Stokes on a scratch hub (on: in the New
+tab's place over one relay; already open: gone to, no relay).

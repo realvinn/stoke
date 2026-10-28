@@ -1139,7 +1139,10 @@ export class PtyManager {
      * tears the process down in, while onExit needs the child to actually
      * die *and* the event loop to still be alive to fire it. Clearing here
      * closes that race instead of leaving cleanup to a callback that might
-     * never get scheduled.
+     * never get scheduled. (Since the quit hold, `holdQuitForPtys` in
+     * ptyExitTracker.ts, gotcha 163, onExit usually does run during a quit,
+     * while will-quit waits on the children; but only up to the hold's
+     * deadline, and a child that outlives it never fires it. This stays.)
      *
      * Harmless to run twice: proc.onExit below still fires later - for a
      * session that exits on its own, this is the only cleanup that runs -

@@ -171,7 +171,7 @@ lumps your LAN together; the per-email lockout is unaffected.
 
 ## 3. Sign up from Stoke
 
-In Stoke: **Settings › Account & sync**, address `http://nuc.local:8788` (Stoke appends `/hub`), or your
+In Stoke: **Settings › Accounts › Stoke**, address `http://nuc.local:8788` (Stoke appends `/hub`), or your
 tailnet name if you front the LAN port with `tailscale serve --bg http://127.0.0.1:8788`
 (`https://nuc.<tailnet>.ts.net`). Paste the invite, choose an email and a password of 12+
 characters. The first account is the owner.
@@ -280,8 +280,33 @@ no key — which is why it is safe as a plain command on the NUC.
 graceful: requests in flight finish, every socket is told `bye`, and every Stoke reconnects on
 its own and re-reads what it missed.
 
-**Logs** are JSON lines in the journal: `journalctl -u stoke-hub -o cat | jq .`. Requests name the
-route, status, account and device; refusals from strangers are rate-limited to a summary line.
+**Logs** are JSON lines in the journal: `journalctl -u stoke-hub -o cat | jq .` (on protech-nuc,
+`~/stoke-hub/logs/hub.log`). Requests name the route, status, account and device; refusals from
+strangers are rate-limited to a summary line.
+
+From `stoke-hub` 0.2.0 the close lines say who ended a connection, which is what to read when a
+remote tab keeps dropping:
+
+| Line | Field | Means |
+|---|---|---|
+| `relay closed` | `code` | the code both ends were sent (always a sendable one, as before) |
+| | `raw` | what the hub saw: `1006` is a drop with no close frame, `1005` a close with no code |
+| | `by` | `guest`, `host` or `hub`: whose socket closed or failed, or the hub's own doing (a timer, a sign-out, a revoke, flow control) |
+| | `noPong` | only on the ping round's cut: the end that stopped answering |
+| | `missing` | `guest`, `host` or `both`: the end that never joined, on a relay that ended before both were in |
+| | `fromGuest`, `fromHost`, `quietMs` | frames each end sent (they add up to `frames`), and how long the relay had been silent |
+| `presence closed` | `rid`, `code`, `by`, `why`, `ms`, `frames`, `app` | one device's presence socket: the raw code, `device` or `hub`, the reason, its lifetime, frames received and the Stoke version. `rid` matches the upgrade's `request` line; `replaced: true` when a newer socket from that device took over |
+| `relay notice replayed` | `relay`, `guest`, `host` | a host whose presence reconnected was told again of a relay still waiting for it |
+
+The hub tells a host of a new relay once, over the presence socket it has at that moment. If that
+socket was dropping, the notice went nowhere and the guest used to wait for "the other end never
+joined". Now every relay still waiting for a device as its host, with its guest already in and
+not yet expired, is named again when that device's presence opens. Every released Stoke skips a
+notice for a relay it already serves, so the repeat is harmless. To see how often it helps, count
+`relay notice replayed`, and the `missing: host` closes that remain. A `by: host` (or `guest`)
+with `raw: 1011` and `why: could not deliver a frame` means that end dropped while frames were
+going to it, not the hub. The lines carry ids, codes, counts and times as before; nothing new
+holds a token, a key or anything from inside a frame.
 
 ## Backups, and restoring one
 
@@ -337,7 +362,9 @@ cut at the next 25-second round.
 The storage cap (2026-10-28) ran only in `verify:hub-server` and `verify:hub-client` on a Mac, and
 against released beta.15 and beta.19 clients in a scratch run there: not yet on the NUC, and its
 first open of the real `hub.db` (the in-place count) is untested against that file — back it up
-before the upgrade.
+before the upgrade. The close fields and the notice replay (also 2026-10-28) ran in
+`verify:hub-server` and between two sandbox Stokes on a hub started from source on 127.0.0.1;
+whether the replay cuts the "never joined" count in production only this hub's log can show.
 
 Everything here ran on a Mac under Node 26, and under Electron's Node 24.18 (the NUC's major
 version): the server, both listeners, the bundle, every subcommand, SIGTERM. **Not run:** on the

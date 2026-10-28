@@ -168,9 +168,15 @@
         running there. <code>stoke --new</code> always opens another tab, <code>stoke --cli
         codex</code> starts a different coding CLI, <code>stoke --open</code> only adds the
         folder to the sidebar, and <code>stoke --help</code> lists the rest. A running Stoke takes
-        the request; one that is not running starts. In the next desktop beta,
-        <code>stoke login</code> opens Stoke sign-in and device sync setup, and
-        <code>stoke remote</code> opens Phone access setup.
+        the request; one that is not running starts.
+      </p>
+      <p>
+        That is <code>stoke</code> on the stable release the plain installer puts in, and on
+        Windows and Linux on either channel. The betas add <code>stoke login</code>, which opens
+        Stoke sign-in and device sync setup, and <code>stoke remote</code>, which opens Phone
+        access setup. On a Mac running a beta (beta.15 or later), plain <code>stoke</code> starts
+        Stoke's terminal shell instead: put <code>--desktop</code> first for any of these, as in
+        <code>stoke --desktop .</code> or <code>stoke --desktop login</code>.
       </p>
       <p>
         The command is a link in <code>~/.local/bin</code> on macOS, made by the installer (or by

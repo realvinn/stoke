@@ -457,6 +457,7 @@ export type ItemPutResult =
    * The rest of the request is decided as usual and the response is still 200.
    * A client from before this code (beta.15–beta.19) takes it as any other
    * refusal: it logs `reason` and tries again at its next pass, never sooner.
+   * CLAUDE.md gotcha 168.
    */
   | { id: string; ok: false; error: 'full'; reason: string; storage: HubStorage }
 export interface ItemsPutResponse {

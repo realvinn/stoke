@@ -299,3 +299,24 @@ Two preconditions, proven before one press, never a retried click (a flaky click
 On a miss it prints where it aimed against where the tail is now, the last browser state, and saves
 `04-terminal-<layout>-failure.png`. **Still open:** a scroll between the hover and the press fails
 it (rehearsed: a 19 px difference printed), the one window this does not close.
+
+## 177. A harness can hold what it is timing: an attached inspector holds Electron's exit, and an unread socket never reports a close
+
+**Found 2026-10-28, proving the quit hold (gotcha 163) and the lent microphone's Stop in the built
+app on macOS.** Both made a correct build look broken.
+
+- **A main-process inspector client keeps Electron alive after its quit.** The first timing of a
+  quit with a trapping child read 30 s from `app.quit()` to exit, where the fix bounds it at 3 s:
+  Node waited for the driver's own `--inspect` session ("Waiting for the debugger to
+  disconnect..."). Send `app.quit()` (synchronously, gotcha 110), detach the main inspector at once,
+  then time the exit from outside by the pid you started. Run that way: exit at +2,859 ms.
+- **A Node `net` socket with no `data` listener never emits `end` or `close` after the peer
+  destroys it** (measured). A harness that plays the far end of a forward and times "the far side
+  closed" must read the socket, or the close it waits for never comes.
+
+Two smaller traps from the same run. JXA hands an NSArray's `count` over as a STRING, so a
+save-and-restore of the owner's pasteboard (gotcha 152's rig rule) that compares counts with `===`
+calls every item different; compare with `Number()`. And the session title another machine is
+shown is the transcript's `ai-title` record, never Stoke's tab name: a stub agent writes none and
+shares `title: null`, so a privacy check for "the title" must append an `ai-title` to the stub's
+transcript first.

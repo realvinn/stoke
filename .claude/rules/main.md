@@ -21,6 +21,12 @@ paths:
   - "src/renderer/src/components/AccountSyncSettings.tsx"
   - "src/shared/privateChat.ts"
   - "scripts/verify-private.mts"
+  - "scripts/verify-hub-relay.mts"
+  - "scripts/verify-hub-reconnect.mts"
+  - "scripts/verify-connection-log.mts"
+  - "scripts/hub-relay-fakes.mts"
+  - "scripts/verify-pty-exit.mts"
+  - "scripts/drive-pty-quit.mts"
 ---
 
 # Anywhere in the main process
@@ -1015,6 +1021,48 @@ child that traps both SIGHUP and SIGTERM kept the app process alive with no wind
 the stub's own timer ended it. A truly hung program would keep a windowless Stoke alive
 indefinitely. Left alone because quit ordering is fragile (gotchas 35, 90).
 
+> **Checked against the code on 2026-10-28, later the same day: the quit hang is fixed.** The cause,
+> from `sample` of the lingering process (plain Electron 43.2, real node-pty, 820 of 820 samples):
+> main thread in `node::FreeEnvironment → RunCleanup → CleanupHandles → Napi
+> ThreadSafeFinalize<SetupExitCallback>::Wrapper (pty.node) → std::thread::join`. node-pty's exit
+> TSFN finalizer joins the thread that sits in `waitpid` for its child, so Stoke's process lives
+> exactly as long as its stubbornest pty child (21,530 ms with a stub's 20 s timer, 11,749 ms with
+> 12 s; a normal child 42 ms), and no JS runs once that teardown has started. So:
+> - **`holdQuitForPtys`** (ptyExitTracker.ts) holds the quit at `will-quit`, when every window has
+>   already closed, while any owned pty child remains; runs `PtyExitTracker.settle` (once per
+>   process); then quits again. Windows' before-quit drain calls the same `settle` instead of
+>   `wait()`. Nothing in before-quit moved, but the second quit runs it again (gotcha 170).
+> - **`settleQuit`** keeps the owner's SIGHUP (node-pty's kill; Claude Code's SIGHUP handler is
+>   what writes its transcript) as the first signal. A child that exits inside `FORCE_KILL_GRACE_MS` (2 s) is
+>   never signalled again, and the settle ends at the last exit. One still running gets
+>   `killProcessTree` with no second SIGHUP (SIGTERM to its group, SIGKILL after
+>   `QUIT_TERM_GRACE_MS`, 300 ms; taskkill /T /F on Windows), behind `killablePid`. The whole
+>   settle ends at `QUIT_DEADLINE_MS` (3 s; `WIN_QUIT_DEADLINE_MS` 5 s, the old drain's bound).
+> - **A deadline that cuts a tree kill short must leave a SIGKILL behind** (`lastResortKill`, also
+>   behind `killablePid`, to the pid alone): once the quit goes on, no JS runs to send it, and a
+>   child ignoring SIGTERM would hold Stoke in teardown for good. The first run of the trapping case
+>   failed at load average ~17 because the tree kill outran the second the deadline left it; that
+>   is why the SIGTERM→SIGKILL gap is 300 ms and not 500.
+>
+> Measured after the fix, real Electron, real ptys and the real `PtyManager.shutdown()`
+> (verify:pty-exit through `scripts/drive-pty-quit.mts`): a normal child ends the quit 39 ms after
+> it; a child and a grandchild that both trap SIGHUP and SIGTERM 2,583 ms, both gone, the child
+> escalated (`killed`); a 600 ms-slow child beside a normal one 654 ms, one settle, one quit; the
+> control with no hold 4,802 ms (the stub's own 5 s). In the built app on macOS: the trapping pair
+> ended +2,605 ms and main exited +2,859 ms (code 0) with `[stoke] Quit: 1 terminal process(es)
+> still running after the grace; their process trees were ended (killed)`; idle controls exited at
+> +170 ms and +433 ms with no such line. 9 quit mutations each turned the suite red.
+>
+> Decided and left: a leader that exits on SIGHUP is never escalated, so a trapping member of its
+> group still outlives the quit, as before. A slow but healthy `claude`, with its SessionEnd hooks,
+> is now SIGKILLed with its group at about 2.3 s where the quit used to wait (not measured with a
+> real `claude`). On Windows the grace is 2 s where the drain gave 5 and killed nothing, and "still
+> running" there means "exit not yet DELIVERED": a taskkill is safe only while node-pty still holds
+> the process handle, which keeps the pid reserved. Unchecked, since only darwin-arm64's node-pty is
+> installed here; the owner may want a longer win32 grace. Not run: Windows, Linux (the suite's
+> control asserts the macOS-measured hang, `quitToExitMs >= 4000`, so the first xvfb run shows
+> whether Linux joins the same way), a real `claude`, and "Restart and install" under the hold.
+
 ## 168. A new hub refusal is a per-put result, never a new top-level error code
 
 **Found 2026-10-28, adding the per-account storage cap (`src/shared/hub/storage.ts`).** An older
@@ -1053,3 +1101,153 @@ verify:hub, verify:hub-server and verify:hub-client hold each rule; 14 mutations
 re-seal room, no tombstone room, `<` for `<=`, a trigger off, `full` as a whole-request error, a
 client that ignores `full` or retries at once, …) each turned a suite red. **Not run:** on the NUC,
 against its real `hub.db`, or on Linux.
+
+## 170. A `will-quit` that holds the quit and quits again runs every `before-quit` handler a second time
+
+**Found 2026-10-28, in review of the quit hold (`holdQuitForPtys`, gotcha 163).** The hold calls
+`event.preventDefault()` in `will-quit`, waits for the pty children, then calls `app.quit()` again,
+and Electron runs the whole quit sequence for that call, `before-quit` included. Measured in a real
+Electron 43.2 under verify:pty-exit's driver (`scripts/drive-pty-quit.mts`): `before-quit →
+will-quit → child-exit → settle → before-quit → will-quit`, two before-quit lines per held quit.
+
+index.ts's handler was only half ready for that. Everything after `if (appQuitting) return` runs
+once, but the drain decision above it ran on every call: `process.platform === 'win32' ||
+accountIdentities.pendingCount > 0`. An account identity check that passed its `appQuitting` test
+before the press, and was waiting on `secretsSettled()` (a Keychain dialog up at quit), can start
+its probe during the hold. The second before-quit then read `pendingCount > 0`, called
+`preventDefault`, and returned at `appQuitting` without ever quitting again: a windowless Stoke that
+stays up for good, and any later Quit takes the same path. Reasoned from the code, not reproduced;
+it needs an identity probe that starts inside the hold.
+
+The drain is now decided once, at the FIRST before-quit (`quitDrains ??= …`). The rule: **whatever
+a `before-quit` handler decides, decide it once per quit, and a handler that calls `preventDefault`
+there must be the one that quits again.** A `will-quit` hold, an updater's quit-and-install, a drain:
+each re-enters every before-quit handler. verify:pty-exit pins both halves: the before-quit body by
+regex, with `quitDrains` exactly twice in index.ts, and case (a)'s two before-quit lines, which pin
+the Electron fact itself. Index.ts mutated back to recomputing `drain` turned it red. The tab write
+and `flushSettings` sit behind the `appQuitting` guard, so they still run once (gotchas 35, 63).
+
+## 171. The connection log's privacy is its allowlist, never its formatter, and its tag table is audited against the senders
+
+**Built and reviewed 2026-10-28 ("Keep a connection log": `ConnectionLog`, src/main/hub/
+connectionLog.ts; the rules in src/shared/hub/connectionTrace.ts).** A dropped remote tab can be
+explained only from both machines, so each can keep a log of its own side: the relay and presence
+lifecycles, sleep, wake and screen lock, in `<userData>/connections.log`. It sits on a computer the
+owner may paste from, so what a line may hold is decided in one pure place. Four ways around that
+were found while building it:
+
+- **`formatLine` is not redaction.** The freeze log's writer, reused here, keeps `:`, `/` and `@`
+  inside a value's token, so a URL or an email handed over as a field would land almost whole. The
+  guarantee is `traceFields`: only field names in `TRACE_FIELD_RULES`, each value checked for its
+  own shape (numbers rounded and non-negative, a relay id in full, a device id cut to
+  `DEVICE_ID_CHARS`, words from fixed sets), and an event not in `CONNECTION_EVENTS` dropped whole.
+  A new field is a new rule there, never a string passed through.
+- **A table of another program's strings goes stale in silence.** Close reasons are free text, so
+  `closeReasonTag` maps the known ones to tags and writes anything else as `other` plus its length.
+  The first table "covered every known reason" and missed six that are really sent: the hub's
+  `replaced` (a presence 4001), `that end of the relay is taken`, `guest socket error`, `host socket
+  error`, `too much sent before the other end joined`, and the host's `the other machine closed the
+  session`. Safe, and blind to exactly the drops the log exists for. verify:connection-log now reads
+  every close reason out of hub/sockets.ts, hub/app.ts, worker/hub-edge.ts, remote.ts and channel.ts
+  (`callsOf`, `reasonsAt`) and fails on any that tags as `other`; renaming one hub reason turns it red.
+- **Two layers hide each other from a mutation.** `closeReasonTag`'s `other` and `traceFields`'
+  `why` rule each stop a free-text reason. Either one mutated out left every check green; both
+  together wrote a planted token, an email and the email's domain into the log. Each layer has its
+  own unit check now (gotcha 175).
+- **A switch must be reachable wherever its effect still runs.** The row lived in Other machines,
+  drawn only inside the vault, and signing out does not reset `hub.connectionLog`. Left on, the log
+  went on writing `log-start` at every boot, and every sleep, wake and screen lock, with no switch
+  anywhere on screen. The row is drawn outside the vault too while the log is on.
+
+Off, nothing is created or written, not even a stat: verify:connection-log runs a whole connect,
+drop and reconnect against a counting fake fs, and on a real fs `connections.log` appears only once
+it is on. In the built app on macOS, two sandbox Stokes on a scratch hub with the log on in both:
+both logs, and the clipboard after each Copy log, were searched for 27 planted values (the session
+token and its first 12 characters, both device private keys, the hub URL, its host:port and
+127.0.0.1, the email, its local part and its domain, the password, both device labels and their
+words, text typed in a remote tab, a session title, the folder name, both full device ids, the
+account id). None was found, and both controls were. **Not proven:** Show log file (it opens
+Finder), the powerMonitor lines (no real sleep), Windows and Linux.
+
+## 172. A close event cannot say who began it, and a ws close with a long reason fails silently
+
+**Found 2026-10-28, building and reviewing the hub's close lines (hub/sockets.ts, hub/app.ts) and
+the connection log (gotcha 171).** A drop is read from three logs, each Stoke's and the NUC's
+hub.log, and each line has to say which end gave up. A socket's `close` event carries only a code
+and the peer's reason, and 1000 or 1006 arrive the same whoever began it. Four places got it wrong
+or nearly did:
+
+- **The hub marks its own closes before making them.** `markHubEnded(ws, why)` (a WeakMap) is
+  called by `closeQuietly`, `Presence.sendTo`'s cut of a socket that is not reading, `pingAll`'s
+  terminate and presence's `refuse`; the close handlers read `hubEndedWhy` and log `by: hub`
+  (`noPong: <end>` for a ping round's cut) or `by: <role>` / `device`. A new place where the hub
+  closes or terminates a socket must call it, or its line blames the device.
+- **A failed write belongs to the end it was going to, and its callback comes first.** A host that
+  stopped reading and was then reset (RST) while the guest streamed 3 MB: the hub logged `by: hub,
+  raw: 1011, why: could not deliver a frame`, because `ws.send`'s error callback runs before that
+  socket's `close` event (measured on macOS, Node 26.7, ws 8.21.1), so `deliver` wrote the line
+  before any close handler could. It passes `to` now.
+- **The client records a socket's close only while the channel is still open**
+  (`channel.state !== 'closed'` in remote.ts, guest and host). That is how `by=local`, our own
+  `channel.close`, is told from `by=remote`. A fake socket whose `close()` fires 'close'
+  synchronously makes every local close look like the hub's; ws fires it later.
+- **ws throws on a close reason over 123 UTF-8 BYTES, and the throw was swallowed.**
+  `RelayChannel.close` cut its reason to 120 characters. A snapshot-wait reason naming a
+  15-character CJK device is 97 characters and 127 bytes: ws 8.21.1 threw "The message must not be
+  greater than 123 bytes", the socket stayed `readyState` 2 (CLOSING), and the server still held it
+  300 ms later, while the tab had already moved on to a fresh relay. `closeFrameReason` cuts by
+  bytes, whole code points only (`CLOSE_REASON_BYTES`); the account website's adapter receives at
+  most 123 bytes too.
+
+One more for whoever tests it: just after the server's `close`, a ws client can still read CLOSING.
+A check of the client's state waits for the client's own `close` event; one that did not passed 3
+runs in 5. verify:hub-server holds the hub's fields over real sockets and the broker's with fake
+ones, verify:hub-reconnect the long close against a real ws, verify:connection-log the
+local/remote split. Each fix mutated back turned its suite red.
+
+## 173. A host can be online and deaf, so a relay notice sent once can go nowhere
+
+**Found 2026-10-28, chasing relays that ended "the other end never joined", and driven between two
+sandbox Stokes on a scratch hub.** A guest asks the hub for a relay and the hub tells the host
+ONCE (`relayCreate`), over whatever presence socket the host had at that moment. A socket that was
+dropping, or a presence that was down, lost the notice: the host never joined, and the guest sat on
+"Connecting…" until the hub's own `RELAY_OPEN_TTL_MS` plus its sweep, about 91 s. The NUC's hub.log
+shows that 275 times between Oct 4 and Oct 27, while the slowest of 4,914 joins in the same weeks
+took 2.3 s. Four pieces, each needed:
+
+- **The hub tells again.** After `welcome` and the statuses, `presenceOpened` re-sends
+  `{t:'relay'}` for every relay `waitingFor(account, device)` lists (this device the host, the
+  guest's end in, the host's not, not expired) and logs `relay notice replayed`. A relay whose guest
+  never attached is not replayed: it would hold one of the host's `HOSTED_MAX` slots until it
+  expired. The repeat is safe on every released client. v0.9.99, beta.1, beta.10 and beta.19's
+  `onRelay` each check `hosted.has(relay)` and claim before the first await (`git show
+  ${t}:src/main/hub/remote.ts`; in zsh write `${t}`, since `$t:s…` is a history modifier). With that
+  guard mutated out, the host opened three sockets and the guest's channel failed with "a text frame
+  arrived after the handshake".
+- **The guest gives up at a deadline counted from socket open to handshake** (`RELAY_JOIN_WAIT_MS`,
+  10 s, over four times the slowest join seen), not at the hub's close; the expiry is a counted try, and
+  the next try asks for a fresh relay. In the built app, with the host's presence held up but deaf (a
+  proxy dropping every byte from the hub to the host), the guest logged `relay-join-timeout
+  ms=10002`, retried 2.3 s later, and the hub logged `missing: host`. The host's "let this device
+  in?" question comes after the handshake, so the deadline never cuts it.
+- **A host that comes back brings its tabs back** (`revive`, from `onOnline`): a tab that was given
+  up on, or waiting out a backoff, for a device not in the last online list connects again once,
+  with its tries reset. Careful with that test: `presenceClosed` empties `online`, so after a
+  presence reconnect EVERY online device "just came online", and anything keyed on that fires on
+  every reconnect. `revive` is safe there (it skips a tab connecting, open, refused or ended, and a
+  device the chain no longer holds); something new keyed the same way may not be.
+- **Waking from sleep pings every open tab** (`HubRemote.wake`, from powerMonitor `resume` through
+  `installHubWake`, a `RELAY_WAKE_PONG_MS` wait of 10 s), and clears a pong wait already running:
+  left, the keepalive's old timer closed a live link after it had answered.
+
+**To drive the deadline, keep the host's presence connected and deaf.** Refusing it does not reach
+the deadline: the hub answers a relay to an offline host with `offline` at once, so the guest never
+waits. verify:hub-server holds the replay's rules, verify:hub-relay the repeated notice, and
+verify:hub-reconnect the deadline, revive, the upgrade deadline (`relaySocketOptions`,
+`RELAY_HANDSHAKE_MS`) and wake, on `node:test`'s `mock.timers`. In the built app: a relay cut twice
+was open again at +1.4 s and +1.3 s; a hub restarted after 6 s was open again at +15.3 s, bounded
+by presence's backoff; the replay showed in hub.log. **Not run:** on the NUC, behind Cloudflare or
+the edge Worker, Windows, Linux. **Open, for the owner:** a host whose presence reconnects between
+`relayCreate` and the guest's upgrade is told neither time (the guest retries after 10 s), and a
+half-dead presence takes every retry's notice into the same dead socket until its own heartbeat
+finds out.

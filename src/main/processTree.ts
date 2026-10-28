@@ -132,7 +132,8 @@ async function goneWithin(deps: TreeKillDeps, target: number, ms: number): Promi
  * exited, and between the two connections of a password retry
  * (sshFallback.ts), and an ended session stays in PtyManager's map (gotcha 84).
  * An exited process's pid may already be someone else's, on Windows within
- * moments.
+ * moments. CLAUDE.md gotcha 163; the quit's escalation (ptyExitTracker.ts)
+ * goes through it as Force restart does.
  */
 export function killablePid(pid: number, self: { pid: number; ppid: number }, exited: boolean): boolean {
   return Number.isInteger(pid) && pid > 1 && pid !== self.pid && pid !== self.ppid && !exited

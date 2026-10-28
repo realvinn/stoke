@@ -326,6 +326,10 @@ export type MicVerdict = { ok: true; mode: MicMode } | { ok: false; reason: MicR
  * idle hold, or a `/voice tap` pressed a little long — and is treated as a
  * tap, ended by the next Space, so a tap-mode user is never cut off on
  * release.
+ *
+ * This gate is the lent microphone's security, not the token: any far process
+ * can connect, and the token is the socket's own name there. Never loosen it
+ * to "a Space was typed recently" (CLAUDE.md gotcha 166).
  */
 export function micGateAdmit(s: MicGateState, now: number, windowFocused: boolean): { state: MicGateState; verdict: MicVerdict } {
   const no = (reason: MicRefusal) => ({ state: s, verdict: { ok: false, reason } as MicVerdict })

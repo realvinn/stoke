@@ -40,8 +40,8 @@ A `dist:*` exists per target and each MUST run on that target's own platform and
 
 Every suite runs alone as `npm run verify:<name>`: context, codex-context, statusline, unicode,
 usage, codex-resume, profiles, settings, secrets, hub, hub-server, hub-client, hub-presence,
-account-remote, hub-relay, providers, claude-config, folders, search, settings-search,
-chat-sources, color, theme-gen, activity, worklog-gate, work-plugin, plugins, grok-bot,
+account-remote, hub-relay, connection-log, hub-reconnect, providers, claude-config, folders,
+search, settings-search, chat-sources, color, theme-gen, activity, worklog-gate, work-plugin, plugins, grok-bot,
 work-notion, work-drafts, work-session-notes, tabs, tab-overflow, tab-windows, topbar,
 quick-terminal, shell-layout, pty-exit, terminal-stall, git, launcher, launch-preflight, registry,
 restore, private, shortcuts, find, drop, fullscreen, layers, terminal-links, browser-url,
@@ -94,7 +94,7 @@ src/main/            Electron main process
   hub/                 Stoke Hub: crypto.ts, the node:crypto reference (no electron import, so the
                        hub server on the NUC imports it too), and the desktop client (service.ts,
                        files.ts, http.ts, sshKeys.ts; rules in shared/hub/client.ts), lazily loaded
-                       for Settings › Account & sync. remote.ts + channel.ts are "Other machines"
+                       for Settings › Accounts › Stoke. remote.ts + channel.ts are "Other machines"
                        (the E2E relay; rules in shared/hub/remote.ts). Spec: docs/superpowers/specs/2026-10-01-*
 src/preload/         contextBridge -> window.stoke
 src/renderer/        desktop React UI (all colour via CSS custom properties)
@@ -207,6 +207,14 @@ rule file named on the group line.
   pid 0, and `kill(-0)` is Stoke's own group. `killProcessTree` asks `ps` for the group before the first signal.
 - **168.** Refuse a hub put per put (`full`), never by a new top-level code (`isHubErrorBody`: an older client calls that
   "not a hub"). Never refuse a re-seal or a delete for room (`storageBudget`); keep every item write in `item_usage`'s triggers.
+- **170.** Decide anything in `before-quit` once per quit (`quitDrains ??=`): a `will-quit` hold that quits again
+  (`holdQuitForPtys`) re-runs every before-quit handler, and a fresh `preventDefault` there never quits.
+- **171.** Let a connection-log line hold only what `traceFields` allows (`formatLine` keeps `:/@`, so a URL lands whole),
+  audit `closeReasonTag`'s table against the senders' source (`callsOf`), and draw a switch wherever its effect still writes.
+- **172.** Mark every close the hub makes before making it (`markHubEnded`), blame a failed write on the end it was going to
+  (`deliver`), and cut a close reason by UTF-8 bytes (`closeFrameReason`): ws throws past 123 and the socket stays CLOSING.
+- **173.** Expect a relay notice to be lost: the hub replays waiting ones on the host's next presence (`waitingFor`; a repeat is
+  dropped by `hosted.has`), the guest quits at `RELAY_JOIN_WAIT_MS`, and after a presence reconnect every device reads as new.
 
 **Terminal** — `.claude/rules/terminal.md`
 - **5.** Never read the terminal from the DOM: WebGL paints a canvas, so `.xterm-rows` is empty.
@@ -537,6 +545,8 @@ rule file named on the group line.
   keyword) and a `fallback` if it is drawn only sometimes; open Settings by id only through `resolveSettingsTarget`.
 - **150.** A new tab kind needs every reader of `tab.cwd` taught it: a private chat's folder is never opened, git-read or a
   profile's (`openableFolder`, `folderChip`, `profileCwd`); an async finish takes focus only from nowhere (`pathTakesFocus`).
+- **176.** Open an existing chat only through `chatOpenPlan` (sidebar, chat search, Other machines), claim before the start
+  (`chatStartingRef`), and pick an async open's New tab at the press (`chatNewTab`), never at the reply.
 
 **Packaging and signing** — `.claude/rules/release.md`
 - **7.** Pick architectures with the `--x64`/`--arm64` CLI flags and never add an `arch:` list to
@@ -599,6 +609,10 @@ rule file named on the group line.
   push protection refuses a push whose history holds one whole, documented placeholders included.
 - **161.** Pin `prefers-reduced-motion` (`Emulation.setEmulatedMedia`) in a suite that reads style or geometry: app.css makes every
   change a 1 ms transition, stale in the same task and never done without frames; give `captureTestWindow` a deadline.
+- **174.** Give every real timer a server starts a config override (`pingMs`, `sweepMs`) and set it in a suite on a fake
+  clock: hub-server's 60 s sweep fired only on slow runs, swept by the fake hour, and read as a lockout regression.
+- **175.** Treat a mutant that stays green as a suite gap: assert the shipped constants, not a fake's (`systemQuitSettle`),
+  make a harness prove it ran to its end before an absence counts, and give each of two layered guards its own check.
 
 ## Standing traps when driving the app
 
@@ -622,6 +636,8 @@ rule file named on the group line.
   Chromium's fake microphone records silence here, under the recorder's 1 KB floor, so nothing is sent.
 - **169.** Click terminal text in a driven test only once two reads 300 ms apart agree and xterm's
   `_core.linkifier.currentLink` holds the whole link (probe-e2e's URL step); never retry the click instead.
+- **177.** Detach a main-process inspector right after `app.quit()` before timing an exit (Node waits for the debugger),
+  and read any socket whose close you time: an unread `net` socket never reports the peer's close.
 - **Nested backticks inside a template literal end it early**, as a SyntaxError that points at the
   wrong place. Build anything injected into a page from an array of lines.
 - **A `.settings.json` missing from `$TMPDIR/stoke/statusline/` has two causes, both found and

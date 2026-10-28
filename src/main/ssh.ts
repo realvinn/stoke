@@ -467,7 +467,9 @@ export function buildSshArgs(host: SshHost, remoteCommand?: string, extra: { mic
    * skips `-o`'s value and would read a `-R`'s as the host. No
    * `ExitOnForwardFailure`: a server that forbids stream forwarding prints
    * ssh's own warning in the tab and still connects. Anything that is not the
-   * exact shape is left out, never passed on.
+   * exact shape is left out, never passed on. The token is fresh per
+   * connection because sshd never unlinks a forwarded socket (CLAUDE.md
+   * gotcha 165).
    */
   if (extra.micForward && isMicForwardOption(extra.micForward)) args.push('-o', extra.micForward)
 
