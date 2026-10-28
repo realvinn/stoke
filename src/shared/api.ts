@@ -722,8 +722,11 @@ export interface StokeApi {
     /**
      * Kill, then resolve once the process has actually exited — or after
      * `capMs` (at most 10s), whichever is first. True when it exited in time.
+     * `force`: the whole process group, SIGTERM then SIGKILL (Force restart).
      */
-    stop(ptyId: string, capMs?: number): Promise<boolean>
+    stop(ptyId: string, capMs?: number, force?: boolean): Promise<boolean>
+    /** Resolves as soon as main's event loop is free to answer (`pty:ping`). */
+    ping(): Promise<boolean>
     /**
      * Type `text` as Claude Code takes it — typed chunks, ESC CR newlines,
      * never a paste (gotchas 85, 86) — then press Enter only if `enter`.

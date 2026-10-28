@@ -3071,6 +3071,92 @@ mark.hit {
 }
 
 /*
+ * A terminal that has not answered (TerminalStallOverlay, shared/terminalStall.ts):
+ * starting, not responding, or Stoke itself busy. A grey veil over exactly the
+ * terminal card — the pane's own padding, mirrored, never `inset: 0`, which
+ * would cover the padding too (the `.paused-screen` trap below) — and so inside
+ * the pane, never over the docked browser (gotcha 14).
+ *
+ * The veil lets the pointer through (`pointer-events: none`; the card takes
+ * it back) and nothing in it takes focus, so the terminal keeps the keyboard.
+ * `grayscale` on what is behind is the "grey screen" asked for, in every theme,
+ * from the theme's own `--surface`, never a fixed colour.
+ *
+ * Under the pane's strips, the find bar, the exit card and the toasts
+ * (`--z-sticky` and `--z-sticky` - 2): they stay usable over it.
+ *
+ * Reduced motion (gotcha 72): `fade` runs for 1ms and rests fully shown, and
+ * `.spinner`'s own block stills it as a ring with one arc — a mark, not a gap.
+ */
+.term-stall {
+  position: absolute;
+  inset: var(--space-8) var(--pane-pad-right) var(--space-8) var(--space-12);
+  display: flex;
+  overflow: hidden;
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--surface) 72%, transparent);
+  -webkit-backdrop-filter: grayscale(1);
+  backdrop-filter: grayscale(1);
+  pointer-events: none;
+  z-index: calc(var(--z-sticky) - 3);
+  animation: fade 160ms ease-out;
+}
+
+:root[data-term-frame='true'] .term-stall {
+  inset: var(--space-8);
+}
+
+/* `margin: auto`, not centring on the veil: a short pane scrolls nothing out of reach (gotcha 60). */
+.term-stall-card {
+  margin: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-8);
+  max-width: min(26rem, calc(100% - var(--space-32)));
+  padding: var(--space-16) var(--space-24);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-md);
+  color: var(--text);
+  text-align: center;
+  pointer-events: auto;
+}
+
+.term-stall-card .spinner {
+  width: 1.5rem;
+  height: 1.5rem;
+  border-width: 3px;
+}
+
+.term-stall-title {
+  margin: 0;
+  font-size: var(--fs-base);
+  font-weight: 600;
+}
+
+.term-stall-detail {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+.term-stall-confirm {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-8);
+}
+
+.term-stall-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-8);
+}
+
+/*
  * A tab restored from the last run. The stored screen sits behind the card,
  * dimmed enough to read as context rather than as live output — three paused
  * tabs are otherwise the same empty pane with different titles.

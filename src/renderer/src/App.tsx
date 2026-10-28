@@ -130,6 +130,7 @@ import {
 import { TERMINAL_DEFAULTS, zoomStep } from '@shared/ui'
 import { VOICE_DEFAULTS } from '@shared/voiceSettings'
 import { welcomePlan, type WelcomeReason } from '@shared/welcome'
+import { forceRestartRoute } from '@shared/terminalStall'
 import { matchShortcut, typeThroughKey } from './lib/shortcuts'
 import { newTab } from './lib/newTab'
 import { profileIdForCwd } from './lib/projectProfile'
@@ -251,6 +252,13 @@ type BusyPrompt =
  * process that will not die, and gotcha 73's file ownership covers that case.
  */
 const RELAUNCH_EXIT_CAP_MS = 3000
+
+/**
+ * Force restart's cap (TerminalStallOverlay): SIGTERM, `FORCE_KILL_GRACE_MS`
+ * (2 s) for it to land, SIGKILL, and a second to see the whole group gone
+ * (main/processTree.ts). Main clamps it to 10 s.
+ */
+const FORCE_STOP_CAP_MS = 5000
 
 /** How long a first run keeps the shell inert waiting for agent detection to open the picker. */
 const FIRST_RUN_WAIT_MS = 5000
@@ -4201,7 +4209,7 @@ export function App(): React.JSX.Element {
    * calls once the question is settled.
    */
   const relaunchTab = useCallback(
-    (tab: Tab, plan: RelaunchOffer): Promise<boolean> => {
+    (tab: Tab, plan: Pick<RelaunchOffer, 'sessionId' | 'fresh'>, opts: { force?: boolean } = {}): Promise<boolean> => {
       // Claimed before anything irreversible, which is the half of gotcha 20
       // that is easy to get wrong: the kill below cannot be taken back, so the
       // guard has to be in place before it, not after the await that follows.
@@ -4239,7 +4247,10 @@ export function App(): React.JSX.Element {
       })
       return (async (): Promise<boolean> => {
         try {
-          await window.stoke.pty.stop(oldPty, RELAUNCH_EXIT_CAP_MS)
+          // Force restart kills the whole process group, SIGKILL included (`forceRestartTab`).
+          await (opts.force
+            ? window.stoke.pty.stop(oldPty, FORCE_STOP_CAP_MS, true)
+            : window.stoke.pty.stop(oldPty, RELAUNCH_EXIT_CAP_MS))
         } catch {
           /* the process is gone either way; start the replacement */
         }
@@ -4252,13 +4263,14 @@ export function App(): React.JSX.Element {
           accountId: tab.accountId,
           name: tab.projectName,
           title: tab.title,
-          sessionId: plan.sessionId,
           ...(!plan.fresh && tab.agentResumeId ? { agentResumeId: tab.agentResumeId } : {}),
           // What the renderer believes; main checks the disk and has the last
           // word (`resumeOrMint`), because `--resume` on an id with no
           // transcript exits 1 and `--session-id` on one with a transcript is
-          // refused.
-          resume: !plan.fresh,
+          // refused. No id at all is only ever Force restart's, on a
+          // `--continue` tab the registry has not named yet: it continues in
+          // the folder again, as a restored one does (`resumeTabFor`).
+          ...(plan.sessionId ? { sessionId: plan.sessionId, resume: !plan.fresh } : { continueLast: true }),
           replaceTabId: tab.id,
           permissionMode: tab.permissionMode,
           agentAccess: tab.agentAccess,
@@ -4325,6 +4337,44 @@ export function App(): React.JSX.Element {
       void relaunchTab(tab, plan)
     },
     [relaunchTab]
+  )
+
+  /*
+   * Force restart, from the scrim over a terminal that stopped answering
+   * (TerminalStallOverlay, shared/terminalStall.ts), and only on the confirm
+   * there: nothing here ever kills unasked (gotcha 82). Main kills the pty's
+   * whole process group, SIGTERM then SIGKILL (`pty.stop(…, force)`), because a
+   * hung `claude` never runs the handler for the SIGHUP an ordinary close sends.
+   *
+   * A local agent session comes back the relaunch pill's way, `relaunchTab`: the
+   * same agent, account and settings, resuming the session the process is on
+   * NOW (the registry's id first, as `relaunchPlan` reads it), main deciding
+   * `--resume` or `--session-id` against the disk (gotcha 81). Its guard is the
+   * pill's, claimed before the kill (gotchas 20, 51). Everything else — an SSH
+   * tab, an install, a key enrollment, a sign-in, a private chat — takes its own
+   * "Start again" (`restartTab`) once the old tree is gone; its exit reaches the
+   * tab first, so if that start is refused the tab is left ended, with its card,
+   * never marked running over a dead pty.
+   */
+  const forcingRef = useRef<Set<string>>(new Set())
+  const forceRestartTab = useCallback(
+    async (tab: Tab): Promise<boolean> => {
+      if (tab.kind !== 'session' || !tab.ptyId || tab.status !== 'running') return false
+      if (forceRestartRoute(tab) === 'relaunch') {
+        const sessionId = liveRef.current[tab.ptyId]?.sessionId || tab.sessionId
+        return relaunchTab(tab, { sessionId, fresh: false }, { force: true })
+      }
+      if (forcingRef.current.has(tab.id) || relaunchingRef.current.has(tab.id)) return false
+      forcingRef.current.add(tab.id)
+      try {
+        await window.stoke.pty.stop(tab.ptyId, FORCE_STOP_CAP_MS, true).catch(() => false)
+        restartTab({ ...tab, status: 'exited' })
+        return true
+      } finally {
+        forcingRef.current.delete(tab.id)
+      }
+    },
+    [relaunchTab, restartTab]
   )
 
   /** Drop a relaunch that was waiting for idle. */
@@ -6549,6 +6599,7 @@ export function App(): React.JSX.Element {
                   voice={settings?.voice ?? VOICE_DEFAULTS}
                   onOpenUrl={openUrl}
                   onRestart={restartTab}
+                  onForceRestart={forceRestartTab}
                   onClose={requestCloseTab}
                   onReconnectNow={reconnectTabNow}
                   onStopReconnect={stopReconnect}

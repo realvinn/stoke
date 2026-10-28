@@ -4236,11 +4236,12 @@ function registerIpc(): void {
    * trusted, because a renderer bug that passed an hour would otherwise hang a
    * relaunch for an hour.
    */
-  ipcMain.handle(CH.ptyStop, async (_e, ptyId: string, capMs?: number) => {
+  ipcMain.handle(CH.ptyStop, async (_e, ptyId: string, capMs?: number, force?: boolean) => {
     if (!ptys) return true
     const sessionId = ptys.sessionIdFor(ptyId)
     const cap = Math.min(Math.max(typeof capMs === 'number' && Number.isFinite(capMs) ? capMs : 3000, 0), 10_000)
-    const stopped = ptys.stop(ptyId, cap)
+    // `force`: Force restart's whole-group kill (processTree.ts), only ever from the user's confirm.
+    const stopped = ptys.stop(ptyId, cap, force === true)
     if (sessionId) {
       watcher?.unwatch(sessionId)
       codexWatcher.unwatch(sessionId)
@@ -4248,6 +4249,8 @@ function registerIpc(): void {
     }
     return await stopped
   })
+  // Nothing to do but answer: a reply proves main's loop is free (shared/terminalStall.ts).
+  ipcMain.handle(CH.ptyPing, () => true)
   ipcMain.handle(CH.sessionState, () => liveSessionStates())
 
   /* --------------------------------------------------------------- context */

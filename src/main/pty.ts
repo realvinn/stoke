@@ -3,6 +3,7 @@ import { spawnSshPty } from './sshFallback.ts'
 import { randomUUID } from 'node:crypto'
 import { releaseExitedPtyTransports } from './ptyTransportCleanup.ts'
 import { ownedPtyExits } from './ptyExitTracker.ts'
+import { killProcessTree, systemTreeKill, type TreeKillOutcome } from './processTree.ts'
 import { join } from 'node:path'
 import { rmSync } from 'node:fs'
 import { access, realpath, rm, writeFile } from 'node:fs/promises'
@@ -1080,6 +1081,49 @@ export class PtyManager {
     } catch {
       /* already gone */
     }
+    this.drop(ptyId, s)
+  }
+
+  /**
+   * Force restart's kill (TerminalStallOverlay; only ever on the user's confirm,
+   * gotcha 82): the pty's whole process GROUP, SIGTERM and then SIGKILL after
+   * `FORCE_KILL_GRACE_MS` (processTree.ts). A hung `claude` never runs the
+   * handler that would act on `kill()`'s SIGHUP, and its MCP servers share its
+   * group, so they go too. The bookkeeping is `kill()`'s, to the letter: the
+   * entry leaves the map at once (an explicit close, gotcha 84) and the
+   * statusLine files are released by owner (gotcha 73). The pty's own kill
+   * (SIGHUP) runs before this returns; the group's SIGTERM follows once `ps`
+   * has said the child leads it. Resolves with what the kill found.
+   *
+   * An ended session stays in the map (gotcha 84), and an SSH tab's pty then
+   * reports pid 0, which `kill(-0)` would read as Stoke's OWN process group:
+   * `killProcessTree` signals nothing for a pid of 0 or 1, Stoke's own or its
+   * parent's, or once `s.exited` (`killablePid`).
+   */
+  private forceKill(ptyId: string): Promise<TreeKillOutcome> | null {
+    this.codexResume.forget(ptyId)
+    const s = this.sessions.get(ptyId)
+    if (!s) return null
+    const tree = killProcessTree(
+      s.proc.pid,
+      systemTreeKill(
+        () => {
+          if (s.exited) return
+          try {
+            s.proc.kill()
+          } catch {
+            /* already gone */
+          }
+        },
+        () => s.exited
+      )
+    )
+    this.drop(ptyId, s)
+    return tree
+  }
+
+  /** What every explicit close does once the process has been told to go. */
+  private drop(ptyId: string, s: Session): void {
     this.sessions.delete(ptyId)
     s.mirror.dispose()
     /*
@@ -1123,18 +1167,28 @@ export class PtyManager {
    * predecessor that will not die, and `releaseSessionFiles` is what keeps
    * that late exit from deleting the successor's files. Resolves true when the
    * exit landed inside the cap.
+   *
+   * `force` is Force restart's (`forceKill`): the whole process group, and it
+   * resolves true only once the process has exited AND nothing is left in its
+   * group, so a replacement never starts beside the old one's MCP servers.
    */
-  async stop(ptyId: string, capMs: number): Promise<boolean> {
+  async stop(ptyId: string, capMs: number, force = false): Promise<boolean> {
     const s = this.sessions.get(ptyId)
     if (!s) return true
     const exited = s.exitedPromise.then(() => true)
-    this.kill(ptyId)
+    let done: Promise<boolean> = exited
+    if (force) {
+      const tree = this.forceKill(ptyId)
+      if (tree) done = Promise.all([exited, tree]).then(([, outcome]) => outcome !== 'stuck')
+    } else {
+      this.kill(ptyId)
+    }
     let timer: NodeJS.Timeout | null = null
     const capped = new Promise<boolean>((resolve) => {
       timer = setTimeout(() => resolve(false), Math.max(0, capMs))
     })
     try {
-      return await Promise.race([exited, capped])
+      return await Promise.race([done, capped])
     } finally {
       if (timer) clearTimeout(timer)
     }

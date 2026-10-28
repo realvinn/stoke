@@ -175,8 +175,16 @@ export const CH = {
   /**
    * Kill and WAIT for the exit, capped. A relaunch starts its replacement only
    * after this resolves, so two `claude` processes never write one transcript.
+   * With `force` (Force restart, shared/terminalStall.ts) it kills the pty's
+   * whole process group, SIGTERM then SIGKILL (main/processTree.ts).
    */
   ptyStop: 'pty:stop',
+  /**
+   * Answers at once, and only when main's event loop is free: a terminal that
+   * has gone silent asks this before blaming its program, since pty output
+   * reaches the renderer through main (shared/terminalStall.ts).
+   */
+  ptyPing: 'pty:ping',
   /**
    * Type text into a session as Claude Code takes it (`PtyManager.submit`:
    * typed chunks, ESC CR newlines — gotchas 85, 86), pressing Enter after it

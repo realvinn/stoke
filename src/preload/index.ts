@@ -158,7 +158,8 @@ const api: StokeApi = {
       ipcRenderer.send(CH.ptyResize, ptyId, cols, rows),
     onSized: (cb) => on<Parameters<typeof cb>>(CH.ptySized, cb),
     kill: (ptyId: string) => ipcRenderer.send(CH.ptyKill, ptyId),
-    stop: (ptyId: string, capMs?: number) => ipcRenderer.invoke(CH.ptyStop, ptyId, capMs),
+    stop: (ptyId: string, capMs?: number, force?: boolean) => ipcRenderer.invoke(CH.ptyStop, ptyId, capMs, force === true),
+    ping: () => ipcRenderer.invoke(CH.ptyPing),
     type: (ptyId: string, text: string, enter: boolean) => ipcRenderer.invoke(CH.ptyType, ptyId, text, enter),
     onData: (cb) => on<[string, string]>(CH.ptyData, cb),
     onExit: (cb) => on<[string, number, number | undefined, boolean | null | undefined]>(CH.ptyExit, cb)

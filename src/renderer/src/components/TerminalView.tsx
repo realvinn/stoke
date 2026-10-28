@@ -50,6 +50,8 @@ import { ContextMenu } from './ContextMenu'
 import { TerminalFind } from './TerminalFind'
 import { useSshImages } from './ImageSendStrip'
 import { useDictation } from './Dictation'
+import { TerminalStallOverlay, useTerminalStall } from './TerminalStallOverlay'
+import { schemeProbe } from '@shared/terminalStall'
 
 /*
  * The OSC 52 cap (`MAX_OSC52_BASE64`) and what a write puts on the clipboard
@@ -150,6 +152,11 @@ interface Props {
   host?: SshHost | null
   /** "Set up key login" from the image strip, when ssh said Permission denied. */
   onSetUpKey?: (hostId: string) => void
+  /**
+   * Force restart, from the scrim over a terminal that stopped answering
+   * (TerminalStallOverlay): kill the whole process tree and bring the tab back.
+   */
+  onForceRestart?: (tab: Tab) => Promise<boolean>
 }
 
 /**
@@ -187,9 +194,19 @@ export function TerminalView({
   onReconnectNow,
   onStopReconnect,
   host = null,
-  onSetUpKey
+  onSetUpKey,
+  onForceRestart
 }: Props): React.JSX.Element {
   const hostRef = useRef<HTMLDivElement>(null)
+  /** The light/dark class of the terminal's background, for the stall probe below. */
+  const lightRef = useRef(false)
+  /*
+   * Is this terminal stuck, and is it the program or Stoke (shared/terminalStall.ts)?
+   * Fed every output chunk and every `onData` from the pty effect below. Its
+   * probe is the colour-scheme report a program on mode 2031 answers (gotcha
+   * 42), sent with the class in force so nothing repaints.
+   */
+  const stall = useTerminalStall(() => window.stoke.pty.write(tab.ptyId, schemeProbe(lightRef.current)))
   const termRef = useRef<Terminal | null>(null)
   /** Read by the size claim (another machine's remote tab), which is bound once per pty. */
   const activeRef = useRef(active)
@@ -656,7 +673,10 @@ export function TerminalView({
       bookmark = undefined
     }, 15_000) : undefined
 
+    // Before the replay: what the history holds is this pty's output too.
+    stall.start()
     const detach = attachSink(tab.ptyId, (data) => {
+      stall.output(data)
       /*
        * Track whether the child has asked to be told about colour-scheme
        * changes, so the nudge below is only ever sent to something expecting it.
@@ -683,6 +703,8 @@ export function TerminalView({
       // Noted before the write: an automatic relaunch must not kill a session
       // with a draft in its prompt box, and the registry cannot see one.
       noteInput(tab.ptyId, data)
+      // Only what a person typed starts the stall clock (`isTypedInput`).
+      stall.input(data)
       window.stoke.pty.write(tab.ptyId, data)
     })
 
@@ -1242,6 +1264,7 @@ export function TerminalView({
       host.removeEventListener('paste', onPasteEvent, true)
       offClipboardKeys()
       detach()
+      stall.stop()
       onInput.dispose()
       term.dispose()
       unregisterTerm(tab.ptyId)
@@ -1413,6 +1436,7 @@ export function TerminalView({
    * too, where `theme.appearance` alone would not have said.
    */
   const light = isLightBackground(theme.terminal.background)
+  lightRef.current = light
   useEffect(() => {
     if (!termRef.current || !themeNotifyRef.current) return
     window.stoke.pty.write(tab.ptyId, light ? '\x1b[?997;2n' : '\x1b[?997;1n')
@@ -1445,6 +1469,12 @@ export function TerminalView({
     term.options.smoothScrollDuration = termOpts.smoothScroll ? 100 : 0
     fitNowRef.current()
   }, [termOpts])
+
+  // An exited process owes nothing: its card says so, and the scrim goes.
+  useEffect(() => {
+    if (tab.status === 'exited') stall.exit()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab.status, tab.ptyId])
 
   // A hidden pane cannot be measured, so refit and focus when it is revealed.
   useEffect(() => {
@@ -1570,6 +1600,12 @@ export function TerminalView({
       {/* The right-click is handled by a capture-phase listener on this host,
           attached with the terminal, so it never reaches xterm. */}
       <div className="term-host" ref={hostRef} />
+      <TerminalStallOverlay
+        stall={stall}
+        tab={tab}
+        hostLabel={host ? host.label || host.alias : null}
+        onForceRestart={onForceRestart}
+      />
       {findOpen && termRef.current && searchRef.current && (
         <TerminalFind
           tab={tab}
