@@ -1,10 +1,17 @@
 import { TERMINAL_FUNCTION_KEYS, terminalKeySequence, type TerminalKey, type TerminalKeyModifiers } from '@shared/terminalKeys'
 import { el, toast } from './dom'
 
+/** Ctrl+D arms on the first tap and sends on a second tap within this window. */
+export const EOF_CONFIRM_MS = 3_000
 interface Options {
   write: (sequence: string) => boolean
   applicationCursorMode: () => boolean
   signal: AbortSignal
+  /**
+   * Tests only: Ctrl+D's confirm window (`EOF_CONFIRM_MS` when absent). A driven tap on a slow CI runner can
+   * reach the page 2 s after it was sent, so two taps there outlast the shipped 3 s (CLAUDE.md gotcha 180).
+   */
+  eofConfirmMs?: number
 }
 type Modifier = 'shift' | 'ctrl' | 'alt'
 type Latch = 'off' | 'next' | 'locked'
@@ -52,7 +59,7 @@ export function keepFocusOnTap(control: HTMLElement, signal: AbortSignal): void 
 }
 
 /** On-screen keys share the terminal's protocol, never the browser's key shortcuts. */
-export function mountTerminalKeys(root: HTMLElement, { write, applicationCursorMode, signal }: Options): {
+export function mountTerminalKeys(root: HTMLElement, { write, applicationCursorMode, signal, eofConfirmMs = EOF_CONFIRM_MS }: Options): {
   reset: () => void
   setEnabled: (enabled: boolean) => void
 } {
@@ -217,7 +224,7 @@ export function mountTerminalKeys(root: HTMLElement, { write, applicationCursorM
       disarm(); if (write('\x04')) consume()
     } else {
       eof.classList.add('armed'); eof.textContent = 'Confirm'; eof.setAttribute('aria-label', 'Confirm Control-D: end of input'); eofAt = performance.now()
-      eofTimer = setTimeout(disarm, 3000)
+      eofTimer = setTimeout(disarm, eofConfirmMs)
     }
   }, { signal })
   panels[3].append(eof)

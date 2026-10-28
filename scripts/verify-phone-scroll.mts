@@ -1,4 +1,5 @@
 /** Exercise shipped touch routing with real xterm mouse reporting in Chromium. */
+import { touchDrag } from './touch-drag.mts'
 import { app, BrowserWindow } from 'electron'
 import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
@@ -15,7 +16,7 @@ async function main(): Promise<void> {
 import { Terminal } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import { mountTerminalTouchScroll } from ${JSON.stringify(resolve('src/remote/terminalTouchScroll.ts'))};
-import { mountTerminalKeys } from ${JSON.stringify(resolve('src/remote/terminalKeyBar.ts'))};
+import { mountTerminalKeys, EOF_CONFIRM_MS } from ${JSON.stringify(resolve('src/remote/terminalKeyBar.ts'))};
 const root = document.getElementById('terminal'), input = document.getElementById('composer');
 const term = new Terminal({cols:40,rows:10}); term.open(root);
 const abort = new AbortController(); let allowed = true, forwarding = false; const data = [];
@@ -61,7 +62,10 @@ window.histBottom = () => { hist.scrollToBottom(); box.scrollTop = 0; };
 // The key bar as session.ts mounts it, beside a composer that keeps the phone's keyboard up.
 const keyRoot = document.getElementById('keys'), composer2 = document.getElementById('composer2');
 const sentKeys = [], keyEvents = [];
-mountTerminalKeys(keyRoot, { write: value => { sentKeys.push(value); return true; }, applicationCursorMode: () => false, signal: new AbortController().signal }).setEnabled(true);
+// eofConfirmMs: a driven tap can reach the page 2 s after it was sent on a CI runner, so two of them outlast the shipped
+// 3 s (gotcha 180); the shipped value is asserted on its own (eofConfirmDefault).
+mountTerminalKeys(keyRoot, { write: value => { sentKeys.push(value); return true; }, applicationCursorMode: () => false, signal: new AbortController().signal, eofConfirmMs: 20000 }).setEnabled(true);
+window.eofConfirmDefault = EOF_CONFIRM_MS;
 // The window, bubble phase: after every listener on the control itself has run.
 for (const type of ['pointerdown', 'mousedown', 'click']) window.addEventListener(type, e => { if (e.target.closest && e.target.closest('#keys button')) keyEvents.push(type + (e.defaultPrevented ? ' cancelled' : '')); });
 window.keyAt = sel => { const b = keyRoot.querySelector(sel); if (!b || !b.getClientRects().length) return null; const r = b.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; };
@@ -107,13 +111,14 @@ window.exerciseHistory = async () => {
     assert.equal(history.boxFirstKept, true)
     assert.equal(history.wheelNative, false, 'an application with mouse reporting still gets the swipe')
     assert.ok(history.wheelSent > 0 && history.wheelKept, 'as wheel reports, the buffer untouched')
-    // The same through Chromium's own touch pipeline: a trusted swipe, not a dispatched event.
+    // The same through Chromium's own touch pipeline: trusted touches from CDP's Input.dispatchTouchEvent, not
+    // events a script dispatched. Never synthesizeScrollGesture's touch source: on Linux it sends no touchmove (gotcha 180).
     await win.webContents.executeJavaScript('window.histBottom()')
     win.webContents.debugger.attach('1.3')
     await win.webContents.debugger.sendCommand('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 })
     const at = await win.webContents.executeJavaScript('window.histRect()')
     const before = await win.webContents.executeJavaScript('window.histView()')
-    await win.webContents.debugger.sendCommand('Input.synthesizeScrollGesture', { x: at.x, y: at.y, yDistance: 100, gestureSourceType: 'touch', speed: 800 })
+    await touchDrag((method, params) => win.webContents.debugger.sendCommand(method, params), at.x, at.y, 100)
     const after = await win.webContents.executeJavaScript('window.histView()')
     assert.ok(after.viewportY < before.viewportY, `a real finger-down swipe shows older lines: ${JSON.stringify({ before, after })}`)
     assert.equal(after.boxTop, 0, 'and the box did not scroll instead')
@@ -135,7 +140,14 @@ window.exerciseHistory = async () => {
       assert.ok(at, `${selector} is on screen`)
       assert.equal(await win!.webContents.executeJavaScript('window.keyFocus()'), true, 'the composer has focus before the tap')
       if (mouse) for (const type of ['mousePressed', 'mouseReleased']) await dbg.sendCommand('Input.dispatchMouseEvent', { type, x: at.x, y: at.y, button: 'left', clickCount: 1 })
-      else { await dbg.sendCommand('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [at] }); await dbg.sendCommand('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] }) }
+      else {
+        // A tap's two halves sent together, then both replies awaited. On the Linux runner a driven touch reaches this
+        // page 1.4-2 s after it is sent; sent one after the other's reply, the halves arrived 2 s apart (gotcha 180).
+        await Promise.all([
+          dbg.sendCommand('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [at] }),
+          dbg.sendCommand('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+        ])
+      }
       await pause(250)
       return win!.webContents.executeJavaScript('window.keyRead()')
     }
@@ -170,6 +182,7 @@ window.exerciseHistory = async () => {
     await clicked('More again', '.key-more-toggle', { panel: false })
     const up = await tapKey('.keys-quick [data-key="ArrowUp"]')
     assert.deepEqual([up.sent, up.focused], [['\x1b[A'], true], `Up, a repeat key, sends once on the press and keeps the focus: ${JSON.stringify(up)}`)
+    assert.equal(await win.webContents.executeJavaScript('window.eofConfirmDefault'), 3000, 'the shipped Ctrl+D confirm window is 3 s (the suite widens it only for its own taps)')
     console.log('PASS phone key bar taps: every control that acts on its click (Esc, Tab, Enter, More, the group tabs, Ctrl+C, F2, Ctrl+D, Delete, Home, and Esc by mouse) keeps the composer focused by its mousedown and fires its click with its pointerdown left alone (WebKit drops the click otherwise); repeat keys and Shift send once on the press.')
   } catch (error) { console.error(error); process.exitCode = 1 }
   finally { win?.destroy(); rmSync(temp, { recursive: true, force: true }); app.exit(process.exitCode ? Number(process.exitCode) : 0) }

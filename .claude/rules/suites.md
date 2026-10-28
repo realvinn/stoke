@@ -1,6 +1,8 @@
 ---
 paths:
   - "scripts/verify-*.{mts,mjs}"
+  - "scripts/drive-*.mts"
+  - "scripts/touch-drag.mts"
   - "scripts/suite-tmpdir.mts"
   - "scripts/ci-verify.mjs"
   - "package.json"
@@ -412,3 +414,56 @@ One mutant stays green honestly. Perl's "no pattern" mutation in the stand-in is
 perl loop's own token regex already skips such names before `gone` is reached. Record an equivalent
 mutant as one, with the reason, rather than writing a check that cannot fail; only a fixture that
 passes the outer layer reaches the inner one.
+
+## 180. A synthesized touch scroll gesture sends no touchmove on Linux, so drive a finger with dispatched touches
+
+**Found 2026-10-28: CI's gating Verify job was red on four pushes in a row** (runs 40650955792,
+40658756289, 40664680841, 40687038232), every time on verify:account-remote's "a finger scrolls the
+list under a fixed bar to its last session", every time with the same reading,
+`{"top":0,"bar":0,"page":0,"row":1021}`. The macOS leg passed it. The suite swiped with CDP
+`Input.synthesizeScrollGesture` and `gestureSourceType: 'touch'`, Chromium's own synthetic gesture.
+
+The page was not at fault. A throwaway diagnostic on the same ubuntu runner (Electron 43.2, X11
+under `xvfb-run -a -s '-screen 0 1280x1024x24'`, branch `diag/linux-touch`, deleted after) drove a
+plain overflow box, the control, with every input, in the suite's own window shape, and counted the
+page's events:
+
+| Input | Linux | macOS |
+|---|---|---|
+| `synthesizeScrollGesture` touch, at y 300 or 640 | 1 touchstart, **0 touchmove**, scrollTop 0 | 4-5 touchmove, ~400 px |
+| the same with phone emulation, or with `--touch-events=enabled` | the same: nothing scrolls | — |
+| `synthesizeScrollGesture` mouse (wheel) | 17 wheel, 400 px | 400 px |
+| `Input.dispatchTouchEvent`: start, 20 moves 16 ms apart, end | 20 touchmove, ~450 px | ~480 px |
+
+So on Linux the synthetic touch gesture delivers its touchstart and then nothing: no page or CSS
+can scroll from it. A screen-size clamp was ruled out first: ci-verify gives xvfb 1280x1024, and the
+window measured 390x844 inside it.
+
+The rule: **drive a finger through `Input.dispatchTouchEvent` (`scripts/touch-drag.mts`'s
+`touchDrag`): touchstart, touchmoves a frame apart, touchend, all inside the viewport.** These are
+trusted events through the browser's input pipeline, not events a script dispatched, and they
+scroll on Linux and macOS alike. verify:account-remote and verify:phone-scroll both swiped with the
+synthetic gesture; both use the helper now, and both pass on the Linux runner and on the Mac.
+
+**And once the swipe was fixed, the next suite hit the same runner's other half.** verify:phone-scroll's
+"Ctrl+D, second tap" ended "Confirm, nothing sent" on Linux (passing on the Mac). A timestamped event
+log of the real fixture on the runner showed why: there, a driven touch REACHES THE PAGE 1.4-2 s after
+`Input.dispatchTouchEvent` is sent, and the reply follows delivery. The suite sent touchEnd only after
+touchStart's reply, so each tap's halves landed 2,033 ms apart, the two Ctrl+D clicks 4,066 ms apart
+(684 ms on the Mac), and the key's 3 s confirm window had closed. The app was right. Two runs pinned the
+mechanism: sending both halves together and awaiting both put them in the page in the same
+millisecond and passed, while not awaiting at all left the page empty when the suite read it 250 ms
+later (`events: []`). A plain button on the same runner tapped in 6-12 ms and touchmoves in a drag were
+not slow (verify:account-remote's ~80 awaited moves ran in 29 s), so the delay belongs to that fixture
+on that runner; its cause was not found. The rules: **send a tap's two halves together and await both
+replies**, and **never let a test depend on a window shorter than the runner's delivery delay**. Ctrl+D's
+window is now an option (`eofConfirmMs`, default `EOF_CONFIRM_MS`, 3 s), widened in the suite only, with
+the shipped 3 s asserted on its own (gotcha 174's rule for real timers, applied to a component).
+
+Two smaller lessons from the same four red runs:
+
+- **Watch CI after every push, not only before a release.** The gate went red on the first push of
+  the touch checks and stayed red for three more pushes before anyone looked.
+- **A gesture check needs a control on the same runner before its failure means anything.** The
+  diagnostic's plain overflow box is what turned "the list does not scroll on Linux" into "nothing
+  scrolls from that gesture on Linux".

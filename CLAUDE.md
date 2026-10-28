@@ -617,6 +617,8 @@ rule file named on the group line.
   clock: hub-server's 60 s sweep fired only on slow runs, swept by the fake hour, and read as a lockout regression.
 - **175.** Treat a mutant that stays green as a suite gap: assert the shipped constants, not a fake's (`systemQuitSettle`),
   make a harness prove it ran to its end before an absence counts, and give each of two layered guards its own check.
+- **180.** Drive a finger with `Input.dispatchTouchEvent` (`touchDrag`), never `synthesizeScrollGesture`'s touch source (no
+  touchmove on Linux); send a tap's halves together, and widen a component's timer for a test (`eofConfirmMs`), never its shipped value.
 
 ## Standing traps when driving the app
 

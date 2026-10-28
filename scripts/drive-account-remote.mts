@@ -1,4 +1,5 @@
 import { captureTestWindow } from './capture-test-window.mts'
+import { touchDrag } from './touch-drag.mts'
 /** Driven only by verify-account-remote with a throwaway account and loopback hub. */
 import { app, BrowserWindow } from 'electron'
 import assert from 'node:assert/strict'
@@ -149,8 +150,12 @@ async function tapsKeepFocus(cdp: Debugger, run: Run): Promise<void> {
   assert.deepEqual(await run(state), { taps: [], row: true, focused: true }, 'typing brings the key row out')
   const tap = async (selector: string): Promise<{ taps: string[]; row: boolean; focused: boolean }> => {
     const at = await run(`(() => { const r = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) } })()`)
-    await cdp.sendCommand('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [at] })
-    await cdp.sendCommand('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+    // A tap's halves sent together, both replies awaited: one after the other's reply, they reach the page 2 s apart on
+    // the Linux runner, a press rather than a tap (gotcha 180).
+    await Promise.all([
+      cdp.sendCommand('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [at] }),
+      cdp.sendCommand('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+    ])
     await pause(400)
     return run(state)
   }
@@ -189,7 +194,8 @@ async function phone(win: BrowserWindow, run: (code: string) => Promise<any>, un
   const metrics = (height: number) => cdp.sendCommand('Emulation.setDeviceMetricsOverride', { width: 390, height, deviceScaleFactor: 3, mobile: true })
   await cdp.sendCommand('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 })
   await metrics(844)
-  const swipe = (x: number, y: number, dy: number) => cdp.sendCommand('Input.synthesizeScrollGesture', { x, y, yDistance: dy, gestureSourceType: 'touch', speed: 1500 })
+  // A finger drag as dispatched touches; synthesizeScrollGesture's touch source sends no touchmove on Linux (gotcha 180).
+  const swipe = (x: number, y: number, dy: number) => touchDrag((method, params) => cdp.sendCommand(method, params), x, y, dy)
   const settle = () => new Promise(done => setTimeout(done, 400))
   await until(`document.querySelectorAll('.device-session[data-pty^="pty-pc"]').length === 12 && innerHeight === 844`)
   assert.equal(await run(`document.querySelectorAll('.devices-page .topbar a, .devices-page .topbar .icon-btn').length`), 0,
@@ -198,7 +204,7 @@ async function phone(win: BrowserWindow, run: (code: string) => Promise<any>, un
   const box = await run(`({ client: ${list}.clientHeight, scroll: ${list}.scrollHeight, bottom: Math.round(${list}.getBoundingClientRect().bottom) })`)
   assert.ok(box.scroll > box.client && box.bottom === 844, `the list is a scroller bounded by the screen: ${JSON.stringify(box)}`)
   const last = `document.querySelector('.device-session[data-pty="pty-pc-12"]')`
-  await swipe(195, 640, -1400); await settle(); await swipe(195, 640, -1400); await settle()
+  await swipe(195, 760, -660); await settle(); await swipe(195, 760, -660); await settle()
   const moved = await run(`({ top: ${list}.scrollTop, bar: Math.round(document.querySelector('.devices-page .topbar').getBoundingClientRect().top), page: scrollY, row: Math.round(${last}.getBoundingClientRect().bottom) })`)
   assert.ok(moved.top > 0 && moved.bar === 0 && moved.page === 0 && moved.row <= 844, `a finger scrolls the list under a fixed bar to its last session: ${JSON.stringify(moved)}`)
   await keepsTheList(cdp, run, until, Math.round(moved.top))

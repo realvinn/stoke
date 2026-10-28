@@ -3140,6 +3140,10 @@ scripts/          the verify-*.mts suites, make-icon.cjs
                     browser fixtures; empty captures and persistent Viz errors fail the suite,
                     and a window that has stopped drawing fails it by name (`ScreenshotStalled`,
                     a 10 s deadline over the frame wait and `capturePage`, gotcha 161)
+  touch-drag.mts    `touchDrag`: a finger drag as CDP `Input.dispatchTouchEvent` touches, which
+                    verify:account-remote's driver and verify:phone-scroll swipe with. Never
+                    `synthesizeScrollGesture`'s touch source: on Linux it sends no touchmove
+                    (gotcha 180)
   check-release-assets.mjs  the publish gate: for every target in targets.mjs, the feed
                     its updater fetches must list a file its updater will accept, and that
                     file must be on disk. Derived from the matrix, so a new platform
