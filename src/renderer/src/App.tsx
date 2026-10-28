@@ -3710,6 +3710,69 @@ export function App(): React.JSX.Element {
   const startSshEnrollRef = useRef(startSshEnroll)
   startSshEnrollRef.current = startSshEnroll
 
+  /**
+   * "Set up microphone there" on a host that wants a password: a tab running
+   * ssh with the stand-in's install as its command, where the password is
+   * typed (gotcha 109; main builds the argv from the host id alone,
+   * `micSetupTabCommand`). Settings asks for it only once the one-shot
+   * key-login install answered that the machine wants a password. Marked
+   * `enrollHostId` + `micSetup`: the same utility tab as "Add key" (never
+   * restored, no images, no find), with its own exit card and Try again.
+   * One per host at a time, claimed before the IPC call (gotcha 51).
+   */
+  const micSetupRef = useRef(new Set<string>())
+  const startMicSetup = useCallback(async (hostId: string, replaceTabId?: string): Promise<void> => {
+    const host = settingsRef.current?.hosts.find((h) => h.id === hostId)
+    if (!host || micSetupRef.current.has(hostId)) return
+    micSetupRef.current.add(hostId)
+    try {
+      const res = await window.stoke.pty.start({
+        // Main reads only the host id and the size.
+        cwd: '',
+        micSetup: { hostId },
+        permissionMode: 'default',
+        model: '',
+        effort: 'default',
+        cols: 120,
+        rows: 30
+      })
+      const label = host.label.trim() || host.alias.trim()
+      const tab: Tab = {
+        id: res.ptyId,
+        kind: 'session',
+        cliId: 'claude',
+        ptyId: res.ptyId,
+        sessionId: '',
+        cwd: host.alias,
+        projectName: label,
+        title: `Set up microphone on ${label}`,
+        permissionMode: 'default',
+        model: '',
+        effort: 'default',
+        ultracode: false,
+        status: 'running',
+        exitCode: null,
+        hostId: host.id,
+        enrollHostId: host.id,
+        micSetup: true,
+        selectedPath: null,
+        expandedPath: null
+      }
+      setTabs((list) => {
+        const next = replaceOrAppend(list, tab, replaceTabId)
+        tabsRef.current = next
+        return next
+      })
+      // In front: the password, if one is asked for, is typed here.
+      activeTabIdRef.current = tab.id
+      setActiveTabId(tab.id)
+    } catch (e) {
+      setError(ipcErrorMessage(e))
+    } finally {
+      micSetupRef.current.delete(hostId)
+    }
+  }, [])
+
   /* ------------------------------------------------------ account sign-in */
 
   /**
@@ -3866,7 +3929,7 @@ export function App(): React.JSX.Element {
 
       // The "Add key" tab is done. If it was in front, the tab that asked goes
       // there — not whichever neighbour closing it would leave.
-      const enrollTabs = tabsRef.current.filter((t) => t.enrollHostId === e.hostId)
+      const enrollTabs = tabsRef.current.filter((t) => t.enrollHostId === e.hostId && !t.micSetup)
       const enrollWasActive = enrollTabs.some((t) => t.id === activeTabIdRef.current)
       for (const t of enrollTabs) closeTab(t.id)
       if (enrollWasActive && sourceTabId && tabsRef.current.some((t) => t.id === sourceTabId)) {
@@ -4134,6 +4197,12 @@ export function App(): React.JSX.Element {
         // "New private chat" on an ended one: a fresh chat in its slot. The old
         // one's folder and files went when its process exited.
         void startPrivate(tab.id).finally(() => releaseStart(tab.id))
+        return
+      }
+
+      if (plan.kind === 'mic-setup') {
+        // "Try again" on the microphone's setup tab: the same install, in its slot.
+        void startMicSetup(plan.hostId, tab.id).finally(() => releaseStart(tab.id))
         return
       }
 
@@ -6116,7 +6185,7 @@ export function App(): React.JSX.Element {
   const sshStripHostId = sshOffer?.hostId ?? sshEnroll?.hostId ?? null
   const sshOfferHost = sshStripHostId ? settings?.hosts.find((h) => h.id === sshStripHostId) : undefined
   /** The open "Add key to …" tab for that host, if there is one. */
-  const sshEnrollTab = sshOfferHost ? tabs.find((t) => t.enrollHostId === sshOfferHost.id) : undefined
+  const sshEnrollTab = sshOfferHost ? tabs.find((t) => t.enrollHostId === sshOfferHost.id && !t.micSetup) : undefined
 
   const worklogPending = worklog.filter((p) => p.status === 'pending').length
   const worklogState = useMemo(
@@ -6957,6 +7026,13 @@ export function App(): React.JSX.Element {
               setPreviewTheme(null)
               setSettingsOpen(false)
               void startSshEnroll(hostId, null)
+            },
+            onSetUpMic: (hostId) => {
+              // As for a key: the sheet goes so the tab, where any password
+              // is typed, is what the user sees.
+              setPreviewTheme(null)
+              setSettingsOpen(false)
+              void startMicSetup(hostId)
             }
           }}
           onClose={() => {

@@ -49,6 +49,7 @@ import { endRemoteSession, listRemoteSessions, runSsh, type RunResult } from '..
 import { OPENSSH_PARENT_VARS, sshChildEnv } from '../src/main/ssh.ts'
 import { identityFilesFor } from '../src/main/hub/sshKeys.ts'
 import { buildUploadArgs, buildUploadBody } from '../src/main/ssh.ts'
+import { micForwardOption } from '../src/shared/micTunnel.ts'
 import {
   inspectUploadFile,
   openUploadFile,
@@ -1041,9 +1042,28 @@ console.log('\nthe managed session: the argv')
     const g = await execFileAsync(exe, ['-F', empty, '-G', ...plan.args], { encoding: 'utf8', timeout: 15000 }).catch(
       (e: { stdout?: string }) => ({ stdout: e.stdout ?? '' })
     )
+    /*
+     * The lent microphone's forward (shared/micTunnel.ts) on the same kept
+     * plan: ssh's own parser must read it as a RemoteForward, an option, and
+     * the plain plan above must have none (verify:mic-tunnel holds the rest).
+     */
+    const micTok = '0123456789abcdef'.repeat(2)
+    const lentPlan = sshHostArgs(kept({}), 'stoke-00000001', micForwardOption(micTok, '/tmp/stoke-mic-x/m.sock'))
+    const gl = lentPlan.ok
+      ? await execFileAsync(exe, ['-F', empty, '-G', ...lentPlan.args], { encoding: 'utf8', timeout: 15000 }).catch(
+          (e: { stdout?: string }) => ({ stdout: e.stdout ?? '' })
+        )
+      : { stdout: '' }
     await rm(emptyDir, { recursive: true, force: true })
     check('ssh -G reads serveraliveinterval 15', /^serveraliveinterval 15$/m.test(g.stdout), '')
     check('and serveralivecountmax 3', /^serveralivecountmax 3$/m.test(g.stdout), '')
+    const forwards = (out: string): string => out.split(/\r?\n/).filter((l) => l.startsWith('remoteforward')).join(' | ')
+    check('no host lends the microphone unasked: no remoteforward', !/^remoteforward /m.test(g.stdout), forwards(g.stdout))
+    check(
+      'a lent microphone is ssh’s own RemoteForward of /tmp/stoke-mic.<token>.sock',
+      new RegExp(`^remoteforward /tmp/stoke-mic\\.${micTok}\\.sock /tmp/stoke-mic-x/m\\.sock\r?$`, 'm').test(gl.stdout),
+      forwards(gl.stdout) || '(none)'
+    )
   }
 }
 

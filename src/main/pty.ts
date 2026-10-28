@@ -490,7 +490,13 @@ export class PtyManager {
      * OpenRouter or Anthropic key would make it the Default account again.
      * Other agents carry their account's environment in `agentPlan`.
      */
-    accountEnv: Record<string, string> | null = null
+    accountEnv: Record<string, string> | null = null,
+    /**
+     * An SSH tab's lent-microphone forward (`-o RemoteForward=…`, minted per
+     * connection by main's `MicTunnels.prepare`), or null. A local option only:
+     * nothing reaches the remote command (gotcha 19). Ignored off SSH.
+     */
+    micForward: string | null = null
   ): Promise<StartResult> {
     if (this.stopping) throw new Error('The Stoke window is closing.')
     /*
@@ -656,7 +662,7 @@ export class PtyManager {
      * sentence rather than connecting a tab that only LOOKS kept (gotcha 126).
      * Decided before anything is written or spawned.
      */
-    const hostPlan = remote ? sshHostArgs(opts.host!, opts.remoteSession) : null
+    const hostPlan = remote ? sshHostArgs(opts.host!, opts.remoteSession, micForward) : null
     if (hostPlan?.ok && opts.host?.preferredAddress) { hostPlan.args = await prepareSshRoute(hostPlan.args, sshExecutable(), sshChildEnv()); if (this.stopping) throw new Error('The Stoke window is closing.') }
     if (hostPlan && !hostPlan.ok) throw new Error(hostPlan.message)
     const installFile = installing && process.platform === 'win32' ? join(tmpdir(), `stoke-install-${ptyId}.ps1`) : null

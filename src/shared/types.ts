@@ -110,6 +110,13 @@ export interface LaunchOptions {
    */
   enroll?: { hostId: string }
   /**
+   * Install the microphone stand-in on this host in a tab, where ssh asks for
+   * the password (gotcha 109): the "Set up microphone on …" tab. Only the id
+   * crosses; main builds the argv (`micSetupTabCommand`) from the host
+   * settings holds. Never saved for restore.
+   */
+  micSetup?: { hostId: string }
+  /**
    * The account this session runs on (shared/accounts.ts): an account id,
    * `'default'` for the agent's own sign-in, or absent for "this agent's
    * default account" (`agents.defaultAccount`). Resolved in main
@@ -740,6 +747,18 @@ export interface SshHost {
    * a hub payload from an older Stoke means the same thing.
    */
   noUploads?: boolean
+  /**
+   * Lend this computer's microphone to Claude Code's `/voice` on this machine
+   * (Linux servers only; shared/micTunnel.ts). Each tab's ssh forwards a far
+   * socket to Stoke, and a stand-in `arecord` there streams this microphone
+   * only while Space is held in that tab, or just after it was tapped on its
+   * own. Off unless ticked; only the literal `true` turns it on.
+   *
+   * Machine-local, like `downloadFolder`: it is consent to stream THIS
+   * computer's microphone, so hub sync never publishes or imports it — a
+   * host synced from another device arrives with it off here.
+   */
+  micTunnel?: boolean
   /** Explicit remote folder for file browsing/downloads. Empty disables it.
    * Machine-local consent: hub sync never imports or publishes this field. */
   downloadFolder?: string

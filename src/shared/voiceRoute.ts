@@ -107,8 +107,20 @@ export interface DictationTab {
 /** Who a held Space belongs to on this tab. */
 export type SpaceOwner = 'cli' | 'stoke'
 
-export function spaceOwner(tab: DictationTab, claudeVoice: boolean): SpaceOwner {
-  if (tab.hostId || tab.kind === 'remote') return 'stoke'
+/*
+ * An SSH tab whose host LENDS this computer's microphone (`SshHost.micTunnel`,
+ * shared/micTunnel.ts) is the exception to the SSH rule above: the far
+ * `claude`'s `/voice` records through Stoke there, and its hold detection is
+ * the held Space's repeat stream reaching the pty — exactly what Stoke's
+ * dictation would take. So Space is the CLI's on that tab, whatever this
+ * computer's `/voice` says (it says nothing about the far CLI), and ⇧⌘D says
+ * why instead of arming (`micOwnsSpace`). One owner, decided before a key is
+ * pressed (gotcha 79). Unticking the host's box gives the tab back to Stoke's
+ * dictation.
+ */
+export function spaceOwner(tab: DictationTab, claudeVoice: boolean, micLent = false): SpaceOwner {
+  if (tab.hostId) return micLent ? 'cli' : 'stoke'
+  if (tab.kind === 'remote') return 'stoke'
   return tab.cliId === 'claude' && claudeVoice ? 'cli' : 'stoke'
 }
 

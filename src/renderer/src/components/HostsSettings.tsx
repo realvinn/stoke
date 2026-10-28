@@ -27,6 +27,13 @@ interface Props {
   /** The host an enrollment is running for, or null. One at a time. */
   enrollingHostId: string | null
   onOpenAccount: () => void
+  /**
+   * Open the "Set up microphone on …" tab, where ssh asks for this machine's
+   * password (gotcha 109). Asked for only once the one-shot key-login install
+   * said the machine wants a password. Optional so a caller without tabs can
+   * still draw the panel.
+   */
+  onSetUpMic?: (hostId: string) => void
 }
 
 /**
@@ -166,7 +173,8 @@ export function HostsSettings({
   onChangeKeyEnroll,
   onSetUpKey,
   enrollingHostId,
-  onOpenAccount
+  onOpenAccount,
+  onSetUpMic
 }: Props): React.JSX.Element {
   /*
    * Text fields are local drafts, committed on blur or Enter.
@@ -185,6 +193,45 @@ export function HostsSettings({
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   const [confirming, setConfirming] = useState<string | null>(null)
   const [filesHost, setFilesHost] = useState<string | null>(null)
+  /*
+   * "Set up microphone on this machine": the host it runs for, claimed before
+   * the await (gotcha 20) so a second press does nothing, and what it said.
+   */
+  const micSetupRef = useRef<string | null>(null)
+  const [micSetupHost, setMicSetupHost] = useState<string | null>(null)
+  const [micSaid, setMicSaid] = useState<Record<string, { ok: boolean; lines: string[] }>>({})
+  const setUpMic = (host: SshHost): void => {
+    if (micSetupRef.current) return
+    micSetupRef.current = host.id
+    setMicSetupHost(host.id)
+    setMicSaid((m) => {
+      const { [host.id]: _gone, ...rest } = m
+      return rest
+    })
+    void window.stoke.micTunnel
+      .install(host.id)
+      .then((r) => {
+        if (r.ok) {
+          const lines = [
+            r.report.installed ? `Installed at ${r.report.installed}.` : 'Installed.',
+            ...r.report.notes
+          ]
+          setMicSaid((m) => ({ ...m, [host.id]: { ok: r.report.ready, lines } }))
+        } else if (r.needsLogin && onSetUpMic) {
+          // A password host: the install runs in a tab where it is typed.
+          onSetUpMic(host.id)
+        } else {
+          setMicSaid((m) => ({ ...m, [host.id]: { ok: false, lines: [r.message] } }))
+        }
+      })
+      .catch((err: unknown) =>
+        setMicSaid((m) => ({ ...m, [host.id]: { ok: false, lines: [err instanceof Error ? err.message : String(err)] } }))
+      )
+      .finally(() => {
+        micSetupRef.current = null
+        setMicSetupHost(null)
+      })
+  }
 
   const known = useMemo(
     () => new Set(suggestions.map((s) => s.trim().toLowerCase())),
@@ -281,6 +328,8 @@ export function HostsSettings({
         keyEnrollRefused: false,
         keyEnrolled: false,
         noUploads: false,
+        // Never lends the microphone until asked (shared/micTunnel.ts).
+        micTunnel: false,
         // A NEW machine keeps its tabs' shells running between connections;
         // one saved before this existed hydrates as 'off', unchanged.
         persist: 'tmux'
@@ -719,6 +768,48 @@ export function HostsSettings({
                   )}
                 </span>
               </label>
+
+              {/*
+                The lent microphone (shared/micTunnel.ts). Per host and off
+                unless ticked; machine-local, never synced (types.ts). It
+                reaches a tab's connection when the tab connects, so it says
+                so. `/voice tap` is the recommendation: hold mode needs five
+                Space bytes each within 120 ms and ends on a 200 ms gap, both
+                read at the far end, where a laggy link bunches and spreads them.
+              */}
+              <label className="check-row" data-setting="hosts.mic">
+                <input
+                  type="checkbox"
+                  checked={host.micTunnel === true}
+                  onChange={(e) => update(host.id, { micTunnel: e.target.checked })}
+                />
+                <span>
+                  <span className="field-label">Lend this computer’s microphone to Claude’s /voice on this server</span>
+                  <span className="field-hint">
+                    {host.micTunnel === true
+                      ? 'Linux servers only, from the next connection. Run /voice tap there and tap Space (hold mode is fragile over a slow link). It streams only to a recorder that starts just as you hold Space, or tap it on its own, in that tab, and stops at your next key or Stop, with “Mic →” showing.'
+                      : 'Linux servers only.'}
+                  </span>
+                </span>
+              </label>
+              {host.micTunnel === true && (
+                <div className="settings-item-actions">
+                  <button
+                    className="btn"
+                    data-size="sm"
+                    disabled={micSetupHost !== null || !host.alias.trim() || host.alias.trim().startsWith('-')}
+                    onClick={() => setUpMic(host)}
+                    aria-label={`Set up the microphone on ${name}`}
+                  >
+                    {micSetupHost === host.id ? 'Setting up…' : 'Set up microphone there'}
+                  </button>
+                  <span className="field-hint" role="status">
+                    {micSaid[host.id]
+                      ? micSaid[host.id].lines.join(' ')
+                      : 'Puts a small arecord in ~/.local/bin there, once. Asks for a password in a tab if it needs one.'}
+                  </span>
+                </div>
+              )}
 
               {/*
                 The way in that needs no password prompt first. Uses the

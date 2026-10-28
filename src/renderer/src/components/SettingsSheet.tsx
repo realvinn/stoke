@@ -214,6 +214,8 @@ interface Props {
   sshKeys: {
     enrollingHostId: string | null
     onSetUpKey: (hostId: string) => void
+    /** "Set up microphone there" on a host that wants a password: App opens its tab. */
+    onSetUpMic?: (hostId: string) => void
   }
   /** Chat history's status and detection, which App holds for the offer and the sidebar too. */
   chats: { status: ChatIndexStatus | null; detection: ChatDetection | null }
@@ -1345,6 +1347,7 @@ export function SettingsSheet({
                 keyEnroll={settings.sshKeyEnroll}
                 onChangeKeyEnroll={(sshKeyEnroll) => onPatch({ sshKeyEnroll })}
                 onSetUpKey={sshKeys.onSetUpKey}
+                onSetUpMic={sshKeys.onSetUpMic}
                 enrollingHostId={sshKeys.enrollingHostId}
                 onOpenAccount={() => go({ page: 'account' })}
               />

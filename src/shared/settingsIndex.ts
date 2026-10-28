@@ -597,6 +597,8 @@ export const SETTING_ROWS: readonly SettingRow[] = [
   },
   // Inside each machine's row, so drawn only once a machine exists.
   { id: 'hosts.images', page: 'hosts', label: 'Send pasted and dropped files and images to this machine', keywords: ['image', 'screenshot', 'paste image', 'upload', 'picture', 'scp', 'drop file', 'file', 'send file', 'upload file', 'paste file', 'attach', 'pdf', 'document'], fallback: 'hosts.list' },
+  // Inside each machine's row too: lending this computer's microphone to Claude's /voice there.
+  { id: 'hosts.mic', page: 'hosts', label: 'Lend this computer’s microphone to Claude’s /voice on this server', keywords: ['microphone', 'mic', 'voice', '/voice', 'dictate', 'speech', 'talk', 'arecord', 'audio', 'tunnel', 'set up microphone', 'voice tap'], fallback: 'hosts.list' },
   { id: 'hosts.downloads', page: 'hosts', label: 'Download folder on this machine', keywords: ['download', 'files', 'browse', 'remote folder', 'ssh', 'python', 'transfer', 'phone'], fallback: 'hosts.list' },
 
   // Browser

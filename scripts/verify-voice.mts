@@ -471,6 +471,17 @@ check('a Codex tab: Stoke, whatever Claude’s setting says', spaceOwner({ cliId
 check('a remote tab is Stoke’s even with this computer’s /voice on', spaceOwner({ cliId: 'claude', hostId: null, kind: 'remote' }, true), 'stoke')
 check('and with it off', spaceOwner({ cliId: 'claude', hostId: null, kind: 'remote' }, false), 'stoke')
 check('a local session tab is still asked', spaceOwner({ cliId: 'claude', hostId: null, kind: 'session' }, true), 'cli')
+/*
+ * An SSH tab whose host LENDS this computer's microphone (shared/micTunnel.ts):
+ * the far claude's /voice records through Stoke there, and its hold detection
+ * is the held Space's repeats reaching the pty — so Space is the CLI's, and
+ * ⇧⌘D says why instead of arming. Not lending, it is Stoke's as before.
+ */
+check('an SSH tab that lends the microphone: the far claude’s /voice', spaceOwner({ cliId: 'claude', hostId: 'vps' }, false, true), 'cli')
+check('whatever this computer’s /voice says', spaceOwner({ cliId: 'claude', hostId: 'vps' }, true, true), 'cli')
+check('not lending: Stoke’s, as before', spaceOwner({ cliId: 'claude', hostId: 'vps' }, true, false), 'stoke')
+check('the lent flag never moves a local tab', [spaceOwner({ cliId: 'claude', hostId: null }, false, true), spaceOwner({ cliId: 'codex', hostId: null }, true, true)], ['stoke', 'stoke'])
+check('nor a remote (hub) tab', spaceOwner({ cliId: 'claude', hostId: null, kind: 'remote' }, false, true), 'stoke')
 ok('the refusal names /voice and how to turn it off', CLI_OWNS_SPACE.includes('/voice') && /turn it off/.test(CLI_OWNS_SPACE))
 
 console.log('\na refused microphone names the switch to change')
@@ -1089,7 +1100,9 @@ console.log('\nthe wire: the panes and the phone really route through these')
   const remoteTerm = readFileSync(remotePath, 'utf8')
   if (at >= 0) console.log(`  (reading ${termPath}, ${phonePath}, ${settingsPath}, ${micPath}, ${dictPath})`)
 
-  ok('TerminalView arms dictation through the one hook, and draws its strip', /useDictation\(\{/.test(term) && /\{dictation\.strip\}/.test(term))
+  // The lent microphone's strip takes the corner while it streams (`mic.strip ?? dictation.strip`).
+  ok('TerminalView arms dictation through the one hook, and draws its strip', /useDictation\(\{/.test(term) && /\{(?:mic\.strip \?\? )?dictation\.strip\}/.test(term))
+  ok('and a lending SSH tab refuses to arm it first, by spaceOwner’s lent flag', /spaceOwner\(tab, false, micLentRef\.current\) === 'cli'/.test(term))
   ok('the old repeat pass-through is gone', !/e\.code !== 'Space' \|\| e\.repeat\) return/.test(dict + term))
   ok(
     'keydown and keyup both step spaceHold, through spaceKey',

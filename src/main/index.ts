@@ -170,6 +170,7 @@ import { DesktopSshFiles } from './desktopSshFiles.ts'
 import { hostPersists, isSafeRemoteSessionName, mintRemoteSessionName } from '../shared/sshPersist.ts'
 import { shouldOfferKey } from '../shared/sshAuth.ts'
 import { EnrollRuns } from './enrollRuns.ts'
+import { MicTunnels, installMicStandIn, micSetupTabCommand, registerMicTunnelIpc } from './micTunnel.ts'
 import {
   consumeUpdateRestart,
   readTabState,
@@ -1024,6 +1025,30 @@ const enrolling = new Set<string>()
  */
 const enrollRuns = new EnrollRuns()
 
+/*
+ * The lent microphone's listeners, one per SSH tab connection whose host has
+ * `micTunnel` on (micTunnel.ts, shared/micTunnel.ts). Made on first use. The
+ * renderer that shows a tab is named by its webContents id: main sends it
+ * open/close, and reads its window's focus itself for the gate.
+ */
+let micTunnels: MicTunnels | null = null
+function micTunnelsFor(): MicTunnels {
+  return (micTunnels ??= new MicTunnels({
+    send: (ownerId, event) => {
+      const wc = BrowserWindow.getAllWindows()
+        .map((w) => w.webContents)
+        .find((c) => c.id === ownerId)
+      if (!wc || wc.isDestroyed()) return
+      if ('open' in event) wc.send(CH.micTunnelOpen, event.open)
+      else wc.send(CH.micTunnelClose, event.close)
+    },
+    windowFocused: (ownerId) =>
+      BrowserWindow.getAllWindows().some((w) => !w.isDestroyed() && w.webContents.id === ownerId && w.isFocused())
+  }))
+}
+/** Claimed per host before the first await (gotcha 20): one install at a time. */
+const micInstalling = new Set<string>()
+
 /** How long an install tab's process may linger once its result is proven, before it is stopped. */
 const ENROLL_LINGER_MS = 1500
 
@@ -1295,7 +1320,7 @@ async function launchSession(
   if (appQuitting) throw new Error('Stoke is closing.')
   const account = requested.accountLogin ? getSettings().accounts[requested.accountLogin.accountId] : null
   const cli = account?.cli ?? cliIdOf(requested.cli)
-  const local = !requested.host && !requested.enroll
+  const local = !requested.host && !requested.enroll && !requested.micSetup
   const release = local ? agentLifecycle.beginLaunch(cli) : () => {}
   if (!release) throw new Error('This agent is being updated. Wait for the update to finish before launching it.')
   try { return await startSession(requested, origin) }
@@ -1339,6 +1364,8 @@ async function startSession(
   }
   // Its own path, before anything else reads the request: an enrollment takes
   // the host id from it and nothing more (`planEnrollLaunch`).
+  // The same shape for the microphone stand-in's tab: only the host id is read.
+  if (requested.micSetup) return startMicSetupSession(requested)
   if (requested.enroll) return startEnrollSession(requested)
   // The same shape for an account's sign-in tab: only the account id is read.
   if (requested.accountLogin) return startAccountLogin(requested)
@@ -1506,6 +1533,21 @@ async function startSession(
     claudePluginDir = await skillsProjector.prepare(opts.cwd)
   }
   const launched = accountId ? { ...opts, accountId } : opts
+  /*
+   * The lent microphone (micTunnel.ts): a fresh listener and token for THIS
+   * connection when the host, as settings holds it (never the renderer's copy),
+   * has it on. A listener that cannot be made costs the microphone, never the
+   * tab: the connection goes ahead without the forward.
+   */
+  let micLease: Awaited<ReturnType<MicTunnels['prepare']>> | null = null
+  if (opts.host && settings.hosts.find((h) => h.id === opts.host!.id)?.micTunnel === true) {
+    micLease = await micTunnelsFor()
+      .prepare(opts.host.id)
+      .catch((err: unknown) => {
+        console.warn(`[stoke] mic tunnel: no listener for this connection (${(err as Error).message})`)
+        return null
+      })
+  }
   let started: StartResult
   try {
     started = await ptys.start(
@@ -1528,9 +1570,14 @@ async function startSession(
       null,
       claudePluginDir,
       // A second Claude account's home, applied in place of the Providers keys.
-      isClaudeCode(cliId) && account ? accountEnv(account) : null
+      isClaudeCode(cliId) && account ? accountEnv(account) : null,
+      micLease?.forward ?? null
     )
+    micLease?.attach(started.ptyId)
+    // An ssh that ended before the attach fired its exit with nothing to release.
+    if (micLease && ptys.list().find((s) => s.ptyId === started.ptyId)?.exited) void micTunnels?.release(started.ptyId)
   } catch (err) {
+    micLease?.release()
     // Nothing ran in the folder: it and its marker go now.
     if (privateLaunch) await privateChats?.abandon(privateLaunch.id).catch(() => {})
     throw err
@@ -1678,6 +1725,38 @@ async function startEnrollSession(requested: LaunchOptions): Promise<StartResult
     // On success the claim is held until the tab exits (`finishEnrollRun`).
     if (!started) enrolling.delete(hostId)
   }
+}
+
+/**
+ * Install the microphone stand-in on a host in a tab (`opts.micSetup`), for a
+ * host that wants a password (gotcha 109): the tab runs ssh with the install
+ * body as its command, and the password is typed there. Only the host id is
+ * read from the request; the argv is main's (`micSetupTabCommand`), from the
+ * host settings holds. It goes through pty.ts's enrollment path (`opts.enroll`
+ * with this command) so it is a tab like "Add key to …": no password scan, no
+ * transcript, never listed for the phone, never restored. Nothing is proven
+ * after it: the tab shows what the far side printed, and the renderer's card
+ * reads the exit code.
+ */
+async function startMicSetupSession(requested: LaunchOptions): Promise<StartResult> {
+  if (!ptys) throw new Error('Window is not ready')
+  const hostId = requested.micSetup?.hostId
+  if (typeof hostId !== 'string' || !hostId) throw new Error('No host was named.')
+  const host = getSettings().hosts.find((h) => h.id === hostId)
+  if (!host) throw new Error('That host is no longer in Settings.')
+  const command = micSetupTabCommand(host)
+  if (!command) throw new Error('Stoke will not hand this alias to ssh. Set the microphone up by hand.')
+  const cols = typeof requested.cols === 'number' && Number.isFinite(requested.cols) ? requested.cols : 120
+  const rows = typeof requested.rows === 'number' && Number.isFinite(requested.rows) ? requested.rows : 30
+  return ptys.start(
+    { cwd: '', permissionMode: 'default', model: '', effort: 'default', cols, rows, enroll: { hostId: host.id } },
+    null,
+    null,
+    () => null,
+    getSettings().providers,
+    null,
+    command
+  )
 }
 
 /**
@@ -3337,6 +3416,8 @@ function createWindow(): void {
       // Whichever — only the probe knows whether it worked.
       const run = enrollRuns.exit(ptyId)
       if (run) void finishEnrollRun(run, code, signal)
+      // A tab that lent the microphone: its listener and folder go with it.
+      void micTunnels?.release(ptyId)
       // An account's sign-in tab: see who it signed in as, and release it.
       const login = accountLoginRuns.get(ptyId)
       if (login) {
@@ -5861,6 +5942,28 @@ function registerIpc(): void {
    * the provider, key or address takes effect on the next dictation instead of
    * the next launch.
    */
+  // The lent microphone (micTunnel.ts): key and pane reports, frames, Stop, and the one-shot install.
+  registerMicTunnelIpc(ipcMain, micTunnelsFor(), {
+    key: CH.micTunnelKey,
+    pane: CH.micTunnelPane,
+    frame: CH.micTunnelFrame,
+    stop: CH.micTunnelStop
+  })
+  ipcMain.handle(CH.micTunnelInstall, async (_e, hostId: unknown) => {
+    if (typeof hostId !== 'string') return { ok: false, needsLogin: false, message: 'No host was named.' }
+    const host = getSettings().hosts.find((h) => h.id === hostId)
+    if (!host) return { ok: false, needsLogin: false, message: 'That host is no longer in Settings.' }
+    if (micInstalling.has(hostId)) return { ok: false, needsLogin: false, message: 'Stoke is already setting the microphone up there.' }
+    micInstalling.add(hostId)
+    try {
+      return await installMicStandIn(host)
+    } catch (err) {
+      return { ok: false, needsLogin: false, message: (err as Error).message }
+    } finally {
+      micInstalling.delete(hostId)
+    }
+  })
+
   ipcMain.handle(CH.transcribe, async (_e, wav: ArrayBuffer) => {
     // A hosted provider's key is sealed: read it only once the store has opened.
     await secretsSettled()
@@ -6246,6 +6349,8 @@ if (!app.requestSingleInstanceLock(launchRequest ? { stokeCli: launchRequest } :
      */
     releaseHeldLocks()
     ptys?.shutdown()
+    // Every lent-microphone listener and its private folder.
+    void micTunnels?.closeAll()
     // Their exits may never be delivered now: the folders go at once, the
     // rest on the next boot's sweep (privateChat.ts `quitSync`).
     privateChats?.quitSync()

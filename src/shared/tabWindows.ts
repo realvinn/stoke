@@ -63,6 +63,14 @@ export interface Tab {
    */
   enrollHostId?: string
   /**
+   * Set with `enrollHostId` on a "Set up microphone on …" tab: it installs the
+   * lent microphone's stand-in `arecord` there (LaunchOptions.micSetup), so it
+   * is every bit the utility tab an "Add key" tab is (never restored, no
+   * images, no find) but its exit is its own, and Try again runs it again,
+   * never a key install (`restartPlan`'s `mic-setup`).
+   */
+  micSetup?: boolean
+  /**
    * The account this tab's session runs on (shared/accounts.ts): an account
    * id, or `'default'` for the agent's own sign-in. Main's answer
    * (`StartResult.accountId`), never the renderer's guess, so a relaunch, a

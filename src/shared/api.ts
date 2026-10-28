@@ -49,6 +49,7 @@ import type { LaunchPreflightRequest, LaunchPreflightResult } from './launchPref
 import type { SshFilesRequest, SshFilesListResult, SshFilesSaveResult, SshFilesProgress } from './sshFiles'
 import type { SecretStoreStatus } from './secrets'
 import type { SecretsOpenState } from './secretsOpen'
+import type { MicCloseEvent, MicInstallResult, MicKey, MicOpenEvent, MicPane } from './micTunnel'
 import type { SetupPreview } from './setupFile'
 import type { HubLocalKeyView, HubResult, HubVerifyResult, HubView } from './hub/client'
 import type { AttachAnswer, HubRemoteView, RemoteChatGrantView, RemoteChatOpen, RemoteChatsResult, RemoteTabFrame } from './hub/remote'
@@ -1271,6 +1272,24 @@ export interface StokeApi {
      * when the clip held no speech.
      */
     transcribe(wav: ArrayBuffer): Promise<{ ok: true; text: string } | { ok: false; error: string }>
+  }
+
+  /**
+   * The lent microphone (shared/micTunnel.ts). The renderer reports what main's
+   * gate needs and nothing else — keys in a lending tab, that tab's pane state —
+   * opens the microphone only when main says a connection was admitted, and
+   * sends 20 ms PCM frames until main says it closed.
+   */
+  micTunnel: {
+    key(ptyId: string, kind: MicKey): void
+    pane(ptyId: string, pane: MicPane): void
+    /** One 20 ms frame of 16 kHz signed 16-bit little-endian mono, as an ArrayBuffer. */
+    frame(streamId: string, pcm: ArrayBuffer): void
+    stop(streamId: string, reason: 'stop' | 'failed'): void
+    onOpen(cb: (e: MicOpenEvent) => void): () => void
+    onClose(cb: (e: MicCloseEvent) => void): () => void
+    /** Install the stand-in over a one-shot key-login ssh; `needsLogin` asks for the tab. */
+    install(hostId: string): Promise<MicInstallResult>
   }
 
   clipboard: {

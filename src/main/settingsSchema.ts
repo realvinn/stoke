@@ -435,6 +435,9 @@ export function hydrateSettings(raw: unknown): Settings {
               // A refusal, so only the literal turns it on: a truthy leftover
               // must not silently stop images reaching a machine.
               noUploads: h.noUploads === true,
+              // Lending the microphone streams this computer's audio to a
+              // machine: only the literal turns it on, like `worklog`.
+              micTunnel: h.micTunnel === true,
               downloadFolder: sshDownloadFolder(h.downloadFolder),
               persist: h.persist === 'tmux' ? ('tmux' as const) : ('off' as const)
             }

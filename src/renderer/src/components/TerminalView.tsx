@@ -50,6 +50,8 @@ import { ContextMenu } from './ContextMenu'
 import { TerminalFind } from './TerminalFind'
 import { useSshImages } from './ImageSendStrip'
 import { useDictation } from './Dictation'
+import { useMicTunnel } from './MicTunnel'
+import { micOwnsSpace } from '@shared/micTunnel'
 import { TerminalStallOverlay, useTerminalStall } from './TerminalStallOverlay'
 import { schemeProbe } from '@shared/terminalStall'
 
@@ -277,6 +279,14 @@ export function TerminalView({
        * would take a feature away on a read error.
        */
       refusal: async () => {
+        /*
+         * A tab that lends the microphone gives Space to the far claude's
+         * /voice (`spaceOwner`'s third argument, gotcha 79): Stoke's dictation
+         * would take the very repeats its hold detection reads.
+         */
+        if (spaceOwner(tab, false, micLentRef.current) === 'cli') {
+          return micOwnsSpace(host ? host.label.trim() || host.alias.trim() : 'this machine')
+        }
         const state = await window.stoke.audio.voiceState().catch(() => null)
         return state && spaceOwner(tab, state.claudeVoice) === 'cli' ? CLI_OWNS_SPACE : null
       },
@@ -317,6 +327,24 @@ export function TerminalView({
         return null
       }
     }
+  })
+  /*
+   * The lent microphone (MicTunnel.tsx, shared/micTunnel.ts): an SSH tab whose
+   * host has "Lend this computer's microphone" on. It only reports keys and the
+   * pane's state to main, and opens the microphone when main says a connection
+   * from the far `arecord` was admitted. Never an "Add key" or setup tab.
+   */
+  const micLent = tab.kind === 'session' && !!tab.hostId && !tab.enrollHostId && host?.micTunnel === true
+  const micLentRef = useRef(micLent)
+  micLentRef.current = micLent
+  const mic = useMicTunnel({
+    ptyId: tab.ptyId,
+    lending: micLent && tab.status === 'running',
+    host,
+    hostRef,
+    active,
+    dictating: dictation.on,
+    voice
   })
   /** Whether a file drag is currently over this pane, for the drop ring. */
   const [dropping, setDropping] = useState(false)
@@ -1345,7 +1373,7 @@ export function TerminalView({
    * error's ssh line wraps, a thumbnail arrives or kept words appear.
    */
   // Which floats are drawn: the dictation strip's variants change its height.
-  const floatsKey = `${images.strip ? 1 : 0}${tab.status === 'exited' ? 1 : 0}${dictation.stripKey}`
+  const floatsKey = `${images.strip ? 1 : 0}${tab.status === 'exited' ? 1 : 0}${mic.strip ? 3 : dictation.stripKey}`
   useLayoutEffect(() => {
     const pane = hostRef.current?.parentElement
     if (!pane || !findOpen) return
@@ -1733,8 +1761,30 @@ export function TerminalView({
         />
       )}
       {images.strip}
-      {dictation.strip}
-      {tab.status === 'exited' && tab.enrollHostId ? (
+      {/* The lent microphone's "Mic → host" takes the dictation strip's corner while it shows. */}
+      {mic.strip ?? dictation.strip}
+      {tab.status === 'exited' && tab.micSetup ? (
+        /*
+         * The microphone's setup tab: its exit is the install's. What it
+         * printed above says where the stand-in went and whether a login
+         * shell there finds it; nothing more is proven here.
+         */
+        <div className="term-exit" role="status">
+          <span>
+            {tab.exitCode === 0
+              ? 'Installed. Fix anything a “Stoke:” line above names, then reconnect this machine’s tabs and use /voice there.'
+              : `The microphone was not set up${tab.exitCode !== null ? ` (exit ${tab.exitCode})` : ''}. The reason is above.`}
+          </span>
+          {tab.exitCode !== 0 && (
+            <button className="btn" data-variant="primary" onClick={() => onRestart(tab)}>
+              Try again
+            </button>
+          )}
+          <button className="btn" data-variant={tab.exitCode === 0 ? 'primary' : 'ghost'} onClick={() => onClose(tab.id)}>
+            Close tab
+          </button>
+        </div>
+      ) : tab.status === 'exited' && tab.enrollHostId ? (
         /*
          * An "Add key to …" tab's exit is ssh-copy-id finishing, not a session
          * ending. The verdict is main's probe, a moment later, on the strip

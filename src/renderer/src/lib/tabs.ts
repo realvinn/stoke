@@ -468,6 +468,7 @@ export type RestartPlan =
    * so there is nothing to start again — and its folder is already gone.
    */
   | { kind: 'private' }
+  | { kind: 'mic-setup'; hostId: string }
   | { kind: 'impossible'; reason: string }
 
 export function restartPlan(
@@ -478,6 +479,7 @@ export function restartPlan(
     cliId?: CodingCliId
     installing?: CodingCliId[]
     enrollHostId?: string
+    micSetup?: boolean
     remoteSession?: string
     accountId?: string
     accountLogin?: string
@@ -509,6 +511,16 @@ export function restartPlan(
    * `hostId` too: read as a host tab, "Try again" would open a plain session on
    * the machine whose key it failed to install, asking for the same password.
    */
+  /*
+   * A "Set up microphone on …" tab carries `enrollHostId` too (it is the same
+   * kind of utility tab): read as an enrollment, Try again would start a KEY
+   * install on a machine the person only asked to lend a microphone to.
+   */
+  if (tab.enrollHostId && tab.micSetup) {
+    return hostIds.includes(tab.enrollHostId)
+      ? { kind: 'mic-setup', hostId: tab.enrollHostId }
+      : { kind: 'impossible', reason: 'That host is no longer in Settings, so there is nothing to set up.' }
+  }
   if (tab.enrollHostId) {
     return hostIds.includes(tab.enrollHostId)
       ? { kind: 'enroll', hostId: tab.enrollHostId }

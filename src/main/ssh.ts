@@ -29,6 +29,7 @@ import type { RemoteSessionInfo, SshHost } from '@shared/types'
 // resolves no aliases. A type-only import would be erased and could use either.
 import { buildRemoteInstallCommand, isEnrollableAlias } from '../shared/sshAuth.ts'
 import { MAX_FILE_BYTES, isSafeFarName } from '../shared/imageUpload.ts'
+import { isMicForwardOption } from '../shared/micTunnel.ts'
 import {
   MANAGED_TMUX_SOCKET,
   hostPersists,
@@ -418,7 +419,7 @@ export function preferredSshArgs(host: SshHost): string[] {
   return ['-o', `Hostname=${ip}`]
 }
 
-export function buildSshArgs(host: SshHost, remoteCommand?: string): string[] {
+export function buildSshArgs(host: SshHost, remoteCommand?: string, extra: { micForward?: string | null } = {}): string[] {
   const alias = host.alias.trim()
   const command = (remoteCommand ?? host.command).trim()
   const args: string[] = preferredSshArgs(host)
@@ -455,6 +456,20 @@ export function buildSshArgs(host: SshHost, remoteCommand?: string): string[] {
    * overridden for these tabs only — command-line options win over the file.
    */
   args.push('-o', `ServerAliveInterval=${SERVER_ALIVE_INTERVAL_S}`, '-o', `ServerAliveCountMax=${SERVER_ALIVE_COUNT_MAX}`)
+
+  /*
+   * 6. **The lent microphone, as a local option too** (shared/micTunnel.ts).
+   * A host with "Lend this computer's microphone" on forwards a far Unix
+   * socket, `/tmp/stoke-mic.<token>.sock`, to main's listener for THIS
+   * connection, minted fresh for it (`MicTunnels.prepare`). It is an option
+   * before the destination, never a word of the remote command (gotcha 19),
+   * and spelled `-o RemoteForward=` rather than `-R` because `prepareSshRoute`
+   * skips `-o`'s value and would read a `-R`'s as the host. No
+   * `ExitOnForwardFailure`: a server that forbids stream forwarding prints
+   * ssh's own warning in the tab and still connects. Anything that is not the
+   * exact shape is left out, never passed on.
+   */
+  if (extra.micForward && isMicForwardOption(extra.micForward)) args.push('-o', extra.micForward)
 
   if (command) args.push('-t')
   if (alias.startsWith('-')) args.push('--')
@@ -628,9 +643,11 @@ export const NO_TMUX_NOTICE =
  */
 export function sshHostArgs(
   host: SshHost,
-  remoteSession?: string | null
+  remoteSession?: string | null,
+  /** This connection's lent-microphone forward (`micForwardOption`), or null. */
+  micForward: string | null = null
 ): { ok: true; args: string[] } | { ok: false; message: string } {
-  if (!hostPersists(host)) return { ok: true, args: buildSshArgs(host) }
+  if (!hostPersists(host)) return { ok: true, args: buildSshArgs(host, undefined, { micForward }) }
   const refusal = persistRefusal(host.command)
   if (refusal) return { ok: false, message: refusal }
   if (!isSafeRemoteSessionName(remoteSession)) {
@@ -638,7 +655,7 @@ export function sshHostArgs(
   }
   const command = buildPersistentCommand(host, remoteSession)
   if (!command) return { ok: false, message: 'Stoke could not build the kept-session command for this machine.' }
-  return { ok: true, args: buildSshArgs(host, command) }
+  return { ok: true, args: buildSshArgs(host, command, { micForward }) }
 }
 
 /**
@@ -790,6 +807,50 @@ export function buildUploadArgs(host: SshHost, name: string, size: number): stri
     alias,
     `sh -c '${body}'`
   ]
+}
+
+/**
+ * The argv that installs the microphone stand-in on `host` (`micSetupBody`,
+ * shared/micTunnel.ts), or null for a body or alias that is not provably safe.
+ *
+ * `batch` is the one-shot run for a host whose key login works: BatchMode, so
+ * a host that wants a password answers "Permission denied" in seconds and the
+ * caller offers the tab instead. `tab` is that tab's argv (gotcha 109): ssh
+ * asks for the password on the tab's own terminal, once
+ * (`NumberOfPasswordPrompts=1`, so a typo fails at once rather than three
+ * times), and `-o EscapeChar=none`'s twin `-e none` keeps a `~` the user types
+ * from being an escape (gotcha 29).
+ *
+ * Both take the upload's options (`buildUploadArgs`, gotcha 146), because
+ * this is a file copy too, not a session: `-T` (no pty for the body),
+ * `RemoteCommand=none` (a config `RemoteCommand` refuses a command line),
+ * `ClearAllForwardings=yes` (a host's `LocalForward` held by its open tab, or
+ * this very microphone forward, must not fail it), `PermitLocalCommand=no`,
+ * `ForwardAgent=no`, `-x`. ssh still reads a password from its tty with `-T`.
+ */
+export function buildMicSetupArgs(host: SshHost, body: string, mode: 'batch' | 'tab'): string[] | null {
+  const alias = host.alias.trim()
+  if (!alias || alias.startsWith('-')) return null
+  if (!body || body.includes("'")) return null
+  const common = [
+    '-T',
+    '-x',
+    '-o',
+    'RemoteCommand=none',
+    '-o',
+    'ClearAllForwardings=yes',
+    '-o',
+    'PermitLocalCommand=no',
+    '-o',
+    'ForwardAgent=no',
+    '-e',
+    'none'
+  ]
+  const auth =
+    mode === 'batch'
+      ? ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', '-o', 'ControlMaster=no']
+      : ['-o', 'ConnectTimeout=20', '-o', 'NumberOfPasswordPrompts=1', '-o', 'ControlMaster=no']
+  return [...(mode === 'batch' ? preferredSshArgs(host) : []), ...common, ...auth, alias, `sh -c '${body}'`]
 }
 
 /**

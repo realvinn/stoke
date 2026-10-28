@@ -467,6 +467,17 @@ const api: StokeApi = {
     transcribe: (wav: ArrayBuffer) => ipcRenderer.invoke(CH.transcribe, wav)
   },
 
+  // The lent microphone: reports in, frames in, open/close out (main/micTunnel.ts checks every argument).
+  micTunnel: {
+    key: (ptyId, kind) => ipcRenderer.send(CH.micTunnelKey, ptyId, kind),
+    pane: (ptyId, pane) => ipcRenderer.send(CH.micTunnelPane, ptyId, pane),
+    frame: (streamId, pcm) => ipcRenderer.send(CH.micTunnelFrame, streamId, pcm),
+    stop: (streamId, reason) => ipcRenderer.send(CH.micTunnelStop, streamId, reason),
+    onOpen: (cb) => on<[Parameters<typeof cb>[0]]>(CH.micTunnelOpen, cb),
+    onClose: (cb) => on<[Parameters<typeof cb>[0]]>(CH.micTunnelClose, cb),
+    install: (hostId) => ipcRenderer.invoke(CH.micTunnelInstall, hostId)
+  },
+
   clipboard: {
     readSync: () => ipcRenderer.sendSync(CH.clipboardRead) as ClipboardPeek,
     filePathsSync: () => ipcRenderer.sendSync(CH.clipboardFilePaths) as { paths: string[]; count: number },

@@ -613,6 +613,22 @@ export const CH = {
    */
   voiceTest: 'audio:voiceTest',
 
+  // the lent microphone (shared/micTunnel.ts, main/micTunnel.ts)
+  /** renderer -> main: a key in a tab that lends the microphone (`MicKey`; bare modifiers never sent). */
+  micTunnelKey: 'mic-tunnel:key',
+  /** renderer -> main: that tab's pane state (`MicPane`: in front, focused, dictating). */
+  micTunnelPane: 'mic-tunnel:pane',
+  /** renderer -> main: one 20 ms frame of 16 kHz S16LE audio for an open stream. */
+  micTunnelFrame: 'mic-tunnel:frame',
+  /** renderer -> main: Stop pressed, or the microphone could not be opened. */
+  micTunnelStop: 'mic-tunnel:stop',
+  /** main -> renderer: a connection was admitted; open the microphone for it (`MicOpenEvent`). */
+  micTunnelOpen: 'mic-tunnel:open',
+  /** main -> renderer: the stream ended; close the microphone (`MicCloseEvent`). */
+  micTunnelClose: 'mic-tunnel:close',
+  /** renderer -> main: install the stand-in on a host over BatchMode ssh (`MicInstallResult`). */
+  micTunnelInstall: 'mic-tunnel:install',
+
   // wallpaper
   /** Pick an image, copy it under userData, and set `settings.wallpaper.path`. */
   wallpaperPick: 'wallpaper:pick',
