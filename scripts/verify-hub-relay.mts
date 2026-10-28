@@ -1025,6 +1025,54 @@ hostA.sessions = [{ ptyId: 'pty-a1', project: 'stoke', title: 'Stub session', st
   await tick(30)
   check('a relay from a device the chain does not hold as active is not even opened', [relays.get(xRelay)?.host.readyState, last(hostA).guests.some((g) => g.device === X.id), last(hostA).asks.length], [0, false, 0])
 
+  // The hub names a relay still waiting for its host again whenever that host's presence reconnects
+  // (hub/app.ts `presenceOpened`), so a host can hear of one relay twice: while it is still opening
+  // it, or once it is in. Neither may open a second socket, or both channels answer the guest's hs1.
+  {
+    const dupRelay = idFromBytes('relay', randomU8(15))
+    const dgs = new FakeSocket()
+    const dhs = new FakeSocket()
+    dgs.peer = dhs
+    dhs.peer = dgs
+    relays.set(dupRelay, { guest: dgs, host: dhs, hostDevice: A.id, guestDevice: B.id })
+    let opens = 0
+    const realOpen = dhs.open.bind(dhs)
+    dhs.open = () => {
+      opens++
+      realOpen()
+    }
+    let dupOpen = false
+    let dupClosed: string | null = null
+    const dup = new RelayChannel({
+      role: 'guest',
+      relay: dupRelay,
+      account: ACCOUNT,
+      me: { id: B.id, signPriv: B.keys.signPriv },
+      peer: A.id,
+      peerKey: keyOf,
+      io: { send: (x) => dgs.send(x), close: (c) => dgs.close(c) },
+      events: { onOpen: () => (dupOpen = true), onFrame: () => {}, onClose: (r) => (dupClosed = r) }
+    })
+    dgs.on('message', (data: unknown, binary: boolean) => dup.receive(binary ? new Uint8Array(data as Buffer) : String(data), binary))
+    dgs.open()
+    const first = hostA.remote.onRelay(dupRelay, B.id)
+    const whileOpening = hostA.remote.onRelay(dupRelay, B.id)
+    dup.start()
+    await Promise.all([first, whileOpening])
+    await until(() => dupOpen)
+    await hostA.remote.onRelay(dupRelay, B.id)
+    await tick(30)
+    const handlers = (dhs as unknown as { handlers: Record<string, unknown[]> }).handlers
+    const hostedOf = (m: Machine): Map<string, unknown> => (m.remote as unknown as { hosted: Map<string, unknown> }).hosted
+    check(
+      'a relay named twice while the host opens it, and again once it is in: one socket opened, one channel on it, and the guest’s handshake whole',
+      [opens, handlers.message?.length ?? 0, dupOpen, dupClosed, hostedOf(hostA).has(dupRelay)],
+      [1, 1, true, null, true]
+    )
+    dup.close('done')
+    ok('and it ends as one relay', !!(await until(() => !hostedOf(hostA).has(dupRelay))))
+  }
+
   hostA.remote.reset()
   guestB.remote.reset()
 }

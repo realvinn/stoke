@@ -111,7 +111,7 @@ import {
 } from '../src/main/hub/crypto.ts'
 import { HubLog, LogThrottle } from './log.ts'
 import { clientKey, InFlight, RateBuckets, Semaphore } from './limits.ts'
-import { Presence, RelayBroker, type PresenceConn } from './sockets.ts'
+import { hubEndedWhy, markHubEnded, Presence, RelayBroker, type PresenceConn } from './sockets.ts'
 import { HubStore, type AccountRow, type ItemUsageRow, type PairRow, type Role, type SessionRow } from './store.ts'
 
 /**
@@ -139,6 +139,12 @@ export interface HubConfig {
   rate?: { capacity: number; refillPerSec: number }
   /** How often sockets are pinged (default `HUB_LIMITS.pingMs`); a suite sets it long and drives `ping()` itself. */
   pingMs?: number
+  /**
+   * How often the sweep runs (default `SWEEP_MS`); a suite on a fake clock sets it long and drives `tick()` itself,
+   * or a run slower than a minute sweeps by the real timer at whatever hour the fake clock has reached
+   * (CLAUDE.md gotcha 174).
+   */
+  sweepMs?: number
   /**
    * Bytes of items each account may keep unless the operator gave it its own
    * figure (`stoke-hub storage <email> --cap`). Default `DEFAULT_STORAGE_CAP_BYTES`
@@ -597,7 +603,7 @@ class HubServer {
       this.servers.push({ listener, server })
       this.log.info('listening', { listener, host: at.host, port, mount: this.config.mount || '/', refusesAll: listener === 'edge' ? !secretOk : undefined })
     }
-    this.timers.push(setInterval(() => this.tick(), SWEEP_MS))
+    this.timers.push(setInterval(() => this.tick(), this.config.sweepMs ?? SWEEP_MS))
     this.timers.push(setInterval(() => this.pingAll(), this.config.pingMs ?? HUB_LIMITS.pingMs))
     for (const t of this.timers) t.unref()
     this.log.info('started', { version: HUB_SERVER_VERSION, protocol: HUB_PROTOCOL, accounts: this.store.accountCount(), storageCap: this.storageCap })
@@ -658,6 +664,7 @@ class HubServer {
     for (const ws of [...this.wssPresence.clients, ...this.wssRelay.clients]) {
       if (ws.isPaused) continue
       if (this.alive.get(ws) === false) {
+        markHubEnded(ws, 'no pong')
         ws.terminate()
         continue
       }
@@ -667,6 +674,7 @@ class HubServer {
       try {
         ws.ping(payload)
       } catch {
+        markHubEnded(ws, 'ping failed')
         ws.terminate()
       }
     }
@@ -905,7 +913,7 @@ class HubServer {
       const auth = ticket ? this.takeBrowserTicket(ticket, pathV1.split('?')[0]) : this.authenticate(route.auth, 'GET', pathV1, headers, Buffer.alloc(0)) as Authed
       ctx.auth = auth
       if (match.name === 'wsPresence') {
-        this.wssPresence.handleUpgrade(req, socket, head, (ws) => this.presenceOpened(ws, auth))
+        this.wssPresence.handleUpgrade(req, socket, head, (ws) => this.presenceOpened(ws, auth, ctx.rid))
       } else {
         const relay = this.relays.get(auth.account.id, match.params.relay)
         if (!relay) throw new HubError('not-found', 'That relay is not open (it expired, closed, or is not yours).')
@@ -926,31 +934,39 @@ class HubServer {
     }
   }
 
-  private presenceOpened(ws: WebSocket, auth: Authed): void {
+  /** `rid` is the upgrade's request id: its `request` line (route wsPresence, 101) is this socket's open line. */
+  private presenceOpened(ws: WebSocket, auth: Authed, rid: string): void {
     const conn: PresenceConn = { ws, account: auth.account.id, device: auth.device, tokenHash: auth.tokenHash, app: '', status: null }
     this.watchAlive(ws)
     this.presence.add(conn)
-    let windowStart = this.now()
+    const openedAt = this.now()
+    let windowStart = openedAt
     let frames = 0
+    let received = 0
+    const refuse = (code: number, why: string): void => {
+      markHubEnded(ws, why)
+      ws.close(code, why)
+    }
     ws.on('message', (data: RawData, isBinary: boolean) => {
       const now = this.now()
+      received++
       if (now - windowStart >= 60_000) {
         windowStart = now
         frames = 0
       }
       if (++frames > PRESENCE_FRAMES_PER_MINUTE) {
-        ws.close(1008, 'too many frames')
+        refuse(1008, 'too many frames')
         return
       }
       if (isBinary) {
-        ws.close(1003, 'presence frames are JSON text')
+        refuse(1003, 'presence frames are JSON text')
         return
       }
       let f: unknown
       try {
         f = JSON.parse(Buffer.isBuffer(data) ? data.toString('utf8') : String(data))
       } catch {
-        ws.close(1007, 'not JSON')
+        refuse(1007, 'not JSON')
         return
       }
       const frame = parsePresenceClientFrame(f)
@@ -968,8 +984,23 @@ class HubServer {
         this.presence.broadcast(conn.account, { t: 'status', device: conn.device, status: frame.status }, conn.device)
       }
     })
-    ws.on('close', () => {
-      if (this.presence.remove(conn)) this.presence.broadcast(conn.account, { t: 'presence', online: this.presence.online(conn.account) })
+    ws.on('close', (code: number, reason: Buffer) => {
+      const current = this.presence.remove(conn)
+      if (current) this.presence.broadcast(conn.account, { t: 'presence', online: this.presence.online(conn.account) })
+      // `code` as ws saw it: 1005 is a close frame with no code, 1006 no close frame at all.
+      const hub = hubEndedWhy(ws)
+      this.log.info('presence closed', {
+        rid,
+        account: conn.account,
+        device: conn.device,
+        app: conn.app || undefined,
+        code,
+        by: hub === null ? 'device' : 'hub',
+        why: hub ?? (reason.toString('utf8').slice(0, 120) || undefined),
+        ms: this.now() - openedAt,
+        frames: received,
+        replaced: current ? undefined : true
+      })
     })
     ws.on('error', () => {})
     const online = this.presence.online(conn.account)
@@ -977,6 +1008,19 @@ class HubServer {
     // What every other device last said about itself, so a newcomer's list fills at once.
     for (const other of this.presence.statuses(conn.account)) {
       if (other.device !== conn.device) this.presence.send(conn.account, conn.device, { t: 'status', device: other.device, status: other.status })
+    }
+    /*
+     * A host is told of a relay once (`relayCreate`), over the presence socket
+     * it had then. If that socket was dropping, or this device's presence was
+     * down, the notice went nowhere: the host never joined and the guest sat on
+     * "Connecting…" until "the other end never joined". So every relay still
+     * waiting for this device as its host is named again. A host that already
+     * has one open skips the repeat (HubRemote.onRelay keeps one per relay id),
+     * and the hub takes one socket per end (`canJoin`). CLAUDE.md gotcha 173.
+     */
+    for (const r of this.relays.waitingFor(conn.account, conn.device)) {
+      this.presence.send(conn.account, conn.device, { t: 'relay', relay: r.id, guest: r.guest })
+      this.log.info('relay notice replayed', { relay: r.id, account: conn.account, guest: r.guest, host: conn.device })
     }
     this.presence.broadcast(conn.account, { t: 'presence', online }, conn.device)
   }
@@ -1490,6 +1534,8 @@ class HubServer {
       // Read inside the transaction, so an operator's `--cap` lands between two requests, never inside one.
       const cap = this.capOf(this.store.accountById(account))
       let usage = usageAt(this.store.itemUsage(account), epoch)
+      // A refusal for room is this put's own result inside a 200, never a top-level error code:
+      // an older client's `isHubErrorBody` would call the hub "not a hub" (CLAUDE.md gotcha 168).
       const full = (id: string, reason: string): ItemPutResult => ({ id, ok: false, error: 'full', reason, storage: { used: usage.used, cap } })
       for (const put of puts) {
         const env = isRecord(put) && isRecord(put.envelope) ? put.envelope : null

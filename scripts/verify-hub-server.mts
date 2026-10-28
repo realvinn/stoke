@@ -70,7 +70,7 @@ import { hubEndpoint } from '../src/shared/hub/edge.ts'
 import { formatRecoverySecret, parseRecoverySecret } from '../src/shared/hub/pairing.ts'
 import { HUB_HEADERS, HUB_LIMITS, readHubResponse } from '../src/shared/hub/protocol.ts'
 import { hs1Problem, RELAY_IDLE_MS, RELAY_MAX_FRAME_BYTES, RELAY_OPEN_TTL_MS, RELAYS_PER_ACCOUNT, type RelayHs1, type RelayHs2, type RelayHs3 } from '../src/shared/hub/relay.ts'
-import { RELAY_HIGH_WATER } from '../hub/sockets.ts'
+import { hubEndedWhy, Presence, PRESENCE_MAX_BUFFERED, RELAY_HIGH_WATER, RelayBroker } from '../hub/sockets.ts'
 import { clientKey } from '../hub/limits.ts'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -353,7 +353,7 @@ async function commitFromChain(d: Dev, epoch: number): Promise<string> {
 
 async function main(): Promise<void> {
   hub = await startHub(
-    { dataDir: join(TMP, 'hub'), mount: '/hub', edge: { host: '127.0.0.1', port: 0 }, lan: { host: '127.0.0.1', port: 0 }, edgeSecret: SECRET, rate: { capacity: 100_000, refillPerSec: 1000 }, pingMs: 60 * 60_000 },
+    { dataDir: join(TMP, 'hub'), mount: '/hub', edge: { host: '127.0.0.1', port: 0 }, lan: { host: '127.0.0.1', port: 0 }, edgeSecret: SECRET, rate: { capacity: 100_000, refillPerSec: 1000 }, pingMs: 60 * 60_000, sweepMs: 60 * 60_000 },
     { now, log: new HubLog((l) => logLines.push(l), { now, level: 'debug' }), announce: (t) => announced.push(t) }
   )
   EDGE = `http://127.0.0.1:${hub.edgePort}/hub`
@@ -1087,6 +1087,11 @@ let liveItemId = ''
     await h.until(() => h.closed, 5000)
     check('a frame over 1 MiB closes the relay: the sender with 1009, the other end too', [g.closed?.code, h.closed !== null], [1009, true])
     ok('and nothing of it reached the host', h.frames.length === 4)
+    {
+      // ws fails the guest's socket (its 'error' event): the guest's doing, never the hub's.
+      const lo = JSON.parse(logLines.find((l) => l.includes('"msg":"relay closed"') && l.includes(`"relay":"${relay}"`)) ?? '{}')
+      check('and the hub’s log names the guest, whose socket failed, as the end that began it', [lo.by, lo.why], ['guest', 'guest socket error'])
+    }
 
     const r2 = (await call('POST', '/v1/relays', { host: A.id }, { dev: C })).body?.relay as string
     const g2 = await mustOpen(`/v1/ws/relay/${r2}`, C, 'guest end')
@@ -1256,6 +1261,11 @@ let liveItemId = ''
     await g5.until(() => g5.closed, 3000)
     clearInterval(beat)
     check('an end that reads nothing is cut at the next round, unsolicited pongs notwithstanding (the relay goes with it)', g5.closed?.reason, 'host left')
+    {
+      // The guest is still told "host left" (above), but the log knows the hub cut it, and which end went silent.
+      const l5 = JSON.parse(logLines.find((l) => l.includes('"msg":"relay closed"') && l.includes(r5)) ?? '{}')
+      check('and the log says the hub cut it, at the end that stopped answering, with the 1006 it saw', [l5.by, l5.noPong, l5.raw, l5.code, l5.why], ['hub', 'host', 1006, 1000, 'host left'])
+    }
     hub.ping()
     await new Promise((r) => setTimeout(r, 400))
     hub.ping()
@@ -1288,6 +1298,170 @@ let liveItemId = ''
     check('a session deleted by another process closes its presence and its relays at the next ping round', [presC2.closed !== null, g8.closed?.reason ?? null, h8.closed !== null], [true, 'session ended', true])
     check('while the other device’s own sockets stay', [presA.closed, presA.ws.readyState], [null, WebSocket.OPEN])
     await login(C, OWNER_EMAIL, OWNER_PW)
+  }
+
+  /* --------------------------- the hub's record of a close, and a host told again */
+  console.log('\nthe hub’s record of each close (who began it, the code it saw, how quiet it was), and a host told again')
+  {
+    const parsed = (msg: string): any[] => logLines.filter((l) => l.includes(`"msg":"${msg}"`)).map((l) => JSON.parse(l))
+    /** The `relay closed` line of one relay, once it is written. */
+    const closeLine = async (relay: string): Promise<any> => {
+      await waitFor(() => parsed('relay closed').some((l) => l.relay === relay), 3000)
+      return parsed('relay closed').find((l) => l.relay === relay) ?? {}
+    }
+    /** The next `presence closed` line of one device, after the `seen` it already had. */
+    const presenceLine = async (d: Dev, seen: number): Promise<any> => {
+      const mine = (): any[] => parsed('presence closed').filter((l) => l.device === d.id)
+      await waitFor(() => mine().length > seen, 3000)
+      return mine()[seen] ?? {}
+    }
+    const presenceCount = (d: Dev): number => parsed('presence closed').filter((l) => l.device === d.id).length
+    const pick = (o: any, keys: string[]): unknown[] => keys.map((k) => (o && k in o ? o[k] : null))
+    const relayTo = async (host: Dev): Promise<string> => (await call('POST', '/v1/relays', { host: host.id }, { dev: C })).body?.relay as string
+    const CLOSE = ['code', 'raw', 'by', 'why', 'quietMs', 'frames', 'fromGuest', 'fromHost']
+
+    // A guest whose connection drops: no close frame, so the hub sees 1006 and may send only 1000.
+    const ra = await relayTo(A)
+    const ga = await mustOpen(`/v1/ws/relay/${ra}`, C, 'guest end')
+    const ha = await mustOpen(`/v1/ws/relay/${ra}`, A, 'host end')
+    clock += 2000 // so its life (9 s) and its quiet (7 s) differ
+    for (let i = 0; i < 3; i++) await sendOn(ga, `from the guest ${i}`, false)
+    await ha.until(() => ha.frames.length >= 3)
+    for (let i = 0; i < 2; i++) await sendOn(ha, `from the host ${i}`, false)
+    await ga.until(() => ga.frames.length >= 2)
+    clock += 7000
+    ga.ws.terminate()
+    await ha.until(() => ha.closed)
+    check('a guest whose connection drops: the host is sent 1000 "guest left", as before', [ha.closed?.code, ha.closed?.reason], [1000, 'guest left'])
+    const la = await closeLine(ra)
+    check('the log keeps the 1006 the hub saw, names the guest, how long the relay had been quiet, and the frames each end sent', pick(la, CLOSE), [1000, 1006, 'guest', 'guest left', 7000, 5, 3, 2])
+    ok('and names no missing end and no ping cut (both had joined, nobody was cut), and its whole life', !('missing' in la) && !('noPong' in la) && la.ms === 9000, JSON.stringify(la))
+
+    // A host that sends a close frame with no code in it: 1005 seen, 1000 sent.
+    const rb = await relayTo(A)
+    const gb = await mustOpen(`/v1/ws/relay/${rb}`, C, 'guest end')
+    const hb = await mustOpen(`/v1/ws/relay/${rb}`, A, 'host end')
+    await sendOn(gb, 'one frame', false)
+    await hb.until(() => hb.frames.length >= 1)
+    hb.ws.close()
+    await gb.until(() => gb.closed)
+    check('a host that closes with no code: the guest is sent 1000 "host left"', [gb.closed?.code, gb.closed?.reason], [1000, 'host left'])
+    check('and the log says 1005 and the host', pick(await closeLine(rb), CLOSE), [1000, 1005, 'host', 'host left', 0, 1, 1, 0])
+
+    // A guest closing on purpose, with a reason: that reason is the why, and the guest began it.
+    const rt = await relayTo(A)
+    const gt = await mustOpen(`/v1/ws/relay/${rt}`, C, 'guest end')
+    const ht = await mustOpen(`/v1/ws/relay/${rt}`, A, 'host end')
+    gt.ws.close(1000, 'the tab was closed')
+    await ht.until(() => ht.closed)
+    check('a guest that closes its tab: its own code and reason, and the guest began it', pick(await closeLine(rt), ['code', 'raw', 'by', 'why']), [1000, 1000, 'guest', 'the tab was closed'])
+
+    // The hub's own timer.
+    const rc = await relayTo(A)
+    const gc = await mustOpen(`/v1/ws/relay/${rc}`, C, 'guest end')
+    const hc = await mustOpen(`/v1/ws/relay/${rc}`, A, 'host end')
+    await sendOn(hc, 'from the host', false)
+    await gc.until(() => gc.frames.length >= 1)
+    clock += RELAY_IDLE_MS
+    hub.tick()
+    await gc.until(() => gc.closed)
+    await hc.until(() => hc.closed)
+    check('a relay the hub closes as idle is the hub’s close, quiet the whole ten minutes', pick(await closeLine(rc), CLOSE), [1000, 1000, 'hub', 'idle', RELAY_IDLE_MS, 1, 0, 1])
+
+    // The presence socket, closed every way there is.
+    const pc0 = presenceCount(C)
+    const pC = await mustOpen('/v1/ws/presence', C, 'presence for the close lines')
+    await sendOn(pC, JSON.stringify({ t: 'hello', protocol: 1, app: '1.0.0-test' }), false)
+    await sendOn(pC, JSON.stringify({ t: 'ping' }), false)
+    await pC.frame((f) => f.t === 'pong')
+    clock += 5000
+    pC.ws.close(4000, 'going away now')
+    const lp = await presenceLine(C, pc0)
+    check('a presence socket the device closes: its code, its reason, how long it lived, how many frames it sent, its app', pick(lp, ['code', 'by', 'why', 'ms', 'frames', 'app']), [4000, 'device', 'going away now', 5000, 2, '1.0.0-test'])
+    const opened = parsed('request').find((l) => l.rid === lp.rid)
+    check('and its rid is the request line that opened it (route wsPresence, 101, the same device)', pick(opened, ['route', 'status', 'device']), ['wsPresence', 101, C.id])
+    ok('the close line carries no token, key or status: only the fields above', Object.keys(lp).every((k) => ['t', 'level', 'msg', 'rid', 'account', 'device', 'app', 'code', 'by', 'why', 'ms', 'frames', 'replaced'].includes(k)), JSON.stringify(Object.keys(lp)))
+    const pC2 = await mustOpen('/v1/ws/presence', C, 'presence again')
+    pC2.ws.terminate()
+    check('a presence connection that drops: 1006, the device’s end', pick(await presenceLine(C, pc0 + 1), ['code', 'by', 'why', 'replaced']), [1006, 'device', null, null])
+    const pC3 = await mustOpen('/v1/ws/presence', C, 'presence again')
+    const pC4 = await mustOpen('/v1/ws/presence', C, 'and a second one from the same device')
+    await pC3.until(() => pC3.closed)
+    check('a presence socket a newer one replaced: the hub’s close, and says so', pick(await presenceLine(C, pc0 + 2), ['code', 'by', 'why', 'replaced']), [4001, 'hub', 'replaced', true])
+    pC4.ws.pause() // reads nothing, so answers no ping
+    hub.ping()
+    await new Promise((r) => setTimeout(r, 400))
+    hub.ping()
+    await pC4.until(() => pC4.closed, 3000)
+    check('a presence socket the ping round cut: the hub’s close, "no pong"', pick(await presenceLine(C, pc0 + 3), ['code', 'by', 'why']), [1006, 'hub', 'no pong'])
+    const ended = parsed('presence closed').find((l) => l.device === C.id && l.why === 'your hub session ended')
+    check('and the one a deleted session closed (above): the hub’s, with its reason', pick(ended, ['by', 'code']), ['hub', 1000])
+    pC4.ws.resume()
+
+    // A host told again. B is the host: it must be online for a relay to be asked of it.
+    await login(B, OWNER_EMAIL, OWNER_PW)
+    const pb0 = presenceCount(B)
+    const pB1 = await mustOpen('/v1/ws/presence', B, 'the host opens presence')
+    const rp1 = await relayTo(B) // the guest's end joins, the host's does not: waiting for B
+    ok('the host is told at the request', !!(await pB1.frame((f) => f.t === 'relay' && f.relay === rp1)))
+    const gp1 = await mustOpen(`/v1/ws/relay/${rp1}`, C, 'guest end')
+    const rp2 = await relayTo(B) // both ends in: nothing to tell
+    const gp2 = await mustOpen(`/v1/ws/relay/${rp2}`, C, 'guest end')
+    const hp2 = await mustOpen(`/v1/ws/relay/${rp2}`, B, 'host end')
+    const rp3 = await relayTo(B) // neither end in: the guest gave up on it
+    const rq = await relayTo(B) // only the host's end in
+    const hq = await mustOpen(`/v1/ws/relay/${rq}`, B, 'host end')
+    const rpA = await relayTo(A) // waiting for ANOTHER host
+    const gpA = await mustOpen(`/v1/ws/relay/${rpA}`, C, 'guest end')
+    pB1.ws.terminate()
+    await presenceLine(B, pb0)
+    const pB2 = await mustOpen('/v1/ws/presence', B, 'the host’s presence reconnects')
+    await pB2.frame((f) => f.t === 'welcome')
+    await new Promise((r) => setTimeout(r, 300))
+    const kinds = pB2.json().map((f) => f?.t)
+    const told = pB2.json().filter((f) => f?.t === 'relay')
+    check('on reconnecting, the host is told again of the one relay still waiting for it, by its guest', told.map((f) => [f.relay, f.guest]), [[rp1, C.id]])
+    ok('after its welcome', kinds.indexOf('welcome') >= 0 && kinds.indexOf('welcome') < kinds.indexOf('relay'), JSON.stringify(kinds))
+    ok('never of a relay it joined, one no guest is in, or another host’s', !told.some((f) => [rp2, rp3, rq, rpA].includes(f.relay)))
+    check('the hub writes what it replayed', pick(parsed('relay notice replayed').find((l) => l.relay === rp1), ['guest', 'host']), [C.id, B.id])
+    const hp1 = await mustOpen(`/v1/ws/relay/${rp1}`, B, 'the host joins the relay it was told of again')
+    await sendOn(gp1, 'across, after the replay', false)
+    check('and the relay works: the guest’s frame reaches it', (await hp1.until(() => hp1.frames[0]))?.data.toString('utf8'), 'across, after the replay')
+    const rp4 = await relayTo(B) // waiting, but about to expire
+    const gp4 = await mustOpen(`/v1/ws/relay/${rp4}`, C, 'guest end')
+    clock += RELAY_OPEN_TTL_MS // past every opening relay's deadline, before the sweep runs
+    pB2.ws.terminate()
+    await presenceLine(B, pb0 + 1)
+    const pB3 = await mustOpen('/v1/ws/presence', B, 'the host’s presence reconnects again')
+    await pB3.frame((f) => f.t === 'welcome')
+    await new Promise((r) => setTimeout(r, 300))
+    check('a relay past its deadline is not replayed, nor one the host has since joined', pB3.json().filter((f) => f?.t === 'relay').map((f) => f.relay), [])
+    hub.tick()
+    await gp4.until(() => gp4.closed)
+    await gpA.until(() => gpA.closed)
+    await hq.until(() => hq.closed)
+    const NJ = ['why', 'by', 'missing', 'code', 'raw']
+    check('"never joined" names the end that never came: the host', pick(await closeLine(rp4), NJ), ['the other end never joined', 'hub', 'host', 1000, 1000])
+    check('the guest', pick(await closeLine(rq), NJ), ['the other end never joined', 'hub', 'guest', 1000, 1000])
+    check('or both', pick(await closeLine(rp3), NJ), ['the other end never joined', 'hub', 'both', 1000, 1000])
+    check('whichever host it waited for', pick(await closeLine(rpA), NJ), ['the other end never joined', 'hub', 'host', 1000, 1000])
+    gp1.ws.close(1000, 'done')
+    gp2.ws.close(1000, 'done')
+    await hp1.until(() => hp1.closed)
+    await hp2.until(() => hp2.closed)
+    pB3.ws.close()
+    await presenceLine(B, pb0 + 2)
+  }
+  {
+    // A frame the hub refuses on a presence socket is the hub's close (`refuse` marks it), not the device's.
+    const mine = (): any[] => logLines.filter((l) => l.includes('"msg":"presence closed"')).map((l) => JSON.parse(l)).filter((l) => l.device === C.id)
+    const before = mine().length
+    const pR = await mustOpen('/v1/ws/presence', C, 'presence that sends a binary frame')
+    pR.ws.send(Buffer.from([1, 2, 3]), { binary: true })
+    await pR.until(() => pR.closed)
+    await waitFor(() => mine().slice(before).some((l) => l.code === 1003), 3000)
+    const lr = mine().slice(before).find((l) => l.code === 1003)
+    check('a presence socket the hub refuses (a binary frame): 1003 to the device, and the log says the hub closed it, and why', [pR.closed?.code, lr?.by, lr?.why], [1003, 'hub', 'presence frames are JSON text'])
   }
 
   /* ---------------------------------------------------- revocation */
@@ -1538,6 +1712,7 @@ let liveItemId = ''
     check('and the owner is told exactly that, against the default cap (no STOKE_HUB_STORAGE_CAP: 25 MiB)', told.body?.storage, { used: Number(mine), cap: DEFAULT_STORAGE_CAP_BYTES })
   }
 
+  await brokerChecks()
   await storageChecks()
 
   /* ---------------------------------------------------- shutdown */
@@ -1647,6 +1822,91 @@ let liveItemId = ''
   await commandChecks()
 }
 
+/* ------------------------------------------------- the broker, faked */
+
+/** What RelayBroker and Presence call on a hub-side `ws` socket, and nothing more. */
+class FakeHubSocket {
+  readonly OPEN = 1
+  readyState = 1
+  bufferedAmount = 0
+  isPaused = false
+  /** When set, every send's callback gets it, on a later turn as a real write's does. */
+  sendFails: Error | null = null
+  closedWith: { code: number; reason: string } | null = null
+  terminated = false
+  private readonly handlers = new Map<string, ((...args: any[]) => void)[]>()
+  on(event: string, fn: (...args: any[]) => void): this {
+    this.handlers.set(event, [...(this.handlers.get(event) ?? []), fn])
+    return this
+  }
+  emit(event: string, ...args: unknown[]): void {
+    for (const fn of this.handlers.get(event) ?? []) fn(...args)
+  }
+  send(_data: unknown, opts?: unknown, cb?: (err?: Error) => void): void {
+    const done = typeof opts === 'function' ? (opts as (err?: Error) => void) : cb
+    setImmediate(() => done?.(this.sendFails ?? undefined))
+  }
+  close(code: number, reason: string): void {
+    this.closedWith = { code, reason }
+    this.readyState = 2
+  }
+  terminate(): void {
+    this.terminated = true
+    this.readyState = 3
+  }
+  pause(): void {
+    this.isPaused = true
+  }
+  resume(): void {
+    this.isPaused = false
+  }
+}
+
+/**
+ * Closes a real socket shows only by chance: a write to an end that dropped while
+ * frames were still going to it (measured over real sockets with an RST: the send's
+ * error callback runs before that socket's close event), and a presence socket the
+ * hub cuts for not reading (1 MiB queued toward it).
+ */
+async function brokerChecks(): Promise<void> {
+  console.log('\nthe broker’s close lines for closes a real socket shows only by chance (fake sockets)')
+  const lines: string[] = []
+  const t = Date.parse('2026-10-01T12:00:00Z')
+  const broker = new RelayBroker({ now: () => t, log: new HubLog((l) => lines.push(l), { now: () => t }) })
+  const closeLine = (relay: string): any => JSON.parse(lines.find((l) => l.includes('"msg":"relay closed"') && l.includes(`"relay":"${relay}"`)) ?? '{}')
+  const r = broker.create('relay-undeliverable', 'acct-fake', 'dev-guest', 'dev-host')
+  const g = new FakeHubSocket()
+  const h = new FakeHubSocket()
+  if (r) {
+    broker.join(r, 'guest', g as unknown as WebSocket, 'tok-guest')
+    broker.join(r, 'host', h as unknown as WebSocket, 'tok-host')
+  }
+  h.sendFails = new Error('write EPIPE')
+  g.emit('message', Buffer.from('toward a host whose connection just dropped'), false)
+  await new Promise((resolve) => setImmediate(resolve))
+  h.emit('close', 1006, Buffer.alloc(0)) // the host's close event, after the failed write
+  const l = closeLine('relay-undeliverable')
+  check(
+    'a frame the hub cannot deliver ends the relay as the doing of the END it could not reach, never the hub’s',
+    [l.by, l.raw, l.code, l.why, l.fromGuest, l.fromHost],
+    ['host', 1011, 1011, 'could not deliver a frame', 1, 0]
+  )
+  ok('and it is written once, by the failed write, not again by the close that follows', lines.filter((x) => x.includes('"msg":"relay closed"')).length === 1)
+
+  const presence = new Presence()
+  const slow = new FakeHubSocket()
+  slow.bufferedAmount = PRESENCE_MAX_BUFFERED + 1
+  const fine = new FakeHubSocket()
+  presence.add({ ws: slow as unknown as WebSocket, account: 'acct-fake', device: 'dev-slow', tokenHash: 'tok-slow', app: '', status: null })
+  presence.add({ ws: fine as unknown as WebSocket, account: 'acct-fake', device: 'dev-fine', tokenHash: 'tok-fine', app: '', status: null })
+  presence.broadcast('acct-fake', { t: 'pong' })
+  check(
+    'a presence socket cut for not reading is marked as the hub’s close (its log line says by hub, "not reading"); one that reads is not',
+    [slow.terminated, hubEndedWhy(slow as unknown as WebSocket), fine.terminated, hubEndedWhy(fine as unknown as WebSocket)],
+    [true, 'not reading', false, null]
+  )
+}
+
 /* ---------------------------------------------------------- storage */
 
 /**
@@ -1661,7 +1921,7 @@ async function storageChecks(): Promise<void> {
   const dir = join(TMP, 'storage')
   const said: string[] = []
   const CAP = 64 * 1024
-  const config = { dataDir: dir, mount: '/hub', edge: null, lan: { host: '127.0.0.1', port: 0 }, edgeSecret: null, rate: { capacity: 100_000, refillPerSec: 1000 }, pingMs: 60 * 60_000, storageCap: CAP }
+  const config = { dataDir: dir, mount: '/hub', edge: null, lan: { host: '127.0.0.1', port: 0 }, edgeSecret: null, rate: { capacity: 100_000, refillPerSec: 1000 }, pingMs: 60 * 60_000, sweepMs: 60 * 60_000, storageCap: CAP }
   const deps = { now, log: new HubLog(() => {}), announce: (t: string) => said.push(t) }
   let h = await startHub(config, deps)
   let base = `http://127.0.0.1:${h.lanPort}/hub`

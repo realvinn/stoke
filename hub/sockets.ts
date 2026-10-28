@@ -36,8 +36,29 @@ export function sendableCloseCode(code: number): number {
   return 1000
 }
 
+/*
+ * Sockets the HUB ended, and why: a kick, a refusal, a ping round's cut. A
+ * socket's close event carries only a code and the peer's reason, which cannot
+ * tell a dropped connection from one the hub began closing, so the close log
+ * lines read it from here. Weak, so a socket's mark goes with the socket.
+ * A new place where the hub closes or terminates a socket must mark it first,
+ * or its close line blames the other end (CLAUDE.md gotcha 172).
+ */
+const hubEnded = new WeakMap<WebSocket, string>()
+
+/** Note that the hub is ending `ws` (the first reason wins). Call it before the close or terminate. */
+export function markHubEnded(ws: WebSocket, why: string): void {
+  if (!hubEnded.has(ws)) hubEnded.set(ws, why)
+}
+
+/** Why the hub ended `ws`, or null when it did not (the peer closed it, or the connection dropped). */
+export function hubEndedWhy(ws: WebSocket): string | null {
+  return hubEnded.get(ws) ?? null
+}
+
 function closeQuietly(ws: WebSocket | null, code: number, reason: string): void {
   if (!ws) return
+  markHubEnded(ws, reason)
   try {
     ws.close(sendableCloseCode(code), reason.slice(0, 120))
   } catch {
@@ -115,6 +136,7 @@ export class Presence {
     try {
       if (conn.ws.readyState !== conn.ws.OPEN) return
       if (conn.ws.bufferedAmount > PRESENCE_MAX_BUFFERED) {
+        markHubEnded(conn.ws, 'not reading')
         conn.ws.terminate()
         return
       }
@@ -190,6 +212,8 @@ export interface Relay {
   /** Frames and bytes forwarded, for the close log line. Never their content. */
   frames: number
   bytes: number
+  /** The same frames by the end that sent them (they sum to `frames`), for the close log line. */
+  framesFrom: Record<RelayRole, number>
   /** Which end's socket the broker has paused because the OTHER end is not keeping up. */
   held: Record<RelayRole, boolean>
   /** The most ever queued toward either end, for the close log line: what flow control held it to. */
@@ -257,6 +281,7 @@ export class RelayBroker {
       lastActivity: now,
       frames: 0,
       bytes: 0,
+      framesFrom: { guest: 0, host: 0 },
       held: { guest: false, host: false },
       peakBuffered: 0,
       closed: false
@@ -291,8 +316,12 @@ export class RelayBroker {
     relay.tokens[role] = tokenHash
     const other = otherEnd(role)
     ws.on('message', (data: RawData, isBinary: boolean) => this.forward(relay, other, data, isBinary))
-    ws.on('close', (code: number, reason: Buffer) => this.closeRelay(relay, code, reason.toString('utf8') || `${role} left`))
-    ws.on('error', () => this.closeRelay(relay, 1011, `${role} socket error`))
+    ws.on('close', (code: number, reason: Buffer) => {
+      // Every other close the hub makes goes through closeRelay first, so a mark here is the ping round's cut.
+      const cut = hubEndedWhy(ws) !== null
+      this.closeRelay(relay, code, reason.toString('utf8') || `${role} left`, cut ? 'hub' : role, cut ? { noPong: role } : {})
+    })
+    ws.on('error', () => this.closeRelay(relay, 1011, `${role} socket error`, role))
     if (bothJoined(relay)) {
       relay.lastActivity = this.now()
       const queued = relay.queue.splice(0)
@@ -322,9 +351,12 @@ export class RelayBroker {
     const ws = relay.sockets[to]
     if (!ws || ws.readyState !== ws.OPEN) return
     relay.frames++
+    relay.framesFrom[otherEnd(to)]++
     relay.bytes += bytes
     ws.send(data, { binary }, (err) => {
-      if (err) this.closeRelay(relay, 1011, 'could not deliver a frame')
+      // A write fails when `to`'s connection dropped with frames still going to it, and this
+      // callback runs before that socket's close event: the drop is `to`'s, never the hub's (gotcha 172).
+      if (err) this.closeRelay(relay, 1011, 'could not deliver a frame', to)
       else this.drained(relay, to)
     })
     // What is queued toward `to` now: the socket's own write queue and ws's.
@@ -356,9 +388,17 @@ export class RelayBroker {
     this.log.debug('relay released', { relay: relay.id, end })
   }
 
-  /** Close both ends with the same (sendable) code and forget the relay. */
-  closeRelay(relay: Relay, code: number, reason: string): void {
+  /**
+   * Close both ends with the same (sendable) code and forget the relay. `by`
+   * is who began it, for the log: the end whose socket closed or failed, or
+   * the hub (its timers, a sign-out, a revoke, flow control, a ping round's
+   * cut, which names the end that stopped answering in `noPong`).
+   */
+  closeRelay(relay: Relay, code: number, reason: string, by: RelayRole | 'hub' = 'hub', extra: { noPong?: RelayRole } = {}): void {
     if (relay.closed) return
+    const now = this.now()
+    // The end that had not joined (the "never joined" close, or anything that ends a relay still opening).
+    const missing = bothJoined(relay) ? undefined : relay.sockets.guest === null && relay.sockets.host === null ? 'both' : relay.sockets.guest === null ? 'guest' : 'host'
     relay.closed = true
     this.relays.delete(relay.id)
     relay.queue.length = 0
@@ -367,16 +407,39 @@ export class RelayBroker {
     for (const end of ['guest', 'host'] as const) if (relay.held[end]) relay.sockets[end]?.resume()
     closeQuietly(relay.sockets.guest, code, reason)
     closeQuietly(relay.sockets.host, code, reason)
+    // `code` is what both ends were sent; `raw` is what the hub saw, so a 1005/1006 drop
+    // (no close frame) stays apart from a clean 1000 in the log, though never on the wire.
     this.log.info('relay closed', {
       relay: relay.id,
       account: relay.account,
       code: sendableCloseCode(code),
+      raw: code,
+      by,
+      noPong: extra.noPong,
+      missing,
       why: reason,
       frames: relay.frames,
+      fromGuest: relay.framesFrom.guest,
+      fromHost: relay.framesFrom.host,
       bytes: relay.bytes,
       peakBuffered: relay.peakBuffered,
-      ms: this.now() - relay.createdAt
+      ms: now - relay.createdAt,
+      quietMs: now - relay.lastActivity
     })
+  }
+
+  /**
+   * Relays waiting for `device` as their host: the guest's end is in, the
+   * host's is not, and there is still time to join. The hub tells a host of a
+   * relay once (`relayCreate`), over whatever presence socket it had then, so a
+   * host whose presence reconnected in between is told again from this list
+   * (CLAUDE.md gotcha 173).
+   */
+  waitingFor(account: string, device: string): Relay[] {
+    const now = this.now()
+    return [...this.relays.values()].filter(
+      (r) => !r.closed && r.account === account && r.host === device && r.sockets.guest !== null && r.sockets.host === null && now < r.expiresAt
+    )
   }
 
   /** Every relay one device is an end of (revoked, signed out). */
