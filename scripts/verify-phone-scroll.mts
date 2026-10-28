@@ -15,6 +15,7 @@ async function main(): Promise<void> {
 import { Terminal } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import { mountTerminalTouchScroll } from ${JSON.stringify(resolve('src/remote/terminalTouchScroll.ts'))};
+import { mountTerminalKeys } from ${JSON.stringify(resolve('src/remote/terminalKeyBar.ts'))};
 const root = document.getElementById('terminal'), input = document.getElementById('composer');
 const term = new Terminal({cols:40,rows:10}); term.open(root);
 const abort = new AbortController(); let allowed = true, forwarding = false; const data = [];
@@ -57,6 +58,16 @@ const hSwipe = (dy) => { const r = host.querySelector('.xterm-screen').getBoundi
 window.histRect = () => { const r = host.querySelector('.xterm-screen').getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + 30) }; };
 window.histView = () => ({ viewportY: hist.buffer.active.viewportY, baseY: hist.buffer.active.baseY, boxTop: box.scrollTop });
 window.histBottom = () => { hist.scrollToBottom(); box.scrollTop = 0; };
+// The key bar as session.ts mounts it, beside a composer that keeps the phone's keyboard up.
+const keyRoot = document.getElementById('keys'), composer2 = document.getElementById('composer2');
+const sentKeys = [], keyEvents = [];
+mountTerminalKeys(keyRoot, { write: value => { sentKeys.push(value); return true; }, applicationCursorMode: () => false, signal: new AbortController().signal }).setEnabled(true);
+// The window, bubble phase: after every listener on the control itself has run.
+for (const type of ['pointerdown', 'mousedown', 'click']) window.addEventListener(type, e => { if (e.target.closest && e.target.closest('#keys button')) keyEvents.push(type + (e.defaultPrevented ? ' cancelled' : '')); });
+window.keyAt = sel => { const b = keyRoot.querySelector(sel); if (!b || !b.getClientRects().length) return null; const r = b.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; };
+window.keyFocus = () => { composer2.focus(); keyEvents.length = 0; sentKeys.length = 0; return document.activeElement === composer2; };
+window.keyRead = () => ({ events: keyEvents.splice(0), sent: sentKeys.splice(0), focused: document.activeElement === composer2, panel: !keyRoot.querySelector('.keys-panel').hidden,
+ tab: keyRoot.querySelector('[role=tab][aria-selected="true"]').textContent, eof: keyRoot.querySelector('.key-eof').textContent, shift: keyRoot.querySelector('.key-modifier[data-key="Shift"]').dataset.state });
 window.exerciseHistory = async () => {
  await new Promise(done => hist.write(Array.from({length:60}, (_, i) => 'history ' + (i + 1)).join('\\r\\n'), done));
  const v = () => hist.buffer.active.viewportY, base = hist.buffer.active.baseY;
@@ -68,8 +79,8 @@ window.exerciseHistory = async () => {
  histMouse = true; const wheelNative = hSwipe(60), wheelSent = histWheel.length, wheelKept = v() === base; histMouse = false;
  return { base, olderNative, olderBy, newerNative, newerAt, atBottomNative, atTopNative, stillTop, boxFirstNative, boxFirstKept, boxOverflows: box.scrollHeight > box.clientHeight, wheelNative, wheelSent, wheelKept };
 };`)
-    await build({ configFile: false, logLevel: 'error', build: { outDir: join(temp, 'bundle'), emptyOutDir: true, lib: { entry, name: 'fixture', formats: ['iife'], fileName: () => 'fixture.js', cssFileName: 'fixture' } } })
-    writeFileSync(join(temp, 'index.html'), '<link rel="stylesheet" href="bundle/fixture.css"><div id="terminal" style="height:220px;width:400px"></div><textarea id="composer"></textarea><div id="box" style="height:150px;width:400px;overflow:auto;overscroll-behavior:contain"><div id="history"></div></div><script src="bundle/fixture.js"></script>')
+    await build({ configFile: false, logLevel: 'error', resolve: { alias: { '@shared': resolve('src/shared') } }, build: { outDir: join(temp, 'bundle'), emptyOutDir: true, lib: { entry, name: 'fixture', formats: ['iife'], fileName: () => 'fixture.js', cssFileName: 'fixture' } } })
+    writeFileSync(join(temp, 'index.html'), '<link rel="stylesheet" href="bundle/fixture.css"><div id="terminal" style="height:220px;width:400px"></div><textarea id="composer"></textarea><div id="box" style="height:150px;width:400px;overflow:auto;overscroll-behavior:contain"><div id="history"></div></div><div style="position:fixed;top:0;right:0;width:360px"><textarea id="composer2" rows="1"></textarea><div id="keys"></div></div><script src="bundle/fixture.js"></script>')
     win = new BrowserWindow({ show: false, webPreferences: { backgroundThrottling: false } })
     await win.loadFile(join(temp, 'index.html'))
     const result = await win.webContents.executeJavaScript('window.exercise()')
@@ -107,6 +118,59 @@ window.exerciseHistory = async () => {
     assert.ok(after.viewportY < before.viewportY, `a real finger-down swipe shows older lines: ${JSON.stringify({ before, after })}`)
     assert.equal(after.boxTop, 0, 'and the box did not scroll instead')
     console.log(`PASS phone scrollback swipes: older/newer lines through the shipped module, the box's own overflow first, mouse-reporting apps untouched, and a trusted Chromium swipe moved ${before.viewportY - after.viewportY} lines.`)
+    /*
+     * The key bar, tapped with Chromium's trusted touch while a composer has
+     * focus. A control that acts on its CLICK keeps that focus by cancelling
+     * its mousedown and leaves its pointerdown alone: WebKit drops a tap's
+     * click when the pointerdown was cancelled, so in WebKit 26.6 More, the
+     * group tabs, Ctrl+D and every key sent on click did nothing (Chromium
+     * fires the click either way, so here the rule is read off the events:
+     * `pointerdown` uncancelled, `mousedown cancelled`, `click`). A key that
+     * acts on the press itself (a repeat key, a modifier) sends once.
+     */
+    const dbg = win.webContents.debugger
+    const pause = (ms: number) => new Promise(done => setTimeout(done, ms))
+    const tapKey = async (selector: string, mouse = false): Promise<any> => {
+      const at = await win!.webContents.executeJavaScript(`window.keyAt(${JSON.stringify(selector)})`)
+      assert.ok(at, `${selector} is on screen`)
+      assert.equal(await win!.webContents.executeJavaScript('window.keyFocus()'), true, 'the composer has focus before the tap')
+      if (mouse) for (const type of ['mousePressed', 'mouseReleased']) await dbg.sendCommand('Input.dispatchMouseEvent', { type, x: at.x, y: at.y, button: 'left', clickCount: 1 })
+      else { await dbg.sendCommand('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [at] }); await dbg.sendCommand('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] }) }
+      await pause(250)
+      return win!.webContents.executeJavaScript('window.keyRead()')
+    }
+    const onClick = ['pointerdown', 'mousedown cancelled', 'click']
+    const clicked = async (name: string, selector: string, want: Record<string, unknown>, mouse = false): Promise<void> => {
+      const r = await tapKey(selector, mouse)
+      assert.deepEqual({ events: r.events, focused: r.focused, ...Object.fromEntries(Object.keys(want).map(k => [k, r[k]])) }, { events: onClick, focused: true, ...want },
+        `${name}: a tap keeps the composer focused by its mousedown, fires the click and does its job, its pointerdown left alone`)
+    }
+    await clicked('Esc', '.keys-quick [data-key="Escape"]', { sent: ['\x1b'] })
+    await clicked('Tab', '.keys-quick [data-key="Tab"]', { sent: ['\t'] })
+    await clicked('Enter', '.keys-quick [data-key="Enter"]', { sent: ['\r'] })
+    await clicked('Esc by mouse (a laptop browser)', '.keys-quick [data-key="Escape"]', { sent: ['\x1b'] }, true)
+    await clicked('More', '.key-more-toggle', { panel: true, sent: [] })
+    await clicked('the Shortcuts tab', '[role=tab][id$="tab-shortcuts"]', { tab: 'Shortcuts', sent: [] })
+    await clicked('Ctrl+C', '.keys-shortcuts [aria-label^="Control-C"]', { sent: ['\x03'] })
+    await clicked('the F keys tab', '[role=tab][id$="tab-functions"]', { tab: 'F keys' })
+    await clicked('F2', '.keys-functions [data-key="F2"]', { sent: ['\x1bOQ'] })
+    await clicked('the Edit tab', '[role=tab][id$="tab-edit"]', { tab: 'Edit' })
+    await clicked('Ctrl+D, first tap', '.key-eof', { eof: 'Confirm', sent: [] })
+    await pause(400)
+    await clicked('Ctrl+D, second tap', '.key-eof', { eof: 'Ctrl+D', sent: ['\x04'] })
+    await clicked('Delete', '.keys-edit [data-key="Delete"]', { sent: ['\x1b[3~'] })
+    const backspace = await tapKey('.keys-edit [data-key="Backspace"]')
+    assert.deepEqual([backspace.sent, backspace.focused], [['\x7f'], true], `Backspace, a repeat key, sends once on the press and keeps the focus: ${JSON.stringify(backspace)}`)
+    await clicked('the Navigate tab', '[role=tab][id$="tab-navigate"]', { tab: 'Navigate' })
+    await clicked('Home', '.keys-navigate [data-key="Home"]', { sent: ['\x1b[H'] })
+    const shift = await tapKey('.key-modifier[data-key="Shift"]')
+    assert.deepEqual([shift.shift, shift.sent, shift.focused], ['next', [], true], `Shift arms for the next key and keeps the focus: ${JSON.stringify(shift)}`)
+    const left = await tapKey('.keys-navigate [data-key="ArrowLeft"]')
+    assert.deepEqual([left.sent, left.shift, left.focused], [['\x1b[1;2D'], 'off', true], `then Left sends Shift+Left once and releases Shift: ${JSON.stringify(left)}`)
+    await clicked('More again', '.key-more-toggle', { panel: false })
+    const up = await tapKey('.keys-quick [data-key="ArrowUp"]')
+    assert.deepEqual([up.sent, up.focused], [['\x1b[A'], true], `Up, a repeat key, sends once on the press and keeps the focus: ${JSON.stringify(up)}`)
+    console.log('PASS phone key bar taps: every control that acts on its click (Esc, Tab, Enter, More, the group tabs, Ctrl+C, F2, Ctrl+D, Delete, Home, and Esc by mouse) keeps the composer focused by its mousedown and fires its click with its pointerdown left alone (WebKit drops the click otherwise); repeat keys and Shift send once on the press.')
   } catch (error) { console.error(error); process.exitCode = 1 }
   finally { win?.destroy(); rmSync(temp, { recursive: true, force: true }); app.exit(process.exitCode ? Number(process.exitCode) : 0) }
 }

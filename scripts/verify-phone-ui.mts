@@ -1338,6 +1338,13 @@ console.log('\nremote terminal keys: function keys and modifiers')
   ], [true, false])
   check('a failed copy says https only on http, in both places', [(phone.match(/copyFailedSentence\(window\.isSecureContext\)/g) ?? []).length, phone.includes('Try the https link')], [2, false])
   check('both phone sends are capped by the socket\'s frame size before they go', (phone.match(/phoneFrameFits\(/g) ?? []).length, 2)
+  // WebKit drops a tap's click when its pointerdown was cancelled: the toggle did
+  // nothing there. Its tap is driven in verify:account-remote, the key bar's in
+  // verify:phone-scroll; this holds the wiring the session view cannot show here.
+  check('the key row toggle keeps the composer focused by its mousedown and leaves its pointerdown alone', [
+    phone.includes('keepFocusOnTap(keysToggle, signal)'),
+    /keysToggle\.addEventListener\(\s*'pointerdown'/.test(phone)
+  ], [true, false])
 }
 
 console.log(failures ? `\n${failures} FAILED` : '\nall pass')

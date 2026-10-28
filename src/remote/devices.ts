@@ -20,7 +20,8 @@ interface DeviceCard {
   update: (machine: OtherMachineView) => void
 }
 
-function deviceCard(): DeviceCard {
+/** `quiet`: the account site, where a last-known card keeps its note (see mountDevices). */
+function deviceCard(quiet = false): DeviceCard {
   const name = el('h2', { class: 'device-name' })
   const platform = el('span', { class: 'device-platform' })
   const note = el('p', { class: 'device-note' })
@@ -36,7 +37,7 @@ function deviceCard(): DeviceCard {
       if (platform.textContent !== platformText) platform.textContent = platformText
       sessions.setAttribute('aria-label', `Sessions on ${machine.label}`)
       const status = machine.status
-      const message = machine.reachable === false ? 'Reconnecting to your account… Showing last-known sessions.' : !status
+      const message = machine.reachable === false && !quiet ? 'Reconnecting to your account… Showing last-known sessions.' : !status
         ? 'Waiting for this device to share its status…'
         : !status.open
           ? 'To open sessions, turn on “Let my other devices see and open my sessions” under Accounts → Devices & sync on this device.'
@@ -108,18 +109,26 @@ export function mountDevices(opts: { wide?: boolean; account?: boolean } = {}): 
     try {
       const reply = await api<RemoteDevicesResponse>('/api/machines', { signal })
       if (signal.aborted) return
-      const rows = reply.available ? reply.machines : []
+      // The account site re-checks presence on every wake (back to the tab, the
+      // network back) and every dropped socket (a second browser on the same
+      // link takes it), and its client calls the list unavailable until presence
+      // answers, while the hub still names the computers it last knew
+      // (`reachable: false`). Emptying the list then put a scrolled one back at
+      // its top each time. So their cards stay where they are, links held and
+      // with no note to move them, until presence says who is online; with none
+      // known, it says it is reconnecting.
+      const rows = reply.available || opts.account ? reply.machines : []
       const present = new Set(rows.map(machine => machine.id))
       for (const [id, card] of cards) if (!present.has(id)) { card.root.remove(); cards.delete(id) }
       rows.forEach((machine, index) => {
         let card = cards.get(machine.id)
-        if (!card) { card = deviceCard(); cards.set(machine.id, card) }
+        if (!card) { card = deviceCard(opts.account); cards.set(machine.id, card) }
         card.update(machine)
         if (devices.children[index] !== card.root) devices.insertBefore(card.root, devices.children[index] ?? null)
       })
       received = true
       showMessage(!reply.available
-        ? opts.account ? 'Reconnecting to your Stoke account…' : `Sign in to Stoke Hub and join your vault on ${localName} to reach your other approved devices.`
+        ? opts.account ? (rows.length ? '' : 'Reconnecting to your Stoke account…') : `Sign in to Stoke Hub and join your vault on ${localName} to reach your other approved devices.`
         : rows.length === 0
           ? 'None of your other devices is online. Open Stoke on another device signed in to the same Hub account and vault.' : '')
     } catch (error) {

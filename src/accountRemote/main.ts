@@ -22,7 +22,9 @@ let route = ''
 let fromList = false
 /** A leave is on its way: the step back lands a task or more later, and two would go back two. */
 let leaving = false
-function showNote(text: string): void { notice.textContent = text; notice.hidden = !text }
+/** The note says the account connection failed: it goes once presence answers again. */
+let failureShown = false
+function showNote(text: string, failure = false): void { notice.textContent = text; notice.hidden = !text; failureShown = failure && !!text }
 function routeParts(key: string): string[] {
   try { return key.replace(/^#\/?/, '').split('/').map(decodeURIComponent) } catch { return ['devices'] }
 }
@@ -89,17 +91,19 @@ async function boot(): Promise<void> {
         leaveSession()
       }
     }
-    if (client!.error) showNote(client!.error)
+    if (client!.error) showNote(client!.error, true)
+    // Once the account answers again, a failure note left up is stale.
+    else if (failureShown && client!.view.available) showNote('')
     else if (previous && client!.view.machines.some(m => m.id === previous!.device)) showNote(`${previous.label} is back online. Its sessions are available below.`)
   })
   showNote('Connecting to your Stoke account…')
   await client.start(); await loadHost()
   showNote('')
   window.addEventListener('hashchange', render)
-  const wake = (): void => { if (document.visibilityState === 'visible') void client?.wake().catch(error => showNote(error instanceof Error ? error.message : 'Reconnecting to your account…')) }
+  const wake = (): void => { if (document.visibilityState === 'visible') void client?.wake().catch(error => showNote(error instanceof Error ? error.message : 'Reconnecting to your account…', true)) }
   window.addEventListener('online', wake); document.addEventListener('visibilitychange', wake)
   window.addEventListener('pagehide', () => { mounted?.destroy(); mounted = null; client?.stop() })
-  window.addEventListener('pageshow', event => { if (event.persisted) void client?.start().then(render).catch(error => showNote(error instanceof Error ? error.message : 'Reconnecting to your account…')) })
+  window.addEventListener('pageshow', event => { if (event.persisted) void client?.start().then(render).catch(error => showNote(error instanceof Error ? error.message : 'Reconnecting to your account…', true)) })
   render()
 }
 void boot().catch(error => { showNote(error instanceof Error ? error.message : 'The account remote could not connect.'); content.append(el('button', { class: 'btn account-retry', type: 'button' }, 'Try again')); content.querySelector('button')?.addEventListener('click', () => location.reload()) })

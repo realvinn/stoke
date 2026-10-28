@@ -39,6 +39,18 @@ const EDIT: readonly Key[] = [
   { label: 'Delete', name: 'Delete', key: 'Delete' }
 ]
 
+/**
+ * Keep the composer's focus (and the phone's keyboard) through a tap on a
+ * control that acts on its click: cancel the MOUSEDOWN, whose default moves
+ * focus. Never cancel such a control's pointerdown: WebKit then drops the
+ * tap's click, though Chromium still fires it, so in WebKit 26.6 the key row's
+ * toggle, More, the group tabs, Ctrl+D and every key sent on click did nothing.
+ * A key that acts on the press itself (a repeat key, a modifier) may cancel it.
+ */
+export function keepFocusOnTap(control: HTMLElement, signal: AbortSignal): void {
+  control.addEventListener('mousedown', event => event.preventDefault(), { signal })
+}
+
 /** On-screen keys share the terminal's protocol, never the browser's key shortcuts. */
 export function mountTerminalKeys(root: HTMLElement, { write, applicationCursorMode, signal }: Options): {
   reset: () => void
@@ -131,10 +143,11 @@ export function mountTerminalKeys(root: HTMLElement, { write, applicationCursorM
     const button = el('button', { type: 'button', class: 'key', 'data-key': key.key ?? key.label, 'aria-label': key.name, title: key.name, disabled: true },
       el('span', { class: 'key-main' }, key.label), key.label === '⇧tab' ? el('span', { class: 'key-sub' }, 'mode') : null)
     inputs.push(button)
+    keepFocusOnTap(button, signal)
+    // A repeat key sends on the press; any other key on its click (keepFocusOnTap).
     button.addEventListener('pointerdown', event => {
-      if (!enabled || event.button !== 0) return
+      if (!enabled || event.button !== 0 || !key.repeat) return
       event.preventDefault()
-      if (!key.repeat) return
       const selected = modifiers()
       if (!sendKey(key, selected)) return
       stopRepeat()
@@ -170,7 +183,7 @@ export function mountTerminalKeys(root: HTMLElement, { write, applicationCursorM
   }
   groups.forEach((group, index) => {
     const button = el('button', { type: 'button', class: 'key key-group-toggle', role: 'tab', id: `${root.id}-tab-${group.id}`, 'aria-controls': panels[index].id }, group.label)
-    button.addEventListener('pointerdown', event => event.preventDefault(), { signal })
+    keepFocusOnTap(button, signal)
     button.addEventListener('click', () => selectGroup(index), { signal })
     button.addEventListener('keydown', event => {
       const next = event.key === 'ArrowRight' ? (index + 1) % groups.length : event.key === 'ArrowLeft' ? (index + groups.length - 1) % groups.length : event.key === 'Home' ? 0 : event.key === 'End' ? groups.length - 1 : -1
@@ -179,7 +192,7 @@ export function mountTerminalKeys(root: HTMLElement, { write, applicationCursorM
     }, { signal })
     groupButtons.push(button); tabs.append(button)
   })
-  moreButton.addEventListener('pointerdown', event => event.preventDefault(), { signal })
+  keepFocusOnTap(moreButton, signal)
   moreButton.addEventListener('click', () => {
     const opening = panel.hidden
     if (!opening) reset()
@@ -196,7 +209,7 @@ export function mountTerminalKeys(root: HTMLElement, { write, applicationCursorM
     eofTimer = null
     eof.classList.remove('armed'); eof.textContent = 'Ctrl+D'; eof.setAttribute('aria-label', 'Control-D: end of input. Tap twice.')
   }
-  eof.addEventListener('pointerdown', event => event.preventDefault(), { signal })
+  keepFocusOnTap(eof, signal)
   eof.addEventListener('click', () => {
     if (!enabled) return
     if (eofTimer) {

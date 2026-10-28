@@ -167,6 +167,15 @@ export class AccountRemote extends EventTarget implements RemoteBackend {
     await this.refreshKey()
     this.remote.chainChanged()
     for (const [device, sealed] of this.statuses) await this.remote.onStatus(device, sealed)
+    /*
+     * The account answered. A read that failed said so (`failed`), and only a
+     * presence frame cleared it, so one failed 10 s pass (or `chain`/`bye`
+     * read) while the presence socket stayed up left "did not answer" over a
+     * live list, the list pushed down under it, until some device came or
+     * went. With presence up too, nothing is wrong any more. Presence down:
+     * its welcome clears it, once the list is live again.
+     */
+    if (this.error && this.presenceReady && !this.stopped && generation === this.generation) { this.error = ''; this.dispatchEvent(new Event('change')) }
   }
   private async refreshKey(): Promise<void> {
     const chain = this.chain
@@ -180,7 +189,18 @@ export class AccountRemote extends EventTarget implements RemoteBackend {
     } catch { /* Online desktops publish an updated wrap after a rotation. Retry on the next pass. */ }
   }
   async start(): Promise<void> { if (this.timer) return; this.stopped = false; await this.refresh(); if (this.stopped) return; this.presence.start(); this.timer = setInterval(() => { void this.refresh().catch(error => this.failed(error)) }, 10_000) }
-  async wake(): Promise<void> { if (this.stopped) return; this.presenceReady = false; this.presence.stop(); this.remote.presenceClosed(); await this.refresh(); if (!this.stopped) this.presence.start() }
+  /**
+   * Back in view, or the network back: re-check presence from a fresh socket.
+   * Restarted whatever the chain read says: a wake whose read failed (the hub
+   * away for a moment) left presence stopped until the next wake, so the page
+   * never reconnected when the hub came back. Started, presence's own open
+   * reads the chain again and backs off between tries.
+   */
+  async wake(): Promise<void> {
+    if (this.stopped) return
+    this.presenceReady = false; this.presence.stop(); this.remote.presenceClosed()
+    try { await this.refresh() } finally { if (!this.stopped) this.presence.start() }
+  }
   stop(): void { this.stopped = true; this.presenceReady = false; this.generation++; this.presence.stop(); this.remote.reset(); if (this.timer) clearInterval(this.timer); this.timer = null }
   socket(url: string): WebSocket { return new TerminalSocket(this, new URL(url, location.href)) as unknown as WebSocket }
   async api<T>(path: string, init?: RequestInit): Promise<T> {

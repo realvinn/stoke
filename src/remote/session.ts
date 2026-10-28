@@ -62,7 +62,7 @@ import { confirmSheet, el, explain, icon, iconButton, openSheet, toast } from '.
 import { rowTitle, screenLines, sendAnswer } from './list'
 import { store } from './store'
 import { openSessionFiles } from './files'
-import { mountTerminalKeys } from './terminalKeyBar'
+import { keepFocusOnTap, mountTerminalKeys } from './terminalKeyBar'
 import { mountTerminalTouchScroll } from './terminalTouchScroll'
 import { DraftJournal, mountDraftCache } from './draftCache'
 import { REMOTE_DEVICE_INPUT_MAX, REMOTE_DEVICE_SUBMIT_MAX, type RemoteDeviceState } from '@shared/remoteDevices'
@@ -925,7 +925,8 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
     },
     { signal }
   )
-  keysToggle.addEventListener('pointerdown', event => event.preventDefault(), { signal })
+  // Its pointerdown stays uncancelled: WebKit drops the tap's click otherwise.
+  keepFocusOnTap(keysToggle, signal)
   input.addEventListener(
     'focus',
     () => {
