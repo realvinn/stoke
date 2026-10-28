@@ -1601,12 +1601,24 @@ try {
       writeFileSync(join(Q.ssh.dir, 'quota_ed25519'), qKey.priv, { mode: 0o600 })
       writeFileSync(join(Q.ssh.dir, 'quota_ed25519.pub'), `${qKey.pub}\n`)
       secretsSeen.push(qKey.priv.split('\n')[1])
+      // A host whose ssh -G offers that key: the share marks it before its upload (review-quota 15).
+      writeFileSync(Q.ssh.config, `Host quotahost\n  IdentityFile ${join(Q.ssh.dir, 'quota_ed25519')}\n`)
+      Q.set({ hosts: [{ id: 'host-1', label: 'Quota', alias: 'quotahost', command: '' }] } as Partial<Settings>)
+      await until('the host is in, its growth waiting for room', () => Q.svc.view().busy === null)
+      const qState = (): { keyRefs: Record<string, string[]> } => (Q.svc as unknown as { st(): { keyRefs: Record<string, string[]> } }).st()
+      const refsBefore = JSON.stringify(qState().keyRefs)
       const qShared = await Q.svc.shareKey('quota_ed25519')
       check('sharing a key on a full hub is refused with the room sentence, and the key is not listed as shared', [qShared.ok, !qShared.ok && /no room left/.test(qShared.message), Q.svc.view().sshKeys.some((k) => k.name === 'quota_ed25519' && k.mine)], [false, true, false])
+      check('…and the hosts it marked before the upload are put back: none points at a key the hub never took', JSON.stringify(qState().keyRefs), refsBefore)
       operatorCap(null)
       const given = await Q.svc.syncNow()
       const s2 = Q.svc.view().storage
       check('given room by the hub’s owner, the waiting change goes up at the next sync and the notice clears', [given.ok, s2?.full, s2?.cap, (s2?.used ?? 0) > (s0?.used ?? 0)], [true, null, 1024 * 1024, true])
+      const savedRefs = JSON.parse(readFileSync(join(Q.userData, 'hub-state.json'), 'utf8')).keyRefs as Record<string, string[]>
+      check('and the state that sync saved names no key ref at all', Object.values(savedRefs ?? {}).flat(), [])
+      // The control: with room, the same share marks that same host, so the refusal above had marked it too.
+      const qAgain = await Q.svc.shareKey('quota_ed25519')
+      check('control: given room, the same share is taken and marks the host whose ssh -G offers it', [qAgain.ok, Q.svc.view().sshKeys.find((k) => k.name === 'quota_ed25519')?.hosts], [true, ['Quota']])
       Q.svc.stop()
     } finally {
       await qHub.close()

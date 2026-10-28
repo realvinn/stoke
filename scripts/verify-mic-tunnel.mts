@@ -566,10 +566,20 @@ else {
 
   // A short, private folder for the sockets (sun_path is 104 bytes on macOS).
   const sockDir = mkdtempSync('/tmp/vmic-')
+  /*
+   * A second one, of the same length (so a prefix cut by length lands on the
+   * same place in both): a Stoke-shaped name anywhere but the stand-in's own
+   * folder is never its to remove.
+   */
+  const awayDir = mkdtempSync('/tmp/vmic-')
   // suite-tmpdir.mts turns SIGINT/TERM/HUP into exits, so this runs then too.
-  process.on('exit', () => rmSync(sockDir, { recursive: true, force: true }))
+  process.on('exit', () => {
+    rmSync(sockDir, { recursive: true, force: true })
+    rmSync(awayDir, { recursive: true, force: true })
+  })
   const placed = MIC_STAND_IN.split('/tmp/stoke-mic.')
-  check('the stand-in names /tmp/stoke-mic. in exactly three places (the substitution below is exact)', placed.length - 1, 3)
+  // find_sockets' glob, its case pattern and its prefix strip, and each connector's PREFIX (the stale-socket rule).
+  check('the stand-in names /tmp/stoke-mic. in exactly five places (the substitution below is exact)', placed.length - 1, 5)
   const script = placed.join(`${sockDir}/stoke-mic.`)
   const binA = join(work, 'binA')
   const binB = join(work, 'binB')
@@ -689,8 +699,9 @@ else {
     utimesSync(path, t, t)
   }
   /** A socket file nobody listens on: bound by a process that exited without unlinking it. */
-  const stale = (token: string): string => {
-    const path = `${sockDir}/stoke-mic.${token}.sock`
+  const stale = (token: string, dir: string = sockDir): string => {
+    const path = `${dir}/stoke-mic.${token}.sock`
+    rmSync(path, { force: true })
     if (tools.python3) execFileSync(tools.python3, ['-c', `import socket; s=socket.socket(socket.AF_UNIX); s.bind(${JSON.stringify(path)})`])
     else if (tools.perl) execFileSync(tools.perl, ['-MSocket', '-e', `socket(my $s, PF_UNIX, SOCK_STREAM, 0); bind($s, pack_sockaddr_un(${JSON.stringify(path)}))`])
     return path
@@ -799,6 +810,48 @@ else {
       // The probe hands over only with no socket there at all.
       clean()
       await loops('the probe, no socket', PROBE)
+      /*
+       * Stale sockets (sshd never unlinks a forwarded one, gotcha 165): a socket
+       * found REFUSING is removed only if it is exactly a Stoke socket, a socket
+       * and not a link, ours, and over 60 s old. Every socket here refuses or
+       * is stale, so the connector walks all of them; then only the one that
+       * meets every rule may be gone.
+       */
+      clean()
+      const oldStale = stale(tok(31))
+      touch(oldStale, 120)
+      const newStale = stale(tok(32))
+      touch(newStale, 30)
+      const notSock = `${sockDir}/stoke-mic.${tok(33)}.sock`
+      writeFileSync(notSock, 'not a socket')
+      touch(notSock, 120)
+      const otherName = stale(`${'a'.repeat(31)}`)
+      touch(otherName, 120)
+      const linkTarget = `${sockDir}/elsewhere.sock`
+      if (tools.python3) execFileSync(tools.python3, ['-c', `import socket; s=socket.socket(socket.AF_UNIX); s.bind(${JSON.stringify(linkTarget)})`])
+      else execFileSync(tools.perl!, ['-MSocket', '-e', `socket(my $s, PF_UNIX, SOCK_STREAM, 0); bind($s, pack_sockaddr_un(${JSON.stringify(linkTarget)}))`])
+      touch(linkTarget, 120)
+      const link = `${sockDir}/stoke-mic.${tok(34)}.sock`
+      symlinkSync(linkTarget, link)
+      const answering = await far(tok(35), 'refuse')
+      touch(answering.path, 120)
+      const sw = await run(sh, join(binA, 'arecord'), REC, PATH)
+      const present = (path: string): boolean => {
+        try {
+          lstatSync(path)
+          return true
+        } catch {
+          return false
+        }
+      }
+      check(`${label}: with every socket refusing or stale, it still exits 1 with no audio`, [sw.code, sw.out.length], [1, 0])
+      check(`${label}: a refusing Stoke socket of ours over 60 s old is removed`, present(oldStale), false)
+      check(`${label}: one under 60 s old is kept (a forward being set up)`, present(newStale), true)
+      check(`${label}: a non-socket named like one is kept`, present(notSock), true)
+      check(`${label}: a socket whose name is not exactly the pattern is kept`, present(otherName), true)
+      check(`${label}: a link named like a Stoke socket is kept, and so is what it points at`, [present(link), present(linkTarget)], [true, true])
+      check(`${label}: a socket that ANSWERS (then refuses the token) is kept, however old`, [present(answering.path), answering.conns], [true, 1])
+      await answering.close()
     }
 
     // No connector at all.
@@ -857,6 +910,85 @@ else {
       const me = process.getuid()
       check('python connector, the socket is ours: connects, sends the token, copies the audio', await asUid(me), { code: 0, out: PAYLOAD.length, conns: 1, tokens: 1 })
       check('python connector, the socket is another user’s: never connects, exit 1, nothing out', await asUid(me + 1), { code: 1, out: 0, conns: 0, tokens: 0 })
+      /*
+       * The stale-socket rule's owner check, the same way: an old refusing
+       * socket is removed under our own uid and kept when the connector reads
+       * it as another user's. The code's own /tmp prefix is put on the scratch
+       * folder, as the shell's is above.
+       */
+      const placedCode = code.split('/tmp/stoke-mic.').join(`${sockDir}/stoke-mic.`)
+      const kept = (path: string): boolean => {
+        try {
+          lstatSync(path)
+          return true
+        } catch {
+          return false
+        }
+      }
+      // Handed straight to the connector, past the shell's own filter: [an old refusing Stoke socket, one whose name is 31 hex].
+      const sweepAs = (uid: number): boolean[] => {
+        clean()
+        const old = stale(tok(41))
+        const odd = stale('b'.repeat(31))
+        const away = stale(tok(44), awayDir)
+        for (const p of [old, odd, away]) touch(p, 120)
+        const wrapper = `import os, sys\nos.geteuid = lambda: ${uid}\nexec(compile(sys.argv.pop(1), "connector", "exec"))`
+        const r = spawnSync(tools.python3!, ['-c', wrapper, placedCode, '', '0', old, odd, away], { encoding: 'utf8', timeout: 5000 })
+        // The connector ran to its own end ("no Stoke microphone answered"), never a crash that would keep everything
+        // (CLAUDE.md gotcha 175).
+        return [kept(old), kept(odd), kept(away), r.status === 1 && !/Traceback/.test(r.stderr)]
+      }
+      check('python connector, handed them directly: the old refusing socket of ours goes; a 31-hex name, and the same name in another folder, stay', sweepAs(me), [false, true, true, true])
+      check('python connector: read as another user\u2019s, the old refusing socket is kept', sweepAs(me + 1), [true, true, true, true])
+      /*
+       * The rule is checked again at the removal, not only on the walk: a socket
+       * whose owner reads differently by then (a chown between the two) is kept.
+       * os.lstat answers the real owner on its first call for a path, another
+       * after that.
+       */
+      clean()
+      const turned = stale(tok(42))
+      touch(turned, 120)
+      // Its names start with _stoke_: the connector runs in the same globals, and its own `real` is a path.
+      const turning = [
+        'import os, sys',
+        '_stoke_lstat = os.lstat',
+        '_stoke_calls = {}',
+        'class _StokeSt:',
+        '    def __init__(self, st): self._st = st; self.st_uid = st.st_uid + 1',
+        '    def __getattr__(self, k): return getattr(self._st, k)',
+        'def _stoke_fake(p, *a, **k):',
+        '    st = _stoke_lstat(p, *a, **k)',
+        '    _stoke_calls[p] = _stoke_calls.get(p, 0) + 1',
+        '    return st if _stoke_calls[p] == 1 else _StokeSt(st)',
+        'os.lstat = _stoke_fake',
+        'exec(compile(sys.argv.pop(1), "connector", "exec"))'
+      ].join('\n')
+      const tr = spawnSync(tools.python3!, ['-c', turning, placedCode, '', '0', turned], { encoding: 'utf8', timeout: 5000 })
+      check('python connector: a socket whose owner reads as another user\u2019s by the removal is kept (the connector ran to its own end)', [kept(turned), tr.status, /Traceback/.test(tr.stderr)], [true, 1, false])
+    }
+  }
+  // The perl connector handed the same two directly, past the shell's filter (its owner check, `$>`, cannot be faked without root).
+  if (tools.perl) {
+    const perlCode = /exec perl -e '([^']*)'/.exec(MIC_STAND_IN)?.[1] ?? null
+    ok('the perl connector is one single-quoted word of the stand-in', perlCode !== null && perlCode.includes('sub gone'))
+    if (perlCode) {
+      clean()
+      const old = stale(tok(43))
+      const odd = stale('c'.repeat(31))
+      const away = stale(tok(45), awayDir)
+      for (const p of [old, odd, away]) touch(p, 120)
+      const placed = perlCode.split('/tmp/stoke-mic.').join(`${sockDir}/stoke-mic.`)
+      const r = spawnSync(tools.perl, ['-e', placed, '', '0', old, odd, away], { encoding: 'utf8', timeout: 5000 })
+      const present = (path: string): boolean => {
+        try {
+          lstatSync(path)
+          return true
+        } catch {
+          return false
+        }
+      }
+      check('perl connector, handed them directly: the old refusing socket of ours goes; a 31-hex name, and the same name in another folder, stay (it ran to its own end)', [present(old), present(odd), present(away), r.status], [false, true, true, 1])
     }
   }
   clean()
@@ -1059,7 +1191,22 @@ console.log('\nthe wire (source text)')
   ok('and ⇧⌘D asks spaceOwner with the lent flag first', /spaceOwner\(tab, false, micLentRef\.current\) === 'cli'/.test(term))
   const onKeyBody = /const onKey = \(e: KeyboardEvent\): void => \{([\s\S]*?)\n {4}\}/.exec(micTsx)?.[1] ?? null
   ok('the hook only observes keys: its key listener reports micKeyOf and takes nothing from the terminal', onKeyBody !== null && /micKeyOf\(e\)/.test(onKeyBody) && !/preventDefault|stopPropagation|stopImmediatePropagation|return false/.test(onKeyBody), onKeyBody ?? '(no onKey listener found)')
-  ok('nothing else in the hook cancels a key: no preventDefault, and the one stopPropagation is the strip’s own (gotcha 145)', !/preventDefault/.test(micTsx) && (micTsx.match(/stopPropagation\(\)/g) ?? []).length === 1 && /onKeyDown=\{\(e\) => \{[\s\S]{0,120}e\.stopPropagation\(\)/.test(micTsx))
+  // The one preventDefault is Stop's mousedown (keepFocus, below), never a key's.
+  const keepFocusDef = /const keepFocus = \(e: \{[^}]*\}\): void => (e\.preventDefault\(\))\n/.exec(micTsx)
+  const keyless = micTsx.replace(keepFocusDef?.[0] ?? '', '')
+  ok('nothing else in the hook cancels a key: no preventDefault, and the one stopPropagation is the strip’s own (gotcha 145)', !/preventDefault/.test(keyless) && (micTsx.match(/stopPropagation\(\)/g) ?? []).length === 1 && /onKeyDown=\{\(e\) => \{[\s\S]{0,120}e\.stopPropagation\(\)/.test(micTsx))
+  /*
+   * The strip's Stop keeps focus in the terminal on press, as the stall
+   * overlay's buttons do: a mousedown that took focus made main end the stream
+   * as 'blur' before the click's 'stop' (measured in the built app), and left
+   * typing nowhere.
+   */
+  const stopButton = /<button\b[^>]*onClick=\{stop\}[^>]*>/.exec(micTsx)?.[0] ?? ''
+  ok('the strip’s Stop cancels its own mousedown (keepFocus), so the terminal keeps focus and the stream ends as stop, not blur', /onMouseDown=\{keepFocus\}/.test(stopButton), stopButton || '(no Stop button found)')
+  let prevented = 0
+  if (keepFocusDef) new Function('e', keepFocusDef[1])({ preventDefault: () => void prevented++ })
+  check('keepFocus is exactly a preventDefault of the press', [keepFocusDef !== null, prevented], [true, 1])
+  check('and it is on mousedown only, never on a key', [(micTsx.match(/onMouseDown=\{keepFocus\}/g) ?? []).length, /onKey\w*=\{keepFocus\}/.test(micTsx)], [1, false])
   // One record of what main was told, so neither of the two pane reporters can leave main on a state the other moved off.
   ok('every pane report goes through the one sendPane', (micTsx.match(/micTunnel\.pane\(/g) ?? []).length === 1 && /const sendPane = /.test(micTsx))
   ok('the microphone opens only on main’s open, through openMicrophone', /micTunnel\.onOpen\(/.test(micTsx) && /openMicrophone\(/.test(micTsx))

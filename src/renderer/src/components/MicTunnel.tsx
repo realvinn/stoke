@@ -5,7 +5,7 @@ import { microphoneError } from '@shared/voiceRoute'
 import { MIC_FRAME_SAMPLES, MIC_SAMPLE_RATE, micKeyOf, micStripText, type MicPane } from '@shared/micTunnel'
 // `no-inline`: under 4 KB Vite inlines an asset as a `data:` URL, and the renderer's CSP
 // (`script-src 'self'`) refuses a data: worklet module, so the built app fell back to the
-// ScriptProcessor (measured 2026-10-28). As a file it loads from 'self'.
+// ScriptProcessor (measured 2026-10-28). As a file it loads from 'self'. CLAUDE.md gotcha 167.
 import workletUrl from '../lib/micWorklet.js?url&no-inline'
 
 /*
@@ -29,6 +29,9 @@ import workletUrl from '../lib/micWorklet.js?url&no-inline'
 
 /** How long a "could not open the microphone" line stays. */
 const NOTICE_MS = 9000
+
+/** A press on the strip's Stop must not take focus from the terminal (main stops a stream on 'blur'). */
+const keepFocus = (e: { preventDefault: () => void }): void => e.preventDefault()
 
 interface Capture {
   streamId: string
@@ -321,7 +324,13 @@ export function useMicTunnel({
           <span className="voice-dot" data-state={live ? 'recording' : 'error'} />
           <span className="voice-text">{live ? micStripText(label) : notice}</span>
           {live && (
-            <button className="btn" data-size="sm" onClick={stop} aria-label={`Stop lending the microphone to ${label}`}>
+            /*
+             * The press keeps focus in the terminal (`keepFocus`, as the stall
+             * overlay's buttons do): a mousedown that took it would end the
+             * stream as 'blur' before the click said 'stop', and leave typing
+             * nowhere.
+             */
+            <button className="btn" data-size="sm" onMouseDown={keepFocus} onClick={stop} aria-label={`Stop lending the microphone to ${label}`}>
               Stop
             </button>
           )}

@@ -29,6 +29,13 @@
  *    that closes before any audio (stale, or Stoke refused) is skipped for the
  *    next. With none answering: the real `arecord` if there is one, else one
  *    line on stderr and exit 1.
+ *  - Stale sockets: sshd never unlinks a forwarded socket, so one file is
+ *    left per connection. A socket the connector finds REFUSING (ECONNREFUSED:
+ *    nobody listens) is removed only when all of these hold, checked again
+ *    after a second refused try: its path is exactly `/tmp/stoke-mic.<32
+ *    hex>.sock`, it is a socket and not a link, it is owned by this user, and
+ *    it is over 60 s old (a forward being set up now is younger). Nothing else
+ *    is ever removed, and a socket that answers is never touched.
  *  - Any other arguments: the real `arecord`, or a refusal. It never writes a
  *    format nobody asked for.
  *
@@ -38,9 +45,40 @@
  */
 
 const PYTHON = [
-  'import os, socket, stat, sys',
+  'import errno, os, socket, stat, sys, time',
   'real = sys.argv[1]; n = int(sys.argv[2]); orig = sys.argv[3:3 + n]; socks = sys.argv[3 + n:]',
   'uid = os.geteuid()',
+  'PREFIX = "/tmp/stoke-mic."',
+  // sshd never unlinks a forwarded socket (gotcha 165), so one is left behind per connection.
+  'def gone(path):',
+  '    if not path.startswith(PREFIX) or not path.endswith(".sock"):',
+  '        return',
+  '    tok = path[len(PREFIX):-len(".sock")]',
+  '    if len(tok) != 32 or tok.strip("0123456789abcdef"):',
+  '        return',
+  '    def stale():',
+  '        try:',
+  '            st = os.lstat(path)',
+  '        except OSError:',
+  '            return False',
+  '        return stat.S_ISSOCK(st.st_mode) and st.st_uid == uid and time.time() - st.st_mtime > 60',
+  '    if not stale():',
+  '        return',
+  '    time.sleep(0.1)',
+  '    t = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)',
+  '    try:',
+  '        t.connect(path)',
+  '        t.close()',
+  '        return',
+  '    except OSError as e:',
+  '        t.close()',
+  '        if e.errno != errno.ECONNREFUSED:',
+  '            return',
+  '    if stale():',
+  '        try:',
+  '            os.unlink(path)',
+  '        except OSError:',
+  '            pass',
   'for path in socks:',
   '    try:',
   '        st = os.lstat(path)',
@@ -53,6 +91,12 @@ const PYTHON = [
   '    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)',
   '    try:',
   '        s.connect(path)',
+  '    except OSError as e:',
+  '        s.close()',
+  '        if e.errno == errno.ECONNREFUSED:',
+  '            gone(path)',
+  '        continue',
+  '    try:',
   '        s.sendall((token + "\\n").encode("ascii"))',
   '    except OSError:',
   '        s.close()',
@@ -83,14 +127,27 @@ const PYTHON = [
 ].join('\n')
 
 const PERL = [
-  'use strict; use Socket;',
+  'use strict; use Socket; use Errno;',
   'my ($real, $n, @rest) = @ARGV; my @orig = splice(@rest, 0, $n); my $uid = $>;',
+  'my $PREFIX = "/tmp/stoke-mic.";',
+  // The same rule as the python connector's `gone`.
+  'sub gone {',
+  '  my ($p) = @_;',
+  '  return unless index($p, $PREFIX) == 0 && substr($p, length $PREFIX) =~ /^[0-9a-f]{32}\\.sock$/;',
+  '  my $stale = sub { my @st = lstat($p) or return 0; my $old = -S _ && $st[4] == $uid && time - $st[9] > 60; return $old ? 1 : 0 };',
+  '  return unless $stale->();',
+  '  select(undef, undef, undef, 0.1);',
+  '  socket(my $t, PF_UNIX, SOCK_STREAM, 0) or return;',
+  '  if (connect($t, pack_sockaddr_un($p))) { close $t; return }',
+  '  my $refused = $!{ECONNREFUSED}; close $t;',
+  '  unlink $p if $refused && $stale->();',
+  '}',
   'for my $path (@rest) {',
   '  my @st = lstat($path) or next;',
   '  next unless -S _ && $st[4] == $uid;',
   '  my ($tok) = $path =~ m{/stoke-mic\\.([0-9a-f]{32})\\.sock$} or next;',
   '  socket(my $s, PF_UNIX, SOCK_STREAM, 0) or next;',
-  '  connect($s, pack_sockaddr_un($path)) or do { close $s; next };',
+  '  connect($s, pack_sockaddr_un($path)) or do { my $refused = $!{ECONNREFUSED}; close $s; gone($path) if $refused; next };',
   '  syswrite($s, "$tok\\n");',
   '  my $got = 0;',
   '  while (1) {',

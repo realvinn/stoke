@@ -100,7 +100,7 @@
     "verify:theme-gen": "node --experimental-strip-types scripts/verify-theme-gen.mts",
     "verify:work-drafts": "node scripts/verify-work-drafts.mts",
     "verify:quick-terminal": "node scripts/verify-quick-terminal.mts",
-    "verify:pty-exit": "node scripts/verify-pty-exit.mts",
+    "verify:pty-exit": "node scripts/verify-pty-exit.mts --needs-display",
     "verify:terminal-stall": "node scripts/verify-terminal-stall.mts",
     "verify:work-session-notes": "node scripts/verify-work-session-notes.mts",
     "verify:launch-preflight": "node scripts/verify-launch-preflight.mts",

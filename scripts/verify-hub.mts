@@ -597,7 +597,18 @@ console.log('\nitems: the storage cap (storage.ts)')
   check(
     'sizes read the way the panel shows them',
     [0, 512, 1023, 1024, 1_258_291, 10_239, 26_214_400, 3 * 1024 ** 3].map(formatBytes),
-    ['0 bytes', '512 bytes', '1023 bytes', '1 KB', '1.2 MB', '10 KB', '25 MB', '3 GB']
+    ['0 bytes', '512 bytes', '1023 bytes', '1.0 KB', '1.2 MB', '10 KB', '25 MB', '3.0 GB']
+  )
+  // Rounded, then carried to the next unit: 1,048,575 bytes once read "1024 KB".
+  check(
+    'a size that rounds up to 1024 of a unit reads as the next unit, at every boundary',
+    [1023.4, 1023.6, 10_188, 10_189, 1_048_063, 1_048_064, 1_048_575, 1_048_576, 1024 ** 3 - 1, 1024 ** 4 - 1, 1024 ** 5, -5, NaN].map(formatBytes),
+    ['1023 bytes', '1.0 KB', '9.9 KB', '10 KB', '1023 KB', '1.0 MB', '1.0 MB', '1.0 MB', '1.0 GB', '1.0 TB', '1024 TB', '0 bytes', '0 bytes']
+  )
+  check(
+    'nothing ever reads 1024 of a unit below the top one',
+    [1, 2, 3].flatMap((u) => [1024 ** u * 1024 - 1, 1024 ** u * 1023.5, 1024 ** u * 1023.49]).map(formatBytes).filter((t) => /^1024 (KB|MB|GB)$/.test(t)),
+    []
   )
   check(
     'an operator’s size: binary K/M/G with or without B/iB, any case',

@@ -26,7 +26,7 @@ import { basename, dirname, isAbsolute, join } from 'node:path'
 import { CH } from '@shared/ipc'
 import { AgentLifecycleGate } from '../shared/agentLifecycle.ts'
 import { QuickTerminal } from './quickTerminal.ts'
-import { ownedPtyExits } from './ptyExitTracker.ts'
+import { holdQuitForPtys, ownedPtyExits, type QuitSettleReport } from './ptyExitTracker.ts'
 import { boundUsageReading, readRemoteUsage, UsageBindings, usageCacheKey } from './usageBindings.ts'
 import { AccountIdentities, planAccountIdentity, probeAccountIdentity } from './accountIdentity.ts'
 import { configureWindowsAccountIdentityLibrary } from './accountIdentityWindows.ts'
@@ -6338,10 +6338,20 @@ if (!app.requestSingleInstanceLock(launchRequest ? { stokeCli: launchRequest } :
   })
 
   let quitReady = false
+  /*
+   * Whether this quit drains, decided once, at the FIRST before-quit. The
+   * will-quit hold (`holdQuitForPtys`) quits again once its children are gone,
+   * and Electron runs before-quit again for that quit. Decided afresh there, an
+   * account check that started during the hold (one waiting on the secret
+   * store's open at the press) would make it a drain no one ever ends: this
+   * handler returns below without quitting again, and a windowless Stoke stays.
+   * CLAUDE.md gotcha 170.
+   */
+  let quitDrains: boolean | null = null
   app.on('before-quit', event => {
     // Window.close may have already removed the manager. The process-wide
     // tracker still owns its native callbacks, including earlier tab closes.
-    const drain = process.platform === 'win32' || accountIdentities.pendingCount > 0
+    const drain = (quitDrains ??= process.platform === 'win32' || accountIdentities.pendingCount > 0)
     if (drain && !quitReady) event.preventDefault()
     if (appQuitting) return
     appQuitting = true
@@ -6380,7 +6390,10 @@ if (!app.requestSingleInstanceLock(launchRequest ? { stokeCli: launchRequest } :
     tunnel.stop()
     hubClient?.stop()
     if (drain) {
-      void Promise.all([identityDrain, process.platform === 'win32' ? ownedPtyExits.wait() : Promise.resolve(0)]).then(([identities, remaining]) => {
+      // Windows waits here, windows still open, for ConPTY's exits; `settle` also
+      // taskkills a tree still running after the grace (gotcha 163). Elsewhere the
+      // pty wait is will-quit's (`holdQuitForPtys` below), once the windows are gone.
+      void Promise.all([identityDrain, process.platform === 'win32' ? ownedPtyExits.settle().then(reportQuitSettle) : Promise.resolve(0)]).then(([identities, remaining]) => {
         if (identities) console.error(`[stoke] Account identity quit drain: ${identities} pending`)
         // Bound shutdown without claiming missing exits or killing an app.
         const message = `[stoke] PTY quit drain: ${remaining} pending`
@@ -6390,4 +6403,18 @@ if (!app.requestSingleInstanceLock(launchRequest ? { stokeCli: launchRequest } :
       })
     }
   })
+  /*
+   * After every window has closed: a pty child still running would hold
+   * Stoke's process inside Node's teardown for as long as it lived (gotcha
+   * 163), so the quit waits here for the children, ending any still running
+   * after the grace, then quits again. Registered after before-quit and
+   * changing nothing in it.
+   */
+  holdQuitForPtys(app, ownedPtyExits, undefined, reportQuitSettle)
+}
+
+/** One line for a quit that had to end a pty child's tree; the remaining count for the drain's own line. */
+function reportQuitSettle(r: QuitSettleReport): number {
+  if (r.escalated.length) console.error(`[stoke] Quit: ${r.escalated.length} terminal process(es) still running after the grace; their process trees were ended (${r.outcomes.join(', ')})`)
+  return r.remaining
 }

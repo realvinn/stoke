@@ -122,18 +122,28 @@ const UNITS = ['KB', 'MB', 'GB', 'TB'] as const
 /**
  * A size for a person: "512 bytes", "1.2 MB", "25 MB". Binary units under the
  * familiar names (a 25 MiB cap reads "25 MB"), the convention the operator's
- * `--cap 25M` and `STOKE_HUB_STORAGE_CAP` use too.
+ * `--cap 25M` and `STOKE_HUB_STORAGE_CAP` use too. Under 10 of a unit it shows
+ * one decimal ("1.0 MB"), from 10 a whole number.
+ *
+ * Rounded first, then carried: 1,048,575 bytes is 1023.999 KB, which rounds
+ * to 1024 and so reads "1.0 MB", never "1024 KB" (as it did).
  */
 export function formatBytes(n: number): string {
-  if (!Number.isFinite(n) || n < 1024) return `${Math.max(0, Math.round(Number.isFinite(n) ? n : 0))} bytes`
-  let v = n
-  let unit = -1
+  const bytes = Number.isFinite(n) ? Math.round(n) : 0
+  if (bytes < 1024) return `${Math.max(0, bytes)} bytes`
+  let v = bytes / 1024
+  let unit = 0
   while (v >= 1024 && unit < UNITS.length - 1) {
     v /= 1024
     unit++
   }
-  const shown = v < 10 ? Number(v.toFixed(1)) : Math.round(v)
-  return `${shown} ${UNITS[unit]}`
+  // 9.95 and up would print "10.0" with one decimal: it is a whole 10.
+  let shown = v < 9.95 ? Math.round(v * 10) / 10 : Math.round(v)
+  if (shown >= 1024 && unit < UNITS.length - 1) {
+    unit++
+    shown = 1
+  }
+  return `${shown < 10 ? shown.toFixed(1) : String(shown)} ${UNITS[unit]}`
 }
 
 /**

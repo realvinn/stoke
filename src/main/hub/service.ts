@@ -2720,19 +2720,38 @@ export class HubService {
       const keyId = idFromBytes('sshKey', randomU8(10))
       await this.mintHostIds(this.scope())
       const keyPath = join(this.ssh.dir, name)
+      // Each host's refs as they were, so a share the hub does not take leaves no host pointing at it.
+      const before: Array<[string, string[] | undefined]> = []
       for (const h of this.settings().hosts as SyncableHost[]) {
         if (!isId('host', h.syncId)) continue
         const files = await identityFilesFor(h.alias.trim(), this.ssh, this.deps.exec)
-        if (files?.includes(keyPath)) st.keyRefs[h.syncId] = [...new Set([...(st.keyRefs[h.syncId] ?? []), keyId])].sort()
+        if (!files?.includes(keyPath)) continue
+        before.push([h.syncId, st.keyRefs[h.syncId]])
+        st.keyRefs[h.syncId] = [...new Set([...(st.keyRefs[h.syncId] ?? []), keyId])].sort()
+      }
+      const undoRefs = (): void => {
+        for (const [id, refs] of before.reverse()) {
+          if (refs === undefined) delete st.keyRefs[id]
+          else st.keyRefs[id] = refs
+        }
       }
       const keys = await this.keysFor(v, v.epoch)
-      if (!keys) return { ok: false, message: 'This device does not hold the vault key.' }
+      if (!keys) {
+        undoRefs()
+        return { ok: false, message: 'This device does not hold the vault key.' }
+      }
       const path = `t4/ssh-key/${keyId}`
       const editedAt = nextEditedAt(this.now(), st.lastEditedAt)
       st.lastEditedAt = editedAt
       const hash = valueDigest(this.digest, { deleted: false, value: payload })
       const refusedBefore = this.spaceRefused
-      await this.upload([{ path, local: { deleted: false, value: payload }, hash, editedAt, over: null }], v, keys)
+      try {
+        await this.upload([{ path, local: { deleted: false, value: payload }, hash, editedAt, over: null }], v, keys)
+      } catch (err) {
+        undoRefs()
+        throw err
+      }
+      if (!st.records[path]) undoRefs()
       if (!st.records[path] && this.spaceRefused > refusedBefore) {
         return { ok: false, message: 'The hub has no room left for this account, so the key was not shared. Remove something you sync to make room, or ask the hub’s owner for more.' }
       }
