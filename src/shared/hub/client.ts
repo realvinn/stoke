@@ -17,6 +17,7 @@ import type { Settings } from '../types.ts'
 import { isB64u, isId, isNonNegInt, isRecord, stableJson } from './codec.ts'
 import { chainEntryProblem, type ChainEntry, type PinnedChain } from './chain.ts'
 import { HUB_LIMITS } from './protocol.ts'
+import type { HubStorage } from './storage.ts'
 import {
   conflictNote,
   decideConflict,
@@ -919,6 +920,23 @@ export interface HubView {
    * here runs something — it could have changed those before it was removed.
    */
   revokeReport: { device: string; keys: string[]; sshKeys: string[]; commands: string[] } | null
+  /**
+   * What the account keeps on the hub and may keep (storage.ts), as the hub
+   * last said; null before it has (an older hub never says). `full`: the last
+   * pass had puts the hub refused for room, how many and when; null once a
+   * pass uploads everything it had (or has nothing waiting).
+   */
+  storage?: (HubStorage & { full: { at: number; refused: number } | null }) | null
+}
+
+/**
+ * What the panel says when the hub has refused changes for room. Nothing is
+ * lost: those changes stay on this computer and go up at the next sync with
+ * room for them, the ordinary interval or the next change, never sooner.
+ */
+export function storageFullSentence(refused: number): string {
+  const n = refused === 1 ? '1 change could not be synced. It stays' : `${refused} changes could not be synced. They stay`
+  return `The hub has no room left for this account, so ${n} on this computer. Remove something you sync (an SSH host, an SSH key, an API key) to make room, or ask the hub’s owner for more.`
 }
 
 /** A fresh, empty view (the panel's first paint before main answers). */
@@ -946,7 +964,8 @@ export function emptyHubView(): HubView {
     alarm: null,
     held: [],
     kitPending: false,
-    revokeReport: null
+    revokeReport: null,
+    storage: null
   }
 }
 

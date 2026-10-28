@@ -10,6 +10,7 @@
  *   invite [--role member|owner]  mint an invite and print it
  *   backup <dir> [--keep 14]      a consistent copy of the database (VACUUM INTO), keeping the newest N
  *   reset-password <email> [--sign-out]   new password from stdin, or a generated one on a terminal
+ *   storage [<email> [--cap <size>|default]]   what each account keeps and may keep; give one its own cap
  *   health [--url <hub base>]     ask a hub whether it is up (the local edge listener by default)
  *   version | help
  *
@@ -18,8 +19,8 @@
  */
 import { existsSync, mkdirSync, readdirSync, rmSync, chmodSync } from 'node:fs'
 import { join } from 'node:path'
-import { emailThrottleKey, ensureBootstrapInvite, bootstrapAnnouncement, HUB_SERVER_VERSION, mintInvite, startHub, type HubHandle } from './app.ts'
-import { configFrom, dataDirFrom, DEFAULT_EDGE_LISTEN, parseListen, parseMount, readEdgeSecret } from './config.ts'
+import { emailThrottleKey, ensureBootstrapInvite, bootstrapAnnouncement, HUB_SERVER_VERSION, mintInvite, startHub, STORAGE_DEFAULT_META, type HubHandle } from './app.ts'
+import { configFrom, dataDirFrom, DEFAULT_EDGE_LISTEN, parseListen, parseMount, readEdgeSecret, storageCapFrom } from './config.ts'
 import { HubLog, type LogLevel } from './log.ts'
 import { DB_FILE, HubStore } from './store.ts'
 import { INVITE_TTL_MS, normalizeEmail, passwordProblem } from '../src/shared/hub/auth.ts'
@@ -27,6 +28,7 @@ import { base32Encode, groupsOf } from '../src/shared/hub/codec.ts'
 import { hubEndpoint } from '../src/shared/hub/edge.ts'
 import { HUB_HEADERS, readHubResponse } from '../src/shared/hub/protocol.ts'
 import { hashPassword, randomU8 } from '../src/main/hub/crypto.ts'
+import { formatBytes, parseByteSize } from '../src/shared/hub/storage.ts'
 
 const BOOLEAN_FLAGS = new Set(['sign-out', 'help'])
 
@@ -49,10 +51,14 @@ function parseArgs(argv: string[]): { cmd: string; args: string[]; flags: Record
 const HELP = `stoke-hub ${HUB_SERVER_VERSION} — Stoke's sync and remote hub
 
   stoke-hub serve                          run it (env: STOKE_HUB_DATA, STOKE_HUB_LISTEN,
-                                           STOKE_HUB_LAN, STOKE_HUB_MOUNT, HUB_EDGE_SECRET[_FILE])
+                                           STOKE_HUB_LAN, STOKE_HUB_MOUNT, HUB_EDGE_SECRET[_FILE],
+                                           STOKE_HUB_STORAGE_CAP)
   stoke-hub invite [--role member|owner]   mint a one-use invite (7 days)
   stoke-hub backup <dir> [--keep 14]       consistent copy of the database into <dir>
   stoke-hub reset-password <email> [--sign-out]
+  stoke-hub storage [<email>]              what each account keeps, and its cap
+  stoke-hub storage <email> --cap 100M     give one account its own cap (K, M, G: binary units)
+  stoke-hub storage <email> --cap default  back to the hub's (STOKE_HUB_STORAGE_CAP, default 25M)
   stoke-hub health [--url <hub base>]
   stoke-hub version
 
@@ -218,6 +224,64 @@ async function resetPassword(args: string[], flags: Record<string, string | unde
   }
 }
 
+/**
+ * `stoke-hub storage`: what every account keeps against its cap, or one
+ * account's, and `--cap` to give one account its own figure (or `default`).
+ * A running hub reads the cap from the account's row on every put, so a
+ * change counts from the next request; nothing restarts. The hub's default is
+ * the one the hub last started with (it records it), so this command shows the
+ * figure in force even when run without the service's environment.
+ */
+function storage(args: string[], flags: Record<string, string | undefined>): void {
+  process.umask(0o077)
+  const capFlag = flags.cap
+  // `--cap` as the last word parses as a flag with no value: refuse it rather than quietly list (review, 2026-10-28).
+  if ('cap' in flags && capFlag === undefined) fail('--cap needs a size: stoke-hub storage you@example.com --cap 100M (or --cap default).')
+  if (capFlag !== undefined && !args[0]) fail('--cap needs the account’s email: stoke-hub storage you@example.com --cap 100M')
+  let newCap: number | null | undefined
+  if (capFlag !== undefined) {
+    if (capFlag.trim().toLowerCase() === 'default') newCap = null
+    else {
+      const n = parseByteSize(capFlag)
+      if (n === null) fail(`--cap takes a size like 100M or 1G (binary units), or default, not ${JSON.stringify(capFlag)}.`)
+      newCap = n
+    }
+  }
+  const store = openStore(flags)
+  try {
+    const recordedText = store.meta(STORAGE_DEFAULT_META)
+    const recorded = recordedText === null ? NaN : Number(recordedText)
+    const hubDefault = Number.isSafeInteger(recorded) && recorded >= 0 ? recorded : storageCapFrom(process.env.STOKE_HUB_STORAGE_CAP)
+    const capText = (cap: number | null): string => (cap === null ? `${formatBytes(hubDefault)} (the hub’s default)` : `${formatBytes(cap)} (its own)`)
+    const email = args[0] ? normalizeEmail(args[0]) : null
+    if (args[0] && !email) fail(`${JSON.stringify(args[0])} is not an email.`)
+    const rows = store.accountsWithUsage()
+    if (!email) {
+      if (!rows.length) return out('No accounts on this hub yet.')
+      const lines = rows.map((r) => {
+        const cap = r.storage_cap ?? hubDefault
+        const over = Number(r.bytes) > cap ? '  OVER: its devices can only delete until it fits' : ''
+        return `  ${r.email}  ${r.role}  ${Number(r.items)} item${Number(r.items) === 1 ? '' : 's'}  ${formatBytes(Number(r.bytes))} of ${capText(r.storage_cap)}${over}`
+      })
+      return out(`Storage on this hub (the default cap is ${formatBytes(hubDefault)}):\n${lines.join('\n')}`)
+    }
+    const row = rows.find((r) => r.email === email)
+    if (!row) fail(`no account on this hub has the email ${email}.`, 2)
+    const was = row.storage_cap
+    if (newCap !== undefined) store.setStorageCap(row.id, newCap)
+    const cap = newCap === undefined ? was : newCap
+    const effective = cap ?? hubDefault
+    const used = Number(row.bytes)
+    out(
+      `${email} keeps ${formatBytes(used)} in ${Number(row.items)} item${Number(row.items) === 1 ? '' : 's'}; its cap is ${capText(cap)}.` +
+        (newCap !== undefined ? `\n  Was ${capText(was)}. The running hub uses the new figure from its next request.` : '') +
+        (used > effective ? '\n  It is over its cap: its devices can delete and shrink what they sync, and nothing can grow until it fits.' : '')
+    )
+  } finally {
+    store.close()
+  }
+}
+
 async function health(flags: Record<string, string | undefined>): Promise<void> {
   const env = process.env
   let base: string
@@ -259,6 +323,8 @@ async function main(): Promise<void> {
         return backup(args, flags)
       case 'reset-password':
         return await resetPassword(args, flags)
+      case 'storage':
+        return storage(args, flags)
       case 'health':
         return await health(flags)
       case 'version':

@@ -16,6 +16,7 @@ import { isRecord, labelled } from './codec.ts'
 import type { ItemEnvelope, StoredItem } from './items.ts'
 import { HUB_LABELS } from './labels.ts'
 import type { PairRecord } from './pairing.ts'
+import type { HubStorage } from './storage.ts'
 
 export const HUB_PROTOCOL = 1
 export const HUB_API_PREFIX = '/v1'
@@ -86,6 +87,11 @@ export const HUB_LIMITS = {
   itemsPerAccount: 5000,
   /** Items per page of the change feed. */
   itemsPerPage: 500,
+  /*
+   * Bytes of items per account are not here: the cap is the operator's
+   * (`STOKE_HUB_STORAGE_CAP`, `stoke-hub storage --cap`), default
+   * `DEFAULT_STORAGE_CAP_BYTES`, and the rule is storage.ts's.
+   */
   /** Chain entries per account (a long life of devices). */
   chainEntries: 1000,
   /** Active devices per account. */
@@ -354,6 +360,8 @@ export interface AccountResponse {
   role: 'owner' | 'member'
   /** The chain's current epoch and head, or null before genesis. */
   chain: { seq: number; head: string; epoch: number } | null
+  /** What the account keeps and may keep (storage.ts). Absent from a hub older than 2026-10-28. */
+  storage?: HubStorage
 }
 
 export interface InviteResponse {
@@ -432,6 +440,8 @@ export interface ItemsResponse {
   more: boolean
   /** The account's current epoch, so a client notices a rotation it missed. */
   epoch: number
+  /** What the account keeps and may keep, on every page (storage.ts). Absent from an older hub. */
+  storage?: HubStorage
 }
 
 export interface ItemsPutRequest {
@@ -442,8 +452,17 @@ export type ItemPutResult =
   | { id: string; ok: false; error: 'conflict'; current: StoredItem }
   | { id: string; ok: false; error: 'stale-epoch'; epoch: number }
   | { id: string; ok: false; error: 'invalid'; reason: string }
+  /**
+   * No room for it (storage.ts `storageVerdict`, or `HUB_LIMITS.itemsPerAccount`).
+   * The rest of the request is decided as usual and the response is still 200.
+   * A client from before this code (beta.15–beta.19) takes it as any other
+   * refusal: it logs `reason` and tries again at its next pass, never sooner.
+   */
+  | { id: string; ok: false; error: 'full'; reason: string; storage: HubStorage }
 export interface ItemsPutResponse {
   results: ItemPutResult[]
+  /** What the account keeps after these puts. Absent from an older hub. */
+  storage?: HubStorage
 }
 
 /** `POST /v1/items/prune`: delete every envelope sealed under an epoch below this (after a rotation re-sealed them). */

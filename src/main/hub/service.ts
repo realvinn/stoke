@@ -75,6 +75,7 @@ import {
   nextSyncDelay,
   planSync,
   recordCounts,
+  storageFullSentence,
   SYNC_DEBOUNCE_MS,
   valueDigest,
   verifyResultFor,
@@ -106,6 +107,7 @@ import {
   type VaultWrap
 } from '../../shared/hub/protocol.ts'
 import { keyFingerprint, RELAY_MAX_FRAME_BYTES, type HubGrant } from '../../shared/hub/relay.ts'
+import { parseHubStorage, type HubStorage } from '../../shared/hub/storage.ts'
 import { HubPresence, type PresenceSocket } from './presence.ts'
 import { CHATS_REDACTION_BLOCK, emptyRemoteView, isAttachAnswer, type HubRemoteView, type RemoteChatOpen, type RemoteChatsResult } from '../../shared/hub/remote.ts'
 import { applySyncedSettings, heldChangesFor, runsCode, sshKeyPayloadProblem, type SshKeyPayload, type SyncableHost } from '../../shared/hub/settings.ts'
@@ -307,6 +309,17 @@ export class HubService {
   private syncQueued: boolean
   private failures: number
   private lastError: HubView['error']
+  /** What the hub last said this account keeps and may keep; null until it has (an older hub never says). */
+  private storage: HubStorage | null
+  /**
+   * The last pass's puts the hub refused for room (`full`), and when. Not an
+   * error: the rest of the pass synced, and the refused changes go up at the
+   * next pass that has room — the ordinary interval or the next change, as
+   * any refusal always did (storage.ts says why never sooner).
+   */
+  private storageFull: { at: number; refused: number } | null
+  /** `full` answers counted during the current pass's uploads. */
+  private spaceRefused: number
   private syncTimer: ReturnType<typeof setTimeout> | null
   private stampTimer: ReturnType<typeof setTimeout> | null
   private pairTimer: ReturnType<typeof setTimeout> | null
@@ -375,6 +388,9 @@ export class HubService {
     this.syncQueued = false
     this.failures = 0
     this.lastError = null
+    this.storage = null
+    this.storageFull = null
+    this.spaceRefused = 0
     this.syncTimer = null
     this.stampTimer = null
     this.pairTimer = null
@@ -646,6 +662,7 @@ export class HubService {
     v.busy = this.busyLabel
     v.lastSyncAt = this.state?.lastSyncAt ?? null
     v.error = this.revoked ? { message: this.revoked, at: this.now(), retryAt: null } : this.lastError
+    v.storage = this.storage ? { ...this.storage, full: this.storageFull } : null
     const scope = this.scope()
     v.scope = { ...scope, keysDevice: s.hub.sync.keys, accountsDevice: s.hub.sync.accounts }
     v.accountKeys = this.state?.prefs.syncKeys?.on ?? null
@@ -974,6 +991,8 @@ export class HubService {
       this.online = []
       this.lastError = null
       this.failures = 0
+      this.storage = null
+      this.storageFull = null
       this.revokeReport = null
       this.vkCache.clear()
       // Every standing this computer gave its other devices goes with the account: sessions and chat history alike.
@@ -1834,6 +1853,7 @@ export class HubService {
     for (;;) {
       const page = await this.req('GET', `/v1/items?since=${since}&limit=${ITEMS_PAGE}`)
       pages++
+      this.noteStorage(page.storage)
       let done = false
       for (const s of (Array.isArray(page.items) ? page.items : []) as StoredItem[]) {
         if (!isRecord(s) || !isRecord(s.envelope) || typeof s.envelope.id !== 'string') continue
@@ -1965,9 +1985,12 @@ export class HubService {
         }
       })
       const res = await this.req('POST', '/v1/items', { puts: batch.map((b) => ({ baseVersion: 0, envelope: b.envelope })) })
+      this.noteStorage(res.storage)
       const results = Array.isArray(res.results) ? res.results : []
       batch.forEach((b, idx) => {
-        const r = results[idx] as { ok?: boolean; version?: number } | undefined
+        const r = results[idx] as { ok?: boolean; version?: number; error?: unknown } | undefined
+        // The hub leaves a re-seal room by design (storage.ts `storageBudget`); a refusal here is worth a line.
+        if (r?.error === 'full') this.log(`hub: the hub had no room to re-seal ${b.item.path}`)
         if (!r?.ok) return
         st.seen[b.envelope.id] = Math.max(st.seen[b.envelope.id] ?? 0, b.envelope.version)
         const old = st.records[b.item.path]
@@ -2135,6 +2158,8 @@ export class HubService {
       if (!this.signedIn()) return { ok: false, message: 'Your hub session ended. Sign in again.' }
       await this.pass()
       if (this.lastError) return { ok: false, message: this.lastError.message }
+      // Everything else synced; the press still must not answer "Synced." over changes the hub had no room for.
+      if (this.storageFull) return { ok: false, message: storageFullSentence(this.storageFull.refused) }
       return { ok: true }
     })
   }
@@ -2376,7 +2401,9 @@ export class HubService {
       await this.mintHostIds(scope)
       const second = plan()
       for (const r of second.adopt) this.adopt(r)
+      this.spaceRefused = 0
       await this.upload(second.upload, v, keys)
+      this.storageFull = this.spaceRefused ? { at: this.now(), refused: this.spaceRefused } : null
       // A held change the vault has moved on from (a newer value, or this device's own went up over it) is no longer waiting.
       for (const [path, h] of Object.entries(st.held)) if (st.records[path]?.hash !== h.hash) delete st.held[path]
       this.dropOldVaultKeys(v.epoch)
@@ -2405,6 +2432,12 @@ export class HubService {
         this.emit()
       }
     }
+  }
+
+  /** Keep what the hub says about room (`storage`, on items pages and put answers); anything else is ignored. */
+  private noteStorage(v: unknown): void {
+    const s = parseHubStorage(v)
+    if (s) this.storage = s
   }
 
   private hostName(syncId: string): string {
@@ -2577,6 +2610,7 @@ export class HubService {
         return { u, baseVersion, envelope }
       })
       const res = await this.req('POST', '/v1/items', { puts: batch.map((b) => ({ baseVersion: b.baseVersion, envelope: b.envelope })) })
+      this.noteStorage(res.storage)
       const results = Array.isArray(res.results) ? res.results : []
       for (let j = 0; j < batch.length; j++) {
         const { u, envelope } = batch[j]
@@ -2602,6 +2636,12 @@ export class HubService {
           else theirs.push(other)
         } else if (r?.error === 'stale-epoch') {
           stale = true
+        } else if (r?.error === 'full') {
+          // No room: nothing is retried in this pass, the change stays planned for the next one.
+          // Its own `storage` is the figure when IT was judged; the answer's (noted above) is the
+          // one after the whole request, puts taken beside it included, so that one stands.
+          this.spaceRefused++
+          this.log(`hub: no room on the hub for ${u.path}: ${String(r.reason ?? 'full')}`)
         } else if (r) {
           this.log(`hub: the hub refused ${u.path}: ${String(r.reason ?? r.error)}`)
         }
@@ -2683,7 +2723,11 @@ export class HubService {
       const editedAt = nextEditedAt(this.now(), st.lastEditedAt)
       st.lastEditedAt = editedAt
       const hash = valueDigest(this.digest, { deleted: false, value: payload })
+      const refusedBefore = this.spaceRefused
       await this.upload([{ path, local: { deleted: false, value: payload }, hash, editedAt, over: null }], v, keys)
+      if (!st.records[path] && this.spaceRefused > refusedBefore) {
+        return { ok: false, message: 'The hub has no room left for this account, so the key was not shared. Remove something you sync to make room, or ask the hub’s owner for more.' }
+      }
       if (!st.records[path]) return { ok: false, message: 'The hub did not take the key.' }
       st.shared[keyId] = { name: payload.name, fingerprint: payload.fingerprint, comment: payload.comment, passphrase: payload.passphrase, path: keyPath, at: this.now() }
       this.saveState()

@@ -22,6 +22,16 @@
  * Relays are NOT here: they are pairs of live sockets, meaningless after a
  * restart, so the relay broker holds them in memory (hub/sockets.ts).
  *
+ * What each account keeps is counted in `item_usage` (bytes and items per
+ * account and epoch), which only the triggers on `items` write — in the same
+ * statement as the item, so every write path (a put, a prune, a cascade) keeps
+ * it exact and no request ever scans `items` to learn it. A database from
+ * before the count is upgraded in place on open (`upgradeItemUsage`), once.
+ * The cap that count is judged against is the hub's default
+ * (`STOKE_HUB_STORAGE_CAP`), or `accounts.storage_cap` where the operator set
+ * one (`stoke-hub storage <email> --cap`); src/shared/hub/storage.ts has why
+ * and the rule.
+ *
  * `node:sqlite` binds a JS number as REAL (gotcha 125). Every column compared
  * here is an ordinary INTEGER-affinity column, which converts on write and
  * compares numerically, so nothing needs a cast; no virtual table is used.
@@ -43,7 +53,8 @@ CREATE TABLE IF NOT EXISTS accounts (
   role TEXT NOT NULL CHECK (role IN ('owner', 'member')),
   created_at INTEGER NOT NULL,
   status TEXT NOT NULL DEFAULT 'active',
-  item_seq INTEGER NOT NULL DEFAULT 0
+  item_seq INTEGER NOT NULL DEFAULT 0,
+  storage_cap INTEGER
 );
 CREATE TABLE IF NOT EXISTS invites (
   hash TEXT PRIMARY KEY,
@@ -98,6 +109,13 @@ CREATE TABLE IF NOT EXISTS items (
   PRIMARY KEY (account_id, id)
 );
 CREATE INDEX IF NOT EXISTS items_seq ON items(account_id, seq);
+CREATE TABLE IF NOT EXISTS item_usage (
+  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  epoch INTEGER NOT NULL,
+  items INTEGER NOT NULL,
+  bytes INTEGER NOT NULL,
+  PRIMARY KEY (account_id, epoch)
+);
 CREATE TABLE IF NOT EXISTS pairs (
   id TEXT PRIMARY KEY,
   account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
@@ -132,6 +150,36 @@ CREATE TABLE IF NOT EXISTS nonces (
 CREATE INDEX IF NOT EXISTS nonces_seen ON nonces(seen_at);
 `
 
+/**
+ * The triggers that keep `item_usage` (see the header). Bytes are the UTF-8
+ * length of the stored envelope, `length(CAST(… AS BLOB))`, which is what
+ * `Buffer.byteLength` gives the server for the same text. An upsert that
+ * takes its DO UPDATE path fires the UPDATE trigger, not the INSERT one
+ * (measured on node:sqlite, 2026-10-28). A row that reaches no items goes.
+ * Bump `ITEM_USAGE_VERSION` whenever this text changes: the upgrade drops and
+ * recreates the triggers and recounts from the rows themselves.
+ */
+const ITEM_USAGE_VERSION = '1'
+const ITEM_USAGE_TRIGGERS = `
+DROP TRIGGER IF EXISTS item_usage_insert;
+DROP TRIGGER IF EXISTS item_usage_update;
+DROP TRIGGER IF EXISTS item_usage_delete;
+CREATE TRIGGER item_usage_insert AFTER INSERT ON items BEGIN
+  INSERT INTO item_usage(account_id, epoch, items, bytes) VALUES (NEW.account_id, NEW.epoch, 1, length(CAST(NEW.envelope_json AS BLOB)))
+    ON CONFLICT(account_id, epoch) DO UPDATE SET items = items + 1, bytes = bytes + excluded.bytes;
+END;
+CREATE TRIGGER item_usage_update AFTER UPDATE OF account_id, epoch, envelope_json ON items BEGIN
+  UPDATE item_usage SET items = items - 1, bytes = bytes - length(CAST(OLD.envelope_json AS BLOB)) WHERE account_id = OLD.account_id AND epoch = OLD.epoch;
+  INSERT INTO item_usage(account_id, epoch, items, bytes) VALUES (NEW.account_id, NEW.epoch, 1, length(CAST(NEW.envelope_json AS BLOB)))
+    ON CONFLICT(account_id, epoch) DO UPDATE SET items = items + 1, bytes = bytes + excluded.bytes;
+  DELETE FROM item_usage WHERE account_id = OLD.account_id AND epoch = OLD.epoch AND items <= 0;
+END;
+CREATE TRIGGER item_usage_delete AFTER DELETE ON items BEGIN
+  UPDATE item_usage SET items = items - 1, bytes = bytes - length(CAST(OLD.envelope_json AS BLOB)) WHERE account_id = OLD.account_id AND epoch = OLD.epoch;
+  DELETE FROM item_usage WHERE account_id = OLD.account_id AND epoch = OLD.epoch AND items <= 0;
+END;
+`
+
 export type Role = 'owner' | 'member'
 
 export interface AccountRow {
@@ -142,6 +190,15 @@ export interface AccountRow {
   created_at: number
   status: string
   item_seq: number
+  /** The operator's cap for this account in bytes; null: the hub's default. */
+  storage_cap: number | null
+}
+
+/** One account's items under one epoch, as the triggers keep them. */
+export interface ItemUsageRow {
+  epoch: number
+  items: number
+  bytes: number
 }
 
 export interface InviteRow {
@@ -227,7 +284,40 @@ export class HubStore {
     const pairColumns = (this.db.prepare('PRAGMA table_info(pairs)').all() as { name: string }[]).map((c) => c.name)
     if (!pairColumns.includes('device_sign')) this.db.exec("ALTER TABLE pairs ADD COLUMN device_sign TEXT NOT NULL DEFAULT ''")
     this.q('INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING').run('schema', SCHEMA_VERSION)
+    this.upgradeItemUsage()
     this.lockDown()
+  }
+
+  /**
+   * Give a database from before the storage count its column, its triggers and
+   * its count, in ONE transaction, so no crash can leave triggers without a
+   * count or a count without triggers. The count is made from the rows
+   * themselves; a database already at `ITEM_USAGE_VERSION` is left alone, and
+   * the check is inside the transaction, so a hub and a `stoke-hub` command
+   * opening the same file at once cannot both run it (BEGIN IMMEDIATE waits).
+   * Returns whether it ran (verify:hub-server holds both answers).
+   */
+  upgradeItemUsage(): boolean {
+    return this.tx(() => {
+      const accountColumns = (this.db.prepare('PRAGMA table_info(accounts)').all() as { name: string }[]).map((c) => c.name)
+      if (!accountColumns.includes('storage_cap')) this.db.exec('ALTER TABLE accounts ADD COLUMN storage_cap INTEGER')
+      if (this.meta('item_usage') === ITEM_USAGE_VERSION) return false
+      this.db.exec(ITEM_USAGE_TRIGGERS)
+      this.db.exec('DELETE FROM item_usage')
+      this.db.exec(
+        'INSERT INTO item_usage(account_id, epoch, items, bytes) SELECT account_id, epoch, count(*), sum(length(CAST(envelope_json AS BLOB))) FROM items GROUP BY account_id, epoch'
+      )
+      this.setMeta('item_usage', ITEM_USAGE_VERSION)
+      return true
+    })
+  }
+
+  meta(key: string): string | null {
+    return (this.q('SELECT value FROM meta WHERE key = ?').get(key) as { value: string } | undefined)?.value ?? null
+  }
+
+  setMeta(key: string, value: string): void {
+    this.q('INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, value)
   }
 
   /** 0600 on the database and whichever of its WAL and shared-memory files exist now. */
@@ -310,6 +400,18 @@ export class HubStore {
 
   setPasswordHash(accountId: string, pwHash: string): void {
     this.q('UPDATE accounts SET pw_hash = ? WHERE id = ?').run(pwHash, accountId)
+  }
+
+  /** The operator's cap for one account, in bytes; null goes back to the hub's default. */
+  setStorageCap(accountId: string, cap: number | null): void {
+    this.q('UPDATE accounts SET storage_cap = ? WHERE id = ?').run(cap, accountId)
+  }
+
+  /** Every account with what it keeps (`stoke-hub storage`), oldest first. */
+  accountsWithUsage(): (AccountRow & { items: number; bytes: number })[] {
+    return this.q(
+      'SELECT a.*, coalesce(sum(u.items), 0) AS items, coalesce(sum(u.bytes), 0) AS bytes FROM accounts a LEFT JOIN item_usage u ON u.account_id = a.id GROUP BY a.id ORDER BY a.created_at, a.email'
+    ).all() as unknown as (AccountRow & { items: number; bytes: number })[]
   }
 
   /** The account's next change-feed position, taken inside the caller's transaction. */
@@ -482,8 +584,13 @@ export class HubStore {
     ) as unknown as ItemRow[]
   }
 
-  itemCount(accountId: string): number {
-    return Number((this.q('SELECT count(*) AS n FROM items WHERE account_id = ?').get(accountId) as { n: number }).n)
+  /** The account's items per epoch, from the count the triggers keep: a row or two, never a scan of `items`. */
+  itemUsage(accountId: string): ItemUsageRow[] {
+    return (this.q('SELECT epoch, items, bytes FROM item_usage WHERE account_id = ? ORDER BY epoch').all(accountId) as unknown as ItemUsageRow[]).map((r) => ({
+      epoch: Number(r.epoch),
+      items: Number(r.items),
+      bytes: Number(r.bytes)
+    }))
   }
 
   pruneItems(accountId: string, epochBelow: number): number {

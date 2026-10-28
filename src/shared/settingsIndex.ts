@@ -645,7 +645,7 @@ export const SETTING_ROWS: readonly SettingRow[] = [
   { id: 'account.join', page: 'account', label: 'Join your vault', keywords: ['pair', 'pairing code', 'approve device', 'new computer', 'recovery kit'], fallback: 'account.overview' },
   { id: 'account.address', page: 'account', label: 'Hub address', keywords: ['hub url', 'server', 'nuc', 'stoke.vinn.dev', 'self-hosted', 'connection settings'], fallback: 'account.overview' },
   { id: 'account.sign-in', page: 'account', label: 'Sign in to Stoke Hub', keywords: ['log in', 'login', 'create account', 'invite', 'password', 'email'], fallback: 'account.overview' },
-  { id: 'account.syncing', page: 'account', label: 'What syncs', keywords: ['sync settings', 'sync api keys', 'ssh hosts', 'sync now', 'api keys, for the whole account', 'api keys on this computer'], fallback: 'account.overview' },
+  { id: 'account.syncing', page: 'account', label: 'What syncs', keywords: ['sync settings', 'sync api keys', 'ssh hosts', 'sync now', 'api keys, for the whole account', 'api keys on this computer', 'storage', 'hub space', 'quota', 'hub full'], fallback: 'account.overview' },
   { id: 'account.agent-sync', page: 'account', label: 'Sync agent accounts across devices', keywords: ['sync codex accounts', 'sync claude accounts', 'named accounts', 'account credentials', 'sync logins', 'account profiles'], fallback: 'account.overview' },
   { id: 'account.ssh-keys', page: 'account', label: 'SSH keys', keywords: ['share ssh key', 'private key', 'transfer ssh', 'id_ed25519', 'default ssh key'], fallback: 'account.overview' },
   { id: 'hosts.ssh-keys', page: 'hosts', label: 'SSH keys', keywords: ['share ssh key', 'private key', 'transfer ssh', 'id_ed25519', 'default ssh key', 'install key', 'configured servers'] },

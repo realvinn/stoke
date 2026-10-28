@@ -61,7 +61,41 @@ supervisor cannot.
 ssh vin@protech-nuc
 tail -f ~/stoke-hub/logs/hub.log                       # JSON lines; the bootstrap invite is at the top
 H=~/stoke-hub; STOKE_HUB_DATA=$H/data $H/node/bin/node $H/stoke-hub.mjs invite   # another invite
+STOKE_HUB_DATA=$H/data $H/node/bin/node $H/stoke-hub.mjs storage                 # what each account keeps
+STOKE_HUB_DATA=$H/data $H/node/bin/node $H/stoke-hub.mjs storage friend@example.com --cap 100M
 ```
+
+Every account may keep **25 MB** of synced items unless you say otherwise (the whole hub held
+4.4 MB on 2026-10-28). To change the default for everyone, export `STOKE_HUB_STORAGE_CAP`
+(`STOKE_HUB_STORAGE_CAP=50M`) in `run-hub.sh` before it starts the hub, then restart the hub; to
+give one account more, use `storage <email> --cap`, which counts from the next request with no
+restart. Upgrading to the build that has the cap counts every existing account's items once, in
+place, the first time it opens `hub.db` (`upgradeItemUsage` in `store.ts`, one transaction, safe to
+interrupt); take a `backup` first anyway.
+
+**Upgrading here** has no `systemctl`. The 2026-10-04 redeploy went like this, and the build with the
+storage cap (`stoke-hub` 0.2.0) needs the same:
+
+```sh
+npm run build:hub && shasum -a 256 hub/dist/stoke-hub.mjs              # on the Mac
+scp hub/dist/stoke-hub.mjs vin@protech-nuc:stoke-hub/stoke-hub.next.mjs
+ssh vin@protech-nuc
+H=~/stoke-hub; cd $H
+./backup.sh                                                             # a backup now, not at 03:00
+cp stoke-hub.mjs stoke-hub.mjs.prev-$(date +%Y%m%d)                     # the way back
+sha256sum stoke-hub.next.mjs                                            # the same as on the Mac
+node/bin/node stoke-hub.next.mjs version                                # 0.2.0
+mv stoke-hub.next.mjs stoke-hub.mjs
+ps -u "$USER" -o pid,args | grep '[s]toke-hub.mjs'                      # read the hub's own pid
+kill -TERM <that pid>                                                   # run-hub.sh starts the new one (~7 s)
+tail -n 5 logs/hub.log                                                  # "started", version 0.2.0, storageCap
+```
+
+Then `node hub/dist/stoke-hub.mjs health --url https://stoke.vinn.dev/hub` from the Mac (step 5)
+should say 0.2.0, and `storage` should list every account. To go back, put the `.prev-` file in
+place the same way. The 0.1.0 hub runs on the upgraded file, and the triggers the upgrade added
+keep the count exact under it, so starting 0.2.0 again later needs no recount (measured with
+beta.19's own `store.ts` writing and pruning after an upgrade).
 
 ## 0. Build the one file
 
@@ -186,7 +220,7 @@ npx wrangler login
 npx wrangler secret put HUB_EDGE_SECRET -c wrangler.hub-edge.jsonc     # the same secret
 npm run deploy:hub-edge
 node hub/dist/stoke-hub.mjs health --url https://stoke.vinn.dev/hub
-# https://stoke.vinn.dev/hub: stoke-hub 0.1.0, protocol 1
+# https://stoke.vinn.dev/hub: stoke-hub 0.2.0, protocol 1
 ```
 
 `stoke-hub-edge` is a **second Worker on the route `stoke.vinn.dev/hub/*`**; the installer
@@ -217,8 +251,27 @@ sudo -u stoke-hub -E $H invite --role owner
 echo 'the new password' | sudo -u stoke-hub -E $H reset-password you@example.com
 sudo -u stoke-hub -E $H reset-password you@example.com --sign-out   # on a terminal: generates one
 sudo -u stoke-hub -E $H backup /var/backups/stoke-hub --keep 14
+sudo -u stoke-hub -E $H storage                       # every account: items, bytes kept, its cap
+sudo -u stoke-hub -E $H storage friend@example.com --cap 100M      # that account's own cap
+sudo -u stoke-hub -E $H storage friend@example.com --cap default   # back to the hub's
 HUB_EDGE_SECRET_FILE=/etc/stoke-hub/edge-secret sudo -E $H health
 ```
+
+**Storage per account.** Each account may keep `STOKE_HUB_STORAGE_CAP` bytes of synced items (25 MB
+unless set). What counts is every item envelope the hub stores for it, ciphertext and all, at every
+epoch. Sizes are binary: `25M`, `25MB` and `25MiB` are all 26,214,400 bytes. When a device's change
+would take its account past the cap, the hub refuses that one change (`full`); everything else in
+the same sync goes through, Stoke says the hub is full and what to do, and the change waits on the
+device until there is room. Deleting always works, so a full account can always make room, and an
+account you set below what it already holds can only shrink. Two things may take an account past
+its cap on purpose: a delete (the hub cannot see that a change is a delete, so it always takes a
+change that leaves an item no bigger than the largest delete could be), and the re-seal after
+removing a device or making a new Recovery Kit, which puts every item back under the new key
+before the old copies are pruned (refusing it would lose items). Stokes from before the cap
+(beta.15 to beta.19) read the refusal as one more "the hub refused" line in their log and try again
+at their next sync, never sooner. `stoke-hub storage` shows each account's figure and flags one
+that is over its cap; the running hub records the default it started with, so the command shows the
+figure in force even without the service's environment.
 
 A password reset changes who can **sign in**, never what anyone can decrypt — the password opens
 no key — which is why it is safe as a plain command on the NUC.
@@ -263,10 +316,12 @@ back what it holds.
 | `HUB_EDGE_SECRET` / `HUB_EDGE_SECRET_FILE` | `$CREDENTIALS_DIRECTORY/hub-edge-secret` | the edge secret, 32+ characters; never a flag |
 | `STOKE_HUB_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 | `STOKE_HUB_RATE_BURST` / `_PER_SEC` | `300` / `5` | requests per client address |
+| `STOKE_HUB_STORAGE_CAP` | `25M` | what each account may keep (binary units: `25M` = 25 MiB); `stoke-hub storage <email> --cap` overrides it per account |
 
 Fixed by the protocol (`src/shared/hub/protocol.ts`): a request body is at most 1 MiB, a presence
-frame 64 KiB, a relay frame 1 MiB; 100 puts per request, 5,000 items and 32 active devices per
-account, 8 open relays per account. Sign-in locks an email for 15 minutes after 5 wrong
+frame 64 KiB, a relay frame 1 MiB; 100 puts per request, 5,000 items (each at most 128 KiB) and 32
+active devices per account, 8 open relays per account. The bytes an account may keep are yours to
+set (`STOKE_HUB_STORAGE_CAP`, above). Sign-in locks an email for 15 minutes after 5 wrong
 passwords (doubling to 24 h) and an address after 30 failures. A device that has already joined
 proves itself when it signs in and is judged by its own counter instead, so a stranger guessing
 your email cannot lock your devices out — only a new device waits out the lock.
@@ -278,6 +333,11 @@ account under `MemoryMax`. A socket that does not answer the hub's ping with its
 cut at the next 25-second round.
 
 ## What has not been proven
+
+The storage cap (2026-10-28) ran only in `verify:hub-server` and `verify:hub-client` on a Mac, and
+against released beta.15 and beta.19 clients in a scratch run there: not yet on the NUC, and its
+first open of the real `hub.db` (the in-place count) is untested against that file — back it up
+before the upgrade.
 
 Everything here ran on a Mac under Node 26, and under Electron's Node 24.18 (the NUC's major
 version): the server, both listeners, the bundle, every subcommand, SIGTERM. **Not run:** on the

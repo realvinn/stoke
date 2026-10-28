@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react'
-import { DEFAULT_HUB_URL, emptyHubView, type HubLocalKeyView, type HubResult, type HubView } from '@shared/hub/client'
+import { DEFAULT_HUB_URL, emptyHubView, storageFullSentence, type HubLocalKeyView, type HubResult, type HubView } from '@shared/hub/client'
+import { formatBytes } from '@shared/hub/storage'
 import { sameHubUrl } from '@shared/hub/edge'
 import type { RemoteBarMode } from '@shared/ui'
 import { SHARE_CHATS_LABEL, SHARE_CHATS_STOPPED, sharePausedOf, shareChatsRow } from '@shared/remoteChatsView'
@@ -209,7 +210,9 @@ function Overview({ view, now }: { view: HubView; now: number }): React.JSX.Elem
                   ? { tone: 'accent', text: 'syncing' }
                   : view.error
                     ? { tone: 'danger', text: 'error' }
-                    : view.notes.length
+                    : view.storage?.full
+                      ? { tone: 'danger', text: 'hub full' }
+                      : view.notes.length
                       ? { tone: 'accent', text: 'conflict' }
                       : { tone: 'success', text: 'in sync' }
   return (
@@ -869,6 +872,16 @@ function Syncing({ view, now }: { view: HubView; now: number }): React.JSX.Eleme
       <span className="field-hint" data-hub="counts">
         In the vault: {parts.join(', ')}. Last synced {ago(view.lastSyncAt, now)}.
       </span>
+      {view.storage && (
+        <span className="field-hint" data-hub="storage">
+          Storage: {formatBytes(view.storage.used)} of {formatBytes(view.storage.cap)}.
+        </span>
+      )}
+      {view.storage?.full && (
+        <span className="field-hint" data-tone="danger" data-hub="storage-full" role="status">
+          {storageFullSentence(view.storage.full.refused)}
+        </span>
+      )}
       <label className="check-row">
         <input type="checkbox" checked={view.scope.settings} disabled={busy !== null} onChange={(e) => scope({ settings: e.target.checked })} />
         <span>

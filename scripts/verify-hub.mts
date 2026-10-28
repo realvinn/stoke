@@ -141,6 +141,16 @@ import {
   type HostPayload,
   type SyncableHost
 } from '../src/shared/hub/settings.ts'
+import {
+  DEFAULT_STORAGE_CAP_BYTES,
+  formatBytes,
+  MAX_TOMBSTONE_CT_BYTES,
+  parseByteSize,
+  parseHubStorage,
+  RESEAL_SLACK_BYTES,
+  storageBudget,
+  storageVerdict
+} from '../src/shared/hub/storage.ts'
 import { LOCAL_KEYS, PARTIAL_KEYS, PORTABLE_KEYS } from '../src/shared/setupFile.ts'
 import type { Settings } from '../src/shared/types.ts'
 
@@ -579,6 +589,73 @@ console.log('\nitems: the hub’s put rule')
   check('another epoch is stale-epoch (fetch the new wrap, re-seal)', putVerdict(null, 4, { baseVersion: 0, envelope: env }, DA.id), { ok: false, error: 'stale-epoch' })
   check('an author other than the signing device is invalid', putVerdict(null, 3, { baseVersion: 0, envelope: env }, DC.id), { ok: false, error: 'invalid', reason: 'author is not the signing device' })
   check('a malformed envelope is invalid', putVerdict(null, 3, { baseVersion: 0, envelope: { ...env, nonce: 'x' } }, DA.id), { ok: false, error: 'invalid', reason: 'bad nonce' })
+}
+
+console.log('\nitems: the storage cap (storage.ts)')
+{
+  check('the default cap is 25 MiB', DEFAULT_STORAGE_CAP_BYTES, 26_214_400)
+  check(
+    'sizes read the way the panel shows them',
+    [0, 512, 1023, 1024, 1_258_291, 10_239, 26_214_400, 3 * 1024 ** 3].map(formatBytes),
+    ['0 bytes', '512 bytes', '1023 bytes', '1 KB', '1.2 MB', '10 KB', '25 MB', '3 GB']
+  )
+  check(
+    'an operator’s size: binary K/M/G with or without B/iB, any case',
+    ['25M', '25MB', '25MiB', '25 mb', '1.5M', '100k', '1G', '1024', '0', '7b'].map(parseByteSize),
+    [26_214_400, 26_214_400, 26_214_400, 26_214_400, 1_572_864, 102_400, 1024 ** 3, 1024, 0, 7]
+  )
+  check('and nothing that is not one', ['', 'lots', '-1', '1.5', '25X', '25 M B', '1e6', 'M'].map(parseByteSize), [null, null, null, null, null, null, null, null])
+  check('the panel’s line for the owner’s example reads as asked', `Storage: ${formatBytes(1.2 * 1024 * 1024)} of ${formatBytes(DEFAULT_STORAGE_CAP_BYTES)}`, 'Storage: 1.2 MB of 25 MB')
+  check('a storage field is read only whole', [parseHubStorage({ used: 5, cap: 9 }), parseHubStorage({ used: -1, cap: 9 }), parseHubStorage({ used: 1.5, cap: 9 }), parseHubStorage(null), parseHubStorage([1, 2])], [{ used: 5, cap: 9 }, null, null, null, null])
+
+  // The tombstone allowance has to hold every tombstone a client can seal, and nothing near a real item's size.
+  const longName = '\u0001'.repeat(200 - 't2/secret/voice.keys.'.length)
+  const longPath = `t2/secret/voice.keys.${longName}`
+  check('the longest path the grammar takes is 200 characters, of the longest JSON escape', [parseItemPath(longPath) !== null, longPath.length], [true, 200])
+  const worstTomb = sealItem(IK3, { version: 9_999_999, author: DA.id, path: longPath, editedAt: Number.MAX_SAFE_INTEGER, deleted: true, value: null, by: DC.id })
+  const ctOf = (e: ItemEnvelope): number => (b64uDecode(e.ct) as Uint8Array).length
+  ok(`the largest tombstone sealed for real (${ctOf(worstTomb)} bytes) fits the allowance (${MAX_TOMBSTONE_CT_BYTES})`, ctOf(worstTomb) <= MAX_TOMBSTONE_CT_BYTES && MAX_TOMBSTONE_CT_BYTES - ctOf(worstTomb) < 120)
+  ok('and the allowance is small beside the per-item cap', MAX_TOMBSTONE_CT_BYTES < 2048)
+  // Why the hub needs the allowance at all: a tombstone over a tiny value is LONGER than the value.
+  const tinyPath = 't2/secret/voice.keys.groq'
+  const tiny = sealItem(IK3, { version: 1, author: DA.id, path: tinyPath, editedAt: 1_700_000_000_000, deleted: false, value: '' })
+  const tinyTomb = sealItem(IK3, { version: 2, author: DA.id, path: tinyPath, editedAt: 1_700_000_000_001, deleted: true, value: null })
+  const bytesOf = (e: ItemEnvelope): number => utf8(canonicalJson(e)).length
+  ok(`a tombstone over "" is longer than the item it deletes (${bytesOf(tinyTomb)} > ${bytesOf(tiny)})`, bytesOf(tinyTomb) > bytesOf(tiny))
+  const fullUp = { currentBytes: 10_000, olderBytes: 0, olderItems: 0 }
+  check(
+    'so on a full account it is still taken, as a replace no bigger than a tombstone',
+    storageVerdict({ cap: 10_000, usage: fullUp, oldBytes: bytesOf(tiny), newBytes: bytesOf(tinyTomb), newCtBytes: ctOf(tinyTomb) }),
+    'ok'
+  )
+  check('while the same envelope as a NEW item is refused: it frees nothing', storageVerdict({ cap: 10_000, usage: fullUp, oldBytes: null, newBytes: bytesOf(tinyTomb), newCtBytes: ctOf(tinyTomb) }), 'full')
+
+  // The edge, a byte at a time.
+  const at = (currentBytes: number, f: { oldBytes?: number | null; newBytes: number; newCtBytes?: number }, cap = 1000, older = { olderBytes: 0, olderItems: 0 }): string =>
+    storageVerdict({ cap, usage: { currentBytes, ...older }, oldBytes: f.oldBytes ?? null, newBytes: f.newBytes, newCtBytes: f.newCtBytes ?? 5000 })
+  check('a new item that lands exactly at the cap is taken; one byte more is not', [at(900, { newBytes: 100 }), at(900, { newBytes: 101 })], ['ok', 'full'])
+  check('a replace that grows to exactly the cap is taken; one byte more is not', [at(900, { oldBytes: 50, newBytes: 150 }), at(900, { oldBytes: 50, newBytes: 151 })], ['ok', 'full'])
+  check('a replace that does not grow is taken however full, even far over the cap', [at(5000, { oldBytes: 3000, newBytes: 3000 }), at(5000, { oldBytes: 3000, newBytes: 10 })], ['ok', 'ok'])
+  check('over the cap, any growth past the allowance is refused, new or replace', [at(5000, { newBytes: 1 }), at(5000, { oldBytes: 3000, newBytes: 3001 })], ['full', 'full'])
+  check('a cap of 0 takes only what shrinks', [at(0, { newBytes: 1 }, 0), at(10, { oldBytes: 10, newBytes: 9 }, 0)], ['full', 'ok'])
+
+  // A re-seal: a revoke or rotate opened a new epoch, and every item is put again under it before the old epoch is pruned.
+  const older = { olderBytes: 1000, olderItems: 10 }
+  check('while older epochs are held, the budget is room to put every one of them back', [storageBudget(1000, { currentBytes: 0, ...older }), storageBudget(100, { currentBytes: 0, ...older }), storageBudget(5000, { currentBytes: 0, ...older })], [1000 + 10 * RESEAL_SLACK_BYTES, 1000 + 10 * RESEAL_SLACK_BYTES, 5000])
+  check('so a re-seal of an account at its cap fits, and one past its cap (the operator lowered it) too', [at(1000, { newBytes: 640 }, 1000, older), at(1000, { newBytes: 640 }, 100, older)], ['ok', 'ok'])
+  check('but not without end', at(1000 + 10 * RESEAL_SLACK_BYTES - 10, { newBytes: 11 }, 1000, older), 'full')
+  check('once pruned, the cap alone again', storageBudget(1000, { currentBytes: 1640, olderBytes: 0, olderItems: 0 }), 1000)
+  // The slack has to cover the worst a re-seal adds to one envelope: a `by` and one more digit of epoch.
+  const K9 = itemKeys(VK, ACCOUNT, 9)
+  const K10 = itemKeys(VK, ACCOUNT, 10)
+  let worst = 0
+  for (let n = 0; n < 6; n++) {
+    const value = 'v'.repeat(40 + n)
+    const before = sealItem(K9, { version: 1, author: DA.id, path: 't1/settings/themeId', editedAt: 1_700_000_000_000, deleted: false, value })
+    const after = sealItem(K10, { version: 1, author: DA.id, path: 't1/settings/themeId', editedAt: 1_700_000_000_000, deleted: false, value, by: DC.id })
+    worst = Math.max(worst, bytesOf(after) - bytesOf(before))
+  }
+  ok(`the most a re-seal adds to one envelope (${worst} bytes) is within RESEAL_SLACK_BYTES (${RESEAL_SLACK_BYTES})`, worst > 0 && worst <= RESEAL_SLACK_BYTES)
 }
 
 console.log('\nitems: clocks and conflicts')

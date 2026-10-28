@@ -16,6 +16,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { HubConfig, Listen } from './app.ts'
 import { DEFAULT_RATE } from './app.ts'
+import { DEFAULT_STORAGE_CAP_BYTES, parseByteSize } from '../src/shared/hub/storage.ts'
 
 export const DEFAULT_EDGE_LISTEN = '127.0.0.1:8787'
 export const DEFAULT_MOUNT = '/hub'
@@ -66,6 +67,19 @@ function positiveNumber(text: string | undefined, fallback: number, what: string
   return n
 }
 
+/**
+ * `STOKE_HUB_STORAGE_CAP`: what each account may keep unless the operator gave
+ * it its own figure. Bytes, or K/M/G/T (binary: `25M` is 25 MiB). Throws with
+ * a sentence for anything else, so a typo stops the hub instead of quietly
+ * meaning the default.
+ */
+export function storageCapFrom(text: string | undefined): number {
+  if (text === undefined || text.trim() === '') return DEFAULT_STORAGE_CAP_BYTES
+  const n = parseByteSize(text)
+  if (n === null) throw new Error(`STOKE_HUB_STORAGE_CAP must be a size like 25M or 100MB (binary units), not ${JSON.stringify(text.trim())}.`)
+  return n
+}
+
 export function configFrom(env: Record<string, string | undefined>, flags: Record<string, string | undefined>): HubConfig {
   return {
     dataDir: dataDirFrom(env, flags.data),
@@ -76,6 +90,7 @@ export function configFrom(env: Record<string, string | undefined>, flags: Recor
     rate: {
       capacity: positiveNumber(env.STOKE_HUB_RATE_BURST, DEFAULT_RATE.capacity, 'STOKE_HUB_RATE_BURST'),
       refillPerSec: positiveNumber(env.STOKE_HUB_RATE_PER_SEC, DEFAULT_RATE.refillPerSec, 'STOKE_HUB_RATE_PER_SEC')
-    }
+    },
+    storageCap: storageCapFrom(env.STOKE_HUB_STORAGE_CAP)
   }
 }

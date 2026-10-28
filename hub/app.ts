@@ -97,6 +97,7 @@ import {
   type PresenceServerFrame
 } from '../src/shared/hub/protocol.ts'
 import { RELAY_MAX_FRAME_BYTES } from '../src/shared/hub/relay.ts'
+import { DEFAULT_STORAGE_CAP_BYTES, formatBytes, storageVerdict, type HubStorage, type StorageUsage } from '../src/shared/hub/storage.ts'
 import {
   hashPassword,
   nodeChainCrypto,
@@ -111,10 +112,14 @@ import {
 import { HubLog, LogThrottle } from './log.ts'
 import { clientKey, InFlight, RateBuckets, Semaphore } from './limits.ts'
 import { Presence, RelayBroker, type PresenceConn } from './sockets.ts'
-import { HubStore, type AccountRow, type PairRow, type Role, type SessionRow } from './store.ts'
+import { HubStore, type AccountRow, type ItemUsageRow, type PairRow, type Role, type SessionRow } from './store.ts'
 
-/** The hub's own version (the protocol is `HUB_PROTOCOL`; this names the server build). */
-export const HUB_SERVER_VERSION = '0.1.0'
+/**
+ * The hub's own version (the protocol is `HUB_PROTOCOL`; this names the server build).
+ * 0.2.0 (2026-10-28): the per-account storage cap — `stoke-hub version` or `health`
+ * says whether the NUC runs a build that has it.
+ */
+export const HUB_SERVER_VERSION = '0.2.0'
 
 export interface Listen {
   host: string
@@ -134,6 +139,30 @@ export interface HubConfig {
   rate?: { capacity: number; refillPerSec: number }
   /** How often sockets are pinged (default `HUB_LIMITS.pingMs`); a suite sets it long and drives `ping()` itself. */
   pingMs?: number
+  /**
+   * Bytes of items each account may keep unless the operator gave it its own
+   * figure (`stoke-hub storage <email> --cap`). Default `DEFAULT_STORAGE_CAP_BYTES`
+   * (25 MiB); `STOKE_HUB_STORAGE_CAP` in the environment. storage.ts has the rule.
+   */
+  storageCap?: number
+}
+
+/** The meta key a running hub records its default cap under, so `stoke-hub storage` shows the figure in force. */
+export const STORAGE_DEFAULT_META = 'storage_cap_default'
+
+/** The account's item usage the way storage.ts reads it, at `epoch` (the chain's current one). */
+export function usageAt(rows: ItemUsageRow[], epoch: number): StorageUsage & { items: number; used: number } {
+  const u = { currentBytes: 0, olderBytes: 0, olderItems: 0, items: 0, used: 0 }
+  for (const r of rows) {
+    u.items += r.items
+    u.used += r.bytes
+    if (r.epoch === epoch) u.currentBytes += r.bytes
+    else if (r.epoch < epoch) {
+      u.olderBytes += r.bytes
+      u.olderItems += r.items
+    }
+  }
+  return u
 }
 
 export interface HubDeps {
@@ -476,6 +505,7 @@ class HubServer {
   private closed: Promise<void> | null = null
   private readonly browserTickets = new Map<string, { path: string; until: number; auth: Authed }>()
   private readonly handlers: Record<HubRouteName, Handler>
+  private readonly storageCap: number
 
   constructor(config: HubConfig, deps: HubDeps) {
     this.config = { ...config, mount: config.mount.replace(/\/+$/, '') }
@@ -484,6 +514,7 @@ class HubServer {
     this.announce = deps.announce ?? ((text) => process.stdout.write(text))
     this.relays = new RelayBroker({ now: this.now, log: this.log, onResume: (ws) => this.alive.set(ws, true) })
     this.buckets = new RateBuckets(config.rate ?? DEFAULT_RATE)
+    this.storageCap = config.storageCap ?? DEFAULT_STORAGE_CAP_BYTES
     this.wssPresence = new WebSocketServer({ noServer: true, maxPayload: HUB_LIMITS.presenceFrameBytes, perMessageDeflate: false })
     this.wssRelay = new WebSocketServer({ noServer: true, maxPayload: RELAY_MAX_FRAME_BYTES, perMessageDeflate: false })
     this.handlers = {
@@ -524,6 +555,7 @@ class HubServer {
 
   async start(): Promise<HubHandle> {
     this.store = HubStore.open(this.config.dataDir)
+    this.store.setMeta(STORAGE_DEFAULT_META, String(this.storageCap))
     const boot = ensureBootstrapInvite(this.store, this.now())
     if (boot) {
       this.announce(bootstrapAnnouncement(boot.invite))
@@ -568,7 +600,7 @@ class HubServer {
     this.timers.push(setInterval(() => this.tick(), SWEEP_MS))
     this.timers.push(setInterval(() => this.pingAll(), this.config.pingMs ?? HUB_LIMITS.pingMs))
     for (const t of this.timers) t.unref()
-    this.log.info('started', { version: HUB_SERVER_VERSION, protocol: HUB_PROTOCOL, accounts: this.store.accountCount() })
+    this.log.info('started', { version: HUB_SERVER_VERSION, protocol: HUB_PROTOCOL, accounts: this.store.accountCount(), storageCap: this.storageCap })
     return {
       edgePort: ports.edge ?? null,
       lanPort: ports.lan ?? null,
@@ -1249,7 +1281,23 @@ class HubServer {
   private account(ctx: Ctx): unknown {
     const a = ctx.auth as Authed
     const v = a.chain?.verdict
-    return { accountId: a.account.id, email: a.account.email, role: a.account.role, chain: v ? { seq: v.seq, head: v.head, epoch: v.epoch } : null }
+    return {
+      accountId: a.account.id,
+      email: a.account.email,
+      role: a.account.role,
+      chain: v ? { seq: v.seq, head: v.head, epoch: v.epoch } : null,
+      storage: this.storageOf(a.account.id)
+    }
+  }
+
+  /** The account's cap: the operator's own figure for it, else the hub's. Read from the row, so `stoke-hub storage --cap` counts at once. */
+  private capOf(account: AccountRow | null): number {
+    return account?.storage_cap ?? this.storageCap
+  }
+
+  /** What the account keeps and may keep, as every client is told (`HubStorage`). */
+  private storageOf(accountId: string): HubStorage {
+    return { used: usageAt(this.store.itemUsage(accountId), 0).used, cap: this.capOf(this.store.accountById(accountId)) }
   }
 
   private invite(ctx: Ctx): unknown {
@@ -1413,10 +1461,22 @@ class HubServer {
     const rows = this.store.itemsSince(a.account.id, since, limit + 1)
     const page = rows.slice(0, limit)
     const items: StoredItem[] = page.map((r) => ({ envelope: JSON.parse(r.envelope_json) as ItemEnvelope, seq: r.seq }))
-    return { items, next: page.length ? page[page.length - 1].seq : since, more: rows.length > limit, epoch: a.chain?.verdict?.epoch ?? 0 }
+    return {
+      items,
+      next: page.length ? page[page.length - 1].seq : since,
+      more: rows.length > limit,
+      epoch: a.chain?.verdict?.epoch ?? 0,
+      storage: this.storageOf(a.account.id)
+    }
   }
 
-  /** Compare-and-swap puts (`putVerdict`), each decided on its own, in one transaction. */
+  /**
+   * Compare-and-swap puts (`putVerdict`), each decided on its own, in one
+   * transaction, then for room: the item count, then the bytes
+   * (`storageVerdict`, src/shared/hub/storage.ts). A put refused for room is
+   * `full`, beside the others' answers, never a failed request: an old client
+   * logs it and carries on (storage.ts says why that is safe for them).
+   */
   private itemsPut(ctx: Ctx, body: Record<string, unknown>): unknown {
     const a = ctx.auth as Authed
     const account = a.account.id
@@ -1427,7 +1487,10 @@ class HubServer {
     const results: ItemPutResult[] = []
     let lastSeq = 0
     this.store.tx(() => {
-      let count = this.store.itemCount(account)
+      // Read inside the transaction, so an operator's `--cap` lands between two requests, never inside one.
+      const cap = this.capOf(this.store.accountById(account))
+      let usage = usageAt(this.store.itemUsage(account), epoch)
+      const full = (id: string, reason: string): ItemPutResult => ({ id, ok: false, error: 'full', reason, storage: { used: usage.used, cap } })
       for (const put of puts) {
         const env = isRecord(put) && isRecord(put.envelope) ? put.envelope : null
         const id = env && typeof env.id === 'string' && isItemId(env.id) ? env.id : ''
@@ -1441,20 +1504,33 @@ class HubServer {
           else results.push({ id, ok: false, error: 'invalid', reason: verdict.reason })
           continue
         }
-        if (!current && count >= HUB_LIMITS.itemsPerAccount) {
-          results.push({ id, ok: false, error: 'invalid', reason: `an account holds at most ${HUB_LIMITS.itemsPerAccount} items` })
+        if (!current && usage.items >= HUB_LIMITS.itemsPerAccount) {
+          results.push(full(id, `an account holds at most ${HUB_LIMITS.itemsPerAccount} items`))
           continue
         }
         const e = put.envelope as ItemEnvelope
+        const envelopeJson = canonicalJson(e)
+        const room = storageVerdict({
+          cap,
+          usage,
+          oldBytes: current ? Buffer.byteLength(current.envelope_json, 'utf8') : null,
+          newBytes: Buffer.byteLength(envelopeJson, 'utf8'),
+          newCtBytes: Math.floor((e.ct.length * 3) / 4)
+        })
+        if (room === 'full') {
+          results.push(full(id, `no room: this account may keep ${formatBytes(cap)} on this hub and keeps ${formatBytes(usage.used)}`))
+          continue
+        }
         const seq = this.store.nextItemSeq(account)
-        this.store.putItem(account, { id, version: e.version, epoch: e.epoch, envelope_json: canonicalJson(e), seq })
-        if (!current) count++
+        this.store.putItem(account, { id, version: e.version, epoch: e.epoch, envelope_json: envelopeJson, seq })
+        // Read back from the count the triggers just moved, not added up here: one source for the figure.
+        usage = usageAt(this.store.itemUsage(account), epoch)
         lastSeq = seq
         results.push({ id, ok: true, version: e.version, seq })
       }
     })
     if (lastSeq > 0) this.push(account, { t: 'items', seq: lastSeq }, a.device)
-    return { results }
+    return { results, storage: this.storageOf(account) }
   }
 
   private itemsPrune(ctx: Ctx, body: Record<string, unknown>): unknown {

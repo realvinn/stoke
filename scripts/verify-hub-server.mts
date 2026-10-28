@@ -26,7 +26,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { fileURLToPath } from 'node:url'
 import { WebSocket } from 'ws'
 import { startHub, type HubHandle } from '../hub/app.ts'
-import { configFrom, parseListen, parseMount, readEdgeSecret } from '../hub/config.ts'
+import { configFrom, parseListen, parseMount, readEdgeSecret, storageCapFrom } from '../hub/config.ts'
 import { HubLog } from '../hub/log.ts'
 import { HubStore } from '../hub/store.ts'
 import { bridgeSockets, forwardHttp, type EdgeSocket } from '../worker/hub-edge.ts'
@@ -64,7 +64,8 @@ import {
 } from '../src/main/hub/crypto.ts'
 import { IP_THROTTLE, isSessionToken, LOGIN_REFUSED, SESSION_TTL_MS } from '../src/shared/hub/auth.ts'
 import { chainLinkText, chainSigningText, DEVICE_CAPS, verifyChain, type ChainEntry, type DeviceRecord } from '../src/shared/hub/chain.ts'
-import { idFromBytes } from '../src/shared/hub/codec.ts'
+import { canonicalJson, idFromBytes, isRecord } from '../src/shared/hub/codec.ts'
+import { DEFAULT_STORAGE_CAP_BYTES } from '../src/shared/hub/storage.ts'
 import { hubEndpoint } from '../src/shared/hub/edge.ts'
 import { formatRecoverySecret, parseRecoverySecret } from '../src/shared/hub/pairing.ts'
 import { HUB_HEADERS, HUB_LIMITS, readHubResponse } from '../src/shared/hub/protocol.ts'
@@ -1522,11 +1523,40 @@ let liveItemId = ''
     )
   }
 
+  /* ------------------------------------------- the count, after all that */
+  console.log('\nthe storage count after everything above (puts, conflicts, rotations, prunes, a revoke)')
+  {
+    const d = new DatabaseSync(join(TMP, 'hub', 'hub.db'), { readOnly: true, timeout: 5000 })
+    const table = JSON.stringify(d.prepare('SELECT account_id, epoch, items, bytes FROM item_usage ORDER BY account_id, epoch').all())
+    const scan = JSON.stringify(
+      d.prepare('SELECT account_id, epoch, count(*) AS items, sum(length(CAST(envelope_json AS BLOB))) AS bytes FROM items GROUP BY account_id, epoch ORDER BY account_id, epoch').all()
+    )
+    const mine = (d.prepare('SELECT coalesce(sum(length(CAST(envelope_json AS BLOB))), 0) AS b FROM items WHERE account_id = ?').get(ACCOUNT) as { b: number }).b
+    d.close()
+    check('the count the triggers kept equals a full scan of every account’s rows', table, scan)
+    const told = await call('GET', '/v1/account', undefined, { dev: A })
+    check('and the owner is told exactly that, against the default cap (no STOKE_HUB_STORAGE_CAP: 25 MiB)', told.body?.storage, { used: Number(mine), cap: DEFAULT_STORAGE_CAP_BYTES })
+  }
+
+  await storageChecks()
+
   /* ---------------------------------------------------- shutdown */
   console.log('\ngraceful shutdown')
   {
-    const inFlight = login(newDevice('late'), OWNER_EMAIL, OWNER_PW)
-    await new Promise((r) => setTimeout(r, 30))
+    // Close once the hub has the sign-in in hand, not after a fixed 30 ms: under a loaded
+    // machine (load average 31, 2026-10-28) the request had not arrived yet, the close reset
+    // it, and the rejection killed the suite before its tally. Node announces each request on
+    // `http.server.request.start` just before the hub's handler runs.
+    const arrived = new Promise<void>((resolve) => {
+      const onStart = (m: unknown): void => {
+        if (!String((m as { request?: { url?: string } })?.request?.url ?? '').endsWith('/v1/auth/login')) return
+        unsubscribe('http.server.request.start', onStart)
+        resolve()
+      }
+      subscribe('http.server.request.start', onStart)
+    })
+    const inFlight = login(newDevice('late'), OWNER_EMAIL, OWNER_PW).catch((err: unknown) => ({ status: -1, body: null, text: String(err) }) as unknown as Reply)
+    await Promise.race([arrived, new Promise((r) => setTimeout(r, 10_000))])
     const closing = hub.close()
     const bye = await presA.frame((f) => f.t === 'bye', 3000)
     await presA.until(() => presA.closed, 3000)
@@ -1601,11 +1631,301 @@ let liveItemId = ''
       noDir = true
     }
     ok('with no data directory named anywhere it refuses to guess', noDir)
+    check('the storage cap defaults to 25 MiB', [cfg.storageCap, storageCapFrom(undefined), storageCapFrom('  ')], [26_214_400, 26_214_400, 26_214_400])
+    check('STOKE_HUB_STORAGE_CAP takes a size (binary units)', [configFrom({ STATE_DIRECTORY: '/x', STOKE_HUB_STORAGE_CAP: '100M' }, {}).storageCap, storageCapFrom('512k'), storageCapFrom('1048576')], [104_857_600, 524_288, 1_048_576])
+    let badCap = ''
+    try {
+      configFrom({ STATE_DIRECTORY: '/x', STOKE_HUB_STORAGE_CAP: '25 potatoes' }, {})
+    } catch (err) {
+      badCap = (err as Error).message
+    }
+    ok('and refuses one it cannot read, by name, rather than quietly meaning the default', /STOKE_HUB_STORAGE_CAP/.test(badCap), badCap)
   }
 
   /* ------------------------------------------------ the command */
   console.log('\nthe stoke-hub command: from source, and bundled')
   await commandChecks()
+}
+
+/* ---------------------------------------------------------- storage */
+
+/**
+ * The storage cap (src/shared/hub/storage.ts), on a hub of its own with a small
+ * default cap: the exact count across every kind of write, the edge a byte at
+ * a time, shrinking past the cap, the operator's per-account figure, a re-seal
+ * on an account already past its cap, the count surviving a restart, and a
+ * database from before the count upgraded in place.
+ */
+async function storageChecks(): Promise<void> {
+  console.log('\nthe storage cap: what an account keeps, counted exactly, refused only past its cap')
+  const dir = join(TMP, 'storage')
+  const said: string[] = []
+  const CAP = 64 * 1024
+  const config = { dataDir: dir, mount: '/hub', edge: null, lan: { host: '127.0.0.1', port: 0 }, edgeSecret: null, rate: { capacity: 100_000, refillPerSec: 1000 }, pingMs: 60 * 60_000, storageCap: CAP }
+  const deps = { now, log: new HubLog(() => {}), announce: (t: string) => said.push(t) }
+  let h = await startHub(config, deps)
+  let base = `http://127.0.0.1:${h.lanPort}/hub`
+  const inv = /(INV(?:-[0-9A-Z]{4}){6})/.exec(said.join(''))?.[1] ?? ''
+  const EMAIL = 'quota@example.com'
+  const PW = `quota pass ${randomB64u(6)} phrase`
+  secretsSeen.push(inv, PW)
+  await signup(inv, EMAIL, PW, { base })
+  const S = newDevice('Quota Mac')
+  await login(S, EMAIL, PW, { base })
+  const acct = S.account
+  const vk1 = newVaultKey()
+  const R = recoveryKeys(randomU8(16), acct)
+  const g = entry(acct, null, { kind: 'genesis', epoch: 1, signer: S.id, device: recordOf(S), recovery: R.signPub, vk: vaultKeyCommit(vk1, { account: acct, epoch: 1 }) }, S.keys.signPriv)
+  const made = await call('POST', '/v1/chain', { entries: [g], wraps: { epoch: 1, devices: [wrapFor(vk1, acct, 1, S)], recovery: sealRecoveryWrap(vk1, R.wrapKey, { account: acct, epoch: 1 }) } }, { dev: S, base })
+  check('a fresh account with its vault', made.status, 200)
+  let K = itemKeys(vk1, acct, 1)
+
+  const sizeOf = (e: unknown): number => Buffer.byteLength(canonicalJson(e), 'utf8')
+  /** A full scan of what the account keeps: the figure the triggers must match, never used by the hub. */
+  const recount = (account = acct): { items: number; bytes: number } => {
+    const d = new DatabaseSync(join(dir, 'hub.db'), { readOnly: true, timeout: 5000 })
+    const r = d.prepare('SELECT count(*) AS n, coalesce(sum(length(CAST(envelope_json AS BLOB))), 0) AS b FROM items WHERE account_id = ?').get(account) as { n: number; b: number }
+    d.close()
+    return { items: Number(r.n), bytes: Number(r.b) }
+  }
+  const usageTable = (): string => {
+    const d = new DatabaseSync(join(dir, 'hub.db'), { readOnly: true, timeout: 5000 })
+    const t = JSON.stringify(d.prepare('SELECT account_id, epoch, items, bytes FROM item_usage ORDER BY account_id, epoch').all())
+    const scan = JSON.stringify(
+      d.prepare('SELECT account_id, epoch, count(*) AS items, sum(length(CAST(envelope_json AS BLOB))) AS bytes FROM items GROUP BY account_id, epoch ORDER BY account_id, epoch').all()
+    )
+    d.close()
+    return t === scan ? 'equal' : `table ${t} scan ${scan}`
+  }
+  const put = (puts: { baseVersion: number; envelope: unknown }[], dev = S): Promise<Reply> => call('POST', '/v1/items', { puts }, { dev, base })
+  const told = async (): Promise<{ used: number; cap: number } | undefined> => (await call('GET', '/v1/items?since=0&limit=1', undefined, { dev: S, base })).body?.storage
+  const seal = (path: string, version: number, value: unknown, extra: { deleted?: boolean; by?: string } = {}) =>
+    sealItem(K, { version, author: S.id, path, editedAt: clock, deleted: extra.deleted ?? false, value: extra.deleted ? null : value, ...(extra.by ? { by: extra.by } : {}) })
+  const setCap = (cap: number | null, account = acct): void => {
+    const st = HubStore.open(dir)
+    st.setStorageCap(account, cap)
+    st.close()
+  }
+
+  {
+    const a0 = await call('GET', '/v1/account', undefined, { dev: S, base })
+    check('an empty account is told it keeps nothing, against the hub’s default cap', a0.body?.storage, { used: 0, cap: CAP })
+    check('and so does every page of its change feed', await told(), { used: 0, cap: CAP })
+    const e1 = seal('t1/settings/themeId', 1, 'moss')
+    const p1 = await put([{ baseVersion: 0, envelope: e1 }])
+    check('a put is counted at the exact bytes of the envelope the hub stores', [p1.body?.results?.[0]?.ok, p1.body?.storage?.used, recount().bytes], [true, sizeOf(e1), sizeOf(e1)])
+    const e2 = seal('t1/settings/themeId', 2, 'x'.repeat(700))
+    await put([{ baseVersion: 1, envelope: e2 }])
+    check('a replace that grows moves the count by the difference', [(await told())?.used, recount().bytes], [sizeOf(e2), sizeOf(e2)])
+    const e3 = seal('t1/settings/themeId', 3, 'ink')
+    await put([{ baseVersion: 2, envelope: e3 }])
+    check('and one that shrinks, back down', [(await told())?.used, recount().bytes], [sizeOf(e3), sizeOf(e3)])
+    const host = 't3/host/h0000000000000001'
+    const h1 = seal(host, 1, { alias: 'nuc', label: 'NUC', command: 'x'.repeat(300) })
+    const h2 = seal(host, 2, null, { deleted: true })
+    await put([{ baseVersion: 0, envelope: h1 }])
+    await put([{ baseVersion: 1, envelope: h2 }])
+    check('a tombstone replaces what it deletes, byte for byte', [(await told())?.used, recount().bytes], [sizeOf(e3) + sizeOf(h2), sizeOf(e3) + sizeOf(h2)])
+    const trio = ['fontFamily', 'fontSize', 'zoomTarget'].map((k, i) => ({ baseVersion: 0, envelope: seal(`t1/settings/${k}`, 1, `v-${'q'.repeat(i * 10)}`) }))
+    const pt = await put(trio)
+    const sum = sizeOf(e3) + sizeOf(h2) + trio.reduce((n, p) => n + sizeOf(p.envelope), 0)
+    check('three in one request, each counted', [pt.body?.results?.map((r: any) => r.ok), pt.body?.storage?.used, recount().bytes], [[true, true, true], sum, sum])
+    const refused = await put([{ baseVersion: 0, envelope: e1 }])
+    check('a refused put (a conflict) changes nothing', [refused.body?.results?.[0]?.error, (await told())?.used], ['conflict', sum])
+    check('the count table equals a full scan of the rows', usageTable(), 'equal')
+  }
+
+  // A tiny item now, while there is room: its tombstone is longer than it, which matters once the account is full.
+  const tinyPath = 't2/secret/voice.keys.groq'
+  const tiny = seal(tinyPath, 1, '')
+  check('a tiny item goes up while there is room', (await put([{ baseVersion: 0, envelope: tiny }])).body?.results?.[0]?.ok, true)
+
+  console.log('\nthe storage cap: the edge, a byte at a time')
+  {
+    const next = seal('t1/settings/customThemes', 1, 'y'.repeat(4000))
+    const used = (await told())?.used ?? 0
+    setCap(used + sizeOf(next))
+    const exact = await put([{ baseVersion: 0, envelope: next }])
+    check('a put that lands EXACTLY at the cap is taken', [exact.body?.results?.[0]?.ok, exact.body?.storage], [true, { used: used + sizeOf(next), cap: used + sizeOf(next) }])
+    const after = seal('t1/settings/customThemes', 2, 'y'.repeat(4001))
+    setCap(used + sizeOf(after) - 1)
+    const over = await put([{ baseVersion: 1, envelope: after }])
+    const r = over.body?.results?.[0]
+    check(
+      'one byte past it is refused per put, as `full`, with what the account keeps and may keep (200: the request itself is fine)',
+      [over.status, r?.ok, r?.error, typeof r?.reason, r?.storage],
+      [200, false, 'full', 'string', { used: used + sizeOf(next), cap: used + sizeOf(after) - 1 }]
+    )
+    check('and nothing moved', [(await told())?.used, recount().bytes], [used + sizeOf(next), used + sizeOf(next)])
+    // The branches a beta.15–beta.19 client takes on each put result (HubService.upload and
+    // putResealed, unchanged since beta.15), written out: `full` must fall through to the one
+    // that only logs, and must never look like a conflict (which re-puts at once) or a stale epoch (a new pass).
+    const oldUpload = (x: any): string => (x?.ok === true ? 'recorded' : x?.error === 'conflict' && isRecord(x.current) ? 'decide-and-retry' : x?.error === 'stale-epoch' ? 'start-over' : x ? 'log-only' : 'nothing')
+    const oldReseal = (x: any): string => (!x?.ok ? 'skip' : 'recorded')
+    check('an old client’s upload only logs it (reason first), and its re-seal skips it', [oldUpload(r), String(r?.reason ?? r?.error).length > 0, oldReseal(r)], ['log-only', true, 'skip'])
+    const mixed = await put([
+      { baseVersion: 1, envelope: after },
+      { baseVersion: 3, envelope: seal('t1/settings/themeId', 4, 'i') }
+    ])
+    check('each put is still decided on its own: the full one refused, the shrinking one beside it taken', mixed.body?.results?.map((x: any) => x.error ?? x.ok), ['full', true])
+  }
+
+  {
+    setCap(1024)
+    const s0 = (await told())?.used ?? 0
+    ok(`an operator’s lower cap leaves the account over it (${s0} of 1024 bytes)`, s0 > 1024)
+    const shrink = await put([{ baseVersion: 1, envelope: seal('t1/settings/customThemes', 2, 'y'.repeat(100)) }])
+    check('over its cap, a put that shrinks is taken', shrink.body?.results?.[0]?.ok, true)
+    const s1 = (await told())?.used ?? 0
+    const grow = await put([{ baseVersion: 2, envelope: seal('t1/settings/customThemes', 3, 'y'.repeat(2000)) }])
+    const fresh = await put([{ baseVersion: 0, envelope: seal('t1/settings/terminal', 1, { cursor: 'bar' }) }])
+    check('and one that grows is not, new or replace', [grow.body?.results?.[0]?.error, fresh.body?.results?.[0]?.error], ['full', 'full'])
+    const tinyTomb = seal(tinyPath, 2, null, { deleted: true })
+    ok('(that tiny item’s tombstone is longer than it)', sizeOf(tinyTomb) > sizeOf(tiny))
+    const del = await put([{ baseVersion: 1, envelope: tinyTomb }])
+    check('yet deleting it is taken: a delete always is, however full', [del.body?.results?.[0]?.ok, recount().bytes], [true, s1 - sizeOf(tiny) + sizeOf(tinyTomb)])
+    check('the count still equals a full scan', usageTable(), 'equal')
+  }
+
+  console.log('\nthe storage cap: the operator’s figure, per account')
+  {
+    setCap(5 * 1024 * 1024)
+    check('the operator’s own figure is what the account is told', (await call('GET', '/v1/account', undefined, { dev: S, base })).body?.storage?.cap, 5 * 1024 * 1024)
+    const minted = await call('POST', '/v1/auth/invites', {}, { dev: S, base })
+    secretsSeen.push(minted.body?.invite ?? '')
+    await signup(minted.body?.invite ?? '', 'friend@example.com', PW, { base })
+    const T = newDevice('Friend laptop')
+    await login(T, 'friend@example.com', PW, { base })
+    check('another account on the same hub keeps the hub’s default', (await call('GET', '/v1/account', undefined, { dev: T, base })).body?.storage, { used: 0, cap: CAP })
+    setCap(null)
+    check('and back to the default the owner’s goes, when the figure is cleared (no restart: the hub reads the row)', (await call('GET', '/v1/account', undefined, { dev: S, base })).body?.storage?.cap, CAP)
+  }
+
+  console.log('\nthe storage cap: a re-seal on an account at or past its cap')
+  {
+    // Every item re-sealed under a new epoch carries a `by` (written by another device),
+    // the most a re-seal adds to an envelope; the account is far past its cap first.
+    setCap(2048)
+    const before = await call('GET', '/v1/items?since=0', undefined, { dev: S, base })
+    const items = (before.body?.items ?? []).map((x: any) => x.envelope)
+    const keptBefore = recount()
+    ok(`the account keeps ${keptBefore.bytes} bytes in ${keptBefore.items} items, past its cap of 2048`, keptBefore.bytes > 2048 && keptBefore.items === items.length)
+    const vk2 = newVaultKey()
+    const R2s = recoveryKeys(randomU8(16), acct)
+    const chainNow = (await call('GET', '/v1/chain', undefined, { dev: S, base })).body?.entries ?? []
+    const rot = entry(acct, chainNow[chainNow.length - 1], { kind: 'rotate', epoch: 2, signer: S.id, recovery: R2s.signPub, vk: vaultKeyCommit(vk2, { account: acct, epoch: 2 }) }, S.keys.signPriv)
+    const rotated = await call('POST', '/v1/chain', { entries: [rot], wraps: { epoch: 2, devices: [wrapFor(vk2, acct, 2, S)], recovery: sealRecoveryWrap(vk2, R2s.wrapKey, { account: acct, epoch: 2 }) } }, { dev: S, base })
+    check('a rotate is never refused for space', rotated.status, 200)
+    const K1 = K
+    K = itemKeys(vk2, acct, 2)
+    const other = idFromBytes('device', randomU8(10))
+    const resealed = items.map((env: any) => {
+      const o = openItem(K1, env)
+      if (!o.ok) return null
+      return { baseVersion: 0, envelope: sealItem(K, { version: 1, author: S.id, path: o.item.path, editedAt: o.item.editedAt, deleted: o.item.deleted, value: o.item.value, by: other }) }
+    })
+    ok('every item opens for the re-seal', resealed.every((x: unknown) => x !== null))
+    const grown = resealed.reduce((n: number, p: any) => n + sizeOf(p.envelope), 0)
+    ok(`and the re-sealed set is bigger than the one it replaces (${grown} > ${keptBefore.bytes})`, grown > keptBefore.bytes)
+    const rp = await put(resealed as { baseVersion: number; envelope: unknown }[])
+    check('every re-sealed put is taken, though the account is past its cap: the old epoch is still held', rp.body?.results?.map((x: any) => x.ok === true).every(Boolean), true)
+    check('while both epochs are held the account is told both', (await told())?.used, keptBefore.bytes + grown)
+    const between = await put([{ baseVersion: 0, envelope: seal('t1/settings/terminal', 1, { cursor: 'block', pad: 'z'.repeat(2000) }) }])
+    check('the re-seal’s room is not a free-for-all: a big new item past it is still refused', between.body?.results?.[0]?.error, 'full')
+    const pruned = await call('POST', '/v1/items/prune', { epochBelow: 2 }, { dev: S, base })
+    check('pruning the old epoch is taken and counted', [pruned.status, pruned.body?.pruned, (await told())?.used, recount().bytes], [200, items.length, grown, grown])
+    const again = await put([{ baseVersion: 0, envelope: seal('t1/settings/terminal', 1, { cursor: 'bar' }) }])
+    check('once pruned, an account past its cap only shrinks again', again.body?.results?.[0]?.error, 'full')
+    check('the count table equals a full scan across the epoch change', usageTable(), 'equal')
+  }
+
+  console.log('\nthe storage cap: the item count, from the same table')
+  {
+    setCap(1024 * 1024 * 1024)
+    const have = recount().items
+    const d = new DatabaseSync(join(dir, 'hub.db'), { timeout: 5000 })
+    d.exec('BEGIN')
+    const ins = d.prepare("INSERT INTO items(account_id, id, version, epoch, envelope_json, seq) VALUES (?, ?, 1, 2, '{}', 0)")
+    for (let i = have; i < HUB_LIMITS.itemsPerAccount - 1; i++) ins.run(acct, `filler-${i}`)
+    d.exec('COMMIT')
+    d.close()
+    check(`rows written straight into the table are counted too (${HUB_LIMITS.itemsPerAccount - 1})`, [recount().items, usageTable()], [HUB_LIMITS.itemsPerAccount - 1, 'equal'])
+    const last = await put([{ baseVersion: 0, envelope: seal('t1/settings/terminal', 1, { cursor: 'bar' }) }])
+    const one = await put([{ baseVersion: 0, envelope: seal('t1/settings/showBrand', 1, true) }])
+    check(`the ${HUB_LIMITS.itemsPerAccount}th item is taken, the next is full (a count, not bytes)`, [last.body?.results?.[0]?.ok, one.body?.results?.[0]?.error, /at most 5000 items/.test(one.body?.results?.[0]?.reason ?? '')], [true, 'full', true])
+    const w = new DatabaseSync(join(dir, 'hub.db'), { timeout: 5000 })
+    w.prepare("DELETE FROM items WHERE account_id = ? AND id LIKE 'filler-%'").run(acct)
+    w.close()
+    check('deleted rows leave the count too', usageTable(), 'equal')
+  }
+
+  console.log('\nthe storage cap: the count is in the database, not in memory')
+  {
+    const before = await told()
+    await h.close()
+    h = await startHub(config, deps)
+    base = `http://127.0.0.1:${h.lanPort}/hub`
+    check('after a restart the account is told the same', await told(), before)
+    check('and the table still equals a full scan', usageTable(), 'equal')
+    const meta = new DatabaseSync(join(dir, 'hub.db'), { readOnly: true })
+    check('the hub records the default cap it runs with (for `stoke-hub storage`)', (meta.prepare("SELECT value FROM meta WHERE key = 'storage_cap_default'").get() as { value: string } | undefined)?.value, String(CAP))
+    meta.close()
+    await h.close()
+  }
+
+  console.log('\nthe storage cap: a database from before the count, upgraded in place')
+  {
+    // The NUC's database is upgraded where it lies. Make one the way beta.19's hub
+    // left it: no item_usage table, no triggers, no storage_cap, no marker — holding
+    // items in two epochs and one envelope with a non-ASCII byte (bytes, not characters).
+    const old = join(TMP, 'storage-old')
+    HubStore.open(old).close()
+    const d = new DatabaseSync(join(old, 'hub.db'), { timeout: 5000 })
+    d.exec('DROP TRIGGER item_usage_insert; DROP TRIGGER item_usage_update; DROP TRIGGER item_usage_delete; DROP TABLE item_usage; ALTER TABLE accounts DROP COLUMN storage_cap;')
+    d.exec("DELETE FROM meta WHERE key = 'item_usage'")
+    const shape = (): string => JSON.stringify([(d.prepare('PRAGMA table_info(accounts)').all() as { name: string }[]).map((c) => c.name).includes('storage_cap'), d.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'item_usage%'").all().length])
+    check('(the fixture has beta.19’s shape: no cap column, no count, no triggers)', shape(), JSON.stringify([false, 0]))
+    d.prepare("INSERT INTO accounts(id, email, pw_hash, role, created_at) VALUES ('a1', 'one@example.com', 'x', 'owner', 1), ('a2', 'two@example.com', 'x', 'member', 2), ('a3', 'three@example.com', 'x', 'member', 3)").run()
+    const rows: [string, string, number, string][] = [
+      ['a1', 'i1', 1, '{"ct":"' + 'A'.repeat(100) + '"}'],
+      ['a1', 'i2', 1, '{"ct":"' + 'B'.repeat(250) + '"}'],
+      ['a1', 'i3', 2, '{"ct":"' + 'C'.repeat(40) + 'é"}'],
+      ['a2', 'i1', 1, '{"ct":"' + 'D'.repeat(7) + '"}']
+    ]
+    const ins = d.prepare('INSERT INTO items(account_id, id, version, epoch, envelope_json, seq) VALUES (?, ?, 1, ?, ?, 1)')
+    for (const r of rows) ins.run(...r)
+    d.close()
+    const b = (i: number): number => Buffer.byteLength(rows[i][3], 'utf8')
+    ok('(one envelope is a byte longer than its characters)', b(2) === rows[2][3].length + 1)
+    const upgraded = HubStore.open(old)
+    const a1 = upgraded.itemUsage('a1')
+    check('on open, the count is made from the rows: per account, per epoch, in bytes', [a1, upgraded.itemUsage('a2'), upgraded.itemUsage('a3')], [
+      [{ epoch: 1, items: 2, bytes: b(0) + b(1) }, { epoch: 2, items: 1, bytes: b(2) }],
+      [{ epoch: 1, items: 1, bytes: b(3) }],
+      []
+    ])
+    check('and run once: a second open changes nothing', [upgraded.upgradeItemUsage(), JSON.stringify(upgraded.itemUsage('a1'))], [false, JSON.stringify(a1)])
+    check('every account gains a cap column, empty (the hub’s default)', upgraded.accountsWithUsage().map((r) => [r.email, r.storage_cap, Number(r.bytes)]), [['one@example.com', null, b(0) + b(1) + b(2)], ['two@example.com', null, b(3)], ['three@example.com', null, 0]])
+    upgraded.close()
+    const again = HubStore.open(old)
+    check('reopened, still the same', JSON.stringify(again.itemUsage('a1')), JSON.stringify(a1))
+    again.close()
+    // The upgrade installed the triggers: rows written afterwards, by anything, are counted.
+    const w = new DatabaseSync(join(old, 'hub.db'), { timeout: 5000 })
+    w.prepare("INSERT INTO items(account_id, id, version, epoch, envelope_json, seq) VALUES ('a2', 'i9', 1, 1, '1234567890', 2)").run()
+    w.prepare("DELETE FROM items WHERE account_id = 'a1' AND epoch = 1").run()
+    const counted = JSON.stringify(w.prepare('SELECT account_id, epoch, items, bytes FROM item_usage ORDER BY account_id, epoch').all())
+    check('after it, the triggers count every write (an insert and a prune, straight into the table)', counted, JSON.stringify([
+      { account_id: 'a1', epoch: 2, items: 1, bytes: b(2) },
+      { account_id: 'a2', epoch: 1, items: 2, bytes: b(3) + 10 }
+    ]))
+    // An upgrade that never finished: no marker, and a count that is wrong. Only a recount from the rows mends it.
+    w.exec("DELETE FROM meta WHERE key = 'item_usage'; UPDATE item_usage SET bytes = bytes + 999, items = items + 9")
+    w.close()
+    const third = HubStore.open(old)
+    check('an upgrade with no marker recounts from the rows, never from what the table held', [third.itemUsage('a1'), third.itemUsage('a2')], [[{ epoch: 2, items: 1, bytes: b(2) }], [{ epoch: 1, items: 2, bytes: b(3) + 10 }]])
+    third.close()
+  }
 }
 
 /* ------------------------------------------------------------------ CLI */
@@ -1665,7 +1985,7 @@ async function commandChecks(): Promise<void> {
   ]
   for (const v of variants) {
     const data = join(TMP, `cli-${v.name}`)
-    const env = { STOKE_HUB_DATA: data, STOKE_HUB_LISTEN: '127.0.0.1:0', STOKE_HUB_LAN: '127.0.0.1:0', HUB_EDGE_SECRET: SECRET }
+    const env = { STOKE_HUB_DATA: data, STOKE_HUB_LISTEN: '127.0.0.1:0', STOKE_HUB_LAN: '127.0.0.1:0', HUB_EDGE_SECRET: SECRET, STOKE_HUB_STORAGE_CAP: '30M' }
     const c = startChild([...v.entry, 'serve'], env)
     const started = await waitFor(() => c.out.includes('"msg":"started"'), 15_000)
     ok(`${v.name}: serve starts`, started, c.err || c.out)
@@ -1721,6 +2041,33 @@ async function commandChecks(): Promise<void> {
       check('the old password no longer signs in, the new one does', [oldPw.status, newPw.status], [401, 200])
       const nobody = await runChild([...v.entry, 'reset-password', 'nobody@example.com'], cliEnv, 'whatever password 123\n')
       check('reset-password for an unknown email exits 2', nobody.code, 2)
+      // `storage`, run as the owner would on the NUC: the data directory and nothing else of the service's environment.
+      // (A child hub judges requests by the real clock, so these are signed by it, not by this file's fake one.)
+      const listed = await runChild([...v.entry, 'storage'], cliEnv)
+      ok(
+        'storage lists every account against the default the running hub recorded (30 MB from its STOKE_HUB_STORAGE_CAP, not this shell’s 25)',
+        listed.code === 0 && /first@example\.com {2}owner {2}0 items {2}0 bytes of 30 MB \(the hub’s default\)/.test(listed.out) && /second@example\.com {2}member/.test(listed.out),
+        listed.out + listed.err
+      )
+      const capped = await runChild([...v.entry, 'storage', 'First@Example.com', '--cap', '100M'], cliEnv)
+      ok('storage <email> --cap gives that account its own figure', capped.code === 0 && /its cap is 100 MB \(its own\)/.test(capped.out) && /Was 30 MB \(the hub’s default\)/.test(capped.out), capped.out + capped.err)
+      check('and the running hub tells the account so from its next request, with no restart', (await call('GET', '/v1/account', undefined, { dev, base, ts: Date.now() })).body?.storage, { used: 0, cap: 100 * 1024 * 1024 })
+      const relisted = await runChild([...v.entry, 'storage'], cliEnv)
+      ok('the list shows it as the account’s own, the other still on the default', /first@example\.com[^\n]*of 100 MB \(its own\)/.test(relisted.out) && /second@example\.com[^\n]*of 30 MB \(the hub’s default\)/.test(relisted.out), relisted.out)
+      const cleared = await runChild([...v.entry, 'storage', 'first@example.com', '--cap', 'default'], cliEnv)
+      check('--cap default gives it back the hub’s', [cleared.code, (await call('GET', '/v1/account', undefined, { dev, base, ts: Date.now() })).body?.storage?.cap], [0, 30 * 1024 * 1024])
+      const badSize = await runChild([...v.entry, 'storage', 'first@example.com', '--cap', 'lots'], cliEnv)
+      ok('a size it cannot read is refused with a sentence, and nothing changes', badSize.code === 1 && /--cap takes a size/.test(badSize.err), badSize.err)
+      // `--cap` as the last word (the size forgotten) must not pass as a plain listing that set nothing (review, 2026-10-28).
+      const noSize = await runChild([...v.entry, 'storage', 'first@example.com', '--cap'], cliEnv)
+      check(
+        '--cap with no size is refused by name, and the account keeps the hub’s cap',
+        [noSize.code, /--cap needs a size/.test(noSize.err), (await call('GET', '/v1/account', undefined, { dev, base, ts: Date.now() })).body?.storage?.cap],
+        [1, true, 30 * 1024 * 1024]
+      )
+      const unknownCap = await runChild([...v.entry, 'storage', 'nobody@example.com', '--cap', '1M'], cliEnv)
+      const bare = await runChild([...v.entry, 'storage', '--cap', '1M'], cliEnv)
+      check('an unknown email exits 2; --cap with no email is refused', [unknownCap.code, bare.code], [2, 1])
     }
     if (WIN) {
       console.log(`  SKIP  ${v.name}: SIGTERM (Windows delivers no signal to catch; close() is exercised in-process above)`)

@@ -21,6 +21,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { join } from 'node:path'
 import { startHub, type HubHandle } from '../hub/app.ts'
 import { HubLog } from '../hub/log.ts'
+import { HubStore } from '../hub/store.ts'
 import type { Settings } from '../src/shared/types.ts'
 import { hydrateSettings } from '../src/main/settingsSchema.ts'
 import { HubFiles } from '../src/main/hub/files.ts'
@@ -69,6 +70,7 @@ import {
   SYNC_BACKOFF_MS,
   SYNC_INTERVAL_MS,
   sshKeyInstallPlan,
+  storageFullSentence,
   valueDigest,
   VERIFY_OLD_HUB,
   verifyPasswordSentence,
@@ -1528,6 +1530,98 @@ try {
     const unrelated = views.length - n0
     R.set({ chatIndexOptions: { ...R.settings().chatIndexOptions, redact: false } } as Partial<Settings>)
     check('redaction switched off re-judges chat sharing at once; an unrelated setting does not', [unrelated, views.length - n0 > unrelated], [0, true])
+  }
+
+  /* ------------------------------------------ the hub's storage cap, as the client meets it */
+  console.log('\nthe hub’s storage cap, as the client meets it')
+  {
+    // A hub of its own with a small default cap, and the operator's per-account figure
+    // (`stoke-hub storage --cap`) set the way the command sets it, straight in the row.
+    const qDir = join(TMP, 'hub-small')
+    const qSaid: string[] = []
+    const qHub = await startHub(
+      { dataDir: qDir, mount: '/hub', edge: null, lan: { host: '127.0.0.1', port: 0 }, edgeSecret: null, rate: { capacity: 100_000, refillPerSec: 1000 }, pingMs: 60 * 60_000, storageCap: 1024 * 1024 },
+      { log: new HubLog(() => undefined, { level: 'error' }), announce: (t) => qSaid.push(t) }
+    )
+    try {
+      const Q = device('quota', { themeId: 'moss', hosts: [{ id: 'host-1', label: 'Box', alias: 'box', command: '', persist: 'off' }] } as Partial<Settings>)
+      extras.push(Q)
+      await Q.svc.start()
+      await Q.svc.setUrl(`http://127.0.0.1:${qHub.lanPort}/hub`)
+      const qInvite = /(INV(?:-[0-9A-Z]{4}){6})/.exec(qSaid.join(''))?.[1] ?? ''
+      await Q.svc.signIn({ invite: qInvite, email: 'quota@example.com', password: PASSWORD, label: 'Quota Mac' })
+      const qKit = await Q.svc.createVault()
+      if (qKit.ok) secretsSeen.push(qKit.kit)
+      if (qKit.ok) await Q.svc.confirmKit(kitGroup(qKit))
+      await until('the quota device syncs into its vault', () => Q.svc.view().phase === 'active' && Q.svc.view().lastSyncAt !== null)
+      await Q.svc.syncNow()
+      const s0 = Q.svc.view().storage
+      check('the panel is told what the account keeps and may keep, and nothing is waiting', [s0?.cap, (s0?.used ?? 0) > 0, s0?.full, Q.svc.view().counts.hosts], [1024 * 1024, true, null, 1])
+      const qAccount = JSON.parse(readFileSync(join(Q.userData, 'hub-state.json'), 'utf8')).account as string
+      const operatorCap = (cap: number | null): void => {
+        const st = HubStore.open(qDir)
+        st.setStorageCap(qAccount, cap)
+        st.close()
+      }
+      operatorCap(s0?.used ?? 0)
+      const posts = (): number => Q.seen.filter((r) => r === 'POST /v1/items').length
+      const before = posts()
+      Q.set({ worklogGroups: ['g'.repeat(4000)] } as Partial<Settings>)
+      await until('the change is tried, on its own, and refused for room', () => Q.svc.view().storage?.full?.refused === 1)
+      const v1 = Q.svc.view()
+      check('the sync itself is not an error: everything else went up, the panel shows the room instead', [v1.error, v1.storage?.cap, posts() - before], [null, s0?.used, 1])
+      ok('and says what to do', /no room left[\s\S]*Remove something you sync[\s\S]*ask the hub’s owner for more/.test(storageFullSentence(v1.storage?.full?.refused ?? 0)))
+      check(
+        'in the right number: one change stays, several stay',
+        [/so 1 change could not be synced\. It stays on this computer\./.test(storageFullSentence(1)), /so 3 changes could not be synced\. They stay on this computer\./.test(storageFullSentence(3))],
+        [true, true]
+      )
+      const quiet = posts()
+      await sleep(2500)
+      check('no retry storm: nothing more goes to the hub until the next pass (the 5-minute interval, or the next change)', posts() - quiet, 0)
+      const pressed = await Q.svc.syncNow()
+      check('Sync now tries it once more, in one request, and answers with the room, not “Synced.”', [posts() - quiet, pressed.ok, !pressed.ok && /no room left/.test(pressed.message), Q.svc.view().storage?.full?.refused], [1, false, true, 1])
+      // Far over: only shrinking goes up. A deleted host is a tombstone, which always does.
+      operatorCap(1)
+      Q.set({ hosts: [] } as Partial<Settings>)
+      await until('the host’s delete goes up though the account is far past its cap', () => Q.svc.view().counts.hosts === 0 && Q.svc.view().busy === null)
+      check('while the change that grows still waits', Q.svc.view().storage?.full?.refused, 1)
+      // That pass sent both in one request: the refused growth, then the delete the hub took. The
+      // panel's figure is what the account keeps AFTER the request, not what it kept when the
+      // refused put was judged (review, 2026-10-28: the per-put figure overwrote the answer's).
+      const hubUsed = (): number => {
+        const st = HubStore.open(qDir)
+        const n = st.itemUsage(qAccount).reduce((sum, r) => sum + r.bytes, 0)
+        st.close()
+        return n
+      }
+      check('and the figure shown is the hub’s after that whole request, the delete beside the refusal counted', Q.svc.view().storage?.used, hubUsed())
+      // Sharing an SSH key is its own upload, outside a pass: on a full hub it must say so, not "did not take".
+      const qKey = syntheticKey('quota-key', 'none')
+      writeFileSync(join(Q.ssh.dir, 'quota_ed25519'), qKey.priv, { mode: 0o600 })
+      writeFileSync(join(Q.ssh.dir, 'quota_ed25519.pub'), `${qKey.pub}\n`)
+      secretsSeen.push(qKey.priv.split('\n')[1])
+      const qShared = await Q.svc.shareKey('quota_ed25519')
+      check('sharing a key on a full hub is refused with the room sentence, and the key is not listed as shared', [qShared.ok, !qShared.ok && /no room left/.test(qShared.message), Q.svc.view().sshKeys.some((k) => k.name === 'quota_ed25519' && k.mine)], [false, true, false])
+      operatorCap(null)
+      const given = await Q.svc.syncNow()
+      const s2 = Q.svc.view().storage
+      check('given room by the hub’s owner, the waiting change goes up at the next sync and the notice clears', [given.ok, s2?.full, s2?.cap, (s2?.used ?? 0) > (s0?.used ?? 0)], [true, null, 1024 * 1024, true])
+      Q.svc.stop()
+    } finally {
+      await qHub.close()
+    }
+    // The wire from that view to the panel (gotcha 31: no case above sees a component), pinned by its source text.
+    const panel = readFileSync(new URL('../src/renderer/src/components/AccountSyncSettings.tsx', import.meta.url), 'utf8')
+    check(
+      'Account & sync draws the hub’s figures, its sentence when full, and a “hub full” pill after any sync error',
+      [
+        /\{view\.storage && \(\s*<span className="field-hint" data-hub="storage">\s*Storage: \{formatBytes\(view\.storage\.used\)\} of \{formatBytes\(view\.storage\.cap\)\}\./.test(panel),
+        /\{view\.storage\?\.full && \([\s\S]{0,160}\{storageFullSentence\(view\.storage\.full\.refused\)\}/.test(panel),
+        /: view\.error\s*\? \{ tone: 'danger', text: 'error' \}\s*: view\.storage\?\.full\s*\? \{ tone: 'danger', text: 'hub full' \}/.test(panel)
+      ],
+      [true, true, true]
+    )
   }
 
   /* ------------------------------------------ sign out */
