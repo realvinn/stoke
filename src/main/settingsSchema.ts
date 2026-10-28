@@ -82,6 +82,7 @@ export const DEFAULT_SETTINGS: Settings = {
   scratch: { ...DEFAULT_SCRATCH },
   quickTerminal: true,
   startOnLaunch: false,
+  reuseNewTab: true,
   pinnedProjects: [],
   hiddenProjects: [],
   browser: {
@@ -467,6 +468,8 @@ export function hydrateSettings(raw: unknown): Settings {
     // must read as on, which is what an untouched machine gets.
     hideStatusLine: r.hideStatusLine !== false,
     showBrand: r.showBrand !== false,
+    // `!== false`: on unless turned off, and a file from before the key is on.
+    reuseNewTab: r.reuseNewTab !== false,
     contextRingStyle: r.contextRingStyle === 'dotted' ? 'dotted' : 'solid',
     // Rebuilt from named keys (shared/topBar.ts): unknown kinds, bad ids and
     // over-long text go; a file from before the key reads as the default.

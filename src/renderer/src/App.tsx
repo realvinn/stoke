@@ -142,6 +142,8 @@ import {
   autoRelaunchKey,
   autoRelaunchStep,
   busyTabIds,
+  chatNewTab,
+  chatOpenPlan,
   continuePlan,
   cycleTab,
   focusAfterStart,
@@ -5653,14 +5655,26 @@ export function App(): React.JSX.Element {
    * a search hit and a row of an expanded list resume through this one path,
    * reading the same four fields, so the two cannot start different sessions.
    */
+  /*
+   * The chats a press is starting right now, claimed before the await and
+   * released in `.finally` (gotchas 20, 51). A double click on a sidebar row
+   * otherwise ran two `startSession`s before either tab existed: the first
+   * took the New tab's place, the second found that id gone and APPENDED a
+   * second `claude` on the same transcript. CLAUDE.md gotcha 176.
+   */
+  const chatStartingRef = useRef(new Set<string>())
+
   const resumeSession = useCallback(
     (
       s: SessionIndexEntry,
       opts?: {
         /**
-         * The New tab the resume was asked from. When the conversation is
-         * already open elsewhere that tab is closed as its tab comes forward,
-         * rather than left behind as an idle launcher (QA L17).
+         * The New tab a control ON the launcher was pressed in (its Recent
+         * list, Continue). Used up whatever Settings says, as the launcher's
+         * own buttons always are; omitted, the setting decides (`chatNewTab`).
+         * When the conversation is already open elsewhere that tab closes as
+         * its tab comes forward, rather than being left behind as an idle
+         * launcher (QA L17).
          */
         fromTabId?: string | null
         /** This launch's own choices (the launcher's chips); omitted means the defaults. */
@@ -5688,14 +5702,6 @@ export function App(): React.JSX.Element {
       const open = tabsRef.current.find(
         (t) => t.kind === 'session' && t.sessionId === s.id && t.status === 'running'
       )
-      if (open) {
-        const from = opts?.fromTabId
-        // Moved first, so closeTab sees a selection that is not the tab it closes.
-        activeTabIdRef.current = open.id
-        setActiveTabId(open.id)
-        if (from && tabsRef.current.some((t) => t.id === from && t.kind === 'new')) closeTab(from)
-        return
-      }
       /*
        * A PAUSED tab on the same id is resumed where it is, not beside it.
        * Starting a second tab left the paused card behind with its own
@@ -5705,18 +5711,32 @@ export function App(): React.JSX.Element {
        * the launcher's own choices, when it passed any, replace the card's.
        * Local only: a paused SSH card resumes by host, not by id (gotcha 19).
        */
-      const paused = tabsRef.current.find(
-        (t) => t.kind === 'session' && t.sessionId === s.id && t.status === 'paused' && !t.hostId
-      )
-      if (paused) {
-        const from = opts?.fromTabId
-        activeTabIdRef.current = paused.id
-        setActiveTabId(paused.id)
-        if (from && tabsRef.current.some((t) => t.id === from && t.kind === 'new')) closeTab(from)
-        const run = resumeTabFor(opts?.launch ? { ...paused, ...opts.launch } : paused)
-        if (run) void run()
+      const paused = open
+        ? undefined
+        : tabsRef.current.find(
+            (t) => t.kind === 'session' && t.sessionId === s.id && t.status === 'paused' && !t.hostId
+          )
+      // Read at the press, through the refs: the closure's tab list is a render old.
+      const plan = chatOpenPlan({
+        tabs: tabsRef.current,
+        activeId: activeTabIdRef.current,
+        reuse: settingsRef.current?.reuseNewTab !== false,
+        from: opts?.fromTabId,
+        holder: (open ?? paused)?.id ?? null
+      })
+      if (plan.kind === 'go') {
+        // Moved first, so closeTab sees a selection that is not the tab it closes.
+        activeTabIdRef.current = plan.tabId
+        setActiveTabId(plan.tabId)
+        if (plan.close) closeTab(plan.close)
+        if (paused) {
+          const run = resumeTabFor(opts?.launch ? { ...paused, ...opts.launch } : paused)
+          if (run) void run()
+        }
         return
       }
+      if (chatStartingRef.current.has(s.id)) return
+      chatStartingRef.current.add(s.id)
       const project = projects.find((p) => p.path === s.projectPath)
       void startSession({
         cwd: s.projectPath,
@@ -5724,11 +5744,11 @@ export function App(): React.JSX.Element {
         title: s.title ?? s.firstPrompt ?? undefined,
         sessionId: s.id,
         resume: true,
-        replaceTabId: activeNewTabId ?? undefined,
+        replaceTabId: plan.replace ?? undefined,
         ...(opts?.launch ?? {})
-      })
+      }).finally(() => chatStartingRef.current.delete(s.id))
     },
-    [projects, startSession, activeNewTabId, closeTab, resumeTabFor]
+    [projects, startSession, closeTab, resumeTabFor]
   )
 
   /**
@@ -5744,12 +5764,24 @@ export function App(): React.JSX.Element {
    * the hub for a relay and the other machine asks its owner; the tab shows
    * that while it waits. Claimed per session before the IPC (gotchas 20, 51):
    * a double click must not make two tabs on one relay.
+   *
+   * With a New tab in front it takes that tab's place (`chatOpenPlan`, the
+   * setting's), and a session already in a tab here closes it as that tab
+   * comes forward. The New tab is the one in front at the PRESS: the reply
+   * can come after the person has moved on, and a New tab that is gone or
+   * replaced by then is not used up (the tab is appended). `reuse: false` is
+   * Reopen closed tab, which appends as it does for a local tab.
    */
   const remoteOpening = useRef(new Set<string>())
-  const openRemoteSession = useCallback((m: Pick<OtherMachineView, 'id' | 'label' | 'platform'>, s: Pick<RemoteSessionSummary, 'ptyId' | 'title' | 'project'>): void => {
+  const openRemoteSession = useCallback((m: Pick<OtherMachineView, 'id' | 'label' | 'platform'>, s: Pick<RemoteSessionSummary, 'ptyId' | 'title' | 'project'>, opts?: { reuse?: boolean }): void => {
     const key = `${m.id}\n${s.ptyId}`
     if (remoteOpening.current.has(key)) return
     remoteOpening.current.add(key)
+    const from = chatNewTab({
+      tabs: tabsRef.current,
+      activeId: activeTabIdRef.current,
+      reuse: opts?.reuse ?? settingsRef.current?.reuseNewTab !== false
+    })
     void window.stoke.hub.remote
       .open(m.id, s.ptyId)
       .then((r) => {
@@ -5758,8 +5790,12 @@ export function App(): React.JSX.Element {
           return
         }
         const have = tabsRef.current.find((t) => t.kind === 'remote' && t.remote?.tabId === r.tab)
-        if (have) {
-          setActiveTabId(have.id)
+        // `reuse: false`: only the New tab chosen at the press, never one in front now.
+        const plan = chatOpenPlan({ tabs: tabsRef.current, activeId: activeTabIdRef.current, reuse: false, from, holder: have?.id ?? null })
+        if (plan.kind === 'go') {
+          activeTabIdRef.current = plan.tabId
+          setActiveTabId(plan.tabId)
+          if (plan.close) closeTab(plan.close)
           return
         }
         const tab: Tab = {
@@ -5770,18 +5806,19 @@ export function App(): React.JSX.Element {
           projectName: m.label,
           remote: { tabId: r.tab, device: m.id, deviceLabel: m.label, platform: m.platform, ptyId: s.ptyId }
         }
-        const next = [...tabsRef.current, tab]
+        const next = replaceOrAppend(tabsRef.current, tab, plan.replace)
         tabsRef.current = next
         setTabs(next)
+        activeTabIdRef.current = tab.id
         setActiveTabId(tab.id)
       })
       .catch((e) => setError(ipcErrorMessage(e)))
       .finally(() => remoteOpening.current.delete(key))
-  }, [])
+  }, [closeTab])
 
   reopenRemoteRef.current = (tab) => {
     const r = tab.remote
-    if (r) openRemoteSession({ id: r.device, label: r.deviceLabel, platform: r.platform }, { ptyId: r.ptyId, title: tab.customTitle || tab.title, project: '' })
+    if (r) openRemoteSession({ id: r.device, label: r.deviceLabel, platform: r.platform }, { ptyId: r.ptyId, title: tab.customTitle || tab.title, project: '' }, { reuse: false })
   }
 
   /** A hit from another computer: always the read-only viewer. Continuing it there is v2, never a copy here. */
@@ -5811,6 +5848,34 @@ export function App(): React.JSX.Element {
         })
         return
       }
+      /*
+       * Another agent's chat. A tab knows the chat it reopened only when it was
+       * reopened by id (`Tab.agentResumeId`, Codex today), so only such a tab,
+       * still running, is gone to rather than opened twice.
+       */
+      const holder = tabsRef.current.find(
+        (t) =>
+          t.kind === 'session' &&
+          t.status === 'running' &&
+          t.cliId === action.cli &&
+          !!t.agentResumeId &&
+          t.agentResumeId === action.sessionId
+      )
+      const plan = chatOpenPlan({
+        tabs: tabsRef.current,
+        activeId: activeTabIdRef.current,
+        reuse: settingsRef.current?.reuseNewTab !== false,
+        holder: holder?.id ?? null
+      })
+      if (plan.kind === 'go') {
+        activeTabIdRef.current = plan.tabId
+        setActiveTabId(plan.tabId)
+        if (plan.close) closeTab(plan.close)
+        return
+      }
+      const claim = `${action.cli}\n${action.sessionId}`
+      if (chatStartingRef.current.has(claim)) return
+      chatStartingRef.current.add(claim)
       const project = projects.find((p) => p.path === action.cwd)
       void startSession({
         cwd: action.cwd,
@@ -5818,10 +5883,10 @@ export function App(): React.JSX.Element {
         name: project?.label ?? project?.name ?? baseName(action.cwd),
         title: hit.title ?? undefined,
         agentResumeId: action.sessionId,
-        replaceTabId: activeNewTabId ?? undefined
-      })
+        replaceTabId: plan.replace ?? undefined
+      }).finally(() => chatStartingRef.current.delete(claim))
     },
-    [installedAgentIds, resumeSession, projects, startSession, activeNewTabId, query]
+    [installedAgentIds, resumeSession, projects, startSession, closeTab, query]
   )
 
   /* ------------------------------------------------------------ launcher */

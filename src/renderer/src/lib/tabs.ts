@@ -1150,6 +1150,61 @@ export function newTabToReuse(
   return tabs.find((t) => t.kind === 'new' && !t.launch)?.id ?? null
 }
 
+/**
+ * The New tab opening an existing chat uses up, or null to leave every tab
+ * where it is.
+ *
+ * The owner, 2026-10-28: "I am on new tab and click on a chat it should change
+ * that new tab not open new tab (make that a setting)". A chat picked in the
+ * sidebar, chat search or Other machines while a New tab is in front takes
+ * that tab's place when `reuse` is on (Settings › Sessions, `reuseNewTab`, on
+ * by default); off, it opens in a tab of its own and the New tab stays.
+ *
+ * `from` is the New tab a control ON the launcher was pressed in (its Recent
+ * list, Continue): used up whatever `reuse` says, because a New tab is there
+ * to be replaced by what it starts. Only a tab of kind `new` is ever used up,
+ * never a session, a paused card, an ended tab, a remote, private or utility
+ * tab (gotcha 150). A `from` that is gone, or no longer a New tab, uses up
+ * nothing, so an open that finishes late appends rather than replacing
+ * whatever took its place (gotcha 51).
+ */
+export function chatNewTab(input: {
+  tabs: readonly { id: string; kind: string }[]
+  activeId: string | null
+  reuse: boolean
+  from?: string | null
+}): string | null {
+  const isNew = (id: string | null | undefined): id is string =>
+    !!id && input.tabs.some((t) => t.id === id && t.kind === 'new')
+  if (input.from) return isNew(input.from) ? input.from : null
+  return input.reuse && isNew(input.activeId) ? input.activeId : null
+}
+
+export type ChatOpenPlan =
+  /** A tab here already holds it (running, or a paused card): go there, closing `close`. */
+  | { kind: 'go'; tabId: string; close: string | null }
+  /** Open it in `replace`'s place, or appended when null. */
+  | { kind: 'open'; replace: string | null }
+
+/**
+ * What opening an existing chat does: every surface that opens one asks this
+ * (`resumeSession`, `openChat`, `openRemoteSession`). `holder` is the tab
+ * already holding that chat, or null. A held chat is gone to, never opened a
+ * second time, and the New tab it was asked from closes rather than being
+ * left behind as an idle launcher (QA L17). CLAUDE.md gotcha 176.
+ */
+export function chatOpenPlan(input: {
+  tabs: readonly { id: string; kind: string }[]
+  activeId: string | null
+  reuse: boolean
+  from?: string | null
+  holder: string | null
+}): ChatOpenPlan {
+  const used = chatNewTab(input)
+  if (input.holder) return { kind: 'go', tabId: input.holder, close: used === input.holder ? null : used }
+  return { kind: 'open', replace: used }
+}
+
 /** Settings › Agents' tag options, plus the agent Start starts. */
 export interface AgentTagOptions {
   /** Draw the tag at all (`agents.tag.show`). */

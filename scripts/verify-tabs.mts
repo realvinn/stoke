@@ -40,6 +40,8 @@ import {
   pendingRelaunchStep,
   rebindTabs,
   continuePlan,
+  chatNewTab,
+  chatOpenPlan,
   newTabToReuse,
   nextCustomTitle,
   tabLabel,
@@ -1309,6 +1311,167 @@ check(
   newTabToReuse([{ id: 'n1', kind: 'new', launch: { model: 'sonnet' } }], 'n1'),
   'n1'
 )
+
+console.log('\nchatOpenPlan: a chat picked with a New tab in front takes its place (the owner, 2026-10-28)')
+{
+  // One of every kind a strip holds. Only `n1` and `n2` may ever be used up (gotcha 150).
+  const strip = [
+    { id: 'n1', kind: 'new' },
+    { id: 'n2', kind: 'new' },
+    { id: 'run', kind: 'session' },
+    { id: 'paused', kind: 'session' },
+    { id: 'ended', kind: 'session' },
+    { id: 'private', kind: 'session' },
+    { id: 'install', kind: 'session' },
+    { id: 'remote-1', kind: 'remote' },
+    { id: 'grok', kind: 'grok-bot' }
+  ]
+  const at = (activeId: string | null, reuse: boolean, extra: { from?: string | null; holder?: string | null } = {}) =>
+    chatOpenPlan({ tabs: strip, activeId, reuse, from: extra.from, holder: extra.holder ?? null })
+
+  // The table, row by row: what is in front x the setting x whether a tab already holds the chat.
+  check('New tab in front, setting on, not open anywhere: it opens in the New tab’s place', at('n1', true), { kind: 'open', replace: 'n1' })
+  check('…the OTHER New tab when that is the one in front', at('n2', true), { kind: 'open', replace: 'n2' })
+  check('New tab in front, setting off: a tab of its own, the New tab stays', at('n1', false), { kind: 'open', replace: null })
+  check('New tab in front, setting on, already open in a tab: go there and close the New tab', at('n1', true, { holder: 'run' }), { kind: 'go', tabId: 'run', close: 'n1' })
+  check('…a paused card holding it: the same (the card is resumed where it is)', at('n1', true, { holder: 'paused' }), { kind: 'go', tabId: 'paused', close: 'n1' })
+  check('New tab in front, setting off, already open: go there, the New tab stays', at('n1', false, { holder: 'run' }), { kind: 'go', tabId: 'run', close: null })
+  for (const id of ['run', 'paused', 'ended', 'private', 'install', 'remote-1', 'grok']) {
+    check(`the "${id}" tab in front is never replaced, setting on`, at(id, true), { kind: 'open', replace: null })
+    check(`…and never closed when the chat is open elsewhere`, at(id, true, { holder: 'run' }).kind === 'go' && (at(id, true, { holder: 'run' }) as { close: string | null }).close, null)
+  }
+  check('nothing in front: a tab of its own', at(null, true), { kind: 'open', replace: null })
+  check('a selection naming a tab that is gone: a tab of its own', at('gone', true), { kind: 'open', replace: null })
+
+  // The launcher's own controls pass `from`: the tab it sits on is used up whatever the setting.
+  check('the launcher’s Recent list, setting OFF: still opens in its own New tab', at('n1', false, { from: 'n1' }), { kind: 'open', replace: 'n1' })
+  check('…and closes it when the chat is open elsewhere', at('n1', false, { from: 'n1', holder: 'run' }), { kind: 'go', tabId: 'run', close: 'n1' })
+  check('a `from` that has gone uses up nothing, even with another New tab in front', at('n2', true, { from: 'gone' }), { kind: 'open', replace: null })
+  check('a `from` that is not a New tab uses up nothing (it was replaced in the meantime)', at('n1', true, { from: 'run' }), { kind: 'open', replace: null })
+  check('an empty `from` falls back to the setting', at('n1', true, { from: null }), { kind: 'open', replace: 'n1' })
+  check('the holder is never also the tab it closes', chatOpenPlan({ tabs: strip, activeId: 'n1', reuse: true, from: 'n1', holder: 'n1' }), { kind: 'go', tabId: 'n1', close: null })
+
+  check('chatNewTab is the same rule: the New tab in front, setting on', chatNewTab({ tabs: strip, activeId: 'n2', reuse: true }), 'n2')
+  check('…none with the setting off', chatNewTab({ tabs: strip, activeId: 'n2', reuse: false }), null)
+
+  /*
+   * Other machines: the New tab is chosen at the PRESS (`chatNewTab`), and
+   * the reply asks the plan with `reuse: false` and that `from`, so a New
+   * tab the person went to while waiting is never taken.
+   */
+  const pressed = chatNewTab({ tabs: strip, activeId: 'n1', reuse: true })
+  check('a remote open pressed on n1, answered while n2 is in front: n1 is replaced', chatOpenPlan({ tabs: strip, activeId: 'n2', reuse: false, from: pressed, holder: null }), { kind: 'open', replace: 'n1' })
+  const pressedOff = chatNewTab({ tabs: strip, activeId: 'n1', reuse: false })
+  check('…pressed with the setting off, answered on a New tab: nothing replaced', chatOpenPlan({ tabs: strip, activeId: 'n2', reuse: false, from: pressedOff, holder: null }), { kind: 'open', replace: null })
+  const afterClose = strip.filter((t) => t.id !== 'n1')
+  check('…n1 closed before the answer: appended, nothing else replaced (gotcha 51)', chatOpenPlan({ tabs: afterClose, activeId: 'n2', reuse: false, from: pressed, holder: null }), { kind: 'open', replace: null })
+
+  // The plan feeds replaceOrAppend, which replaces only the id it is given.
+  const plan = at('n1', true)
+  const replace = plan.kind === 'open' ? plan.replace : null
+  check(
+    'the plan’s tab takes the New tab’s index',
+    replaceOrAppend(strip.slice(0, 3), { id: 'chat', kind: 'session' }, replace).map((t) => t.id),
+    ['chat', 'n2', 'run']
+  )
+
+  /*
+   * Every surface that opens an existing chat asks the plan, and only the
+   * launcher's own controls pass `from` (gotcha 31: the wire from a press to
+   * the pure rule is invisible to the table above). A body that cannot be
+   * found is a failure, not a skip (gotcha 113).
+   */
+  const app = readFileSync(new URL('../src/renderer/src/App.tsx', import.meta.url), 'utf8')
+  const body = (name: string): string => {
+    const start = app.indexOf(`const ${name} = useCallback(`)
+    if (start < 0) return ''
+    const rest = app.slice(start)
+    const end = rest.search(/\n  \)\n|\n  \}, \[[^\]]*\]\)\n/)
+    return end < 0 ? '' : rest.slice(0, end)
+  }
+  const resume = body('resumeSession')
+  const openChatBody = body('openChat')
+  const remote = body('openRemoteSession')
+  check('the three bodies were found', [resume.length > 0, openChatBody.length > 0, remote.length > 0], [true, true, true])
+  const readsSetting = /reuse: settingsRef\.current\?\.reuseNewTab !== false/
+  check(
+    'resumeSession (the sidebar’s rows and hits, a Claude chat-search hit, the launcher’s list) asks chatOpenPlan with the setting and the launcher’s `from`',
+    [/chatOpenPlan\(\{/.test(resume), readsSetting.test(resume), /from: opts\?\.fromTabId/.test(resume), /replaceTabId: plan\.replace \?\? undefined/.test(resume)],
+    [true, true, true, true]
+  )
+  check(
+    '…closes only what the plan names, never `from` unchecked, and no longer reads the closure’s activeNewTabId',
+    [/if \(plan\.close\) closeTab\(plan\.close\)/.test(resume), /closeTab\(from\)/.test(resume), /activeNewTabId/.test(resume)],
+    [true, false, false]
+  )
+  check(
+    '…and a double click starts one chat: claimed before the start, released in .finally (gotcha 51)',
+    /if \(chatStartingRef\.current\.has\(s\.id\)\) return\s+chatStartingRef\.current\.add\(s\.id\)[\s\S]*?void startSession\(\{[\s\S]*?\}\)\.finally\(\(\) => chatStartingRef\.current\.delete\(s\.id\)\)/.test(resume),
+    true
+  )
+  /*
+   * A paused card on the same chat is a holder too, and it is resumed where it
+   * is. Without either half the table above stays green: a paused chat picked
+   * in the sidebar opened a SECOND `claude` on its transcript in the New tab
+   * beside the card, or the card came forward and was never resumed.
+   */
+  check(
+    'resumeSession: a paused card holding the chat is the plan’s holder, and is resumed in place on `go`',
+    [
+      /holder: \(open \?\? paused\)\?\.id \?\? null/.test(resume),
+      /if \(plan\.kind === 'go'\) \{[\s\S]*?if \(paused\) \{\s+const run = resumeTabFor\(opts\?\.launch \? \{ \.\.\.paused, \.\.\.opts\.launch \} : paused\)\s+if \(run\) void run\(\)\s+\}\s+return\s+\}/.test(resume)
+    ],
+    [true, true]
+  )
+  check(
+    'openChat (another agent’s chat-search hit) asks chatOpenPlan with the setting, and is claimed the same way',
+    [/chatOpenPlan\(\{/.test(openChatBody), readsSetting.test(openChatBody), /replaceTabId: plan\.replace \?\? undefined/.test(openChatBody), /chatStartingRef\.current\.has\(claim\)/.test(openChatBody), /activeNewTabId/.test(openChatBody)],
+    [true, true, true, true, false]
+  )
+  check(
+    '…and goes to a RUNNING tab of that agent that reopened the same chat by id, rather than opening it twice',
+    /t\.status === 'running' &&\s+t\.cliId === action\.cli &&\s+!!t\.agentResumeId &&\s+t\.agentResumeId === action\.sessionId[\s\S]*?holder: holder\?\.id \?\? null/.test(openChatBody),
+    true
+  )
+  // Never released, the same agent chat could not be opened from search again (after its tab closed) until a reload.
+  check(
+    '…and its claim is released once the start settles, success or not',
+    /chatStartingRef\.current\.add\(claim\)[\s\S]*?void startSession\(\{[\s\S]*?\}\)\.finally\(\(\) => chatStartingRef\.current\.delete\(claim\)\)/.test(openChatBody),
+    true
+  )
+  check(
+    'openRemoteSession (Other machines) picks the New tab at the press and replaces it, never appends unasked',
+    [
+      /const from = chatNewTab\(\{[\s\S]*?reuse: opts\?\.reuse \?\? settingsRef\.current\?\.reuseNewTab !== false/.test(remote),
+      /chatOpenPlan\(\{ tabs: tabsRef\.current, activeId: activeTabIdRef\.current, reuse: false, from, holder: have\?\.id \?\? null \}\)/.test(remote),
+      /replaceOrAppend\(tabsRef\.current, tab, plan\.replace\)/.test(remote),
+      /\[\.\.\.tabsRef\.current, tab\]/.test(remote),
+      /if \(plan\.close\) closeTab\(plan\.close\)/.test(remote)
+    ],
+    [true, true, true, false, true]
+  )
+  check('Reopen closed tab on a remote tab appends, as a local reopen does', /openRemoteSession\([^\n]*\{ reuse: false \}\)/.test(app), true)
+  check(
+    'the sidebar passes no `from` (the setting decides), the launcher’s list passes its own tab (always)',
+    [
+      /onResume=\{resumeSession\}/.test(app),
+      /onOpenChat=\{openChat\}/.test(app),
+      /onOpen=\{openRemoteSession\}/.test(app),
+      /onResume=\{\(s\) => resumeSession\(s, \{ fromTabId: activeNewTabId, launch: launchNow\.choice \}\)\}/.test(app),
+      /if \(s\) resumeSession\(s, \{ fromTabId: from, launch: launchNow\.choice \}\)/.test(app)
+    ],
+    [true, true, true, true, true]
+  )
+  const sheet = readFileSync(new URL('../src/renderer/src/components/SettingsSheet.tsx', import.meta.url), 'utf8')
+  check(
+    'the setting has one writer, its checkbox on Settings › Sessions (gotcha 57)',
+    [
+      /data-setting="sessions\.reuse-new-tab"[\s\S]{0,200}checked=\{settings\.reuseNewTab\}[\s\S]{0,120}onPatch\(\{ reuseNewTab: e\.target\.checked \}\)/.test(sheet),
+      (app.match(/reuseNewTab:/g) ?? []).length
+    ],
+    [true, 0]
+  )
+}
 
 console.log('\ntabLabel: tabs say which project and which agent (QA L16)')
 /*

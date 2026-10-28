@@ -1122,6 +1122,21 @@ export function SettingsSheet({
                   </span>
                 </label>
 
+                <label className="check-row" data-setting="sessions.reuse-new-tab">
+                  <input
+                    type="checkbox"
+                    checked={settings.reuseNewTab}
+                    onChange={(e) => onPatch({ reuseNewTab: e.target.checked })}
+                  />
+                  <span>
+                    <span className="field-label">Open chats in the New tab you&rsquo;re on</span>
+                    <span className="field-hint">
+                      A chat picked in the sidebar, chat search or Other machines takes the New
+                      tab&rsquo;s place. Off: it opens in a tab of its own.
+                    </span>
+                  </span>
+                </label>
+
                 <div className="field" data-setting="sessions.notifications">
                   <span className="field-label">Notify me when Claude finishes</span>
                   <div className="segmented" role="group" aria-label="Notifications">

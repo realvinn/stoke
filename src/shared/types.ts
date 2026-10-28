@@ -1255,6 +1255,12 @@ export interface Settings {
   quickTerminal: boolean
   /** Open a session in the default folder as soon as the app starts. */
   startOnLaunch: boolean
+  /**
+   * A chat picked in the sidebar, chat search or Other machines while a New
+   * tab is in front takes that tab's place (and one already open closes it as
+   * it comes forward). Off: it opens in a tab of its own. See `chatNewTab`.
+   */
+  reuseNewTab: boolean
   pinnedProjects: string[]
   hiddenProjects: string[]
   browser: {

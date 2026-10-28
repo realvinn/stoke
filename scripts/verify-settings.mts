@@ -174,6 +174,12 @@ console.log('\nthe status line')
 check('suppression is on for a machine that has never said', hydrateSettings({}).hideStatusLine, true)
 check('and off stays off', hydrateSettings({ hideStatusLine: false }).hideStatusLine, false)
 
+console.log('\na chat opened with a New tab in front (Settings › Sessions)')
+check('takes the New tab’s place on a machine that has never said', hydrateSettings({}).reuseNewTab, true)
+check('off stays off', hydrateSettings({ reuseNewTab: false }).reuseNewTab, false)
+check('only a literal false turns it off: a hand-edited "false" string is on', hydrateSettings({ reuseNewTab: 'false' } as never).reuseNewTab, true)
+check('a second hydrate changes nothing (gotcha 116)', hydrateSettings(hydrateSettings({ reuseNewTab: false })).reuseNewTab, false)
+
 console.log('\nthe terminal block, field by field')
 check('a machine that has never said gets the defaults', hydrateSettings({}).terminal.lineHeight, 1.3)
 /*

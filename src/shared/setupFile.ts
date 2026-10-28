@@ -256,6 +256,8 @@ export const PORTABLE_KEYS = [
   'worklogBoards',
   'hideStatusLine',
   'showBrand',
+  // How a chat opens beside a New tab: a habit, the same on any machine.
+  'reuseNewTab',
   'contextRingStyle',
   // The title bar's items: a folder chip holds no path and a shortcut means
   // the same on any machine, so the layout and the shortcuts travel.
@@ -547,6 +549,7 @@ const LABELS: Record<string, string> = {
   worklogBoards: 'Worklog boards',
   hideStatusLine: 'Hide Claude’s status line',
   showBrand: 'Show the Stoke name',
+  reuseNewTab: 'Open chats in the New tab you’re on',
   contextRingStyle: 'Context ring style',
   topBar: 'Title bar items and text shortcuts',
   sshKeyEnroll: 'SSH key offer',
