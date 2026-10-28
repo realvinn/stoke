@@ -619,6 +619,8 @@ rule file named on the group line.
   make a harness prove it ran to its end before an absence counts, and give each of two layered guards its own check.
 - **180.** Drive a finger with `Input.dispatchTouchEvent` (`touchDrag`), never `synthesizeScrollGesture`'s touch source (no
   touchmove on Linux); send a tap's halves together, and widen a component's timer for a test (`eofConfirmMs`), never its shipped value.
+- **181.** Prove a deadline fires with a stand-in that cannot answer in time (`slow-git`, `exec sleep` for the one subcommand),
+  never a real process under a 1 ms deadline: on the Linux runner git answered first.
 
 ## Standing traps when driving the app
 

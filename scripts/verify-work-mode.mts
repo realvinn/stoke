@@ -514,6 +514,10 @@ if (process.platform !== 'win32') {
   } catch {
     put(join(repo, 'src', 'pipe.ts'), code('PIPE_FALLBACK'))
   }
+} else {
+  // No FIFO on Windows, so the file is plain code, as when mkfifo fails: left as committed, its
+  // CANARY_FIFO is ordinary readable code and the canary check read it as a leak (the 2026-10-28 Windows leg).
+  put(join(repo, 'src', 'pipe.ts'), code('PIPE_FALLBACK'))
 }
 check('the fixture folder is a real repo and lists every trap', git(repo, 'ls-files').split('\n').filter((p) => /env|id_ed|credentials|node_modules|dist|huge|bundle|binary|secrets|password|link|alias|pipe|linked/.test(p)).length >= 14, true)
 
@@ -665,8 +669,23 @@ check('the fixture folder is a real repo and lists every trap', git(repo, 'ls-fi
   // Each way the listing cannot run: git missing, an unsafe filter config (a name `-c` cannot carry), its deadline.
   const noGit = await reader({ git: async () => null }).source(ign)
   check('in a repository with no git to list it: no listing at all, never a walk', [noGit.reason, noGit.files.length, JSON.stringify(noGit).includes('CANARY_IGNORED')], ['unreadable', 0, false])
-  const late = await reader({ timeouts: { list: 1 } }).source(ign)
-  check('…nor past the listing\'s deadline', [late.reason, late.files.length, JSON.stringify(late).includes('CANARY_IGNORED')], ['slow', 0, false])
+  /*
+   * A git that never answers `ls-files`, so the deadline fires every time. This used to be the real git
+   * under a 1 ms deadline, which is a race, not a test: on the 2026-10-28 Linux gate the runner's git
+   * listed the folder first ([null, 2, false]), the race verify:git lost on 2026-10-02 (gotcha 181). `exec` makes the
+   * killed process the sleep itself, so nothing outlives the kill. A POSIX script; the deadline is
+   * execFile's timeout, the same code on every platform.
+   */
+  if (process.platform !== 'win32') {
+    const slowGit = join(base, 'slow-git')
+    writeFileSync(slowGit, `#!/bin/sh\ncase " $* " in *" ls-files "*) exec sleep 30 ;; esac\nexec ${JSON.stringify(gitBin)} "$@"\n`, { mode: 0o755 })
+    const t0 = performance.now()
+    const late = await reader({ git: async () => slowGit, timeouts: { list: 300 } }).source(ign)
+    const ms = performance.now() - t0
+    check('…nor past the listing\'s deadline', [late.reason, late.files.length, JSON.stringify(late).includes('CANARY_IGNORED'), ms < 5000], ['slow', 0, false, true])
+  } else {
+    console.log('  SKIP  …nor past the listing\'s deadline: the slow stand-in git is a POSIX script (the timeout is execFile\'s, the same on every platform)')
+  }
   git(ign, 'config', 'filter.a=b.clean', 'cat')
   const unsafe = await reader().source(ign)
   check('…nor when the repo\'s filter config cannot be emptied safely', [unsafe.reason, unsafe.files.length, JSON.stringify(unsafe).includes('CANARY_IGNORED')], ['unreadable', 0, false])

@@ -467,3 +467,29 @@ Two smaller lessons from the same four red runs:
 - **A gesture check needs a control on the same runner before its failure means anything.** The
   diagnostic's plain overflow box is what turned "the list does not scroll on Linux" into "nothing
   scrolls from that gesture on Linux".
+
+## 181. A deadline shrunk to 1 ms against a real process is a race, not a test
+
+**Found twice, the second time because the first fix lived only in a code comment.** verify:git
+(2026-10-02, on the v1.0.0-beta.1 release gate) and verify:work-mode (2026-10-28, the gating Verify
+job, run 40692270523) each proved "git took too long" by handing the REAL git a 1 ms deadline
+(`timeouts: { status: 1 }`, `timeouts: { list: 1 }`). On a developer's Mac the timer always wins,
+because spawning git there takes longer than 1 ms, so the check passed every local run and every
+`npm run check`. On the Linux runner git listed a three-file repository first, and Work mode's check
+read `[null, 2, false]` where it wanted `["slow", 0, false]`. execFile arms its timer once the spawn
+has returned, and the timer and the child's exit are two events that nothing orders. verify:git had
+been fixed with a stand-in git that stalls before `status`; Work mode's suite, written later, repeated
+the 1 ms pattern, since no rule named it.
+
+The rule: **to prove a deadline fires, give it a process that cannot answer in time, never a real one
+that is usually slower.** Both suites now hand the reader a POSIX stand-in git (`slow-git`) that
+stalls on the one subcommand under test and runs the real git for everything else, against a
+deadline of a few hundred ms. Work mode's `exec`s the sleep (`exec sleep 30`), so the process the
+deadline kills is the sleep itself and nothing outlives it; verify:git's sleeps and then runs git, so
+its sleep is left running for the rest of its 2 s after the kill. Mutated to map `killed` to
+`null`, Work mode's check goes red with `["unreadable",0,false,true]`. On Windows both checks are a
+SKIP: execFile cannot start a script there, and the timeout is the same code on every platform.
+
+A 1 ms deadline is still fine where the check accepts either outcome: verify:work-mode's "with every
+deadline at 1 ms it resolves in under 500 ms and never throws … with a reason or some files" asserts
+only that nothing hangs, throws or leaks.

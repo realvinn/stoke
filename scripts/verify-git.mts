@@ -346,7 +346,8 @@ try {
    * A git that answers `status` only after 2 s, so the deadline fires every time. This used to be
    * the real git under a 1 ms deadline, which is a race, not a test: on the v1.0.0-beta.1 release
    * gate (2026-10-02) a fast Linux runner's git answered first and the gate went red. The stand-in
-   * is a POSIX script; the deadline itself is execFile's timeout, the same code on every platform.
+   * is a POSIX script; the deadline itself is execFile's timeout, the same code on every platform
+   * (gotcha 181).
    */
   if (process.platform !== 'win32') {
     const slowGit = join(base, 'slow-git')
