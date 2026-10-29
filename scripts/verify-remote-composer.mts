@@ -5,7 +5,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { build } from 'vite'
-import { DraftJournal, DRAFT_TTL, DRAFT_MAX, type DraftStorage } from '../src/remote/draftCache.ts'
+import { DraftJournal, legacyRemoteDraft, markLegacyDraftRestored, splitLegacyDraft, unmarkLegacyDraftRestored, DRAFT_TTL, DRAFT_MAX, type DraftStorage } from '../src/remote/draftCache.ts'
 
 class MemoryStorage implements DraftStorage {
   data = new Map<string, string>(); fail = false; writes = 0
@@ -38,6 +38,21 @@ function journals(): void {
   assert.ok(queued.recoveries().some((r) => r.text === 'current unsent text'), 'restoring backs up current text first')
   storage.setItem(first.prefix + 'broken', '{no json')
   assert.ok(first.records().length > 0, 'one malformed record cannot block recovery')
+  const oldRemote = open('remote-recovery', 'old'); oldRemote.save('same session draft')
+  const otherRemote = open('remote-recovery-other', 'other'); otherRemote.save('different session')
+  const writes = storage.writes
+  const recovered = legacyRemoteDraft(storage, 'remote-recovery', now)!
+  assert.equal(recovered.text, 'same session draft', 'recovery stays within its session')
+  assert.equal(storage.writes, writes, 'looking up a draft does not rewrite it')
+  markLegacyDraftRestored(storage, 'remote-recovery', recovered)
+  assert.equal(legacyRemoteDraft(storage, 'remote-recovery', now), null, 'a restored revision is not inserted again on reopen')
+  assert.equal(oldRemote.records()[0].text, 'same session draft', 'the original saved draft remains intact')
+  unmarkLegacyDraftRestored(storage, 'remote-recovery', recovered)
+  assert.equal(legacyRemoteDraft(storage, 'remote-recovery', now)?.text, 'same session draft', 'a known-unsent attempt may be tried again')
+  assert.deepEqual(splitLegacyDraft('abc👋def', 4), ['abc', '👋de', 'f'], 'long drafts split without breaking an emoji')
+  assert.deepEqual(splitLegacyDraft('abc\r\ndef', 4), ['abc', '\r\nde', 'f'], 'long drafts do not split a CRLF newline')
+  oldRemote.clear()
+  assert.equal(legacyRemoteDraft(storage, 'remote-recovery', now), null, 'cleared drafts stay cleared')
   assert.throws(() => first.save('x'.repeat(DRAFT_MAX + 1)))
   storage.fail = true
   assert.throws(() => first.save('cannot save'))

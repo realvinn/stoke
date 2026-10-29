@@ -8,6 +8,59 @@ export interface DraftStorage { length: number; key(index: number): string | nul
 const NAMESPACE = 'stoke.drafts.v2.'
 const identifier = (): string => globalThis.crypto.randomUUID?.() ?? Array.from(globalThis.crypto.getRandomValues(new Uint32Array(4)), (part) => part.toString(16)).join('-')
 const token = (entry: RecoveryDraft): string => `${entry.key}@${entry.at}`
+
+/** Find an old desktop-remote draft without modifying storage or crossing sessions. */
+const restoredKey = (scope: string): string => `stoke.remote-restored.v1.${encodeURIComponent(scope)}`
+function restoredTokens(storage: DraftStorage, scope: string): string[] {
+  try {
+    const value: unknown = JSON.parse(storage.getItem(restoredKey(scope)) || '[]')
+    return Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string').slice(-1024) : []
+  } catch { return [] }
+}
+
+export function legacyRemoteDraft(storage: DraftStorage, scope: string, now = Date.now()): RecoveryDraft | null {
+  const prefix = `${NAMESPACE}${encodeURIComponent(scope)}::`
+  const entries: RecoveryDraft[] = []
+  for (let i = 0; i < storage.length; i++) {
+    const key = storage.key(i)
+    if (!key?.startsWith(prefix)) continue
+    try {
+      const item: unknown = JSON.parse(storage.getItem(key) || 'null')
+      if (!item || typeof item !== 'object') continue
+      const value = item as Partial<DraftRecord>
+      if (value.version !== 1 || typeof value.text !== 'string' || value.text.length > DRAFT_MAX || !Number.isSafeInteger(value.at) || (value.at ?? 0) < 0 || now - (value.at ?? 0) > DRAFT_TTL || !['draft', 'queued', 'cleared'].includes(value.kind ?? '') || !Array.isArray(value.retired) || value.retired.some(v => typeof v !== 'string') || value.retired.length > 1024) continue
+      entries.push({ ...value, key } as RecoveryDraft)
+    } catch { /* Ignore invalid records without changing them. */ }
+  }
+  const retired = new Set(entries.flatMap(entry => entry.retired))
+  const restored = new Set(restoredTokens(storage, scope))
+  return entries.filter(entry => entry.kind !== 'cleared' && !!entry.text.trim() && !retired.has(token(entry)) && !restored.has(token(entry))).sort((a, b) => b.at - a.at || b.key.localeCompare(a.key))[0] ?? null
+}
+
+/** Record only the revision identity; the original draft is never removed. */
+export function markLegacyDraftRestored(storage: DraftStorage, scope: string, entry: RecoveryDraft): void {
+  const tokens = restoredTokens(storage, scope)
+  const id = token(entry)
+  if (!tokens.includes(id)) tokens.push(id)
+  storage.setItem(restoredKey(scope), JSON.stringify(tokens.slice(-1024)))
+}
+
+/** A known-unsent attempt may be offered again without changing the draft. */
+export function unmarkLegacyDraftRestored(storage: DraftStorage, scope: string, entry: RecoveryDraft): void {
+  storage.setItem(restoredKey(scope), JSON.stringify(restoredTokens(storage, scope).filter(id => id !== token(entry))))
+}
+
+/** Bound each insert without splitting a UTF-16 surrogate pair. */
+export function splitLegacyDraft(text: string, limit: number): string[] {
+  if (!Number.isInteger(limit) || limit < 2) return []
+  const parts: string[] = []
+  for (let start = 0; start < text.length;) {
+    let end = Math.min(start + limit, text.length)
+    if (end < text.length && ((/[\uD800-\uDBFF]/.test(text[end - 1]) && /[\uDC00-\uDFFF]/.test(text[end])) || (text[end - 1] === '\r' && text[end] === '\n'))) end--
+    parts.push(text.slice(start, end)); start = end
+  }
+  return parts
+}
 export class DraftJournal {
   readonly prefix: string
   readonly key: string

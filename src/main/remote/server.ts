@@ -2382,11 +2382,11 @@ export class RemoteServer {
         typeof n === 'number' && Number.isInteger(n) && n > 0 && n <= MAX_TERM_DIM
 
       if (msg.type === 'input' && typeof msg.data === 'string') {
-        manager.write(ptyId, msg.data)
+        manager.writeRemote(ptyId, msg.data, () => ws.readyState === 1)
       } else if (msg.type === 'submit' && typeof msg.text === 'string') {
         // CLAUDE.md gotchas 85, 86 / audit PX-1: typed chunks, then Enter on its own —
         // unless the frame says `enter: false` (another machine's dictation: the words, no Enter).
-        manager.submit(ptyId, msg.text, { enter: msg.enter !== false })
+        manager.submitRemote(ptyId, msg.text, { enter: msg.enter !== false }, () => ws.readyState === 1)
       } else if (msg.type === 'resize' && msg.force && dim(msg.cols) && dim(msg.rows)) {
         /*
          * Only on explicit request: a phone resizing the PTY reflows the

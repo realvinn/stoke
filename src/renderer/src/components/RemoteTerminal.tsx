@@ -7,7 +7,7 @@ import { terminalLinkClick, terminalLinkRepairs } from '@shared/terminalLinks'
 import { captureTerminalViewport, restoreTerminalViewport } from '@shared/terminalViewport'
 import type { TerminalSettings, Theme, VoiceSettings } from '@shared/types'
 import type { RemoteBarMode } from '@shared/ui'
-import { remoteTypeVerdict, type RemoteTabFrame, type RemoteTabView } from '@shared/hub/remote'
+import { REMOTE_TYPE_MAX, remoteTypeVerdict, type RemoteTabFrame, type RemoteTabView } from '@shared/hub/remote'
 import { voiceSupported } from '@shared/voice'
 import { CLI_OWNS_SPACE, spaceOwner } from '@shared/voiceRoute'
 import { floatInset } from '@shared/paneFloats'
@@ -21,7 +21,7 @@ import { installMotionGuard, installOsc52, installShiftSelection, installTermina
 import { toast } from '../lib/toasts'
 import type { Tab } from '../types'
 import { RemoteFab } from './RemoteFab'
-import { RemoteDraft } from './RemoteDraft'
+import { legacyRemoteDraft, markLegacyDraftRestored, splitLegacyDraft, unmarkLegacyDraftRestored, type RecoveryDraft } from '../../../remote/draftCache'
 import { ContextMenu } from './ContextMenu'
 import { useDictation } from './Dictation'
 
@@ -114,7 +114,6 @@ interface Props {
 export function RemoteTerminal({ tab, view, active, theme, fontFamily, fontSize, terminal, accent, alpha, bar, voice, onClose, onOpenUrl }: Props): React.JSX.Element {
   const [clipboardMenu, setClipboardMenu] = useState<{x:number;y:number;selection:string}|null>(null)
   useEffect(() => { setClipboardMenu(null) }, [active, tab.remote?.tabId])
-  const draftInput = useRef<((text: string) => boolean) | null>(null)
   const hostRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const openUrlRef = useRef(onOpenUrl)
@@ -123,6 +122,15 @@ export function RemoteTerminal({ tab, view, active, theme, fontFamily, fontSize,
   const remoteId = tab.remote?.tabId ?? ''
   const stateRef = useRef<RemoteTabView['state'] | undefined>(view?.state)
   stateRef.current = view?.state
+  const recoveredDraftRef = useRef(false)
+  const recoveringDraftRef = useRef(false)
+  const draftScope = JSON.stringify(['remote-desktop', tab.remote?.device, tab.remote?.ptyId ?? remoteId])
+  const draftScopeRef = useRef(draftScope)
+  if (draftScopeRef.current !== draftScope) {
+    draftScopeRef.current = draftScope
+    recoveredDraftRef.current = false
+    recoveringDraftRef.current = false
+  }
   const activeRef = useRef(active)
   activeRef.current = active
   const deviceLabel = view?.deviceLabel ?? tab.remote?.deviceLabel ?? 'another machine'
@@ -164,7 +172,6 @@ export function RemoteTerminal({ tab, view, active, theme, fontFamily, fontSize,
       // Through xterm's onData, as a typed space goes: the relay's input path.
       typeSpace: () => termRef.current?.input(' ', true),
       deliver: async (text) => {
-        if (draftInput.current?.(text)) return null
         const r = await window.stoke.hub.remote.type(remoteId, text)
         return r.ok ? null : r.message
       }
@@ -273,7 +280,7 @@ export function RemoteTerminal({ tab, view, active, theme, fontFamily, fontSize,
     const use = (kind: ClaimTrigger): void => {
       claimer.trigger(kind, {
         shown: activeRef.current && stateRef.current === 'open',
-        focused: host.contains(document.activeElement) || interactionHost.querySelector('.remote-draft textarea') === document.activeElement,
+        focused: host.contains(document.activeElement),
         windowFocused: document.hasFocus(),
         recentInput: recentlyUsed()
       })
@@ -323,11 +330,80 @@ export function RemoteTerminal({ tab, view, active, theme, fontFamily, fontSize,
       }
     })
     window.stoke.hub.remote.rendererAttached(remoteId, true)
+    let pendingInput: string[] = []
+    let pendingBytes = 0
+    let nativeEdited = false
     const offData = term.onData((data) => {
       // Only keys: xterm's own answers to the far application are the far terminal's to give.
       if (isTerminalReport(data)) return
-      if (draftInput.current?.(data)) return
       if (stateRef.current !== 'open') return
+      if (recoveringDraftRef.current) {
+        if (data === '\x1b[A' || data === '\x1bOA') return
+        if (pendingBytes + data.length <= 20_000) { pendingInput.push(data); pendingBytes += data.length }
+        else toast({ tone: 'error', title: 'Input was not sent', description: 'Wait for the saved draft to finish restoring, then try again.' })
+        return
+      }
+      // A permission picker or a running agent also uses Up; never paste a
+      // recovered prompt unless the host reports that the session is idle.
+      if ((data === '\x1b[A' || data === '\x1bOA') && !recoveredDraftRef.current && !nativeEdited && viewRef.current?.session?.activity === 'idle') {
+        let draft: RecoveryDraft | null = null
+        const scope = draftScopeRef.current
+        try { draft = legacyRemoteDraft(localStorage, scope) } catch { /* Storage is unavailable; use native history. */ }
+        if (draft) {
+          const problem = remoteTypeVerdict(viewRef.current)
+          if (problem) { toast({ tone: 'error', title: 'Saved draft could not be restored', description: problem }); return }
+          if (!viewRef.current?.orderedInput) {
+            toast({ tone: 'error', title: 'Update Stoke on the remote computer', description: 'The saved draft needs the newer remote input handling. The saved copy is still on this device.' })
+            return
+          }
+          if (/[\x00-\x09\x0b\x0c\x0e-\x1f\x7f]/.test(draft.text)) {
+            toast({ tone: 'error', title: 'Saved draft was not inserted', description: 'It contains terminal control characters. The saved copy is still on this device.' })
+            return
+          }
+          // Without bracketed paste, a newline in a non-Claude terminal can
+          // submit the prompt. The mirrored terminal must explicitly support it.
+          if (/[\r\n]/.test(draft.text) && !term.modes.bracketedPasteMode) {
+            toast({ tone: 'error', title: 'Multiline draft was not inserted', description: 'The remote terminal cannot safely accept multiline text right now. The saved copy is still on this device.' })
+            return
+          }
+          try { markLegacyDraftRestored(localStorage, scope, draft) }
+          catch { toast({ tone: 'error', title: 'Saved draft could not be restored', description: 'Local storage is unavailable. The saved copy was not changed.' }); return }
+          recoveringDraftRef.current = true
+          // An uncertain delivery must not be repeated by another Up press.
+          recoveredDraftRef.current = true
+          let complete = false
+          let accepted = 0
+          const restore = async (): Promise<{ ok: boolean; message?: string }> => {
+            for (const part of splitLegacyDraft(draft!.text, REMOTE_TYPE_MAX)) {
+              if (disposed || draftScopeRef.current !== scope || stateRef.current !== 'open' || viewRef.current?.session?.activity !== 'idle') {
+                if (accepted === 0) { try { unmarkLegacyDraftRestored(localStorage, scope, draft!) } catch { /* The saved draft is unchanged. */ } }
+                return { ok: false, message: 'The session changed before the whole draft was typed.' }
+              }
+              const result = await window.stoke.hub.remote.type(remoteId, part, false)
+              if (!result.ok) return result
+              accepted++
+            }
+            return { ok: true }
+          }
+          void restore().then(result => {
+            if (disposed || draftScopeRef.current !== scope) return
+            if (result.ok) {
+              complete = true
+              toast({ title: 'Saved draft restored', description: 'Review the text in the agent before sending.' })
+            }
+            else toast({ tone: 'error', title: 'Saved draft may not have been restored', description: `${result.message || 'The connection did not confirm the insert.'} Check the agent input; the saved copy remains on this device.` })
+          }).catch(() => { if (!disposed && draftScopeRef.current === scope) toast({ tone: 'error', title: 'Draft delivery is unknown', description: 'Check the agent input after reconnecting. The saved copy remains on this device.' }) })
+            .finally(() => {
+              if (disposed || draftScopeRef.current !== scope) return
+              recoveringDraftRef.current = false
+              if (complete && stateRef.current === 'open') for (const input of pendingInput) window.stoke.hub.remote.input(remoteId, input)
+              else if (pendingInput.length) toast({ tone: 'error', title: 'Input was not sent', description: 'The draft did not finish restoring. Check the agent input and try again.' })
+              pendingInput = []; pendingBytes = 0
+            })
+          return
+        }
+      }
+      if (data !== '\x1b[A' && data !== '\x1bOA') nativeEdited = true
       window.stoke.hub.remote.input(remoteId, data)
     })
     /*
@@ -356,6 +432,7 @@ export function RemoteTerminal({ tab, view, active, theme, fontFamily, fontSize,
     ro.observe(host, { box: 'border-box' })
     return () => {
       disposed = true
+      if (pendingInput.length) toast({ tone: 'error', title: 'Input was not sent', description: 'The remote tab closed while the draft was restoring.' })
       window.stoke.hub.remote.rendererAttached(remoteId, false)
       host.removeEventListener('wheel', touched)
       host.removeEventListener('pointerdown', touched, true)
@@ -378,7 +455,7 @@ export function RemoteTerminal({ tab, view, active, theme, fontFamily, fontSize,
       term.dispose()
     }
     // The terminal is made once per remote tab; theme and font follow below.
-  }, [remoteId])
+  }, [remoteId, draftScope])
 
   useEffect(() => {
     const term = termRef.current
@@ -408,9 +485,7 @@ export function RemoteTerminal({ tab, view, active, theme, fontFamily, fontSize,
     if (view?.state === 'open') claimedOpenRef.current = true
     // Focus events fire inside focus(): a reconnect's focus is marked quiet so its focusin claims nothing.
     quietFocusRef.current = !switchedTo && !firstOpen
-    // Reconnecting must not steal the caret from a locally saved prompt.
-    const editingDraft = hostRef.current?.closest('.remote-pane')?.querySelector('.remote-draft')?.contains(document.activeElement)
-    if (!editingDraft) termRef.current?.focus()
+    termRef.current?.focus()
     quietFocusRef.current = false
     if (firstOpen || (switchedTo && view?.state === 'open')) {
       claimerRef.current?.trigger('focus', { shown: true, focused: true, windowFocused: document.hasFocus(), recentInput: recentlyUsed() })
@@ -527,7 +602,6 @@ export function RemoteTerminal({ tab, view, active, theme, fontFamily, fontSize,
         </RemoteFab>
       )}
       <div className="term-host remote-host" ref={hostRef} />
-      <RemoteDraft label={`${deviceLabel} · ${tab.customTitle?.trim() || tab.title}`} scope={JSON.stringify(['remote-desktop', tab.remote?.device, tab.remote?.ptyId ?? remoteId])} view={view} receive={draftInput} onHide={() => termRef.current?.focus()} />
       {clipboardMenu && active && <ContextMenu x={clipboardMenu.x} y={clipboardMenu.y} onClose={() => setClipboardMenu(null)} items={[
         {label:'Copy',disabled:!clipboardMenu.selection,onSelect:()=>window.stoke.clipboard.writeText(clipboardMenu.selection)},
         // The viewport, soft wraps joined: what is on screen, never an empty write over the clipboard.

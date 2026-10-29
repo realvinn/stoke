@@ -234,7 +234,6 @@ check('an <input> is measured single-line', refuseOverlongPaste(pasteEvent('INPU
 // that same field's next edit, so it never outlives the paste it was about.
 const CLEARED_ON_EDIT: Record<string, RegExp> = {
   GrokBotWorkspace: /onChange=\{event => onChange\(\{[^}]*sendError: ''/,
-  RemoteDraft: /onInput=\{\(\) => \{ setPasteNote\(''\)/,
   WorkPanel: /onChange=\{typed\(set[A-Z]\w*\)\}/,
   WorkDrafts: /onChange=\{\(e\) => \{ setPasteNote\(''\); /
 }
@@ -253,8 +252,6 @@ for (const [file, cleared] of Object.entries(CLEARED_ON_EDIT)) {
 }
 check('WorkPanel: `typed` clears the paste note before it sets the field',
   /const typed = [^\n]*=> \{ setPasteNote\(''\); set\(e\.target\.value\) \}/.test(source('src/renderer/src/components/WorkPanel.tsx')), true)
-check('RemoteDraft: the refused paste\'s note is shown over the cache\'s status until then',
-  /\{pasteNote \|\| note\}<\/span>/.test(source('src/renderer/src/components/RemoteDraft.tsx')), true)
 
 console.log(failures ? `\n${failures} FAILED` : '\nall pass')
 process.exitCode = failures ? 1 : 0

@@ -5410,6 +5410,7 @@ function registerIpc(): void {
           followsResize: true,
           // The pty socket types `{type:'submit', enter: false}` without an Enter (server.ts): another machine's dictation.
           typeOnly: true,
+          orderedInput: true,
           // Chat history is shared only while it is on here (and the tick, and the vault: hub/remote.ts),
           // and only while its redaction is: rows stored with it off are never searched from elsewhere (gotcha 156).
           chatIndexOn: () => getSettings().chatIndex === 'on',

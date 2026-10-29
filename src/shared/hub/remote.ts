@@ -532,6 +532,8 @@ export interface RemoteTabView {
    * from before that, which would press Enter after the words.
    */
   typeOnly: boolean
+  /** The host queues remote keys behind paced text insertion. */
+  orderedInput?: boolean
 }
 
 /**

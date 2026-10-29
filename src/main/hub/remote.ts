@@ -168,6 +168,8 @@ export interface RemoteMachineDeps {
    * tabs (it would press Enter after the words).
    */
   typeOnly?: boolean
+  /** Remote keystrokes are ordered behind paced text insertion. */
+  orderedInput?: boolean
   /**
    * `settings.chatIndex === 'on'`, read on every call. Absent: this machine
    * never shares its chat history (no `chats: true`, every chats relay
@@ -312,6 +314,7 @@ interface GuestTab {
   mode: RelayMode | null
   /** The host's last `ready` said `typeOnly` under a full grant: it takes dictation (`type`). */
   typeOnly: boolean
+  orderedInput: boolean
   /** Phone browser connections are private, independently owned guest tabs. */
   sink?: RemoteDeviceSink
   sinkState?: string
@@ -464,7 +467,8 @@ export class HubRemote {
       message: t.message,
       session: t.session,
       mode: t.mode,
-      typeOnly: t.typeOnly
+      typeOnly: t.typeOnly,
+      orderedInput: t.orderedInput
     }))
     v.guests = [...this.hosted.values()]
       .filter((h) => h.phase === 'serving')
@@ -767,6 +771,7 @@ export class HubRemote {
       sizes: false,
       mode: null,
       typeOnly: false,
+      orderedInput: false,
       ...(sink ? { sink } : {})
     }
     this.tabs.set(tab.id, tab)
@@ -861,9 +866,10 @@ export class HubRemote {
    * session minutes after they were spoken, into whatever it shows by then,
    * are words nobody meant there.
    */
-  type(tabId: string, text: string, enter = false): { ok: true } | { ok: false; message: string } {
+  type(tabId: string, text: string, enter?: boolean): { ok: true } | { ok: false; message: string } {
     const t = this.tabs.get(tabId)
-    if (typeof text !== 'string' || text.trim().length === 0) return { ok: true }
+    // Explicit type-only inserts must preserve whitespace-only parts of long drafts.
+    if (typeof text !== 'string' || text.length === 0 || (enter !== false && text.trim().length === 0)) return { ok: true }
     // The name the tab's banner shows, so the strip and the banner say the same machine.
     const who = t ? (this.d.context()?.active.find((a) => a.id === t.device)?.label ?? this.statuses[t.device]?.name ?? t.label) : ''
     const why = remoteTypeVerdict(t ? { state: t.state, mode: t.mode, typeOnly: t.typeOnly, deviceLabel: who } : null, text)
@@ -1069,6 +1075,7 @@ export class HubRemote {
         // And only one that says so takes a transcript: an older host would press Enter after it.
         t.mode = f.mode
         t.typeOnly = f.mode === 'full' && f.typeOnly === true
+        t.orderedInput = f.mode === 'full' && f.orderedInput === true
         this.openTerminal(t, channel)
         this.emit()
         return
@@ -1757,7 +1764,8 @@ export class HubRemote {
       mode,
       host: { label: ctx.me.label, platform: ctx.me.platform },
       ...(this.d.followsResize ? { sizes: true } : {}),
-      ...(this.d.typeOnly ? { typeOnly: true } : {})
+      ...(this.d.typeOnly ? { typeOnly: true } : {}),
+      ...(this.d.orderedInput ? { orderedInput: true } : {})
     })
     void this.pushStatus(h)
     this.armStatus()

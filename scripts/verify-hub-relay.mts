@@ -782,7 +782,7 @@ function machine(d: Dev, opts: { snapshotWaitMs?: number; silentPty?: string; ke
           sock.send(JSON.stringify({ type: 'data', ptyId, data: msg.data.replace('\r', '\r\n') }))
         }
         if (msg.type === 'resize') m.resizes.push({ ptyId, cols: msg.cols ?? 0, rows: msg.rows ?? 0, force: msg.force === true })
-        // server.ts: `manager.submit(ptyId, text, { enter: msg.enter !== false })`.
+        // server.ts sends this to the guarded remote submit queue.
         if (msg.type === 'submit' && typeof msg.text === 'string') m.submits.push({ ptyId, text: msg.text, enter: msg.enter !== false })
       })
     },
@@ -795,7 +795,8 @@ function machine(d: Dev, opts: { snapshotWaitMs?: number; silentPty?: string; ke
     // A host from before last active wins says nothing about sizes in its `ready`.
     followsResize: !opts.olderHost,
     // Nor about typing without an Enter, and neither does one from before dictation over remote tabs.
-    typeOnly: !opts.olderHost && !opts.noTyping
+    typeOnly: !opts.olderHost && !opts.noTyping,
+    orderedInput: !opts.olderHost
   })
   machines.set(d.id, m)
   return m
@@ -1637,6 +1638,7 @@ console.log('\na host from before last active wins is never resized: its own tab
   hostM.sharing = true
   for (const m of [hostM, guestM]) m.remote.onOnline([A.id, B.id])
   const tab = await served(hostM, guestM)
+  check('an older host never claims ordered recovery input', tabOf(guestM, tab)?.orderedInput, false)
   check('a used remote tab asks nothing of it', guestM.remote.resize(tab, 132, 41), false)
   guestM.remote.input(tab, 'still-typing\r')
   await until(() => hostM.ptyInput.includes('still-typing\r'))
@@ -1676,7 +1678,7 @@ console.log('\ndictation on a remote tab: typed by the host with no Enter, refus
   hostM.sharing = true
   for (const m of [hostM, guestM]) m.remote.onOnline([A.id, B.id])
   const tab = await served(hostM, guestM)
-  check('the tab knows its grant and that the host types', [tabOf(guestM, tab)?.mode, tabOf(guestM, tab)?.typeOnly], ['full', true])
+  check('the tab knows its grant and that the host orders input', [tabOf(guestM, tab)?.mode, tabOf(guestM, tab)?.typeOnly, tabOf(guestM, tab)?.orderedInput], ['full', true, true])
   const words = 'make the button blue\nand the border thinner'
   check('a transcript is sent', guestM.remote.type(tab, words), { ok: true })
   await until(() => hostM.submits.length)
@@ -1690,6 +1692,9 @@ console.log('\ndictation on a remote tab: typed by the host with no Enter, refus
   check('a locally composed prompt can explicitly request Enter', guestM.remote.type(tab, 'complete draft', true), {ok:true})
   await until(() => hostM.submits.length === 2)
   check('the host receives the whole prompt and its Enter together as one command', hostM.submits[1], {ptyId:'pty-a1',text:'complete draft',enter:true})
+  check('an explicit type-only whitespace chunk is sent', guestM.remote.type(tab, '   ', false), { ok: true })
+  await until(() => hostM.submits.length === 3)
+  check('the whitespace is preserved without Enter', hostM.submits[2], { ptyId: 'pty-a1', text: '   ', enter: false })
 
   // The link drops while the speech service is still working: the words come back to a tab that is not open.
   const r = relays.get(lastRelay)!
@@ -1698,7 +1703,7 @@ console.log('\ndictation on a remote tab: typed by the host with no Enter, refus
   const dropped = guestM.remote.type(tab, 'spoken while the link was down')
   check('a link that dropped mid-transcript refuses it with the sentence, for the strip to keep the words', [dropped.ok, dropped.ok ? '' : dropped.message], [false, 'The link to Studio is not open, so nothing was typed there.'])
   await tick(50)
-  check('and never queues them for a later connection', hostM.submits.length, 2)
+  check('and never queues them for a later connection', hostM.submits.length, 3)
   guestM.remote.close(tab)
   hostM.remote.reset()
   guestM.remote.reset()

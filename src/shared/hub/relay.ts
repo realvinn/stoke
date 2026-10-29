@@ -191,6 +191,8 @@ export type RelayMode = 'view' | 'full'
  *   no Enter — which is how a guest's dictation reaches the session
  *   (`HubRemote.type`). A host from before it would press Enter after the
  *   words, so a guest sends such a host no transcript at all.
+ *   `orderedInput: true` says the host queues remote keys behind paced
+ *   inserts; older hosts omit it and cannot safely restore a saved draft.
  * - `part`: a piece of the JSON text of the NEXT frame, every piece but the
  *   last carrying `more: true` (`relayFrameParts`). A pty's `attached` frame
  *   replays up to 512 K characters of scrollback and a transcript can be
@@ -205,7 +207,7 @@ export type RelayMode = 'view' | 'full'
 export type RelayInnerFrame =
   | { t: 'attach'; kind?: 'session'; ptyId: string }
   | { t: 'attach'; kind: 'chats' }
-  | { t: 'ready'; mode: RelayMode; host: { label: string; platform: string }; sizes?: boolean; typeOnly?: boolean }
+  | { t: 'ready'; mode: RelayMode; host: { label: string; platform: string }; sizes?: boolean; typeOnly?: boolean; orderedInput?: boolean }
   | { t: 'refused'; reason: string; code?: RelayRefusalCode }
   | { t: 'status'; status: unknown }
   | { t: 'req'; id: number; method: 'GET' | 'POST'; path: string; body?: unknown }

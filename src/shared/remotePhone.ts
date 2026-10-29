@@ -264,6 +264,7 @@ export interface SubmitTiming {
  */
 export class SubmitQueue {
   private tail: Promise<void> = Promise.resolve()
+  private pending = 0
   private readonly timing: SubmitTiming
   private readonly sleep: Sleep
 
@@ -292,9 +293,18 @@ export class SubmitQueue {
       if (!write(frames.enter)) return
       await this.sleep(this.timing.afterEnterMs)
     }
-    const job = this.tail.then(run, run)
+    this.pending++
+    const job = this.tail.then(run, run).finally(() => { this.pending-- })
     this.tail = job.catch(() => {})
     return job
+  }
+
+  /** Keep remote keystrokes behind a paced submit, without delaying idle input. */
+  input(data: string, write: (data: string) => boolean): void {
+    if (this.pending === 0) { write(data); return }
+    this.pending++
+    const job = this.tail.then(() => { write(data) }).finally(() => { this.pending-- })
+    this.tail = job.catch(() => {})
   }
 }
 

@@ -1035,6 +1035,26 @@ check('only a trailing suffix counts', stripLocalHostnameSuffix('local.example')
     (d) => (empty.push(d), true)
   )
   check('an empty submit writes nothing, not a bare Enter', empty, [])
+  const inputLog: string[] = []
+  const inputQueue = new SubmitQueue({ chunkGapMs: 2, enterDelayMs: 1, afterEnterMs: 1 })
+  const inputSink = (d: string): boolean => { inputLog.push(d); return true }
+  inputQueue.input('idle key', inputSink)
+  check('remote input is immediate when there is no pending submit', inputLog, ['idle key'])
+  const restoring = inputQueue.push({ chunks: ['draft part 1', 'draft part 2'], enter: '' }, inputSink)
+  inputQueue.input('later key', inputSink)
+  let connected = false
+  inputQueue.input('disconnected key', d => connected && inputSink(d))
+  await restoring
+  await new Promise(resolve => setTimeout(resolve, 15))
+  check('remote input follows every restored chunk, and a disconnected key is dropped', inputLog, ['idle key', 'draft part 1', 'draft part 2', 'later key'])
+  const disconnected: string[] = []
+  let linkOpen = true
+  const disconnectQueue = new SubmitQueue({ chunkGapMs: 1, enterDelayMs: 1, afterEnterMs: 1 }, async () => { linkOpen = false })
+  await disconnectQueue.push({ chunks: ['first chunk', 'second chunk'], enter: '\r' }, data => {
+    if (!linkOpen) return false
+    disconnected.push(data); return true
+  })
+  check('a remote submit stops on disconnect without sending the rest or Enter', disconnected, ['first chunk'])
 
   /*
    * `enter: false`: the title bar's text shortcuts type and, by default, press

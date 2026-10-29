@@ -2337,13 +2337,6 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     sessions; a click opens one as a remote tab. Last-known rows stay visible
                     during account presence reconnects, marked unreachable for new opens; each
                     chat reports its own link state. A group, never an overlay
-  src/components/RemoteDraft.tsx  locally saved prompt editor for remote tabs; collapsed by
-                    default while terminal input goes to the agent's own UI. Offline input opens
-                    the editor, and an option routes online text into it. Enter sends; Shift+Enter adds a line;
-                    sent text keeps a recovery copy and reconnect never replays it. The compact
-                    editor keeps its height across reconnects; expanding overlays the terminal.
-                    Checkpointed drafts recover after abrupt renderer loss; replacement host
-                    sessions offer labelled recovery instead of inheriting another draft.
   src/components/RemoteTerminal.tsx  a remote tab: the other machine's pty through the relay,
                     snapshot requested only after the viewer subscribes (including remounts),
                     with per-chat screen deadlines and local clipboard handling;
@@ -2354,8 +2347,11 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     the full banner (`remoteBar`). Dictation is THIS computer's (Dictation.tsx):
                     Space is always Stoke's here (`spaceOwner`), a tab that may only watch or a
                     host too old to type without Enter is refused (`remoteTypeVerdict`), and a
-                    transcript joins the local prompt editor by default (direct mode uses
-                    `hub.remote.type` without Enter);
+                    transcript is typed through `hub.remote.type` without Enter. The first
+                    Up Arrow, before other input and while the session is idle, restores the newest
+                    legacy draft for this exact session without submitting it, when the host
+                    advertises ordered input; later Up presses reach the agent's own history. Input while
+                    disconnected is never replayed, and legacy records stay untouched;
                     Dictate on the button or banner, the strip under them (`--strip-top`)
   src/components/Dictation.tsx  `useDictation`, the one copy of Stoke's dictation for a terminal
                     pane (TerminalView and RemoteTerminal): ⇧⌘D / Ctrl+Shift+D, the held Space

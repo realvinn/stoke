@@ -961,6 +961,17 @@ export class PtyManager {
     }
   }
 
+  /** A remote key waits behind a paced submit and is discarded if its link closes. */
+  writeRemote(ptyId: string, data: string, connected: () => boolean): void {
+    const session = this.sessions.get(ptyId)
+    if (!session || session.exited) return
+    session.submits.input(data, input => {
+      if (!connected() || this.sessions.get(ptyId) !== session) return false
+      this.write(ptyId, input)
+      return true
+    })
+  }
+
   /** Every write a person (or the phone) made reaches the login watch. */
   private noteLoginInput(s: Session, data: string): void {
     if (s.login && !s.login.settled) s.login = sshLoginInput(s.login, data, { conpty: process.platform === 'win32' })
@@ -1019,6 +1030,14 @@ export class PtyManager {
     if (s) s.inputRevision++
     this.codexResume.cancel(ptyId)
     return this.submitMessage(ptyId, text, opts)
+  }
+
+  /** Stop a remote submit if the connection that requested it closes. */
+  submitRemote(ptyId: string, text: string, opts: { enter?: boolean }, connected: () => boolean): boolean {
+    const s = this.sessions.get(ptyId)
+    if (s) s.inputRevision++
+    this.codexResume.cancel(ptyId)
+    return this.submitMessage(ptyId, text, opts, connected)
   }
 
   private submitMessage(ptyId: string, text: string, opts: { enter?: boolean } = {}, guard?: () => boolean): boolean {

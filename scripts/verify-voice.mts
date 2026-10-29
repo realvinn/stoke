@@ -1151,8 +1151,8 @@ console.log('\nthe wire: the panes and the phone really route through these')
   ok('a tap’s space goes out through onData, as typing does', /typeSpace: \(\) => termRef\.current\?\.input\(' ', true\)/.test(remoteTerm))
   const remoteDeliver = /deliver: async \(text\) => \{([\s\S]*?)\n\s*\}/.exec(remoteTerm)?.[1] ?? ''
   ok(
-    'dictation uses the local draft or main’s type without Enter; clipboard paste is a separate path',
-    /await window\.stoke\.hub\.remote\.type\(remoteId, text\)\s*\n\s*return r\.ok \? null : r\.message/.test(remoteDeliver) && /draftInput\.current\?\.\(text\)/.test(remoteDeliver) && !/\.paste\(/.test(remoteDeliver)
+    'dictation types into the agent without Enter; clipboard paste is a separate path',
+    /await window\.stoke\.hub\.remote\.type\(remoteId, text\)\s*\n\s*return r\.ok \? null : r\.message/.test(remoteDeliver) && !/draftInput/.test(remoteDeliver) && !/\.paste\(/.test(remoteDeliver)
   )
   ok('the link’s button offers Dictate, and gives the keyboard back to the terminal', /dictation\.toggle\(\)\s*\n\s*termRef\.current\?\.focus\(\)/.test(remoteTerm))
   ok('the strip sits under the link’s button or banner (--strip-top)', /setProperty\('--strip-top', top\)/.test(remoteTerm))
