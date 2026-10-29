@@ -16,7 +16,7 @@ export interface AccountIdentityPlan {
   env: Record<string, string | undefined>
   cwd: string
   claudePath: string | null
-  native: 'claude' | 'codex' | null
+  native: 'claude' | 'codex' | 'cursor' | null
   fallback: Pick<AccountIdentity, 'state' | 'method' | 'detail'>
 }
 type IdentitySettings = Pick<Settings, 'accounts' | 'providers' | 'agents' | 'claudePath'>
@@ -44,7 +44,11 @@ export function planAccountIdentity(target: AccountIdentityTarget, settings: Ide
     plan.fallback = { state: 'unavailable', method: 'External authentication', detail: 'This session inherits external authentication; its native saved login cannot identify that credential.' }
     return plan
   }
-  if (target.cli === 'claude' || target.cli === 'codex') plan.native = target.cli
+  if (target.cli === 'cursor' && ['CURSOR_API_KEY', 'CURSOR_AUTH_TOKEN'].some(key => !!env[key]?.trim())) {
+    plan.fallback = { state: 'unavailable', method: 'External authentication', detail: 'This session inherits external authentication; its saved login cannot identify that credential.' }
+    return plan
+  }
+  if (target.cli === 'claude' || target.cli === 'codex' || target.cli === 'cursor') plan.native = target.cli
   if (account?.credentialStore === 'file') plan.nativeArgs = accountLoginOptions(account)
   return plan
 }
@@ -59,7 +63,7 @@ const ownedIdentityChildren = new Set<{ done: Promise<void>; abort: () => void }
 export type AccountIdentitySpawn = (file: string, args: string[], options: SpawnOptions) => ChildProcess
 export async function probeAccountIdentity(plan: AccountIdentityPlan, executable: string, env: Record<string, string>, timeout = ACCOUNT_IDENTITY_TIMEOUT_MS, spawnProcess: AccountIdentitySpawn = spawn, signal?: AbortSignal, cleanupOptions?: WindowsIdentityCleanupOptions): Promise<unknown> {
   if (!plan.native || signal?.aborted || ownedIdentityChildren.size >= 2) return null
-  const args = plan.native === 'claude' ? ['auth', 'status', '--json'] : [...(plan.nativeArgs ?? []), 'app-server', '--listen', 'stdio://']
+  const args = plan.native === 'claude' ? ['auth', 'status', '--json'] : plan.native === 'cursor' ? ['status', '--format', 'json'] : [...(plan.nativeArgs ?? []), 'app-server', '--listen', 'stdio://']
   if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(executable) && /[&|<>^%!\r\n]/.test([executable, ...args].join(' '))) return null
   const spec = spawnSpec(executable, args)
   return new Promise(resolve => {
@@ -133,8 +137,8 @@ export async function probeAccountIdentity(plan: AccountIdentityPlan, executable
     child.on('close', (code) => {
       closed = true
       buffer += decoder.end()
-      if (plan.native === 'claude' && !failed && bytes <= OUTPUT_LIMIT) {
-        try { const parsed = JSON.parse(buffer); if (code === 0 || code === 1 && parsed.loggedIn === false) result = parsed } catch { result = null }
+      if ((plan.native === 'claude' || plan.native === 'cursor') && !failed && bytes <= OUTPUT_LIMIT) {
+        try { const parsed = JSON.parse(buffer); if (code === 0 || code === 1 && (parsed.loggedIn === false || parsed.isAuthenticated === false)) result = parsed } catch { result = null }
       }
       finish()
     })
@@ -146,7 +150,7 @@ export async function probeAccountIdentity(plan: AccountIdentityPlan, executable
       if (bytes > OUTPUT_LIMIT) { failed = true; result = null; stop(); return }
       if (stopping) return
       buffer += decoder.write(chunk)
-      if (plan.native === 'claude') return
+      if (plan.native !== 'codex') return
       let at: number
       while ((at = buffer.indexOf('\n')) >= 0) {
         const line = buffer.slice(0, at); buffer = buffer.slice(at + 1)

@@ -1379,7 +1379,7 @@ Usage: stoke [options] [DIR]
   stoke --cli ID [DIR]    a session with another coding agent, by id:
                           claude, codex, grok, opencode, pi, gemini, qwen, kimi,
                           copilot, cursor, amp, kilo, aider, crush, droid, cline,
-                          auggie, vibe
+                          auggie, muse, vibe
   stoke --continue [DIR]  pick up the last Claude Code conversation in DIR
   stoke --open [DIR]      add DIR to the sidebar and select it; starts nothing
   stoke update            open Settings, Updates and check for a new Stoke; installs nothing

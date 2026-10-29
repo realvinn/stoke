@@ -1,6 +1,8 @@
 import { createReadStream } from 'node:fs'
 import { stat } from 'node:fs/promises'
 import { createInterface } from 'node:readline'
+import { dayKey } from '../shared/localDay.ts'
+export { dayKey } from '../shared/localDay.ts'
 
 /**
  * What was worked on, from Claude Code's own transcripts.
@@ -34,12 +36,6 @@ export const IDLE_GAP_MS = 15 * 60 * 1000
  * Deliberately not `toISOString().slice(0, 10)`, which is UTC: east of
  * Greenwich that reports the morning's work as yesterday.
  */
-export function dayKey(ms: number): string {
-  const d = new Date(ms)
-  const month = String(d.getMonth() + 1).padStart(2, '0')
-  const day = String(d.getDate()).padStart(2, '0')
-  return `${d.getFullYear()}-${month}-${day}`
-}
 
 /**
  * Elapsed active time per local day.

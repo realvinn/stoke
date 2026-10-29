@@ -15,12 +15,36 @@
  * unless called.
  */
 import { readFile } from 'node:fs/promises'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+import { CURSOR_USAGE_URL, cursorUsageResponse } from '../shared/cursorUsage.ts'
 import { clineAuthFrom, clineBalanceResponse, clineBalanceUrl } from '../shared/clineUsage.ts'
 import { KIMI_USAGE_URL, kimiAuthFrom, kimiUsageResponse } from '../shared/kimiUsage.ts'
 import { OPENROUTER_KEY_URL, openRouterResponse } from '../shared/openRouterUsage.ts'
 import type { UsageSnapshot } from '../shared/types.ts'
 
 const TIMEOUT_MS = 15_000
+const execFileAsync = promisify(execFile)
+
+/** Read only the selected CLI login. Never refresh or persist its credentials. */
+export async function fetchCursorUsage(path: string, keychain: boolean, blocked: boolean, now = Date.now()): Promise<UsageSnapshot> {
+  const base: UsageSnapshot = { source: 'cursor', windows: [], extraCredits: null, fetchedAt: now, error: null }
+  if (blocked) return { ...base, note: 'Cursor uses an external credential or server; its login usage cannot be attributed safely.' }
+  let token = ''
+  if (keychain && process.platform === 'darwin') {
+    try { token = (await execFileAsync('/usr/bin/security', ['find-generic-password', '-s', 'cursor-access-token', '-a', 'cursor-user', '-w'], { timeout: 5_000, maxBuffer: 65536 })).stdout.trim() } catch { /* signed out or locked */ }
+  } else {
+    try {
+      const raw: unknown = JSON.parse(await readFile(path, 'utf8'))
+      if (raw && typeof raw === 'object' && 'accessToken' in raw && typeof raw.accessToken === 'string') token = raw.accessToken.trim()
+    } catch { /* signed out or unreadable */ }
+  }
+  if (!token) return { ...base, note: 'Cursor is not signed in to this account, or its credentials are unavailable.' }
+  try {
+    const response = await fetch(CURSOR_USAGE_URL, { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', 'connect-protocol-version': '1' }, body: '{}', redirect: 'error', signal: AbortSignal.timeout(TIMEOUT_MS) })
+    return cursorUsageResponse(response.status, await bodyOf(response), now)
+  } catch (err) { return failed('cursor', now, err, 'Cursor') }
+}
 
 function retryAfterOf(res: Response): number | null {
   const n = Number(res.headers.get('retry-after'))

@@ -67,10 +67,15 @@ export function identityEmail(raw: unknown): string | null {
 }
 
 /** Whitelist fields from the vendor's read-only status response. */
-export function nativeAccountIdentity(cli: 'claude' | 'codex', raw: unknown): Pick<AccountIdentity, 'state' | 'method' | 'email' | 'organization' | 'plan' | 'detail'> {
+export function nativeAccountIdentity(cli: 'claude' | 'codex' | 'cursor', raw: unknown): Pick<AccountIdentity, 'state' | 'method' | 'email' | 'organization' | 'plan' | 'detail'> {
   const unavailable = { state: 'unavailable' as const, method: 'Agent sign-in', email: null, organization: null, plan: null, detail: 'The agent could not report its sign-in identity.' }
   if (!raw || typeof raw !== 'object') return unavailable
   const value = raw as Record<string, unknown>
+  if (cli === 'cursor') {
+    if (value.isAuthenticated === false) return { ...unavailable, state: 'signed-out', method: 'Cursor sign-in', detail: 'Cursor reports that this account is not signed in.' }
+    if (value.isAuthenticated === true) return { ...unavailable, state: 'ready', method: 'Cursor sign-in', detail: 'Reported by Cursor for this account’s current sign-in.' }
+    return unavailable
+  }
   if (cli === 'claude') {
     if (value.loggedIn === false) return { ...unavailable, state: 'signed-out', detail: 'Claude Code reports that this account is not signed in.' }
     if (value.loggedIn !== true) return unavailable

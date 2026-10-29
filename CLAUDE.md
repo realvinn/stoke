@@ -41,7 +41,7 @@ A `dist:*` exists per target and each MUST run on that target's own platform and
 Every suite runs alone as `npm run verify:<name>`: context, codex-context, statusline, unicode,
 usage, codex-resume, profiles, settings, secrets, hub, hub-server, hub-client, hub-presence,
 account-remote, hub-relay, connection-log, hub-reconnect, providers, claude-config, folders,
-search, settings-search, chat-sources, color, theme-gen, activity, worklog-gate, work-plugin, plugins, grok-bot,
+search, settings-search, chat-sources, color, theme-gen, activity, stats, stats-transcripts, worklog-gate, work-plugin, plugins, grok-bot,
 work-mode, work-notion, work-drafts, work-session-notes, tabs, tab-overflow, tab-windows, topbar,
 quick-terminal, shell-layout, pty-exit, terminal-stall, git, launcher, launch-preflight, registry,
 restore, private, shortcuts, find, drop, fullscreen, layers, terminal-links, browser-url,

@@ -56,7 +56,7 @@ export function AgentUpdater({ cli, path }: { cli: CodingCli; path: string }): R
       {result && <p className="field-hint" role="status" data-tone={['failed', 'unverified', 'blocked'].includes(result.outcome) ? 'warning' : undefined}>{result.message}</p>}
       {result?.output && <details><summary className="field-hint">Updater output</summary><pre className="mono agent-update-output">{result.output}</pre></details>}
       {error && <p className="field-hint" role="alert" data-tone="warning">{error}</p>}
-      <span className="field-hint">Updates are explicit and never restart a session. New sessions use the installed version.</span>
+      <span className="field-hint">{cli.id === 'codex' ? 'Automatic Codex updates can be enabled in Settings → Updates. ' : ''}Updates never restart a session. New sessions use the installed version.</span>
     </div>
   )
 }

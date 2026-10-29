@@ -23,6 +23,7 @@ import { join } from 'node:path'
 import { DEFAULT_ACCOUNT_ID, type AgentAccount } from '../shared/accounts.ts'
 import { clineBalanceResponse, clineProvidersPath } from '../shared/clineUsage.ts'
 import { kimiCredentialsPath, kimiUsageResponse } from '../shared/kimiUsage.ts'
+import { cursorUsageResponse } from '../shared/cursorUsage.ts'
 import { codexUsageSnapshot, lastCodexLimits } from '../shared/codexUsage.ts'
 import type { CodingCliId } from '../shared/codingClis.ts'
 import { parseOpenRouterKey } from '../shared/openRouterUsage.ts'
@@ -31,7 +32,7 @@ import type { UsageReading, UsageReadReason, UsageSnapshot, UsageSourceId } from
 import { openRouterSharers, sharedByText, usageKey, type UsageRouteContext } from '../shared/usageSources.ts'
 import { readCodexUsage } from './codexUsage.ts'
 import { credentialSources, fakeUsage, fetchUsage, keepLastGood, nextBackoff } from './usage.ts'
-import { fetchClineUsage, fetchKimiUsage, fetchOpenRouterUsage } from './usageVendors.ts'
+import { fetchClineUsage, fetchKimiUsage, fetchOpenRouterUsage, fetchCursorUsage } from './usageVendors.ts'
 
 /* ------------------------------------------------------------- schedule */
 
@@ -53,7 +54,8 @@ export const USAGE_FLOORS: Readonly<Record<UsageSourceId, UsageFloors>> = {
   codex: { poll: 10_000, message: 5_000 },
   kimi: { poll: 30_000, message: 10_000 },
   openrouter: { poll: 60_000, message: 30_000 },
-  cline: { poll: 120_000, message: 60_000 }
+  cline: { poll: 120_000, message: 60_000 },
+  cursor: { poll: 120_000, message: 60_000 }
 }
 
 interface SourceState {
@@ -152,6 +154,9 @@ export interface UsageSourcePlan {
   /** kimi: its credentials file, and the environment its Kimi Code sees. */
   kimiPath?: string
   kimiEnv?: Record<string, string | undefined>
+  cursorPath?: string
+  cursorKeychain?: boolean
+  cursorBlocked?: boolean
   /** openrouter: the key. A secret — it stays in main. */
   openrouterKey?: string
 }
@@ -213,6 +218,20 @@ export function planUsageSources(
   plans.push({ key: usageKey('codex', DEFAULT_ACCOUNT_ID), source: 'codex', cli: 'codex', accountId: DEFAULT_ACCOUNT_ID, label: 'Default', detail: null, codexHome: codexDefault })
   for (const a of login('codex')) {
     plans.push({ key: usageKey('codex', a.id), source: 'codex', cli: 'codex', accountId: a.id, label: a.label, detail: null, codexHome: a.home })
+  }
+
+  const cursorPath = (home: string, source: Record<string, string | undefined>) => process.platform === 'darwin'
+    ? join(home, '.cursor', 'auth.json')
+    : process.platform === 'win32'
+      ? join(source.APPDATA || join(home, 'AppData', 'Roaming'), 'Cursor', 'auth.json')
+      : join(source.XDG_CONFIG_HOME || join(home, '.config'), 'cursor', 'auth.json')
+  plans.push({ key: usageKey('cursor', DEFAULT_ACCOUNT_ID), source: 'cursor', cli: 'cursor', accountId: DEFAULT_ACCOUNT_ID, label: 'Default', detail: null,
+    cursorPath: cursorPath(userHome, env), cursorKeychain: process.platform === 'darwin' && env.AGENT_CLI_CREDENTIAL_STORE !== 'file',
+    cursorBlocked: !!(env.CURSOR_API_KEY || env.CURSOR_AUTH_TOKEN || env.CURSOR_API_BASE_URL) || env.AGENT_CLI_CREDENTIAL_STORE === 'memory' })
+  for (const a of login('cursor')) {
+    const scoped = { ...env, HOME: a.home, USERPROFILE: a.home, XDG_CONFIG_HOME: a.home, APPDATA: a.home }
+    plans.push({ key: usageKey('cursor', a.id), source: 'cursor', cli: 'cursor', accountId: a.id, label: a.label, detail: null,
+      cursorPath: cursorPath(a.home, scoped), cursorKeychain: false, cursorBlocked: !!env.CURSOR_API_BASE_URL })
   }
 
   plans.push({
@@ -292,6 +311,8 @@ export async function readUsageSource(plan: UsageSourcePlan, now: number, fake?:
       return { ...(await fetchKimiUsage(plan.kimiPath ?? '', plan.kimiEnv ?? {}, now)), accountId: plan.accountId }
     case 'cline':
       return { ...(await fetchClineUsage(plan.clinePath ?? '', plan.clineEnv ?? {}, now)), accountId: plan.accountId }
+    case 'cursor':
+      return { ...(await fetchCursorUsage(plan.cursorPath ?? '', !!plan.cursorKeychain, !!plan.cursorBlocked, now)), accountId: plan.accountId }
     case 'openrouter':
       return { ...(await fetchOpenRouterUsage(plan.openrouterKey ?? '', now)), accountId: 'key' }
   }
@@ -318,6 +339,7 @@ export function fakeSnapshot(plan: UsageSourcePlan, now: number, mode: string): 
   if (plan.source === 'anthropic') return fakeUsage(now, plan.accountId)
   const none: UsageSnapshot = { source: plan.source, accountId: plan.accountId, windows: [], extraCredits: null, fetchedAt: now, error: null }
   if (mode !== 'multi') return none
+  if (plan.source === 'cursor') return { ...cursorUsageResponse(200, { billingCycleEnd: now + 10 * 86_400_000, planUsage: { autoPercentUsed: 24, apiPercentUsed: 61 } }, now), accountId: plan.accountId }
   if (plan.source === 'codex') {
     const turnAt = now - 4 * 60_000
     const other = plan.accountId !== DEFAULT_ACCOUNT_ID

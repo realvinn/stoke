@@ -23,8 +23,8 @@
  * Every home variable below was read out of the vendor's own artefact — the
  * installed binary, or the published package streamed and never run — on
  * 2026-09-30 (the research is quoted beside each entry). An agent whose
- * sign-in does not follow its home (Cursor: fixed Keychain names) gets no
- * login accounts at all: a second "account" there would silently be the first.
+ * sign-in does not follow its home gets no login accounts unless it has a
+ * separate, verified file-backed credential route.
  *
  * Pure, and compiled by both tsconfigs, so no `node:` import (gotcha 27);
  * `scripts/verify-accounts.mts` runs it under strip-types, so shared imports
@@ -104,7 +104,8 @@ export const ACCOUNT_HOME_ENV: Readonly<Partial<Record<CodingCliId, string>>> = 
   pi: 'PI_CODING_AGENT_DIR',
   cline: 'CLINE_DIR',
   vibe: 'VIBE_HOME',
-  droid: 'FACTORY_HOME_OVERRIDE'
+  droid: 'FACTORY_HOME_OVERRIDE',
+  cursor: 'CURSOR_CONFIG_DIR'
 }
 
 /** Whose sign-in lives inside the home above, so a second home is a second account. */
@@ -118,7 +119,8 @@ export const LOGIN_ACCOUNTS: ReadonlySet<CodingCliId> = new Set(
  * it would sign the default account out; the file store is per home.
  */
 export const ACCOUNT_EXTRA_ENV: Readonly<Partial<Record<CodingCliId, Readonly<Record<string, string>>>>> = {
-  gemini: { GEMINI_FORCE_ENCRYPTED_FILE_STORAGE: 'false' }
+  gemini: { GEMINI_FORCE_ENCRYPTED_FILE_STORAGE: 'false' },
+  cursor: { AGENT_CLI_CREDENTIAL_STORE: 'file' }
 }
 
 /**
@@ -157,7 +159,8 @@ export const ACCOUNT_KEY_ENV: Readonly<
  */
 export const ACCOUNT_LOGIN_ARGS: Readonly<Partial<Record<CodingCliId, readonly string[]>>> = {
   claude: ['auth', 'login'],
-  codex: ['login']
+  codex: ['login'],
+  cursor: ['login']
 }
 
 export function loginArgsFor(cli: CodingCliId): string[] {
@@ -472,6 +475,9 @@ export function accountEnv(account: AgentAccount): Record<string, string> {
   if (account.kind === 'login') {
     const name = ACCOUNT_HOME_ENV[account.cli]
     if (!name || !account.home) return {}
+    // Cursor's file credential path uses the OS home on macOS, XDG on Linux,
+    // and APPDATA on Windows; CURSOR_CONFIG_DIR alone changes only CLI config.
+    if (account.cli === 'cursor') return { [name]: account.home, HOME: account.home, USERPROFILE: account.home, XDG_CONFIG_HOME: account.home, APPDATA: account.home, CURSOR_API_KEY: '', CURSOR_AUTH_TOKEN: '', AGENT_CLI_CREDENTIAL_STORE: 'file' }
     return { [name]: account.home, ...(ACCOUNT_EXTRA_ENV[account.cli] ?? {}) }
   }
   const spec = ACCOUNT_KEY_ENV[account.cli]
@@ -490,8 +496,8 @@ export const ACCOUNT_INDEX_NAME = 'index.json'
  * default` unsets to put a shell back on each agent's own sign-in.
  */
 export function accountEnvNames(): string[] {
-  const names = new Set<string>(Object.values(ACCOUNT_HOME_ENV))
-  for (const extra of Object.values(ACCOUNT_EXTRA_ENV)) for (const k of Object.keys(extra ?? {})) names.add(k)
+  const names = new Set<string>(Object.entries(ACCOUNT_HOME_ENV).filter(([id]) => id !== 'cursor').map(([, name]) => name))
+  for (const [id, extra] of Object.entries(ACCOUNT_EXTRA_ENV)) if (id !== 'cursor') for (const k of Object.keys(extra ?? {})) names.add(k)
   return [...names]
 }
 
@@ -531,7 +537,9 @@ export interface AccountIndex {
 
 /** The index row for one of this Stoke's accounts. No key is ever in it. */
 export function accountIndexRow(a: AgentAccount): AccountIndexRow {
-  const login = a.kind === 'login'
+  // Cursor's isolated login needs HOME/APPDATA overrides that must never be
+  // exported into the user's shell. It remains selectable inside Stoke.
+  const login = a.kind === 'login' && a.cli !== 'cursor'
   return {
     id: a.id,
     name: slugOfAccountId(a.id),

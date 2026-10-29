@@ -39,6 +39,7 @@ function ok(name: string, condition: boolean, detail = ''): void {
 
 console.log('\nproject metadata')
 check('junk is dropped rather than kept', hydrateSettings({ projectMeta: 7 }).projectMeta, {})
+check('Codex updates default on and honor an explicit opt out', [DEFAULT_SETTINGS.codexAutoUpdate, hydrateSettings({}).codexAutoUpdate, hydrateSettings({ codexAutoUpdate: false }).codexAutoUpdate], [true, true, false])
 check(
   // A plain array of strings would be dropped either way - by Array.isArray or
   // by the `typeof value !== 'object'` continue further down. An array of
@@ -822,7 +823,7 @@ console.log('\naccounts: rebuilt from named keys, never trusted (shared/accounts
    * A login account's home becomes an agent's config dir, so the hydrate is
    * the lock: a hand-edited file cannot point an agent at `relative/../x`, a
    * home with a newline in it, or a login account for an agent whose sign-in
-   * does not follow its home (Cursor). Nothing is ever added on read.
+   * does not follow its home (Vibe). Nothing is ever added on read.
    */
   check('none by default', DEFAULT_SETTINGS.accounts, {})
   check('agents.defaultAccount defaults to every agent on its own sign-in', DEFAULT_SETTINGS.agents.defaultAccount, {})
@@ -846,7 +847,7 @@ console.log('\naccounts: rebuilt from named keys, never trusted (shared/accounts
   check(
     'only well-formed accounts of known agents survive',
     Object.keys(h.accounts),
-    ['claude-work', 'codex-2', 'grok-team', 'cursor-ci', 'vibe-2']
+    ['claude-work', 'codex-2', 'grok-team', 'cursor-me', 'cursor-ci', 'vibe-2']
   )
   check('a label is trimmed, an unknown key dropped, a known swatch kept', h.accounts['claude-work'], {
     id: 'claude-work',

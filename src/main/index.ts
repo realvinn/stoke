@@ -25,6 +25,8 @@ import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, isAbsolute, join } from 'node:path'
 import { CH } from '@shared/ipc'
 import { AgentLifecycleGate } from '../shared/agentLifecycle.ts'
+import { codexAccountHomes, workingTabs } from '../shared/stats.ts'
+import { installStats, type StatsHandle } from './stats.ts'
 import { QuickTerminal } from './quickTerminal.ts'
 import { holdQuitForPtys, ownedPtyExits, type QuitSettleReport } from './ptyExitTracker.ts'
 import { boundUsageReading, readRemoteUsage, UsageBindings, usageCacheKey } from './usageBindings.ts'
@@ -319,6 +321,7 @@ const windowSavedIds = new Map<number, string[]>()
 const transferTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const returningWindows = new Set<number>()
 function appWindows(): BrowserWindow[] { return [...(win ? [win] : []), ...detachedWindows.values()].filter(w => !w.isDestroyed()) }
+let stats: StatsHandle | null = null
 /**
  * The windows (by `webContents.id`) whose renderer is in Work mode, the pretend
  * IDE (components/WorkMode.tsx). Main takes none of their tab or window chords
@@ -384,6 +387,33 @@ let appQuitting = false
 let browser: EmbeddedBrowser | null = null
 let ptys: PtyManager | null = null
 const agentLifecycle = new AgentLifecycleGate()
+const runningAgentSessions = (id: CodingCliId): number => ptys?.list().filter((session) => session.cli === id && !session.exited && ptys?.launchFacts(session.ptyId)?.hostId === null).length ?? 0
+
+let codexAutoRefreshing = false
+async function refreshCodexUpdate(): Promise<void> {
+  // Development and isolated user-data runs must never update the user's CLI.
+  if (!app.isPackaged || app.commandLine.hasSwitch('user-data-dir') || codexAutoRefreshing || appQuitting || !getSettings().codexAutoUpdate) return
+  codexAutoRefreshing = true
+  try {
+    const lifecycle = await import('./agentLifecycle.ts')
+    const latest = await lifecycle.latestCodexVersion()
+    if (!latest || appQuitting || !getSettings().codexAutoUpdate) return
+    if (!agentLifecycle.beginUpdate('codex')) return
+    try {
+      if (runningAgentSessions('codex')) return
+      const path = await findCli('codex')
+      if (!path) return
+      const searchPath = await buildEnvPath()
+      const info = await lifecycle.inspectAgentInstallation('codex', path, searchPath)
+      if (appQuitting || !getSettings().codexAutoUpdate || runningAgentSessions('codex') || !info.command || !lifecycle.codexUpdateAvailable(info.version, latest)) return
+      const result = await lifecycle.runAgentUpdate(info, searchPath)
+      if (result.outcome === 'updated') forgetIdentities()
+      console.info(`Codex automatic update: ${result.message}`)
+    } finally { agentLifecycle.endUpdate('codex') }
+  } catch (error) {
+    console.warn('Codex automatic update could not finish:', error)
+  } finally { codexAutoRefreshing = false }
+}
 let watcher: ContextWatcher | null = null
 const codexWatcher = new CodexContextWatcher(snap => send(CH.ctxUpdate, snap))
 let registry: RegistryPoller | null = null
@@ -654,6 +684,7 @@ function chatHost(): ChatIndexHost {
   chatIndex ??= new ChatIndexHost({
     workerPath: chatWorkerPath,
     dir: join(app.getPath('userData'), 'chat-index'),
+    statsDir: join(app.getPath('userData'), 'stats'),
     onStatus: (s) => send(CH.chatsStatus, chatStatusFor(s)),
     onError: (err) => console.error('[stoke] chat index:', err.message)
   })
@@ -3413,6 +3444,8 @@ function createWindow(): void {
   // making network calls in the same tick.
   timers.push(setTimeout(() => void refreshCliUpdate(), 12_000))
   timers.push(setInterval(() => void refreshCliUpdate(), AUTO_CHECK_MS))
+  timers.push(setTimeout(() => void refreshCodexUpdate(), 20_000))
+  timers.push(setInterval(() => void refreshCodexUpdate(), AUTO_CHECK_MS))
 
   // Expose the docked browser to Claude Code. Started eagerly so the config
   // file exists before the first session is launched.
@@ -3542,7 +3575,9 @@ function createWindow(): void {
   const fallbackStamps = new Map<string, string>()
   timers.push(setInterval(() => {
     void registry?.pass()
-    for (const st of liveSessionStates()) {
+    const states = liveSessionStates()
+    stats?.sampleAgents(workingTabs(states, id => ptys?.countsForStats(id) ?? false))
+    for (const st of states) {
       if (!portableActivity.has(st.ptyId)) continue
       const stamp = JSON.stringify([st.status, st.waitingFor])
       if (fallbackStamps.get(st.ptyId) === stamp) continue
@@ -3691,7 +3726,13 @@ function createWindow(): void {
    * user-paced, so recomputing unconditionally is cheaper than working out
    * whether this particular write mattered.
    */
-  const offSettings = onSettingsChanged(() => { sendWatchStates(); updateNativeReveal(); ptys?.checkCodexResume(getSettings().agents.codexResume) })
+  let codexAutoWasEnabled = getSettings().codexAutoUpdate
+  const offSettings = onSettingsChanged(() => {
+    const settings = getSettings()
+    if (settings.codexAutoUpdate && !codexAutoWasEnabled) void refreshCodexUpdate()
+    codexAutoWasEnabled = settings.codexAutoUpdate
+    sendWatchStates(); updateNativeReveal(); ptys?.checkCodexResume(settings.agents.codexResume)
+  })
   win.webContents.on('did-finish-load', () => sendWatchStates())
   /*
    * A reload is a new renderer that has not asked for the launch queue yet, so
@@ -3953,7 +3994,6 @@ function registerIpc(): void {
   })
   ipcMain.handle(CH.accountsMcp, () => accountsMcp())
   ipcMain.handle(CH.mcpCatalog, () => readMcpCatalog(claudeConfigReader))
-  const runningAgentSessions = (id: CodingCliId): number => ptys?.list().filter((session) => session.cli === id && !session.exited && ptys?.launchFacts(session.ptyId)?.hostId === null).length ?? 0
   const inspectAgent = async (id: CodingCliId) => {
     const path = await findCli(id)
     if (!path) return null
@@ -5801,6 +5841,17 @@ function registerIpc(): void {
    * leaves the laptop, which is why it answers in milliseconds where the
    * worklog's scan-and-write path took tens of seconds and real money.
    */
+  ipcMain.handle(CH.statsRead, async event => {
+    if (!appFrame(event)) throw new Error('Open Stats in Stoke.')
+    if (!stats) throw new Error('Stats could not start.')
+    stats.onRead()
+    return stats.view()
+  })
+  ipcMain.handle(CH.statsReset, async event => {
+    if (!appFrame(event)) return { ok: false, message: 'Open Stats in Stoke.' }
+    if (!stats) return { ok: false, message: 'Stats could not start.' }
+    return stats.reset()
+  })
   ipcMain.handle(CH.activityRead, async (_e, from: number, to: number) => {
     const settings = getSettings()
     const projects = await listProjects(settings)
@@ -6246,6 +6297,7 @@ if (!app.requestSingleInstanceLock(launchRequest ? { stokeCli: launchRequest } :
     installConnectionLog()
     // After a sleep, every open remote tab is checked at once (HubRemote.wake).
     installHubWake(() => hubClient?.wake())
+    stats = installStats({ windowOpen: () => appWindows().length > 0, push: view => send(CH.statsChanged, view), runPass: plan => chatHost().statsPass(plan), env: chatEnv, codexHomes: () => codexAccountHomes(getSettings().accounts) })
     onSecretsOpenState((state) => {
       send(CH.secretStoreState, state)
       // The opened settings, for a renderer that was handed an earlier copy.
@@ -6411,6 +6463,7 @@ if (!app.requestSingleInstanceLock(launchRequest ? { stokeCli: launchRequest } :
     // Settings coalesce bursts of writes (see store.ts). Anything still waiting
     // is written here rather than lost with the process.
     flushSettings()
+    stats?.quitFlush()
     /*
      * A lock left behind on ~/.claude.json stalls every CLI config write for
      * the ten seconds it takes to go stale. The writer already releases in a

@@ -1109,7 +1109,9 @@ console.log('\nthe default model on an agent’s own sign-in: exactly its confir
     cursor: ['sonnet-5', ['--model', 'sonnet-5']],
     kilo: ['anthropic/claude-sonnet-5', ['-m', 'anthropic/claude-sonnet-5']],
     aider: ['sonnet', ['--model', 'sonnet']],
-    auggie: ['sonnet5', ['-m', 'sonnet5']]
+    cline: ['anthropic/claude-sonnet-4.6', ['-m', 'anthropic/claude-sonnet-4.6']],
+    auggie: ['sonnet5', ['-m', 'sonnet5']],
+    muse: ['muse-spark-1.2', ['--model', 'muse-spark-1.2']]
   }
   for (const c of CODING_CLIS) {
     if (c.id === 'claude') continue
@@ -2160,7 +2162,7 @@ console.log('\nMCP servers: one model, an adapter per agent (mcpServers.ts)')
   check(
     'CLI_CAPS names exactly the agents with no route (each with its reason, codingClis.ts)',
     none,
-    ['grok', 'gemini', 'cursor', 'amp', 'aider', 'crush', 'droid', 'cline', 'auggie']
+    ['grok', 'gemini', 'cursor', 'amp', 'aider', 'crush', 'droid', 'cline', 'auggie', 'muse']
   )
   for (const id of none) {
     check(`${id}: no MCP route, so nothing is passed`, planOk(plan(id, undefined, { mcp: ALL, mcpFileFor: fileFor })), { args: [], env: {}, model: '' })

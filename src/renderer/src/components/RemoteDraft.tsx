@@ -4,11 +4,12 @@ import { remoteTypeVerdict, type RemoteTabView } from '@shared/hub/remote'
 import { refuseOverlongPaste } from '../lib/pasteLimit'
 
 /** Compose the whole prompt locally; reconnect never replays terminal control keys. */
-export function RemoteDraft({ scope, view, receive, label = 'Remote terminal' }: {
+export function RemoteDraft({ scope, view, receive, onHide, label = 'Remote terminal' }: {
   scope: string
   label?: string
   view: RemoteTabView | undefined
   receive: MutableRefObject<((text: string) => boolean) | null>
+  onHide?: () => void
 }): React.JSX.Element {
   const input = useRef<HTMLTextAreaElement>(null)
   const generation = useRef(0)
@@ -21,7 +22,8 @@ export function RemoteDraft({ scope, view, receive, label = 'Remote terminal' }:
   const [versions, setVersions] = useState<RecoveryDraft[]>([])
   const [sending, setSending] = useState(false)
   const sendingRef = useRef(false)
-  const [direct, setDirect] = useState(false)
+  const [direct, setDirect] = useState(true)
+  const [visible, setVisible] = useState(false)
   const [expanded, setExpanded] = useState(false)
   const offline = view?.state !== 'open'
   const preferences = useRef({ direct, offline, waiting: view?.session?.activity === 'waiting' || view?.session?.activity === 'shell' })
@@ -44,6 +46,7 @@ export function RemoteDraft({ scope, view, receive, label = 'Remote terminal' }:
       signal: abort.signal,
       notify: (state, records) => {
         setHasText(!!field.value)
+        if (state === 'restored' && field.value) setVisible(true)
         setVersions(records)
         setNote(state === 'error' ? 'Saving unavailable — keep a copy before closing' : state === 'editing' ? 'Saving…' : state === 'restored' ? 'Draft restored' : 'Saved locally')
       }
@@ -59,7 +62,8 @@ export function RemoteDraft({ scope, view, receive, label = 'Remote terminal' }:
       field.setRangeText(printable, field.selectionStart, field.selectionEnd, 'end')
       field.dispatchEvent(new Event('input', { bubbles: true }))
       setHasText(true)
-      field.focus()
+      setVisible(true)
+      requestAnimationFrame(() => field.focus())
       return true
     }
     return () => { generation.current++; abort.abort(); cache.current = null; receive.current = null }
@@ -91,9 +95,13 @@ export function RemoteDraft({ scope, view, receive, label = 'Remote terminal' }:
   const fieldId = `remote-draft-${view?.id ?? scope}`
   const focusInput = (): void => input.current?.focus({ preventScroll: true })
   return (
-    <div className="remote-draft" data-expanded={expanded || undefined} data-offline={offline || undefined} onKeyDown={e => e.stopPropagation()}>
+    <div className="remote-draft" data-collapsed={!visible || undefined} data-expanded={visible && expanded || undefined} data-offline={offline || undefined} onKeyDown={e => e.stopPropagation()}>
+      <button type="button" className="remote-draft-toggle btn" hidden={visible} aria-expanded={visible} title="Open the locally saved prompt editor. Direct terminal input is not saved here." onClick={() => { setVisible(true); requestAnimationFrame(focusInput) }}>
+        {hasText ? 'Saved prompt · draft' : versions.length ? `Saved prompt · ${versions.length} to recover` : 'Saved prompt'}
+      </button>
       <label className="sr-only" htmlFor={fieldId}>Remote prompt, saved locally</label>
       <textarea id={fieldId} ref={input} rows={1} disabled={sending} maxLength={DRAFT_MAX}
+        hidden={!visible}
         aria-describedby={`${fieldId}-hint`} placeholder="Message agent…"
         onPaste={e => { const refused = refuseOverlongPaste(e); if (refused) setPasteNote(refused) }}
         onKeyDown={e => {
@@ -101,8 +109,9 @@ export function RemoteDraft({ scope, view, receive, label = 'Remote terminal' }:
           if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && !offline) { e.preventDefault(); void insert(!e.ctrlKey && !e.metaKey) }
         }} onInput={() => { setPasteNote(''); setHasText(!!input.current?.value) }} />
       <span className="sr-only" id={`${fieldId}-hint`}>Enter sends, Shift+Enter adds a line, Ctrl+Enter inserts without sending. Your draft stays here through connection loss.</span>
-      <div className="remote-draft-actions">
+      <div className="remote-draft-actions" hidden={!visible}>
         <span role="status" title={pasteNote || note} data-alert={pasteNote ? '' : undefined}>{offline ? 'Offline · ' : ''}{pasteNote || note}</span>
+        <button type="button" className="btn" onClick={() => { setVisible(false); onHide?.() }}>Hide prompt</button>
         <button type="button" className="btn" aria-expanded={expanded} aria-controls={fieldId}
           onMouseDown={e => e.preventDefault()} onClick={() => { setExpanded(v => !v); focusInput() }}>
           {expanded ? 'Collapse prompt' : 'Expand prompt'}

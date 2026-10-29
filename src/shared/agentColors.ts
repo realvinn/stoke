@@ -167,6 +167,7 @@ export const AGENT_SEEDS: Readonly<Record<CodingCliId, string>> = {
   droid: '#af998f',
   cline: '#e64ead',
   auggie: '#74b597',
+  muse: '#1916a3',
   vibe: '#f0ebd9'
 }
 
@@ -195,6 +196,7 @@ export const PREVIOUS_AGENT_SEEDS: Readonly<Record<CodingCliId, string>> = {
   droid: '#2d88e2',
   cline: '#95d4f6',
   auggie: '#31a5a5',
+  muse: '#e2baeb',
   vibe: '#e2baeb'
 }
 

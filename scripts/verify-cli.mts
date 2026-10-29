@@ -370,7 +370,7 @@ for (const cli of CODING_CLIS.filter((c) => !isClaudeCode(c.id))) {
   check(
     `${id} claims usage only from a source of its own — never Anthropic's`,
     caps.usage,
-    id === 'codex' ? 'codex' : id === 'cline' ? 'cline' : id === 'kimi' ? 'kimi' : 'none'
+    id === 'codex' ? 'codex' : id === 'cline' ? 'cline' : id === 'kimi' ? 'kimi' : id === 'cursor' ? 'cursor' : 'none'
   )
   /*
    * `model` is raised exactly where the table has a model flag it read out of
@@ -392,7 +392,7 @@ check(
 check(
   'the model is raised for exactly the agents with a confirmed flag',
   CODING_CLIS.filter((c) => !isClaudeCode(c.id) && CLI_CAPS[c.id].launchFlags.model).map((c) => c.id),
-  ['codex', 'grok', 'opencode', 'pi', 'gemini', 'qwen', 'kimi', 'copilot', 'cursor', 'kilo', 'aider', 'auggie']
+  ['codex', 'grok', 'opencode', 'pi', 'gemini', 'qwen', 'kimi', 'copilot', 'cursor', 'kilo', 'aider', 'cline', 'auggie', 'muse']
 )
 check(
   'every known CLI has an entry, so a new one cannot default to instrumented',

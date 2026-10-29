@@ -3,6 +3,7 @@ import type { Profile } from '@shared/profiles'
 import { deriveAccent } from '@shared/accent'
 import { over, parseColor, toHex } from '@shared/color'
 import { meterScale } from '@shared/meter'
+import { SERIES_SEEDS } from '@shared/series'
 import { agentColorTokens, agentTokenNames, type AgentColors } from '@shared/agentColors'
 
 /** What `applyAppearance` needs to colour the agents: overrides, and whether to paint. */
@@ -96,6 +97,12 @@ export function applyAppearance(theme: Theme, profile: Profile | null, agents?: 
   root.style.setProperty('--meter-low', meter.low)
   root.style.setProperty('--meter-mid', meter.mid)
   root.style.setProperty('--meter-high', meter.high)
+  // Stats uses a fixed, contrast-tested series for each appearance.
+  const series = SERIES_SEEDS[theme.appearance]
+  root.style.setProperty('--series-1', series[0])
+  root.style.setProperty('--series-2', series[1])
+  root.style.setProperty('--series-3', series[2])
+  root.style.setProperty('--series-4', series[3])
 
   /*
    * Each agent's ink, text and fill (shared/agentColors.ts), derived against

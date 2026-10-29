@@ -589,6 +589,9 @@ export const CH = {
   // activity
   /** The work report: hours, lines and titles per day. Read-only, no model. */
   activityRead: 'activity:read',
+  statsRead: 'stats:read',
+  statsChanged: 'stats:changed',
+  statsReset: 'stats:reset',
 
   // clipboard
   clipboardRead: 'clipboard:read',

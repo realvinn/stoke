@@ -26,13 +26,13 @@ import {EMBER} from ${JSON.stringify(resolve('src/shared/themes.ts'))};
 applyAppearance(EMBER,null);
 import {RemoteDraft} from ${JSON.stringify(resolve('src/renderer/src/components/RemoteDraft.tsx'))};
 import ${JSON.stringify(resolve('src/renderer/src/styles/app.css'))};
-window.sent=[];window.fail=false;
+window.sent=[];window.fail=false;window.focusReturns=0;
 window.makeClipboard=async isMac=>{const host=document.createElement('div');document.querySelector('.fixture-screen').append(host);const term=new Terminal({cols:40,rows:5,fontSize:13});term.open(host);window.clipTerm=term;window.clipWrites=[];window.clipInputs=[];window.clipMenus=[];
 const selection=installShiftSelection(host,term,isMac);const remove=installTerminalClipboard(host,term,{isMac,read:()=>'clipboard text',write:text=>window.clipWrites.push(text),menu:(event,text)=>window.clipMenus.push(text)});term.onData(data=>window.clipInputs.push(data));
 window.clipHost=host;window.disposeClipboard=()=>{remove();selection();term.dispose();host.remove()};await new Promise(done=>term.write('copy me'+String.fromCharCode(13,10,27)+'[?1000h',done));};
 window.stoke={hub:{remote:{type:async(id,text,enter)=>{if(window.fail)return {ok:false,message:'Disconnected'};window.sent.push({id,text,enter});return {ok:true}}}}};
 function Fixture(){const [state,setState]=useState('reconnecting');window.setLink=setState;const [scope,setScope]=useState('fixture-remote');window.setScope=setScope;const [machines,setMachines]=useState(null);window.setMachines=setMachines;const receive=useRef(null);window.typeOffline=text=>receive.current?.(text);
-return <div className="fixture"><div className="fixture-screen">Stoke · Work desktop<br/><br/>Agent output remains visible while you write.{machines&&<OtherMachines view={machines} onOpen={()=>{}}/>}</div><RemoteDraft label="Work desktop · Stoke chat" scope={scope} receive={receive} view={{id:'remote-one',state,deviceLabel:'Laptop',mode:'full',typeOnly:true,session:{activity:'idle'}}}/></div>;}
+return <div className="fixture"><div className="fixture-screen">Stoke · Work desktop<br/><br/>Agent output remains visible while you write.{machines&&<OtherMachines view={machines} onOpen={()=>{}}/>}</div><RemoteDraft label="Work desktop · Stoke chat" scope={scope} receive={receive} onHide={()=>window.focusReturns++} view={{id:'remote-one',state,deviceLabel:'Laptop',mode:'full',typeOnly:true,session:{activity:'idle'}}}/></div>;}
 createRoot(document.getElementById('root')).render(<Fixture/>);`)
     await build({ configFile: false, logLevel: 'error', define: { 'process.env.NODE_ENV': '"production"' }, resolve: { alias: { '@shared': resolve('src/shared') } }, esbuild: { jsx: 'automatic' }, build: { outDir: join(temp, 'bundle'), emptyOutDir: true, lib: { entry, name: 'fixture', formats: ['iife'], fileName: () => 'fixture.js', cssFileName: 'fixture' } } })
     writeFileSync(join(temp, 'index.html'), '<meta charset="utf-8"><link rel="stylesheet" href="bundle/fixture.css"><style>.fixture{height:100vh;display:flex;flex-direction:column}.fixture-screen{flex:1;min-height:0;padding:20px;color:var(--text-muted);font-family:var(--mono)}</style><div id="root"></div><script src="bundle/fixture.js"></script>')
@@ -44,8 +44,10 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`)
     const run = async (code: string) => { try { return await win!.webContents.executeJavaScript(code) } catch (cause) { throw new Error(code, {cause}) } }
     const settle = (ms = 80) => new Promise(done => setTimeout(done, ms))
     await settle()
+    assert.equal(await run(`document.querySelector('textarea').hidden`), true, 'the saved editor starts collapsed')
     await run(`window.typeOffline('hello');window.typeOffline('\\x1b[A');window.typeOffline('\\r')`)
     await settle()
+    assert.equal(await run(`document.querySelector('textarea').hidden`), false, 'offline typing opens the saved editor')
     assert.equal(await run(`document.querySelector('textarea').value`), 'hello', 'raw arrows and Enter never enter the draft queue')
     assert.equal(await run(`[...document.querySelectorAll('button')].find(b=>b.textContent==='Send prompt').disabled`), true, 'offline cannot insert')
     await settle(550)
@@ -53,14 +55,17 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`)
     await new Promise<void>(done => win!.webContents.once('did-finish-load', () => done()))
     await settle()
     assert.equal(await run(`document.querySelector('textarea').value`), 'hello', 'draft survives reload without sending')
+    assert.equal(await run(`document.querySelector('textarea').hidden`), false, 'a restored draft is visible')
     assert.equal(await run('window.sent.length'), 0)
     await run(`window.setLink('open')`); await settle()
     assert.equal(await run('window.sent.length'), 0, 'reconnect alone never replays input')
+    assert.equal(await run(`window.typeOffline('direct to the agent')`), false, 'online terminal input goes directly to the agent by default')
     await run(`document.querySelector('details').open=true;window.fail=true;[...document.querySelectorAll('button')].find(b=>b.textContent==='Insert only').click()`); await settle()
     assert.equal(await run(`document.querySelector('textarea').value`), 'hello', 'failed insertion preserves text')
     await run(`window.fail=false;[...document.querySelectorAll('button')].find(b=>b.textContent==='Insert only').click()`); await settle()
     assert.deepEqual(await run('window.sent'), [{ id: 'remote-one', text: 'hello', enter: false }], 'explicit insertion uses the text-only API')
     assert.equal(await run(`document.querySelector('textarea').value`), '')
+    await run(`document.querySelector('.remote-draft-options input[type=checkbox]').click()`); await settle()
     await run(`window.typeOffline('full prompt before the drop');document.querySelector('textarea').focus();document.querySelector('textarea').setSelectionRange(5,5)`); await settle();
     for (let i=0;i<4;i++) {
       await run(`window.setLink('reconnecting')`); await settle();
@@ -137,6 +142,12 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`)
       const stalled = new Promise<never>((_, fail) => { timer = setTimeout(() => fail(Object.assign(new Error(`${file}: no frame within 10 s, so the hidden window has stopped drawing (it drew ${framesAfterReload} frames in the 1 s after its reload)`), { name: 'ScreenshotStalled' })), 10_000) })
       try { writeFileSync(resolve('out', file), (await Promise.race([captureTestWindow(win!), stalled])).toPNG()) } finally { clearTimeout(timer) }
     }
+    await run(`[...document.querySelectorAll('button')].find(b=>b.textContent==='Hide prompt').click()`); await settle()
+    assert.equal(await run(`window.focusReturns`), 1, 'hiding returns focus to the remote terminal')
+    assert.equal(await run(`document.querySelector('textarea').hidden`), true, 'hiding keeps the saved draft out of the terminal view')
+    await capture('remote-draft-hidden.png')
+    await run(`document.querySelector('.remote-draft-toggle').click()`); await settle()
+    assert.ok(await run(`document.querySelector('textarea').value.includes('Draft saved')`), 'reopening keeps the draft')
     await capture('remote-draft-compact.png')
     await run(`document.querySelector('[aria-controls]').click()`);await settle()
     await capture('remote-draft-expanded.png')

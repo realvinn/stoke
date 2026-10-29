@@ -48,6 +48,7 @@ import {
 } from '../src/shared/codexUsage.ts'
 import { nextUtcMidnight, openRouterResponse, parseOpenRouterKey } from '../src/shared/openRouterUsage.ts'
 import { kimiAuthFrom, kimiCredentialsPath, kimiUsageResponse } from '../src/shared/kimiUsage.ts'
+import { cursorUsageResponse, CURSOR_USAGE_URL } from '../src/shared/cursorUsage.ts'
 import {
   clineAuthFrom,
   clineBalanceResponse,
@@ -70,7 +71,7 @@ import {
 } from '../src/shared/usageSources.ts'
 import { balanceText, formatUsd, windowResetLabel } from '../src/shared/usageView.ts'
 import { CODEX_TAIL_BYTES, newestRollouts, readCodexUsage, readTail } from '../src/main/codexUsage.ts'
-import { fetchClineUsage, fetchKimiUsage } from '../src/main/usageVendors.ts'
+import { fetchClineUsage, fetchKimiUsage, fetchCursorUsage } from '../src/main/usageVendors.ts'
 import {
   fakeSnapshot,
   planUsageSources,
@@ -694,6 +695,7 @@ console.log('\nwhich reading answers for which tab')
     'anthropic:claude-work',
     'codex:default',
     'codex:codex-work',
+    'cursor:default',
     'kimi:default',
     'cline:default',
     'cline:cline-two',
@@ -991,10 +993,10 @@ console.log('\nthe fixture a driven run uses (STOKE_FAKE_USAGE=multi) goes throu
   check('with any other value only Claude’s accounts are faked', fakeSnapshot(plans.find((p) => p.key === 'codex:default')!, now, '1').windows, [])
   const readings: UsageReading[] = plans.map((p) => toReading(p, snaps[p.key]))
   const groups = panelGroups(readings, 'codex:codex-work')
-  check('the panel groups by agent, the shared key last', groups.map((g) => `${g.title}:${g.readings.length}`), ['Claude Code:2', 'Codex CLI:2', 'Kimi Code:1', 'Cline:1', 'OpenRouter:1'])
+  check('the panel groups by agent, the shared key last', groups.map((g) => `${g.title}:${g.readings.length}`), ['Claude Code:2', 'Codex CLI:2', 'Kimi Code:1', 'Cline:1', 'Cursor Agent:1', 'OpenRouter:1'])
   const bare = readings.map((r) => (r.source === 'cline' ? { ...r, snapshot: { ...r.snapshot, balances: [] } } : r))
-  check('a source with no reading is hidden', panelGroups(bare, 'codex:codex-work').map((g) => g.title), ['Claude Code', 'Codex CLI', 'Kimi Code', 'OpenRouter'])
-  check('unless it is the tab in front, so its note is not lost', panelGroups(bare, 'cline:default').map((g) => g.title), ['Claude Code', 'Codex CLI', 'Kimi Code', 'Cline', 'OpenRouter'])
+  check('a source with no reading is hidden', panelGroups(bare, 'codex:codex-work').map((g) => g.title), ['Claude Code', 'Codex CLI', 'Kimi Code', 'Cursor Agent', 'OpenRouter'])
+  check('unless it is the tab in front, so its note is not lost', panelGroups(bare, 'cline:default').map((g) => g.title), ['Claude Code', 'Codex CLI', 'Kimi Code', 'Cline', 'Cursor Agent', 'OpenRouter'])
   check('the chip’s rows for Codex: its 5 hours and weekly', chipRows(snaps['codex:default'].windows).map((w) => w.short), ['5h', 'week'])
   check('for OpenRouter, its first two windows', chipRows(snaps['openrouter:key'].windows).map((w) => w.short), ['key', 'free'])
 }
@@ -1027,6 +1029,37 @@ if (process.env.STOKE_LIVE_USAGE === '1') {
   else console.log(`  SKIP  Cline: ${cline.error ?? cline.note ?? 'no reading'}`)
 }
 
+console.log('\nCursor usage follows the selected account')
+{
+  const at = Date.parse('2026-10-29T00:00:00Z'), end = at + 20 * 86_400_000
+  const parsed = cursorUsageResponse(200, { billingCycleEnd: String(end), planUsage: { autoPercentUsed: 23, apiPercentUsed: 61 } }, at)
+  check('both pools and their reset instant are preserved', parsed.windows.map(w => [w.label, w.percent, w.resetsAt]), [['Auto', 23, end], ['API', 61, end]])
+  check('a distant reset names its calendar date and time', windowResetLabel(parsed.windows[0], at).includes(new Date(end).getFullYear().toString()), true)
+  check('Cursor also names the date of a near reset', windowResetLabel({ ...parsed.windows[0], resetsAt: at + 86_400_000 }, at, true).includes(new Date(at).getFullYear().toString()), true)
+  check('missing fields are never reported as zero', cursorUsageResponse(200, { planUsage: { apiPercentUsed: 10 } }, at).windows.map(w => w.label), ['API'])
+  check('refused credentials report an error', !!cursorUsageResponse(401, {}, at).error, true)
+  const account = { id: 'cursor-work', cli: 'cursor' as const, label: 'Work', kind: 'login' as const, home: join(scratch, 'cursor-work'), apiKey: '' }
+  const plans = planUsageSources({ accounts: { [account.id]: account }, claudeAuth: 'default', endpointModes: {}, openrouterKey: '' }, { CURSOR_API_KEY: 'external' }, scratch)
+  check('a default external key cannot be mistaken for the login', plans.find(p => p.key === 'cursor:default')?.cursorBlocked, true)
+  check('the named login has its own path and does not use the default Keychain', [plans.find(p => p.key === 'cursor:cursor-work')?.cursorPath?.startsWith(account.home), plans.find(p => p.key === 'cursor:cursor-work')?.cursorKeychain], [true, false])
+  const fixture = join(scratch, 'cursor-auth.json')
+  writeFileSync(fixture, JSON.stringify({ accessToken: 'synthetic-cursor-token' }))
+  const originalFetch = globalThis.fetch
+  let calls = 0
+  globalThis.fetch = (async (input, init) => {
+    calls++
+    check('the request goes only to Cursor with the selected login', [String(input), (init?.headers as Record<string, string>).authorization, init?.redirect], [CURSOR_USAGE_URL, 'Bearer synthetic-cursor-token', 'error'])
+    return new Response(JSON.stringify({ billingCycleEnd: String(end), planUsage: { autoPercentUsed: 23, apiPercentUsed: 61 } }), { status: 200 })
+  }) as typeof fetch
+  try {
+    const reading = await fetchCursorUsage(fixture, false, false, at)
+    check('the selected file produces its own figures', reading.windows.map(w => w.percent), [23, 61])
+    check('credentials do not reach the reading', JSON.stringify(reading).includes('synthetic-cursor-token'), false)
+    await fetchCursorUsage(fixture, false, true, at)
+    check('an overridden server or credential prevents a request', calls, 1)
+    check('a missing login does not borrow another account', (await fetchCursorUsage(join(scratch, 'missing-cursor'), false, false, at)).windows, [])
+  } finally { globalThis.fetch = originalFetch }
+}
 rmSync(join(scratch, 'claude-a'), { recursive: true, force: true })
 rmSync(join(scratch, 'claude-b'), { recursive: true, force: true })
 rmSync(join(scratch, 'codex-home'), { recursive: true, force: true })

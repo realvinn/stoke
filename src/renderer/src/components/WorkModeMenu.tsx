@@ -19,14 +19,16 @@ interface Props {
   picks: readonly string[]
   charsPerKey: number
   panel: boolean
+  automatic: boolean
   onPicks: (picks: string[]) => void
   onChars: (n: number) => void
   onPanel: (on: boolean) => void
+  onAutomatic: (on: boolean) => void
   onLeave: () => void
 }
 
 export const WorkModeMenu = forwardRef<HTMLDivElement | null, Props>(function WorkModeMenu(
-  { x, y, types, picks, charsPerKey, panel, onPicks, onChars, onPanel, onLeave },
+  { x, y, types, picks, charsPerKey, panel, automatic, onPicks, onChars, onPanel, onAutomatic, onLeave },
   outer
 ) {
   const ref = useRef<HTMLDivElement>(null)
@@ -82,6 +84,10 @@ export const WorkModeMenu = forwardRef<HTMLDivElement | null, Props>(function Wo
       <label role="menuitemcheckbox" aria-checked={panel}>
         <input type="checkbox" checked={panel} onChange={(e) => onPanel(e.target.checked)} />
         <span>Show build output now and then</span>
+      </label>
+      <label role="menuitemcheckbox" aria-checked={automatic}>
+        <input type="checkbox" checked={automatic} onChange={(e) => onAutomatic(e.target.checked)} />
+        <span>Type automatically</span>
       </label>
       <div className="wm-menu-sep" />
       <button type="button" role="menuitem" className="wm-menu-item" onClick={onLeave}>

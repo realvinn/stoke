@@ -46,6 +46,7 @@ export type SettingsPageId =
   | 'claude-settings'
   | 'providers'
   | 'chats'
+  | 'stats'
   | 'voice'
   | 'projects'
   | 'hosts'
@@ -159,6 +160,7 @@ export const SETTINGS_PAGES: readonly SettingsPageDef[] = [
     hint: 'A searchable copy of your AI chats: which tools, how much, and where the copy is',
     keywords: ['chats', 'conversations', 'history', 'index', 'transcripts', 'search chats']
   },
+  { id: 'stats', label: 'Stats', hint: 'What Stats counts on this computer, and starting it over', keywords: ['statistics', 'uptime', 'hours', 'lines written', 'agents working', 'streak', 'chart'] },
   {
     id: 'voice',
     label: 'Voice',
@@ -317,7 +319,7 @@ export function navTree(agents: readonly CodingCliId[], accountAgents: readonly 
           loc: null,
           children: [pageNode('agents'), ...agents.map(agentNode)]
         },
-        ...(['chats', 'voice', 'projects', 'hosts', 'browser'] as const).map(pageNode)
+        ...(['chats', 'stats', 'voice', 'projects', 'hosts', 'browser'] as const).map(pageNode)
       ]
     },
     { title: 'Integrations', nodes: [pageNode('worklog'), pageNode('remote')] },
@@ -568,6 +570,7 @@ export const SETTING_ROWS: readonly SettingRow[] = [
   { id: 'chats.imported', page: 'chats', label: 'Imported chats', keywords: ['import', 'export', 'chatgpt export', 'claude.ai export', 'zip'] },
   { id: 'chats.limits', page: 'chats', label: 'Limits', keywords: ['how much', 'size', 'cap', 'preset'] },
   { id: 'chats.index', page: 'chats', label: 'The index', keywords: ['database', 'sqlite', 'rebuild', 'delete copy', 'storage'] },
+  { id: 'stats.reset', page: 'stats', label: 'Reset stats', keywords: ['clear stats', 'start over', 'delete stats', 'ledger', 'uptime', 'lines'] },
 
   // Voice
   { id: 'voice.mic-access', page: 'voice', label: 'Microphone access', keywords: ['permission', 'privacy', 'allow microphone'], fallback: 'voice.microphone' },
@@ -654,6 +657,7 @@ export const SETTING_ROWS: readonly SettingRow[] = [
   { id: 'updates.command', page: 'updates', label: 'Command line', keywords: ['stoke command', 'terminal', 'path', 'cli'] },
   { id: 'updates.cli', page: 'updates', label: 'Claude Code CLI', keywords: ['claude version', 'claude update', 'cli version'] },
   { id: 'updates.cli-auto', page: 'updates', label: 'Keep the CLI up to date automatically', keywords: ['auto update', 'claude update'] },
+  { id: 'updates.codex-auto', page: 'updates', label: 'Keep Codex up to date automatically', keywords: ['auto update', 'codex update'] },
   { id: 'updates.cli-relaunch', page: 'updates', label: 'After the CLI updates', keywords: ['relaunch', 'restart sessions'] },
   { id: 'updates.cli-path', page: 'updates', label: 'Claude CLI path', keywords: ['claude executable', 'where is claude', 'not found', 'binary'] },
 

@@ -1423,6 +1423,11 @@ export class PtyManager {
     return { sessionId: s.sessionId, cli: s.cli, accountId: s.accountId, hostId: s.hostId, model: s.launchModel, effort: s.launchEffort }
   }
 
+  countsForStats(ptyId: string): boolean {
+    const s = this.sessions.get(ptyId)
+    return !!s && !s.exited && s.ordinary && !s.private && !s.hostId
+  }
+
   /** Main-owned admission for a Work task's optional live session association. */
   localAgentSession(sessionId: string): boolean {
     return [...this.sessions.values()].some((s) => s.sessionId === sessionId && s.ordinary && !s.private && !s.hostId && !s.exited)

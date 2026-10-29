@@ -185,14 +185,14 @@ export function groupsOf(text: string, size: number): string {
  * behind a one-letter kind, so an id says what it names and can never be a
  * path segment with a dot, a slash or `__proto__` in it.
  */
-export const ID_BYTES = { account: 10, device: 10, pair: 10, relay: 15, sshKey: 10, host: 10 } as const
+export const ID_BYTES = { account: 10, device: 10, pair: 10, relay: 15, sshKey: 10, host: 10, stats: 10 } as const
 export type IdKind = keyof typeof ID_BYTES
 /**
  * `host` is an SSH host's SYNC id, never its settings id: `SshHost.id` is a
  * per-machine counter (`host-1`, `host-2`, HostsSettings' `newHostId`), so two
  * machines' `host-1` are usually two different servers.
  */
-const ID_PREFIX: Record<IdKind, string> = { account: 'a', device: 'd', pair: 'p', relay: 'r', sshKey: 'k', host: 'h' }
+const ID_PREFIX: Record<IdKind, string> = { account: 'a', device: 'd', pair: 'p', relay: 'r', sshKey: 'k', host: 'h', stats: 's' }
 
 /** A new id from `random` (which must hold `ID_BYTES[kind]` random bytes). */
 export function idFromBytes(kind: IdKind, random: Uint8Array): string {

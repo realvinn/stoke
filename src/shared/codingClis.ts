@@ -34,6 +34,7 @@ export type CodingCliId =
   | 'cline'
   | 'auggie'
   | 'vibe'
+  | 'muse'
 
 /** The three platforms a recipe can name. */
 export type InstallPlatform = 'darwin' | 'linux' | 'win32'
@@ -463,11 +464,10 @@ export const CODING_CLIS: readonly CodingCli[] = [
       win32: 'npm install -g cline'
     },
     installNeeds: 'Node.js 20 or newer',
-    endpoints: { openrouter: false, custom: null }
-    // No model flag, though its binary (3.0.66) has `-m, --model <model-id>`:
-    // a run records its provider settings in providers.json (see above), and
-    // whether the model rides along could not be read without running it. A
-    // launch flag that writes the agent's own config is what Stoke never does.
+    endpoints: { openrouter: false, custom: null },
+    // Cline's current CLI reference says this chooses the model for the session.
+    modelArgs: DASH_M,
+    modelExample: 'anthropic/claude-sonnet-4.6'
   },
   {
     id: 'auggie',
@@ -487,6 +487,24 @@ export const CODING_CLIS: readonly CodingCli[] = [
     // package (@augmentcode/auggie 0.36.0): `-m, --model <id>`, "Select the
     // model to use for the agent. Use 'auggie model list' to see available models."
     modelArgs: DASH_M
+  },
+  {
+    id: 'muse',
+    label: 'Muse Code',
+    vendor: 'Meta',
+    blurb: 'Meta’s coding agent, using its own sign-in and model settings.',
+    bins: { posix: ['muse'], win32: ['muse.exe', 'muse.cmd', 'muse'] },
+    identify: /\bmuse\b/i,
+    home: 'https://dev.meta.ai/products/muse-code',
+    install: {
+      darwin: 'curl -fsSL https://dev.meta.ai/install.sh | bash',
+      linux: 'curl -fsSL https://dev.meta.ai/install.sh | bash',
+      win32: 'irm https://dev.meta.ai/install.ps1 | iex'
+    },
+    endpoints: { openrouter: false, custom: null },
+    // Meta's configuration reference documents --model on the interactive CLI.
+    modelArgs: LONG_MODEL,
+    modelExample: 'muse-spark-1.2'
   },
   {
     id: 'vibe',
@@ -550,11 +568,11 @@ export interface CliCaps {
   /**
    * Whose usage the chip may describe for a tab of this CLI on its own
    * sign-in (shared/usageSources.ts): Anthropic's plan limits, the limits a
-   * Codex rollout states, or the balance of the Cline account the CLI is
-   * signed in to. An agent pointed at OpenRouter reads the OpenRouter key
+   * Codex rollout states, Kimi and Cursor plan usage, or Cline's account
+   * balance. An agent pointed at OpenRouter reads the OpenRouter key
    * instead, whatever this says — that is its endpoint, not its caps.
    */
-  usage: 'anthropic' | 'codex' | 'kimi' | 'cline' | 'none'
+  usage: 'anthropic' | 'codex' | 'kimi' | 'cline' | 'cursor' | 'none'
   /**
    * Which launch flags a session of this CLI was actually given, so which of
    * the status bar's mode / model / effort items describe it. Claude's three
@@ -677,7 +695,7 @@ export const CLI_CAPS: Record<CodingCliId, CliCaps> = {
   qwen: floorFor('qwen', 'continue', 'file'),
   kimi: { ...floorFor('kimi', 'continue', 'file'), usage: 'kimi' },
   copilot: floorFor('copilot', 'continue', 'file'),
-  cursor: floorFor('cursor', 'continue'),
+  cursor: { ...floorFor('cursor', 'continue'), usage: 'cursor' },
   amp: floorFor('amp', 'continue'),
   // `kilo --continue`, `aider --restore-chat-history`, `auggie -c`, `vibe -c`.
   // Crush, Droid and Cline have resume flags whose meaning with no id was not
@@ -688,6 +706,7 @@ export const CLI_CAPS: Record<CodingCliId, CliCaps> = {
   droid: floorFor('droid', 'none'),
   cline: { ...floorFor('cline', 'none'), usage: 'cline' },
   auggie: floorFor('auggie', 'continue'),
+  muse: floorFor('muse', 'none'),
   vibe: floorFor('vibe', 'continue', 'env')
 }
 

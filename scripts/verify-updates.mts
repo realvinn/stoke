@@ -37,7 +37,7 @@ import { currentVersion, runUpdate } from '../src/main/updates.ts'
 import { probeClaude } from '../src/main/cli.ts'
 import { channelLagNotice, updateButton, updateVerdict } from '../src/renderer/src/lib/updateVerdict.ts'
 import { AgentLifecycleGate, agentNpmPackages, agentVersion, nativeUpdaterInHelp } from '../src/shared/agentLifecycle.ts'
-import { inspectAgentInstallation, runAgentUpdate, agentCommandRunner, agentUpdateEnv, type AgentCommandRunner } from '../src/main/agentLifecycle.ts'
+import { inspectAgentInstallation, runAgentUpdate, agentCommandRunner, agentUpdateEnv, codexUpdateAvailable, type AgentCommandRunner } from '../src/main/agentLifecycle.ts'
 
 const execFileAsync = promisify(execFile)
 
@@ -1110,6 +1110,16 @@ if (isWin) {
     rmSync(home, { recursive: true, force: true })
   }
 }
+
+console.log('\nCodex automatic update version gate')
+check('only a newer stable version permits an update', [
+  codexUpdateAvailable('0.9.9', '0.10.0'),
+  codexUpdateAvailable('0.10.0', '0.10.0'),
+  codexUpdateAvailable('0.11.0', '0.10.0'),
+  codexUpdateAvailable('0.10.0-beta.1', '0.11.0'),
+  codexUpdateAvailable('0.10.0', null),
+  codexUpdateAvailable(null, '0.11.0')
+], [true, false, false, false, false, false])
 
 console.log(`\n${failures === 0 ? 'All checks passed.' : `${failures} check(s) FAILED.`}`)
 process.exit(failures === 0 ? 0 : 1)

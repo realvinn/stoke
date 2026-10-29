@@ -15,15 +15,19 @@ import type {
 import type { PassPlan } from './scan.ts'
 import type { SourceEnv } from './sources.ts'
 import type { ChatSearchFilters } from '../../shared/chatSearch.ts'
+import type { StatsPassResult } from '../../shared/stats.ts'
+import type { StatsPlan } from '../stats/pass.ts'
 
 export interface WorkerData {
   /** The store's directory, `<userData>/chat-index`. */
   dir: string
+  statsDir?: string
 }
 
 export type WorkerRequest =
   | { id: number; op: 'detect'; env: SourceEnv; subagents: boolean }
   | { id: number; op: 'scan'; plan: PassPlan }
+  | { id: number; op: 'statsPass'; plan: StatsPlan }
   /**
    * `redact: 'force'`: only chats cleaned with the rules in force now, whatever the setting (store.ts `search`).
    * `hidden`: folders (`hiddenProjects`) whose chats are left out before the limit, by this platform's path rules.
@@ -48,6 +52,7 @@ export interface WorkerResults {
   detect: ChatDetection
   /** Null when a pass was already running (the host queues one more). */
   scan: ChatPassSummary | null
+  statsPass: StatsPassResult | null
   search: ChatSearchHit[]
   status: ChatIndexStatus
   cancel: null

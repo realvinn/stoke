@@ -25,6 +25,8 @@ import type { PassPlan } from './scan.ts'
 import type { SourceEnv } from './sources.ts'
 import type { ChatSearchFilters } from '../../shared/chatSearch.ts'
 import type { WorkerData, WorkerEvent, WorkerReply, WorkerRequest, WorkerResults } from './protocol.ts'
+import type { StatsPlan } from '../stats/pass.ts'
+import type { StatsPassResult } from '../../shared/stats.ts'
 
 /** A worker with nothing pending for this long is stopped; the next ask starts another. */
 const IDLE_MS = 5 * 60_000
@@ -35,6 +37,7 @@ type Body<K extends Op> = Omit<Extract<WorkerRequest, { op: K }>, 'id' | 'op'>
 export interface ChatIndexHostOptions {
   workerPath: string
   dir: string
+  statsDir?: string
   /** A status the worker pushed: a pass started, moved on, or ended. */
   onStatus: (s: ChatIndexStatus) => void
   /** Anything the worker could not do, for the log. */
@@ -48,6 +51,8 @@ export class ChatIndexHost {
   private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>()
   private scanning = false
   private queued: PassPlan | null = null
+  private scanningStats = false
+  private queuedStats: StatsPlan | null = null
   private idle: ReturnType<typeof setTimeout> | null = null
   private importing = false
   /** When the last pass ended, for the focus trigger's five-minute floor. */
@@ -59,7 +64,7 @@ export class ChatIndexHost {
 
   private ensure(): Worker {
     if (this.worker) return this.worker
-    const data: WorkerData = { dir: this.opts.dir }
+    const data: WorkerData = { dir: this.opts.dir, statsDir: this.opts.statsDir }
     const w = new Worker(this.opts.workerPath, {
       workerData: data,
       // Bounds the heap a hostile or enormous file could make it take.
@@ -83,6 +88,8 @@ export class ChatIndexHost {
       for (const [, p] of this.pending) p.reject(new Error('The chat index stopped.'))
       this.pending.clear()
       this.scanning = false
+      this.scanningStats = false
+      this.queuedStats = null
     })
     this.worker = w
     return w
@@ -91,9 +98,9 @@ export class ChatIndexHost {
   private armIdle(): void {
     if (this.idle) clearTimeout(this.idle)
     this.idle = null
-    if (this.pending.size > 0 || this.scanning) return
+    if (this.pending.size > 0 || this.scanning || this.scanningStats) return
     this.idle = setTimeout(() => {
-      if (this.pending.size === 0 && !this.scanning) void this.stop()
+      if (this.pending.size === 0 && !this.scanning && !this.scanningStats) void this.stop()
     }, IDLE_MS)
     this.idle.unref?.()
   }
@@ -155,6 +162,18 @@ export class ChatIndexHost {
 
   get running(): boolean {
     return this.scanning
+  }
+
+  get statsRunning(): boolean { return this.scanningStats }
+  statsPass(plan: StatsPlan): Promise<StatsPassResult | null> {
+    if (this.scanningStats) { this.queuedStats = plan; return Promise.resolve(null) }
+    this.scanningStats = true
+    return this.request('statsPass', { plan }).finally(() => {
+      this.scanningStats = false
+      const next = this.queuedStats; this.queuedStats = null
+      if (next) void this.statsPass(next).catch((e: Error) => this.opts.onError?.(e))
+      else this.armIdle()
+    })
   }
 
   /**
@@ -230,6 +249,7 @@ export class ChatIndexHost {
     const w = this.worker
     if (!w) return
     this.queued = null
+    this.queuedStats = null
     await Promise.race([this.request('close', {}).catch(() => null), new Promise((r) => setTimeout(r, 1500))])
     if (this.worker === w) this.worker = null
     await w.terminate().catch(() => 0)

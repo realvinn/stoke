@@ -57,6 +57,7 @@ export const SKILL_DIRS: Record<CodingCliId, readonly string[]> = {
   droid: ['~/.factory/skills', '~/.agents/skills'],
   cline: ['~/.cline/skills', '~/.agents/skills'],
   auggie: ['~/.augment/skills', '~/.agents/skills', '~/.claude/skills'],
+  muse: ['~/.config/muse/skills', '~/.agents/skills', '~/.claude/skills', '~/.codex/skills'],
   vibe: ['~/.vibe/skills', '~/.agents/skills']
 }
 

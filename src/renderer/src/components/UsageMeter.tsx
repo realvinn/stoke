@@ -43,7 +43,7 @@ const TICK_MS = 10_000
  * of it means the limit arrives before the reset does.
  */
 
-function Bar({ window: w, now }: { window: UsageWindow; now: number }): React.JSX.Element {
+function Bar({ window: w, now, remaining = false }: { window: UsageWindow; now: number; remaining?: boolean }): React.JSX.Element {
   const ahead = w.elapsed !== null && w.percent > w.elapsed * 100
   const title =
     w.elapsed === null
@@ -61,14 +61,15 @@ function Bar({ window: w, now }: { window: UsageWindow; now: number }): React.JS
       aria-valuemin={0}
       aria-valuemax={100}
       aria-label={`${w.label}, ${w.percent}% used`}
+      aria-valuetext={remaining ? remainingLabel(w) : undefined}
     >
       {/* In the order they are drawn: the text line, then the bar alone on
           the line below (app.css `.usage-row`'s grid areas). */}
       <span className="usage-label">{w.label}</span>
-      <span className="usage-pct">{w.percent}% used</span>
+      <span className="usage-pct">{remaining ? remainingLabel(w) : `${w.percent}% used`}</span>
       <span className="usage-reset">
         {ahead && <span className="usage-ahead">ahead · </span>}
-        {w.active ? windowResetLabel(w, now) : 'not in use'}
+        {w.active ? windowResetLabel(w, now, remaining) : 'not in use'}
       </span>
       <span
         className="usage-track"
@@ -139,9 +140,9 @@ function ReadingBlock({
   const { reading, windows, readAt } = view
   const snap = reading.snapshot
   const asOf = Number.isFinite(readAt) ? clock(readAt) : null
-  const stale = Number.isFinite(readAt) && isStale(readAt, now)
+  const stale = Number.isFinite(readAt) && (reading.source === 'cursor' ? now - readAt > 360_000 : isStale(readAt, now))
   const waitingUntil = snap.error && snap.retryUntil && snap.retryUntil > now ? clock(snap.retryUntil) : null
-  const vendor = { anthropic: 'Anthropic', openrouter: 'OpenRouter', cline: 'Cline', kimi: 'Kimi', codex: 'Codex' }[reading.source]
+  const vendor = { anthropic: 'Anthropic', openrouter: 'OpenRouter', cline: 'Cline', kimi: 'Kimi', codex: 'Codex', cursor: 'Cursor' }[reading.source]
   return (
     <div className="usage-reading" data-active={tag ? true : undefined} data-key={reading.key}>
       <div className="usage-reading-head">
@@ -160,7 +161,7 @@ function ReadingBlock({
       {reading.detail && <span className="usage-reading-detail">{reading.detail}</span>}
 
       {windows.map((w) => (
-        <Bar key={`${w.kind}-${w.label}`} window={w} now={now} />
+        <Bar key={`${w.kind}-${w.label}`} window={w} now={now} remaining={reading.source === 'cursor'} />
       ))}
 
       {snap.extraCredits?.enabled && (

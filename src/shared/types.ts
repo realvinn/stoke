@@ -1399,6 +1399,8 @@ export interface Settings {
    * and nothing else.
    */
   cliAutoUpdate: boolean
+  /** Allow Stoke to update Codex when its local sessions are closed. */
+  codexAutoUpdate: boolean
   /**
    * What happens to open sessions once a newer `claude` is installed under them.
    *
@@ -1765,7 +1767,7 @@ export interface UsageSnapshot {
 }
 
 /** A usage source Stoke can read (shared/usageSources.ts has which agent reads which). */
-export type UsageSourceId = 'anthropic' | 'codex' | 'kimi' | 'openrouter' | 'cline'
+export type UsageSourceId = 'anthropic' | 'codex' | 'kimi' | 'openrouter' | 'cline' | 'cursor'
 
 /**
  * One money or credit figure. `amount` null is UNKNOWN — drawn as a dash or

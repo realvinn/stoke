@@ -1119,6 +1119,8 @@ npm run verify:search         # sidebar + palette search: tiers, recency, highli
                               # index against real files in a temp dir - a 40 MB transcript
                               # costs two 256 KB reads, a second pass costs none
 npm run verify:activity       # the activity report: active time from gaps under the idle cap
+npm run verify:stats          # local-day and Stats record contracts
+npm run verify:stats-transcripts # synthetic transcript counting rules
                               # (never first-to-last, which overstated a week sevenfold on a
                               # real transcript) and lines written, on synthetic transcripts
 npm run verify:settings-search # the Settings index against the sheet: every `data-setting`
@@ -2335,9 +2337,9 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     sessions; a click opens one as a remote tab. Last-known rows stay visible
                     during account presence reconnects, marked unreachable for new opens; each
                     chat reports its own link state. A group, never an overlay
-  src/components/RemoteDraft.tsx  persistent local prompt editor for remote tabs; printable
-                    terminal input and dictation compose locally by default, with direct mode
-                    available for native terminal input. Enter sends; Shift+Enter adds a line;
+  src/components/RemoteDraft.tsx  locally saved prompt editor for remote tabs; collapsed by
+                    default while terminal input goes to the agent's own UI. Offline input opens
+                    the editor, and an option routes online text into it. Enter sends; Shift+Enter adds a line;
                     sent text keeps a recovery copy and reconnect never replays it. The compact
                     editor keeps its height across reconnects; expanding overlays the terminal.
                     Checkpointed drafts recover after abrupt renderer loss; replacement host
@@ -2657,6 +2659,9 @@ src/remote/       mobile web UI, built separately to out/remote. Vanilla TS on o
                     a tapped notification with the shell open is routed by the worker's
                     `stoke:open` message
 src/shared/       types, IPC channel names, themes, profiles, colour maths
+  localDay.ts     local calendar and quarter-hour interval boundaries
+  stats.ts        versioned Stats month records and validation
+  statsChart.ts   Stats chart geometry and hit testing
   secrets.ts        `SECRET_PATHS`, the one registry of which settings are secrets (a new
                     secret is one line here), the move between settings and a path->value
                     map (`__proto__` refused), the secrets.json format, `judgeProtection`
@@ -3006,6 +3011,8 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     once, the plan's bucket first, a window reset since the turn dropped
   openRouterUsage.ts  `GET /api/v1/key` (documented): key limit, spend, the free-model day
   kimiUsage.ts      Kimi Code's own `/usages` and where its token lives, from its 2.1.1 package
+  cursorUsage.ts    Cursor's undocumented dashboard RPC: Auto and API usage and billing reset;
+                    account-specific credentials stay in main, are never refreshed or sent on redirects
   clineUsage.ts     the Cline balance its CLI shows: providers.json's token, `workos:`
                     bearer, micro-dollars; nothing is sent for an expired sign-in
   color.ts          contrast, APCA and oklch maths behind the ladder and the accent ink

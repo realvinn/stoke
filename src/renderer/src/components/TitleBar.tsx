@@ -609,14 +609,14 @@ export function TitleBar({
           */
           title={
             worklogCount > 0
-              ? `Activity — and ${worklogCount} worklog proposal${worklogCount === 1 ? '' : 's'} pending in the review strip`
+              ? `Stats, activity and work boards — ${worklogCount} worklog proposal${worklogCount === 1 ? '' : 's'} pending in the review strip`
               : worklogState === 'watching'
-                ? 'Activity — the worklog is watching this session; nothing proposed yet'
-                : 'Activity — the worklog watches nothing. Scan a session, or tick a profile in Settings'
+                ? 'Stats, activity and work boards — the worklog is watching this session'
+                : 'Stats, activity and work boards'
           }
         >
           <IconPin />
-          <span className="sr-only">Toggle worklog review</span>
+          <span className="sr-only">Open stats, activity and work boards</span>
         </button>
         <PhonePopover onOpenSettings={onOpenPhoneSettings} settingsOpen={settingsOpen} />
         {activeTab?.kind === 'remote' && <RemoteUsageChip key={activeTab.id} view={remoteView} />}

@@ -4,6 +4,7 @@ import type { GrokBotView, GrokBotSource, GrokBotDesktopProfile, GrokBotAccountC
 import type { WorkModeOptions, WorkModeScan, WorkModeSource } from './workMode.ts'
 import type { InstallKind } from './installKind'
 import type { RevealInfo } from './fullScreenReveal'
+import type { StatsResetResult, StatsView } from './stats'
 
 /** A browser profile Stoke could import from. Mirrors main's `SourceProfile`. */
 export interface ImportSource {
@@ -1167,6 +1168,7 @@ export interface StokeApi {
     /** `from`/`to` are epoch ms; both ends are inclusive whole local days. */
     read(from: number, to: number): Promise<ActivityReport>
   }
+  stats: { read(): Promise<StatsView>; onChange(cb: (view: StatsView) => void): () => void; reset(): Promise<StatsResetResult> }
 
   /**
    * The worklog review queue. A scan only ever proposes; nothing reaches Notion

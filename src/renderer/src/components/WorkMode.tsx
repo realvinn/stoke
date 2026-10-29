@@ -95,6 +95,7 @@ export function WorkMode({ cwd, platform, fullScreen, stop = false, onDone }: Wo
   const [source, setSource] = useState<WorkModeSource | null>(null)
   const [sample, setSample] = useState(false)
   const [options, setOptions] = useState<WorkModeOptions>(WM_OPTIONS_DEFAULT)
+  const [automatic, setAutomatic] = useState(true)
   const [session, dispatch] = useReducer(rootReducer, null)
   const [hint, setHint] = useState<{ text: string; key: number } | null>({ text: 'Work mode · press Esc twice to leave', key: 0 })
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
@@ -107,6 +108,7 @@ export function WorkMode({ cwd, platform, fullScreen, stop = false, onDone }: Wo
   const seed = useMemo(() => Math.floor(Math.random() * 0x7fffffff), [])
   const rng = useMemo(() => seededRandom(seed ^ 0x5bd1e995), [seed])
   const lastTyped = useRef(0)
+  const lastManualTyped = useRef(0)
   const lineId = useRef(0)
   const sourceRef = useRef<WorkModeSource | null>(null)
   sourceRef.current = source
@@ -230,6 +232,30 @@ export function WorkMode({ cwd, platform, fullScreen, stop = false, onDone }: Wo
   const saveRef = useRef(save)
   saveRef.current = save
 
+  // Simulate short bursts of typing, with pauses and occasional saves and
+  // editor changes. This drives only the in-memory pretend documents.
+  useEffect(() => {
+    if (phase !== 'open' || !automatic || menu !== null) return
+    let timer = 0
+    let strokes = 0
+    const tick = (): void => {
+      if (phaseRef.current !== 'open') return
+      if (performance.now() - lastManualTyped.current >= 1200) {
+        if (strokes > 0 && strokes % 45 === 0) saveRef.current()
+        if (strokes > 0 && strokes % 85 === 0 && sessionRef.current) {
+          dispatch({ kind: 'focus', group: sessionRef.current.active === 0 ? 1 : 0 })
+        }
+        lastTyped.current = performance.now()
+        dispatch({ kind: 'type' })
+        strokes++
+      }
+      const pause = strokes > 0 && strokes % 23 === 0
+      timer = window.setTimeout(tick, pause ? 1200 + rng() * 1800 : 110 + rng() * 190)
+    }
+    timer = window.setTimeout(tick, 1000)
+    return () => window.clearTimeout(timer)
+  }, [phase, automatic, menu, rng])
+
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
       // Always, first: nothing else in the page acts on a key while Work mode is up.
@@ -264,6 +290,7 @@ export function WorkMode({ cwd, platform, fullScreen, stop = false, onDone }: Wo
       if (menuOpenRef.current) setMenu(null)
       if (kind === 'save') return saveRef.current()
       lastTyped.current = performance.now()
+      lastManualTyped.current = lastTyped.current
       dispatch({ kind: 'type' })
     }
     const swallow = (e: KeyboardEvent): void => {
@@ -300,6 +327,7 @@ export function WorkMode({ cwd, platform, fullScreen, stop = false, onDone }: Wo
   const onPointer = useCallback(
     (group: 0 | 1, row: number, view: View, tops: Int32Array | null, x: number, y: number, at: number) => {
       if (phaseRef.current !== 'open' || menuOpenRef.current) return
+      lastManualTyped.current = performance.now()
       const b = pointerBudget(pointer.current, { x, y, at })
       pointer.current = b.state
       const p = pending.current
@@ -313,6 +341,7 @@ export function WorkMode({ cwd, platform, fullScreen, stop = false, onDone }: Wo
   useEffect(() => () => cancelAnimationFrame(pending.current.frame), [])
   const onPress = useCallback((group: 0 | 1, row: number, view: View, tops: Int32Array | null) => {
     if (phaseRef.current !== 'open') return
+    lastManualTyped.current = performance.now()
     if (menuOpenRef.current) {
       setMenu(null)
       return
@@ -488,9 +517,11 @@ export function WorkMode({ cwd, platform, fullScreen, stop = false, onDone }: Wo
           picks={source?.picks ?? []}
           charsPerKey={session?.charsPerKey ?? options.charsPerKey}
           panel={options.panel}
+          automatic={automatic}
           onPicks={(picks) => void applyPicks(picks)}
           onChars={(n) => void applyOptions({ charsPerKey: n })}
           onPanel={(on) => void applyOptions({ panel: on })}
+          onAutomatic={setAutomatic}
           onLeave={startLeaving}
         />
       )}

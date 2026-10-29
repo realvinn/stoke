@@ -46,7 +46,7 @@ Usage: stoke [options] [DIR]
   stoke --cli ID [DIR]    a session with another coding agent, by id:
                           claude, codex, grok, opencode, pi, gemini, qwen, kimi,
                           copilot, cursor, amp, kilo, aider, crush, droid, cline,
-                          auggie, vibe
+                          auggie, muse, vibe
   stoke --continue [DIR]  pick up the last Claude Code conversation in DIR
   stoke --open [DIR]      add DIR to the sidebar and select it; starts nothing
   stoke update            open Settings, Updates and check for a new Stoke; installs nothing
@@ -137,7 +137,7 @@ account_list() {
       if [ -n "$a_env" ]; then
         printf '%-22s %-9s %s\n%24s%s\n' "$a_id" "$a_cli" "$a_label" '' "$a_home"
       else
-        printf '%-22s %-9s %s\n%24s%s\n' "$a_id" "$a_cli" "$a_label" '' '(an API key, sealed in Stoke; env exports nothing for it)'
+        printf '%-22s %-9s %s\n%24s%s\n' "$a_id" "$a_cli" "$a_label" '' '(managed in Stoke; env exports nothing for it)'
       fi
     done <<ROWS
 $acc_rows
@@ -176,7 +176,7 @@ account_env() {
       [ "$a_id" = "$acc_want" ] || [ "$a_name" = "$acc_want" ] || continue
       acc_hit=1
       if [ -z "$a_env" ] || [ -z "$a_home" ]; then
-        say "# $a_id is an API-key account: its key stays sealed in Stoke and is not exported."
+        say "# $a_id is managed in Stoke and is not exported to this shell."
         continue
       fi
       say "export $a_env=$(sh_quote "$a_home")"

@@ -65,6 +65,7 @@ import { BackupSettings } from './BackupSettings'
 import { AccountSyncSettings } from './AccountSyncSettings'
 import { AccountsSettings, AgentAccountsPage } from './AccountsSettings'
 import { ChatHistorySettings } from './ChatHistorySettings'
+import { StatsSettings } from './StatsSettings'
 import type { ChatDetection, ChatIndexStatus } from '@shared/chatIndex'
 import type { CodingCliDetection, CodingCliId } from '@shared/codingClis'
 import { WorklogSettings } from './WorklogSettings'
@@ -1210,6 +1211,7 @@ export function SettingsSheet({
             {loc.page === 'chats' && (
               <ChatHistorySettings settings={settings} onPatch={onPatch} status={chats.status} detection={chats.detection} />
             )}
+            {loc.page === 'stats' && <StatsSettings />}
 
             {loc.page === 'projects' && (
               <>
@@ -1317,6 +1319,12 @@ export function SettingsSheet({
                   relaunch={settings.cliRelaunch}
                   onChangeRelaunch={(cliRelaunch) => onPatch({ cliRelaunch })}
                 />
+                <label className="check-row" data-setting="updates.codex-auto">
+                  <input type="checkbox" checked={settings.codexAutoUpdate} onChange={e => onPatch({ codexAutoUpdate: e.target.checked })} />
+                  <span><span className="field-label">Keep Codex up to date automatically</span>
+                    <span className="field-hint">Checks when enabled, shortly after launch and every six hours while Stoke is open. If local Codex sessions or sign-in tabs are open, the next check will try again.</span>
+                  </span>
+                </label>
                 <ClaudePathField settings={settings} cli={cli} onPatch={onPatch} />
               </>
             )}

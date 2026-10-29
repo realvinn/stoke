@@ -39,6 +39,7 @@ export async function runAccountIdentityChecks(): Promise<void> {
     const settings = hydrateSettings({ accounts: {
       'claude-work': { id: 'claude-work', cli: 'claude', label: 'Work', kind: 'login', home: join(root, 'claude-work'), apiKey: '' },
       'codex-work': { id: 'codex-work', cli: 'codex', label: 'Codex work', kind: 'login', home: join(root, 'codex-work'), apiKey: '' },
+      'cursor-work': { id: 'cursor-work', cli: 'cursor', label: 'Cursor work', kind: 'login', home: join(root, 'cursor-work'), apiKey: '' },
       'grok-key': { id: 'grok-key', cli: 'grok', label: 'Grok key', kind: 'key', home: '', apiKey: 'fixture credential' }
     } })
     const target: AccountIdentityTarget = { cli: 'claude', accountId: 'claude-work', ptyId: 'owned-fixture-session' }
@@ -68,6 +69,12 @@ export async function runAccountIdentityChecks(): Promise<void> {
     pass('a named Claude login reads its own identity without inherited API, gateway, OAuth or Keychain overrides')
     const codex = planAccountIdentity({ cli: 'codex', accountId: 'codex-work' }, settings, { CODEX_HOME: join(root, 'default-codex') }, root)
     assert.equal(codex.env.CODEX_HOME, join(root, 'codex-work'))
+    const cursor = planAccountIdentity({ cli: 'cursor', accountId: 'cursor-work' }, settings, { CURSOR_API_KEY: 'external', CURSOR_AUTH_TOKEN: 'external' }, root)
+    assert.equal(cursor.native, 'cursor')
+    assert.equal(cursor.env.HOME, join(root, 'cursor-work'))
+    assert.equal(cursor.env.CURSOR_API_KEY, '')
+    assert.equal(cursor.env.CURSOR_AUTH_TOKEN, '')
+    assert.equal(planAccountIdentity({ cli: 'cursor', accountId: 'default' }, settings, { CURSOR_AUTH_TOKEN: 'external' }, root).native, null)
     assert.equal(planAccountIdentity({ cli: 'codex', accountId: 'claude-work' }, settings, {}, root).native, null)
     assert.equal(planAccountIdentity({ cli: 'grok', accountId: 'grok-key' }, settings, {}, root).fallback.method, 'API key')
     assert.equal(planAccountIdentity({ cli: 'cursor', accountId: 'default' }, settings, {}, root).fallback.state, 'unavailable')
@@ -80,6 +87,9 @@ export async function runAccountIdentityChecks(): Promise<void> {
     assert.equal(nativeAccountIdentity('codex', { account: { type: 'chatgpt', email: 'codex@example.test', planType: 'pro', token: 'not public' } }).email, 'codex@example.test')
     assert.equal(nativeAccountIdentity('codex', { account: null, requiresOpenaiAuth: false }).state, 'unavailable')
     assert.equal(nativeAccountIdentity('codex', { account: null, requiresOpenaiAuth: true }).state, 'signed-out')
+    assert.equal(nativeAccountIdentity('cursor', { isAuthenticated: true, accessToken: 'never expose this fixture' }).state, 'ready')
+    assert.equal(nativeAccountIdentity('cursor', { isAuthenticated: false }).state, 'signed-out')
+    assert(!JSON.stringify(nativeAccountIdentity('cursor', { isAuthenticated: true, accessToken: 'never expose this fixture' })).includes('never expose'))
     assert.equal(nativeAccountIdentity('claude', { loggedIn: true, email: 'fake@example.test\nforged' }).email, null)
     pass('only public identity fields survive; stale emails and control characters are refused')
     const service = new AccountIdentities()
@@ -155,6 +165,7 @@ else if (mode==='tree'||mode==='tree-delayed'||mode==='tree-vendor-console') { c
 else if (mode==='hang') { process.on('SIGTERM',()=>record({kind:'ignored-term'})); record({kind:'ready-hang',pid:process.pid}); process.stdout.write(JSON.stringify({loggedIn:true,email:'expired@example.test'})); setInterval(()=>{},1000); }
 else if (mode==='oversized') { process.stdout.write('x'.repeat(150000)); setInterval(()=>{},1000); }
 else if (mode==='claude') { const b=Buffer.from(JSON.stringify({loggedIn:true,email:'équipe@example.test',subscriptionType:'team'})); const cut=b.indexOf(0xc3)+1; process.stdout.write(b.subarray(0,cut)); setTimeout(()=>process.stdout.write(b.subarray(cut)),10); }
+else if (mode==='cursor') { process.stdout.write(JSON.stringify({isAuthenticated:true})); }
 else { if(mode==='late') { process.on('SIGTERM',()=>{});setInterval(()=>{},1000); } const rl=readline.createInterface({input:process.stdin}); rl.on('line',line=>{const r=JSON.parse(line);record(r);if(r.method==='initialize')process.stdout.write(JSON.stringify({id:r.id,result:{userAgent:'fixture'}})+'\\n');else if(r.method==='account/read') { const reply=()=>{record({kind:'late-reply',pid:process.pid});process.stdout.write(JSON.stringify({id:r.id,result:{account:{type:'chatgpt',email:'codex@example.test',planType:'pro'}}})+'\\n');};if(mode==='late'){record({kind:'late-read',pid:process.pid});setTimeout(reply,150);}else reply(); }}); }
 `, { mode: 0o600 })
     const spawned: number[] = []
@@ -183,6 +194,7 @@ else { if(mode==='late') { process.on('SIGTERM',()=>{});setInterval(()=>{},1000)
     if (process.platform !== 'win32') assert((await readFile(record, 'utf8')).trim().split('\n').map(line => JSON.parse(line)).some(v => v.kind === 'late-reply' && v.pid === spawned.at(-1)), 'a reply really arrives after cancellation')
     pass('a native Codex reply received after cancellation cannot restore a discarded identity')
     assert.equal(nativeAccountIdentity('claude', await probeAccountIdentity(captured, 'fixture-only', { ...env, STOKE_IDENTITY_FIXTURE_MODE: 'claude' }, 2_000, run)).email, 'équipe@example.test')
+    assert.equal(nativeAccountIdentity('cursor', await probeAccountIdentity(cursor, 'fixture-only', { ...env, STOKE_IDENTITY_FIXTURE_MODE: 'cursor' }, 2_000, run)).state, 'ready')
     pass('real owned children prove the Codex handshake and read-only request, exact account home, and split UTF-8 Claude identity')
     assert.equal(await probeAccountIdentity(captured, 'fixture-only', { ...env, STOKE_IDENTITY_FIXTURE_MODE: 'hang' }, 1_000, run), null)
     if (process.platform !== 'win32') assert((await readFile(record, 'utf8')).includes('ignored-term'), 'the timeout actually reaches a child that ignores SIGTERM')

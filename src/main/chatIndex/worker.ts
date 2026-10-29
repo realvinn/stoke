@@ -19,15 +19,21 @@ import { detectSource, discovery } from './sources.ts'
 import { importExport } from './importer.ts'
 import { openChat, openChatCleaned } from './viewer.ts'
 import type { WorkerData, WorkerEvent, WorkerReply, WorkerRequest } from './protocol.ts'
+import { StatsStore } from '../stats/store.ts'
+import { runStatsPass } from '../stats/pass.ts'
+import type { StatsPassResult } from '../../shared/stats.ts'
 
 const port = parentPort
 if (!port) throw new Error('chat-index worker started outside a worker thread')
-const { dir } = workerData as WorkerData
+const { dir, statsDir } = workerData as WorkerData
 
 let store: ChatStore | null = null
 let running: Promise<ChatPassSummary> | null = null
 /** An import in progress: one at a time, and Delete index waits for it like a pass. */
 let importing: Promise<unknown> | null = null
+let statsStore: StatsStore | null = null
+let statsRunning: Promise<StatsPassResult> | null = null
+let stopStats = false
 /*
  * Two stop flags, not one. A pass and an import each clear their own when they
  * start, and Rebuild stops only the pass: it keeps imports, so it has no reason
@@ -116,6 +122,16 @@ port.on('message', async (msg: WorkerRequest) => {
         }
         return
       }
+      case 'statsPass': {
+        if (!statsDir) throw new Error('The stats store is not configured.')
+        if (statsRunning) return reply(msg.id, null)
+        stopStats = false
+        statsStore ??= StatsStore.open(statsDir)
+        const pass = runStatsPass(msg.plan, statsStore, { now: Date.now, yieldTurn: () => new Promise(resolve => setImmediate(resolve)), cancelled: () => stopStats })
+        statsRunning = pass
+        try { reply(msg.id, await pass) } finally { statsRunning = null }
+        return
+      }
       case 'search': {
         const s = openStore(false)
         reply(msg.id, s ? s.search(msg.query, msg.limit, { redact: msg.redact, filters: msg.filters, skip: skipFolders(msg.hidden ?? [], process.platform) }) : [])
@@ -140,7 +156,11 @@ port.on('message', async (msg: WorkerRequest) => {
         return
       }
       case 'close': {
+        stopStats = true
+        if (statsRunning) await statsRunning.catch(() => null)
         await settle()
+        statsStore?.close()
+        statsStore = null
         store?.close()
         store = null
         reply(msg.id, null)

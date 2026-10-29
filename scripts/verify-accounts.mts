@@ -142,27 +142,27 @@ console.log('\nthe table: what moves each agent\u2019s sign-in (research, 2026-0
     pi: 'PI_CODING_AGENT_DIR',
     cline: 'CLINE_DIR',
     vibe: 'VIBE_HOME',
-    droid: 'FACTORY_HOME_OVERRIDE'
+    droid: 'FACTORY_HOME_OVERRIDE',
+    cursor: 'CURSOR_CONFIG_DIR'
   })
-  ok('Cursor has no home variable: its credentials are fixed Keychain names', !('cursor' in ACCOUNT_HOME_ENV))
-  ok('so Cursor holds no login account', !LOGIN_ACCOUNTS.has('cursor'))
+  ok('Cursor offers isolated file-backed login accounts', LOGIN_ACCOUNTS.has('cursor'))
   ok('nor Vibe, whose key sits in one keyring item whatever VIBE_HOME says', !LOGIN_ACCOUNTS.has('vibe'))
   ok('every other agent with a home variable can hold a login account', Object.keys(ACCOUNT_HOME_ENV).filter((id) => id !== 'vibe').every((id) => LOGIN_ACCOUNTS.has(id as CodingCliId)))
   ok('Claude and Codex named API keys have a launch-time environment route', 'claude' in ACCOUNT_KEY_ENV && 'codex' in ACCOUNT_KEY_ENV)
   check('Cursor\u2019s key always travels with the in-memory store', ACCOUNT_KEY_ENV.cursor, { key: 'CURSOR_API_KEY', with: { AGENT_CLI_CREDENTIAL_STORE: 'memory' } })
   check('Gemini\u2019s login accounts stay on the per-home file store', ACCOUNT_EXTRA_ENV.gemini, { GEMINI_FORCE_ENCRYPTED_FILE_STORAGE: 'false' })
-  check('the agent\u2019s own sign-in command, where one was read', ACCOUNT_LOGIN_ARGS, { claude: ['auth', 'login'], codex: ['login'] })
+  check('the agent\u2019s own sign-in command, where one was read', ACCOUNT_LOGIN_ARGS, { claude: ['auth', 'login'], codex: ['login'], cursor: ['login'] })
   check('every other agent\u2019s sign-in tab runs the agent itself', loginArgsFor('grok'), [])
   ok('every agent in the tables is a known agent', [...Object.keys(ACCOUNT_HOME_ENV), ...Object.keys(ACCOUNT_KEY_ENV)].every((id) => CODING_CLIS.some((c) => c.id === id)))
   check('what each agent can hold: Claude', accountKindsFor('claude'), ['login', 'key'])
   check('Codex has separate login and API accounts', accountKindsFor('codex'), ['login', 'key'])
   check('Grok: both', accountKindsFor('grok'), ['login', 'key'])
-  check('Cursor: a key only', accountKindsFor('cursor'), ['key'])
+  check('Cursor: browser login and API key', accountKindsFor('cursor'), ['login', 'key'])
   check('Aider: neither', accountKindsFor('aider'), [])
   check(
     'every variable an account can set, for `stoke account env default`',
     accountEnvNames(),
-    [...Object.values(ACCOUNT_HOME_ENV), 'GEMINI_FORCE_ENCRYPTED_FILE_STORAGE']
+    [...Object.entries(ACCOUNT_HOME_ENV).filter(([id]) => id !== 'cursor').map(([, name]) => name), 'GEMINI_FORCE_ENCRYPTED_FILE_STORAGE']
   )
 }
 
@@ -171,11 +171,18 @@ console.log('\nthe environment one launch on an account adds')
   for (const [cli, name] of Object.entries(ACCOUNT_HOME_ENV) as [CodingCliId, string][]) {
     if (!LOGIN_ACCOUNTS.has(cli)) continue
     const home = `/u/.stoke/accounts/${cli}-work`
+    if (cli === 'cursor') {
+      check('Cursor isolates file credentials on all supported OSes', accountEnv(login('cursor-work', home)), { CURSOR_CONFIG_DIR: home, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: home, APPDATA: home, CURSOR_API_KEY: '', CURSOR_AUTH_TOKEN: '', AGENT_CLI_CREDENTIAL_STORE: 'file' })
+      continue
+    }
     check(`${cli}: ${name}`, accountEnv(login(`${cli}-work`, home)), { [name]: home, ...(ACCOUNT_EXTRA_ENV[cli] ?? {}) })
   }
   for (const [cli, spec] of Object.entries(ACCOUNT_KEY_ENV) as [CodingCliId, { key: string; with?: Record<string, string> }][]) {
     check(`${cli} key account: ${spec.key}`, accountEnv(keyed(`${cli}-ci`, 'k-1')), { ...(spec.with ?? {}), [spec.key]: 'k-1' })
   }
+  const cursorRow = accountIndexRow(login('cursor-work', '/u/.stoke/accounts/cursor-work'))
+  check('Cursor profile homes are not exported into an interactive shell', [cursorRow.env, cursorRow.extra, cursorRow.home], ['', '', ''])
+  ok('default shell reset never unsets ordinary home and app-data variables', !accountEnvNames().some(name => ['HOME', 'USERPROFILE', 'XDG_CONFIG_HOME', 'APPDATA'].includes(name)))
   check('a key account with no key adds nothing', accountEnv(keyed('grok-ci', '')), {})
 }
 
@@ -583,14 +590,14 @@ try {
         run(shell, ['account', 'env', 'gemini-2']).stdout,
         `export GEMINI_CLI_HOME='${join(accountsDir, 'gemini-2')}'\nexport GEMINI_FORCE_ENCRYPTED_FILE_STORAGE=false\n`
       )
-      ok(`${shell}: a key account exports nothing, and says so`, /^# grok-team is an API-key account/.test(run(shell, ['account', 'env', 'team']).stdout))
+      ok(`${shell}: a key account exports nothing, and says so`, /^# grok-team is managed in Stoke/.test(run(shell, ['account', 'env', 'team']).stdout))
       check(`${shell}: env default unsets every account variable`, run(shell, ['account', 'env', 'default']).stdout, `unset ${accountEnvNames().join(' ')}\n`)
       const nobody = run(shell, ['account', 'env', 'nope'])
       ok(`${shell}: an unknown name fails with a sentence`, nobody.status === 1 && /no account called nope/.test(nobody.stderr), nobody.stderr)
       const bad = run(shell, ['account', 'env', 'a;rm'])
       ok(`${shell}: a name that is not a name is refused before anything is read`, bad.status === 1 && bad.stdout === '', bad.stderr)
       const list = run(shell, ['account', 'list'])
-      ok(`${shell}: list names every account it can print, labels unescaped`, list.status === 0 && /claude-work +claude +Work "main" 100%/.test(list.stdout) && /grok-team/.test(list.stdout) && /an API key/.test(list.stdout), list.stdout)
+      ok(`${shell}: list names every account it can print, labels unescaped`, list.status === 0 && /claude-work +claude +Work "main" 100%/.test(list.stdout) && /grok-team/.test(list.stdout) && /managed in Stoke/.test(list.stdout), list.stdout)
       const empty = run(shell, ['account', 'list'], { HOME: join(scratch, 'nobody') })
       ok(`${shell}: with no index, list says how to add one`, empty.status === 0 && /No accounts yet/.test(empty.stdout), empty.stdout + empty.stderr)
       check(

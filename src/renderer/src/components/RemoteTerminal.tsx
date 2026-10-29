@@ -527,7 +527,7 @@ export function RemoteTerminal({ tab, view, active, theme, fontFamily, fontSize,
         </RemoteFab>
       )}
       <div className="term-host remote-host" ref={hostRef} />
-      <RemoteDraft label={`${deviceLabel} · ${tab.customTitle?.trim() || tab.title}`} scope={JSON.stringify(['remote-desktop', tab.remote?.device, tab.remote?.ptyId ?? remoteId])} view={view} receive={draftInput} />
+      <RemoteDraft label={`${deviceLabel} · ${tab.customTitle?.trim() || tab.title}`} scope={JSON.stringify(['remote-desktop', tab.remote?.device, tab.remote?.ptyId ?? remoteId])} view={view} receive={draftInput} onHide={() => termRef.current?.focus()} />
       {clipboardMenu && active && <ContextMenu x={clipboardMenu.x} y={clipboardMenu.y} onClose={() => setClipboardMenu(null)} items={[
         {label:'Copy',disabled:!clipboardMenu.selection,onSelect:()=>window.stoke.clipboard.writeText(clipboardMenu.selection)},
         // The viewport, soft wraps joined: what is on screen, never an empty write over the clipboard.

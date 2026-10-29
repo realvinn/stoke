@@ -396,6 +396,11 @@ const api: StokeApi = {
   activity: {
     read: (from: number, to: number) => ipcRenderer.invoke(CH.activityRead, from, to)
   },
+  stats: {
+    read: () => ipcRenderer.invoke(CH.statsRead),
+    onChange: (cb) => on<[Parameters<typeof cb>[0]]>(CH.statsChanged, cb),
+    reset: () => ipcRenderer.invoke(CH.statsReset)
+  },
   plugins: {
     read: () => ipcRenderer.invoke(CH.pluginsRead),
     onChange: (cb) => on<[Parameters<typeof cb>[0]]>(CH.pluginsChanged, cb),

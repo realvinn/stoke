@@ -357,8 +357,8 @@ check('a name with spaces arrives as one argument, tidied', parse('account', 'ad
 })
 ok('an unknown agent is refused', kind(parse('account', 'add', 'banana', 'work')) === 'error')
 ok(
-  'an agent whose sign-in does not follow its home is refused, and told about key accounts',
-  /one sign-in/.test(msg(parse('account', 'add', 'cursor', 'work'))) && /API key/.test(msg(parse('account', 'add', 'cursor', 'work')))
+  'Cursor login accounts can be added',
+  kind(parse('account', 'add', 'cursor', 'work')) === 'account-add'
 )
 ok('Vibe too: its key is in one keyring item, whatever the home', kind(parse('account', 'add', 'vibe', 'work')) === 'error')
 ok('a name with no letter or digit is refused', kind(parse('account', 'add', 'claude', '---')) === 'error')
@@ -380,7 +380,7 @@ check(
 )
 check(
   'a forwarded account-add for a keyring-only agent is dropped',
-  requestFrom({ kind: 'account-add', cli: 'cursor', name: 'work' }, 'darwin'),
+  requestFrom({ kind: 'account-add', cli: 'vibe', name: 'work' }, 'darwin'),
   null
 )
 check(

@@ -84,7 +84,9 @@ export function resetLabel(resetsAt: number | null, percent: number, now: number
     at.getDate() === today.getDate()
   const when = sameDay
     ? clock(resetsAt)
-    : `${at.toLocaleDateString(undefined, { weekday: 'short' })} ${clock(resetsAt)}`
+    : resetsAt - now >= 7 * 86_400_000
+      ? `${at.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })} ${clock(resetsAt)}`
+      : `${at.toLocaleDateString(undefined, { weekday: 'short' })} ${clock(resetsAt)}`
   return `resets ${when} · in ${countdown(resetsAt, percent, now)}`
 }
 
@@ -110,8 +112,12 @@ export function shortLabel(w: UsageWindow): string {
  * states an instant, else the rule it states instead ("resets monthly"), else
  * `countdown`'s "reset unknown"/"unused".
  */
-export function windowResetLabel(w: UsageWindow, now: number): string {
+export function windowResetLabel(w: UsageWindow, now: number, calendarDate = false): string {
   if (w.resetsAt === null && w.resetNote) return w.resetNote
+  if (calendarDate && w.resetsAt !== null && w.resetsAt > now) {
+    const date = new Date(w.resetsAt).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
+    return `resets ${date} ${clock(w.resetsAt)} · in ${countdown(w.resetsAt, w.percent, now)}`
+  }
   return resetLabel(w.resetsAt, w.percent, now)
 }
 

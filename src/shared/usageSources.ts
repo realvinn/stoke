@@ -18,6 +18,8 @@
  *              in that account's KIMI_CODE_HOME (kimiUsage.ts).
  *   cline      Cline, per login account: the balance of the Cline account its
  *              providers.json is signed in to (clineUsage.ts).
+ *   cursor     Cursor, per login account: the dashboard's Auto and API pools
+ *              read with that account's own CLI access token (cursorUsage.ts).
  *   openrouter Any agent pointed at OpenRouter, and Claude Code's Default
  *              account when Settings › Providers routes it there: the one key.
  *
@@ -114,6 +116,7 @@ export function usageRouteFor(target: UsageTarget, ctx: UsageRouteContext): Usag
   if (caps === 'codex') return { source: 'codex', accountId }
   if (caps === 'kimi') return { source: 'kimi', accountId }
   if (caps === 'cline') return { source: 'cline', accountId }
+  if (caps === 'cursor') return { source: 'cursor', accountId }
   return null
 }
 
@@ -167,7 +170,7 @@ export function chipRows(windows: UsageWindow[]): UsageWindow[] {
 }
 
 /** The panel's groups, in a fixed order: agents first, the shared key last. */
-export const USAGE_GROUP_ORDER: readonly UsageSourceId[] = ['anthropic', 'codex', 'kimi', 'cline', 'openrouter']
+export const USAGE_GROUP_ORDER: readonly UsageSourceId[] = ['anthropic', 'codex', 'kimi', 'cline', 'cursor', 'openrouter']
 
 /** A group's heading. */
 export function usageGroupTitle(source: UsageSourceId): string {
@@ -175,6 +178,7 @@ export function usageGroupTitle(source: UsageSourceId): string {
   if (source === 'codex') return cliFor('codex').label
   if (source === 'kimi') return cliFor('kimi').label
   if (source === 'cline') return cliFor('cline').label
+  if (source === 'cursor') return cliFor('cursor').label
   return 'OpenRouter'
 }
 

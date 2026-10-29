@@ -319,6 +319,7 @@ const SETTING_LABELS: Record<string, string> = {
   worklogAuto: 'Worklog auto-scan',
   betaUpdates: 'Beta updates',
   cliAutoUpdate: 'Claude Code updates',
+  codexAutoUpdate: 'Codex updates',
   cliRelaunch: 'Relaunch after a CLI update',
   selfUpdateAuto: 'Stoke updates',
   worklogBoards: 'Worklog boards',

@@ -9,6 +9,31 @@ import { agentNpmPackages, agentVersion, nativeUpdaterInHelp, NATIVE_AGENT_UPDAT
 import type { CodingCliId } from '../shared/codingClis.ts'
 
 const exec = promisify(execFile)
+
+/** Compare stable releases only. Unknown or prerelease versions are never updated automatically. */
+export function codexUpdateAvailable(current: string | null, latest: string | null): boolean {
+  const parse = (value: string | null): number[] | null => {
+    if (!value || !/^\d+\.\d+\.\d+$/.test(value)) return null
+    const parts = value.split('.').map(Number)
+    return parts.every(Number.isSafeInteger) ? parts : null
+  }
+  const a = parse(current), b = parse(latest)
+  if (!a || !b) return false
+  for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return b[i] > a[i]
+  return false
+}
+
+/** Read the published stable version; a failed check never starts an updater. */
+export async function latestCodexVersion(): Promise<string | null> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 10_000)
+  try {
+    const response = await fetch('https://registry.npmjs.org/@openai%2Fcodex/latest', { signal: controller.signal })
+    if (!response.ok) return null
+    const body = await response.json() as { version?: unknown }
+    return typeof body.version === 'string' ? body.version : null
+  } catch { return null } finally { clearTimeout(timer) }
+}
 export type AgentCommandRunner = (file: string, args: string[], timeoutMs: number) => Promise<{ ok: boolean; output: string; timedOut?: boolean }>
 
 /** An updater gets the user's toolchain, not any running agent's provider credentials. */

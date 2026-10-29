@@ -1001,7 +1001,7 @@ for (const t of BUILT_IN_THEMES) {
     }
   }
   eq(`${t.id}: text is the ink wherever the ink clears (${inkClears} of 18)`, same, inkClears)
-  if (t.appearance === 'dark') eq(`${t.id}: dark, so the ink clears for every agent`, inkClears, 18)
+  if (t.appearance === 'dark') eq(`${t.id}: dark, so the ink clears for every agent`, inkClears, 19)
 }
 
 console.log('\n-- the colour picker: HSV, the ring and the map, keys, names, placement --')

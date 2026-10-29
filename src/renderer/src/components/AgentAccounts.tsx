@@ -228,6 +228,7 @@ export function AgentAccounts({
         <summary>Add another sign-in <span className="field-hint">{cli.id === 'claude' ? 'Use a Claude subscription' : cli.id === 'codex' ? 'Use a ChatGPT subscription' : `Use another ${cli.label} login`}</span></summary>
         <div className="account-manager-form" data-setting="agent-accounts.login">
           <span className="field-hint">Sign in to another {cli.label} account in a new tab. Keep a nickname to tell your accounts apart.</span>
+          {cli.id === 'cursor' && <span className="field-hint">Cursor stores this sign-in unencrypted in a private account folder. Its sessions use that folder as their home, which can change where tools look for your configuration.</span>}
           <label className="account-manager-field">Nickname <span className="field-hint">Optional</span>
             <input className="input" value={name} placeholder={`e.g. Work (blank: ${cli.label} ${nextNumber})`}
               aria-label={`New ${cli.label} account name`} maxLength={ACCOUNT_LABEL_MAX} spellCheck={false}

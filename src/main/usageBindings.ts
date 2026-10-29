@@ -8,7 +8,7 @@ import { applyClaudeAccountEnv } from '../shared/claudeAccountEnv.ts'
 /** Cache identity includes private read configuration, never the display name. */
 export function usageCacheKey(plan: UsageSourcePlan): string {
   const sorted = (env: Record<string, string | undefined> | undefined) => env ? Object.fromEntries(Object.entries(env).sort(([a], [b]) => a.localeCompare(b))) : undefined
-  const identity = { source: plan.source, claudeHome: plan.claudeHome, claudeCredentials: plan.claudeCredentials, codexHome: plan.codexHome, clinePath: plan.clinePath, clineEnv: sorted(plan.clineEnv), kimiPath: plan.kimiPath, kimiEnv: sorted(plan.kimiEnv), openrouterKey: plan.openrouterKey }
+  const identity = { source: plan.source, claudeHome: plan.claudeHome, claudeCredentials: plan.claudeCredentials, codexHome: plan.codexHome, clinePath: plan.clinePath, clineEnv: sorted(plan.clineEnv), kimiPath: plan.kimiPath, kimiEnv: sorted(plan.kimiEnv), cursorPath: plan.cursorPath, cursorKeychain: plan.cursorKeychain, cursorBlocked: plan.cursorBlocked, openrouterKey: plan.openrouterKey }
   return `${plan.key}:${createHash('sha256').update(JSON.stringify(identity)).digest('hex')}`
 }
 
