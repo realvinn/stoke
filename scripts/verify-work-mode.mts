@@ -84,6 +84,7 @@ import {
   WM_WALK_MAX_ENTRIES,
   WORK_MODE_LANGUAGES,
   chooseCandidates,
+  relatedFileScore,
   clock12,
   clock24,
   countTypes,
@@ -136,6 +137,7 @@ import {
   fillLine,
   lineOfVisual,
   newDoc,
+  newWorkingDoc,
   newSession,
   nextSlot,
   prepareFile,
@@ -228,6 +230,7 @@ console.log('registration: the package, the catalog, the Settings row, the palet
   check('"characters per key" finds the row first', searchSettings(settingsEntries({ agents: ['claude'], enabledPlugins: ['work-mode'] }), 'characters per key')[0]?.entry.row, 'plugins.work-mode')
   check('the standing palette actions are unchanged', PALETTE_ACTIONS.map((a) => a.id), ['private'])
   check('Work mode is an action only while enabled', [paletteActions({ workMode: false }).map((a) => a.id), paletteActions({ workMode: true }).map((a) => a.id)], [['private'], ['private', 'work-mode']])
+  check('the simulation opens as Work while the real Work plugin remains separate', [WORK_MODE_ACTION.label, BUILTIN_PACKAGES.find(p => p.id === 'work')?.name, BUILTIN_PACKAGES.find(p => p.id === 'work-mode')?.name], ['Work', 'Work', 'Work mode'])
   const hits = searchPaletteActions('work mode', paletteActions({ workMode: true }))
   check('"work mode" finds the action by its label (tier 6)', hits.map((h) => `${h.action.id}:${h.score}`), ['work-mode:6'])
   check('and "ide" or "boss" by its words', [searchPaletteActions('ide', [WORK_MODE_ACTION]).length, searchPaletteActions('boss', [WORK_MODE_ACTION]).length], [1, 1])
@@ -406,6 +409,21 @@ console.log('\nwhich files are typed first, the explorer, the toolchain')
 
 /* --------------------------------------------- main's reader, real fs and git */
 
+{
+  const anchor = 'src/checkout/CartView.tsx'
+  check('related files favor a companion in the same feature', relatedFileScore(anchor, 'src/checkout/CartView.css') > relatedFileScore(anchor, 'src/profile/Profile.css'), true)
+  const files: WorkModeFile[] = [
+    { path: anchor, ext: 'tsx', text: 'code', eol: 'LF' },
+    { path: 'src/profile/Profile.css', ext: 'css', text: 'code', eol: 'LF' },
+    { path: 'src/checkout/CartView.css', ext: 'css', text: 'code', eol: 'LF' }
+  ]
+  check('the second editor starts with a related file', windowQueues(files, ['tsx', 'css']).right[0], 2)
+  const file = prepareFile({ path: 'src/checkout/Cart.ts', ext: 'ts', text: Array.from({ length: 60 }, (_, i) => `const line${i} = ${i};`).join('\n'), eol: 'LF' }, 4)
+  const doc = newWorkingDoc(file)
+  check('a long file opens with real code already visible and an editable caret', [doc.caret >= 12, doc.typed[0] === file.lines[0].length, doc.typed[doc.caret] === file.indent[doc.caret], doc.dirty, doc.touched], [true, true, true, false, false])
+  check('typing continues the selected real line', typeChars(file, doc, 4).typed[doc.caret] > doc.typed[doc.caret], true)
+}
+
 console.log('\nmain\'s reader against real folders and a real git')
 const gitBin = await findGit(process.env.PATH ?? '')
 const globalConfig = join(base, 'gitconfig')
@@ -445,6 +463,19 @@ const put = (path: string, text: string | Buffer): void => {
 /** A plausible source file over the size floor, carrying `marker`. */
 const code = (marker: string, lines = 30): string =>
   Array.from({ length: lines }, (_, i) => `export function step${i}(value: number): number {\n  return value * ${i} // ${marker}\n}\n`).join('\n')
+
+{
+  const project = join(base, 'related-project')
+  put(join(project, 'src', 'checkout', 'CartView.tsx'), code('checkout'))
+  put(join(project, 'src', 'checkout', 'CartView.css'), Array.from({ length: 30 }, (_, i) => `.cart-${i} { display: flex; gap: ${i}px; }`).join('\n'))
+  put(join(project, 'src', 'profile', 'Profile.tsx'), code('profile'))
+  put(join(project, 'src', 'profile', 'Profile.css'), Array.from({ length: 30 }, (_, i) => `.profile-${i} { display: block; margin: ${i}px; }`).join('\n'))
+  const r = reader({ random: () => 0.25 })
+  await r.pick(project, ['tsx', 'css'])
+  const source = await r.source(project)
+  const firstPair = source.files.slice(0, 2).map(f => f.path.replace(/\.[^.]+$/, ''))
+  check('the reader chooses the nearby companion before an unrelated file', firstPair.length === 2 && firstPair[0] === firstPair[1], true)
+}
 
 const CANARIES = ['CANARY_ENV', 'CANARY_IDKEY', 'CANARY_CRED', 'CANARY_NODEMOD', 'CANARY_DIST', 'CANARY_HUGE', 'CANARY_MINI', 'CANARY_NUL', 'CANARY_OUTSIDE', 'CANARY_ALIAS', 'CANARY_PARENTLINK', 'CANARY_SECRETNAME', 'CANARY_PWSTRENGTH', 'CANARY_FIFO', 'CANARY_HASHNAME']
 /** A tracked file whose NAME is key-shaped (a hashed build artefact): never listed, never shown. */

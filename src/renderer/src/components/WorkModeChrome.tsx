@@ -72,7 +72,7 @@ export function ActivityBar({ changed, onMenu }: { changed: number; onMenu: (x: 
       <button
         type="button"
         className="wm-act"
-        aria-label="Work mode settings"
+        aria-label="Work settings"
         tabIndex={-1}
         onClick={(e) => {
           const r = e.currentTarget.getBoundingClientRect()

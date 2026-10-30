@@ -32,6 +32,8 @@ export interface PaletteAction {
   hint: string
   /** Other words that find it, matched at a word's start. */
   words: readonly string[]
+  /** Former or alternate names that are as direct as the visible label. */
+  aliases?: readonly string[]
 }
 
 export const PALETTE_ACTIONS: readonly PaletteAction[] = [
@@ -46,9 +48,10 @@ export const PALETTE_ACTIONS: readonly PaletteAction[] = [
 /** Work mode, the pretend IDE: listed only while its plugin is enabled (`paletteActions`). */
 export const WORK_MODE_ACTION: PaletteAction = {
   id: 'work-mode',
-  label: 'Work mode',
+  label: 'Work',
   hint: 'A pretend IDE that types this project’s code',
-  words: ['work', 'ide', 'editor', 'pretend', 'fake', 'boss', 'typing', 'vscode']
+  aliases: ['work mode'],
+  words: ['work mode', 'work', 'ide', 'editor', 'pretend', 'fake', 'boss', 'typing', 'vscode']
 }
 
 /** The actions the palette offers now: the standing ones, and Work mode while its plugin is on. */
@@ -72,6 +75,10 @@ export function searchPaletteActions(query: string, actions: readonly PaletteAct
     const label = action.label.toLowerCase()
     if (label.startsWith(q)) {
       out.push({ action, score: 6, ranges: [[0, q.length]] })
+      continue
+    }
+    if (action.aliases?.some((alias) => alias.startsWith(q))) {
+      out.push({ action, score: 6, ranges: [] })
       continue
     }
     const at = [...label.matchAll(/\b\w/g)].map((m) => m.index ?? 0).find((i) => label.startsWith(q, i))

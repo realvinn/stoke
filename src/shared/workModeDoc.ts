@@ -194,6 +194,21 @@ export function newDoc(f: Doc): DocState {
   return d
 }
 
+/** Begin inside an existing file, with enough surrounding code to look lived in. */
+export function newWorkingDoc(f: Doc & { path?: string }, seed = 0): DocState {
+  if (f.lines.length < 24) return newDoc(f)
+  const d = newDoc(f)
+  const prefix = Math.min(12 + hash32(seed, f.path ?? '', 0) % 7, Math.floor(f.lines.length / 3))
+  for (let i = 0; i < prefix; i++) d.typed[i] = f.lines[i].length
+  let next = prefix
+  while (next < f.lines.length && f.skip[next]) next++
+  if (next >= f.lines.length) return newDoc(f)
+  d.caret = next
+  d.frontier = next
+  d.typed[next] = Math.min(f.indent[next], f.lines[next].length)
+  return d
+}
+
 /** `n` characters at the caret. A newline costs one, a blank line costs one; no slot left is `done`. */
 export function typeChars(f: Doc, doc: DocState, n: number): DocState {
   if (doc.done || n <= 0) return doc
@@ -609,10 +624,10 @@ function openFile(s0: Session, g: 0 | 1, file: number): Session {
   const at = group.tabs.findIndex((t) => t.file === file)
   if (at >= 0) {
     const tabs = group.tabs.slice()
-    if (tabs[at].doc.done) tabs[at] = { file, doc: newDoc(f) }
+    if (tabs[at].doc.done) tabs[at] = { file, doc: newWorkingDoc(f, s.seed) }
     return setGroup(s, g, { ...group, tabs, active: at })
   }
-  let tabs = [...group.tabs, { file, doc: newDoc(f) }]
+  let tabs = [...group.tabs, { file, doc: newWorkingDoc(f, s.seed) }]
   let active = tabs.length - 1
   while (tabs.length > WM_TABS_MAX) {
     const drop = tabs.findIndex((_, i) => i !== active)

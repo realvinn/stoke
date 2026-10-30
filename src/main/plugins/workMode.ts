@@ -59,6 +59,7 @@ import {
   WM_WALK_MAX_DEPTH,
   WM_WALK_MAX_ENTRIES,
   chooseCandidates,
+  relatedFileScore,
   clampOptions,
   countTypes,
   emptyWorkModeState,
@@ -512,6 +513,18 @@ export class WorkModeReader {
         bytes += read.bytes
         accepted.set(ext, (accepted.get(ext) ?? 0) + 1)
         out.push({ path: rel, ext: extOf(rel), text, eol: read.eol })
+        if (out.length === 1) {
+          // Once an actual readable file is known, keep the other editor in
+          // the same feature where possible. Preserve attempts already made.
+          for (const [kind, paths] of ranked) {
+            if (this.now() >= deadline || gen !== this.generation) return out
+            const done = cursor.get(kind) ?? 0
+            const remaining = paths.slice(done).map((path, order) => ({ path, order, score: relatedFileScore(rel, path) }))
+            remaining.sort((a, b) => b.score - a.score || a.order - b.order)
+            ranked.set(kind, [...paths.slice(0, done), ...remaining.map(item => item.path)])
+            await yieldTurn()
+          }
+        }
       }
     }
     return out

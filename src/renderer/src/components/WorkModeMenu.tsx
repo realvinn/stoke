@@ -47,7 +47,7 @@ export const WorkModeMenu = forwardRef<HTMLDivElement | null, Props>(function Wo
   }, [x, y])
 
   return (
-    <div ref={ref} className="wm-menu" role="menu" aria-label="Work mode" style={{ left: x, top: y }}>
+    <div ref={ref} className="wm-menu" role="menu" aria-label="Work" style={{ left: x, top: y }}>
       <div className="wm-menu-title">File types to type</div>
       {shown.length === 0 && <p className="wm-kbd">No file types to choose from.</p>}
       {shown.map((t) => {
@@ -91,7 +91,7 @@ export const WorkModeMenu = forwardRef<HTMLDivElement | null, Props>(function Wo
       </label>
       <div className="wm-menu-sep" />
       <button type="button" role="menuitem" className="wm-menu-item" onClick={onLeave}>
-        <span>Leave Work mode</span>
+        <span>Leave Work</span>
         <span className="wm-kbd">Esc Esc</span>
       </button>
     </div>

@@ -97,7 +97,7 @@ export function WorkMode({ cwd, platform, fullScreen, stop = false, onDone }: Wo
   const [options, setOptions] = useState<WorkModeOptions>(WM_OPTIONS_DEFAULT)
   const [automatic, setAutomatic] = useState(true)
   const [session, dispatch] = useReducer(rootReducer, null)
-  const [hint, setHint] = useState<{ text: string; key: number } | null>({ text: 'Work mode · press Esc twice to leave', key: 0 })
+  const [hint, setHint] = useState<{ text: string; key: number } | null>({ text: 'Work · press Esc twice to leave', key: 0 })
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const menuOpenRef = useRef(false)
   menuOpenRef.current = menu !== null
@@ -327,7 +327,6 @@ export function WorkMode({ cwd, platform, fullScreen, stop = false, onDone }: Wo
   const onPointer = useCallback(
     (group: 0 | 1, row: number, view: View, tops: Int32Array | null, x: number, y: number, at: number) => {
       if (phaseRef.current !== 'open' || menuOpenRef.current) return
-      lastManualTyped.current = performance.now()
       const b = pointerBudget(pointer.current, { x, y, at })
       pointer.current = b.state
       const p = pending.current
@@ -460,7 +459,7 @@ export function WorkMode({ cwd, platform, fullScreen, stop = false, onDone }: Wo
       className="wm"
       role="dialog"
       aria-modal="true"
-      aria-label="Work mode. Press Escape twice to leave."
+      aria-label="Work. Press Escape twice to leave."
       tabIndex={-1}
       onContextMenu={(e) => {
         e.preventDefault()

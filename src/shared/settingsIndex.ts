@@ -469,7 +469,7 @@ export const SETTING_ROWS: readonly SettingRow[] = [
     id: 'plugins.work-mode',
     page: 'plugins',
     label: 'Typing speed and file types',
-    keywords: ['work mode', 'pretend ide', 'fake editor', 'typing speed', 'characters per key', 'file types', 'file types to type', 'show build output now and then', 'build output', 'bottom panel', 'sample website', 'open work mode'],
+    keywords: ['work mode', 'pretend ide', 'fake editor', 'typing speed', 'characters per key', 'file types', 'file types to type', 'show build output now and then', 'build output', 'bottom panel', 'sample website', 'open work', 'open work mode'],
     fallback: 'plugins.manager'
   },
   { id: 'accounts.overview', page: 'accounts', label: 'Account manager', keywords: ['all accounts', 'manage accounts', 'subscriptions', 'saved logins', 'multiple accounts'] },

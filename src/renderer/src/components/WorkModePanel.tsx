@@ -50,11 +50,11 @@ export function WorkModePanel({ cwd, onOpen }: WorkModeEntry): React.JSX.Element
   }
 
   return (
-    <section className="plugin-panel wm-settings" data-setting="plugins.work-mode" aria-label="Work mode">
-      <h3>Work mode</h3>
+    <section className="plugin-panel wm-settings" data-setting="plugins.work-mode" aria-label="Work">
+      <h3>Work</h3>
       <p>
-        Two pretend editors side by side that type the code of the project in front, a few characters for every key you
-        press, and add whole lines as you move the mouse.
+        A simulated editor that types related files from the current project. Keys type code and the caret snaps to
+        useful places as you move the mouse. It also types automatically between your keystrokes.
       </p>
       <p className="plugin-muted" data-testid="work-mode-privacy">
         Read-only: nothing is written, run or sent anywhere. It never opens .env files, keys, certificates, files named for
@@ -64,7 +64,7 @@ export function WorkModePanel({ cwd, onOpen }: WorkModeEntry): React.JSX.Element
       </p>
       <div className="plugin-controls">
         <button type="button" className="btn" data-variant="primary" onClick={onOpen}>
-          Open Work mode
+          Open Work
         </button>
         <span className="plugin-muted">Leave with Esc, pressed twice.</span>
       </div>

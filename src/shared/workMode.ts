@@ -471,6 +471,19 @@ export function candidateScore(path: string, seed: number): number {
   return score + (hash32(seed, path) % 1000) / 1000
 }
 
+/** Prefer files from the same feature, then nearby directories and matching names. */
+export function relatedFileScore(anchor: string, candidate: string): number {
+  const a = anchor.toLowerCase().split('/'), b = candidate.toLowerCase().split('/')
+  const an = a.pop() ?? '', bn = b.pop() ?? ''
+  let common = 0
+  while (common < a.length && common < b.length && a[common] === b[common]) common++
+  const words = (name: string): string[] => name.replace(/\.[^.]+$/, '').split(/[._-]+/).filter(w => w.length >= 3 && !['index', 'test', 'spec', 'style', 'styles'].includes(w))
+  const aw = words(an), bw = words(bn)
+  const names = aw.filter(w => bw.includes(w)).length + (aw.length && bw.length && aw.join('') === bw.join('') ? 1 : 0)
+  const sameDir = a.length > 0 && a.length === b.length && common === a.length
+  return (sameDir ? 40 : 0) + common * 8 - Math.abs(a.length - b.length) + names * 24
+}
+
 /**
  * For each pick, its readable paths best first. Deterministic per seed; never a
  * path that is not `read`. A type with more than `cap` paths is ranked from an
@@ -586,6 +599,9 @@ export function windowQueues(files: readonly WorkModeFile[], picks: readonly str
     const all = left
     return { left: all.filter((_, i) => i % 2 === 0), right: all.filter((_, i) => i % 2 === 1) }
   }
+  // The second editor starts on the closest companion to the first; keep the
+  // original order for equally related files and keep every file in its queue.
+  if (left.length) right.sort((a, b) => relatedFileScore(files[left[0]].path, files[b].path) - relatedFileScore(files[left[0]].path, files[a].path))
   return { left, right }
 }
 

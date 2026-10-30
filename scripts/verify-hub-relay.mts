@@ -1754,7 +1754,7 @@ console.log('\ndictation on a remote tab: typed by the host with no Enter, refus
   const server = src('src/main/remote/server.ts')
   const mainSrc = src('src/main/index.ts')
   const serviceSrc = src('src/main/hub/service.ts')
-  check('the phone server types a submit with no Enter when the frame says enter: false', /msg\.type === 'submit' && typeof msg\.text === 'string'\)[\s\S]{0,240}manager\.submit\(ptyId, msg\.text, \{ enter: msg\.enter !== false \}\)/.test(server), true)
+  check('the phone server types a submit with no Enter when the frame says enter: false', /msg\.type === 'submit' && typeof msg\.text === 'string'\)[\s\S]{0,240}manager\.submitRemote\(ptyId, msg\.text, \{ enter: msg\.enter !== false \}, \(\) => ws\.readyState === 1\)/.test(server), true)
   check('this machine’s ready says typeOnly (main wires the dep)', /followsResize: true,[\s\S]{0,200}typeOnly: true,/.test(mainSrc), true)
   check('the renderer’s request reaches HubRemote.type through the service, and answers', /ipcMain\.handle\(CH\.hubRemoteType,[\s\S]{0,120}hubClient\.remoteType\(str\(tab\), str\(text\), enter === true\)/.test(mainSrc) && /remoteType\(tab: string, text: string, enter = false\): HubResult \{[\s\S]{0,200}return this\.remote\.type\(tab, text, enter\)/.test(serviceSrc), true)
 }
